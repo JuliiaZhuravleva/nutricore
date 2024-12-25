@@ -38,3 +38,13 @@ docker-compose.override.yml
 
 # Project specific
 .pytest_cache/
+
+# IDE
+*.code-workspace
+
+# Certificates and keys
+meta.json
+private_key.json
+regr.json
+*.pem
+*.key
