@@ -3,6 +3,7 @@ version: '3.8'
 services:
   nginx:
     image: nginx:alpine
+    restart: unless-stopped 
     ports:
       - "80:80"
       - "443:443"
@@ -16,6 +17,7 @@ services:
 
   app:
     build: .
+    restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
@@ -29,6 +31,7 @@ services:
 
   db:
     image: postgres:15
+    restart: unless-stopped
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
@@ -42,6 +45,7 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
       - "6379:6379"
     networks:
@@ -49,6 +53,7 @@ services:
 
   celery_worker:
     build: .
+    restart: unless-stopped
     command: celery -A celery_app.celery_app worker --loglevel=info
     volumes:
       - .:/app
@@ -62,6 +67,7 @@ services:
 
   celery_beat:
     build: .
+    restart: unless-stopped
     command: celery -A celery_app.celery_app beat --loglevel=info
     volumes:
       - .:/app
