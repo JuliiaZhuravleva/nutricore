@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
+    POSTGRES_PORT: int
     DATABASE_URL: Optional[str] = None
 
     # Redis
@@ -24,6 +25,20 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_WEBHOOK_URL: str
+    TELEGRAM_ADMIN_IDS: str
+
+    # OpenAI
+    OPENAI_API_KEY: str
+    OPENAI_MODEL: str
+    OPENAI_TEMPERATURE: float
+    OPENAI_MAX_TOKENS: int
+
+    # Application Settings 
+    DEBUG: bool
+    ENVIRONMENT: str
+    ALLOWED_HOSTS: str
+    DEFAULT_TIMEZONE: str
 
     class Config:
         env_file = ".env"
