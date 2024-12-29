@@ -1,4 +1,4 @@
-from typing import Optional, List
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.meal import Meal
@@ -6,11 +6,13 @@ from app.schemas.meal import MealCreate, MealUpdate
 
 
 class CRUDMeal:
-    def get(self, db: Session, meal_id: int) -> Optional[Meal]:
-        return db.query(Meal).filter(Meal.id == meal_id).first()
+    def get(self, db: Session, meal_id: int) -> Meal | None:
+        stmt = select(Meal).where(Meal.id == meal_id)
+        return db.execute(stmt).scalar_one_or_none()
 
-    def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> List[Meal]:
-        return db.query(Meal).offset(skip).limit(limit).all()
+    def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> list[Meal]:
+        stmt = select(Meal).offset(skip).limit(limit)
+        return db.scalars(stmt).all()
 
     def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
         db_obj = Meal(
@@ -31,33 +33,20 @@ class CRUDMeal:
         return db_obj
 
     def update(self, db: Session, db_obj: Meal, obj_in: MealUpdate) -> Meal:
-        if obj_in.description is not None:
-            db_obj.description = obj_in.description
-        if obj_in.meal_time is not None:
-            db_obj.meal_time = obj_in.meal_time
-        if obj_in.calories is not None:
-            db_obj.calories = obj_in.calories
-        if obj_in.proteins is not None:
-            db_obj.proteins = obj_in.proteins
-        if obj_in.fats is not None:
-            db_obj.fats = obj_in.fats
-        if obj_in.carbohydrates is not None:
-            db_obj.carbohydrates = obj_in.carbohydrates
-        if obj_in.nutrients is not None:
-            db_obj.nutrients = obj_in.nutrients
-        if obj_in.photos is not None:
-            db_obj.photos = obj_in.photos
-        if obj_in.ai_analysis is not None:
-            db_obj.ai_analysis = obj_in.ai_analysis
+        update_data = obj_in.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(db_obj, key, value)
         db.commit()
-        db.refresh(db_obj)
         return db_obj
 
     def remove(self, db: Session, meal_id: int) -> Meal:
-        obj = db.query(Meal).get(meal_id)
-        db.delete(obj)
-        db.commit()
+        stmt = select(Meal).where(Meal.id == meal_id)
+        obj = db.execute(stmt).scalar_one_or_none()
+        if obj:
+            db.delete(obj)
+            db.commit()
         return obj
 
 
 crud_meal = CRUDMeal()
+

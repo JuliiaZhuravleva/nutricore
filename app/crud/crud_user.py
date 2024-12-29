@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
-from typing import Optional, List
+from sqlalchemy import select
+from typing import Optional, List, Type, Any
 
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
@@ -7,10 +8,12 @@ from app.schemas.user import UserCreate, UserUpdate
 
 class CRUDUser:
     def get(self, db: Session, user_id: int) -> Optional[User]:
-        return db.query(User).filter(User.id == user_id).first()
+        stmt = select(User).where(User.id == user_id)
+        return db.execute(stmt).scalar_one_or_none()
 
     def get_by_telegram_id(self, db: Session, telegram_id: str) -> Optional[User]:
-        return db.query(User).filter(User.telegram_id == telegram_id).first()
+        stmt = select(User).where(User.telegram_id == telegram_id)
+        return db.execute(stmt).scalar_one_or_none()
 
     def create(self, db: Session, obj_in: UserCreate) -> User:
         db_obj = User(
@@ -36,7 +39,10 @@ class CRUDUser:
         return db_obj
 
     def remove(self, db: Session, user_id: int) -> User:
-        obj = db.query(User).get(user_id)
+        stmt = select(User).where(User.id == user_id)
+        obj = db.execute(stmt).scalar_one_or_none()
+        if not obj:
+            raise ValueError("User not found")
         db.delete(obj)
         db.commit()
         return obj

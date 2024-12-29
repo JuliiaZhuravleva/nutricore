@@ -1,16 +1,19 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.models.activity import Activity
 from app.schemas.activity import ActivityCreate, ActivityUpdate
 
-
 class CRUDActivity:
     def get(self, db: Session, activity_id: int) -> Optional[Activity]:
-        return db.query(Activity).filter(Activity.id == activity_id).first()
+        stmt = select(Activity).where(Activity.id == activity_id)
+        return db.execute(stmt).scalar_one_or_none()
 
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> List[Activity]:
-        return db.query(Activity).offset(skip).limit(limit).all()
+        stmt = select(Activity).offset(skip).limit(limit)
+        result = db.execute(stmt)
+        return list(result.scalars().all())
 
     def create(self, db: Session, obj_in: ActivityCreate, user_id: int) -> Activity:
         db_obj = Activity(
@@ -27,6 +30,7 @@ class CRUDActivity:
         return db_obj
 
     def update(self, db: Session, db_obj: Activity, obj_in: ActivityUpdate) -> Activity:
+        # Обновление остается без изменений, так как оно не использует запросы
         if obj_in.timestamp is not None:
             db_obj.timestamp = obj_in.timestamp
         if obj_in.activity_type is not None:
@@ -42,10 +46,11 @@ class CRUDActivity:
         return db_obj
 
     def remove(self, db: Session, activity_id: int) -> Activity:
-        obj = db.query(Activity).get(activity_id)
-        db.delete(obj)
-        db.commit()
+        stmt = select(Activity).where(Activity.id == activity_id)
+        obj = db.execute(stmt).scalar_one_or_none()
+        if obj:
+            db.delete(obj)
+            db.commit()
         return obj
-
 
 crud_activity = CRUDActivity()

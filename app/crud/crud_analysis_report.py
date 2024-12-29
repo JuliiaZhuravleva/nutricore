@@ -1,5 +1,6 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import select, delete
 
 from app.models.analysis_report import AnalysisReport
 from app.schemas.analysis_report import AnalysisReportCreate, AnalysisReportUpdate
@@ -7,10 +8,12 @@ from app.schemas.analysis_report import AnalysisReportCreate, AnalysisReportUpda
 
 class CRUDAnalysisReport:
     def get(self, db: Session, report_id: int) -> Optional[AnalysisReport]:
-        return db.query(AnalysisReport).filter(AnalysisReport.id == report_id).first()
+        stmt = select(AnalysisReport).where(AnalysisReport.id == report_id)
+        return db.execute(stmt).scalar_one_or_none()
 
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> List[AnalysisReport]:
-        return db.query(AnalysisReport).offset(skip).limit(limit).all()
+        stmt = select(AnalysisReport).offset(skip).limit(limit)
+        return list(db.execute(stmt).scalars().all())
 
     def create(self, db: Session, obj_in: AnalysisReportCreate, user_id: int) -> AnalysisReport:
         db_obj = AnalysisReport(
@@ -27,24 +30,20 @@ class CRUDAnalysisReport:
         return db_obj
 
     def update(self, db: Session, db_obj: AnalysisReport, obj_in: AnalysisReportUpdate) -> AnalysisReport:
-        if obj_in.report_type is not None:
-            db_obj.report_type = obj_in.report_type
-        if obj_in.period_start is not None:
-            db_obj.period_start = obj_in.period_start
-        if obj_in.period_end is not None:
-            db_obj.period_end = obj_in.period_end
-        if obj_in.analysis is not None:
-            db_obj.analysis = obj_in.analysis
-        if obj_in.metrics is not None:
-            db_obj.metrics = obj_in.metrics
+        update_data = obj_in.dict(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_obj, field, value)
+        db.add(db_obj)
         db.commit()
         db.refresh(db_obj)
         return db_obj
 
     def remove(self, db: Session, report_id: int) -> AnalysisReport:
-        obj = db.query(AnalysisReport).get(report_id)
-        db.delete(obj)
-        db.commit()
+        stmt = select(AnalysisReport).where(AnalysisReport.id == report_id)
+        obj = db.execute(stmt).scalar_one_or_none()
+        if obj:
+            db.delete(obj)
+            db.commit()
         return obj
 
 

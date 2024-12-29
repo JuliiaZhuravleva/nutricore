@@ -1,7 +1,12 @@
+import datetime
+
 from sqlalchemy import Column, Integer, String, Float, JSON, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from app.db.base_class import BaseClass
 from app.db.base import Base
+
+
+UTC = datetime.timezone.utc
 
 
 class Meal(Base, BaseClass):
@@ -9,7 +14,7 @@ class Meal(Base, BaseClass):
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     description = Column(String)
-    meal_time = Column(DateTime, nullable=False)
+    meal_time = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
     calories = Column(Float)
     proteins = Column(Float)
     fats = Column(Float)

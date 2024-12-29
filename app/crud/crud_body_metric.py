@@ -1,5 +1,6 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.models.body_metric import BodyMetric
 from app.schemas.body_metric import BodyMetricCreate, BodyMetricUpdate
@@ -7,10 +8,12 @@ from app.schemas.body_metric import BodyMetricCreate, BodyMetricUpdate
 
 class CRUDBodyMetric:
     def get(self, db: Session, metric_id: int) -> Optional[BodyMetric]:
-        return db.query(BodyMetric).filter(BodyMetric.id == metric_id).first()
+        stmt = select(BodyMetric).where(BodyMetric.id == metric_id)
+        return db.execute(stmt).scalar_one_or_none()
 
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> List[BodyMetric]:
-        return db.query(BodyMetric).offset(skip).limit(limit).all()
+        stmt = select(BodyMetric).offset(skip).limit(limit)
+        return list(db.execute(stmt).scalars().all())
 
     def create(self, db: Session, obj_in: BodyMetricCreate, user_id: int) -> BodyMetric:
         db_obj = BodyMetric(
@@ -36,9 +39,11 @@ class CRUDBodyMetric:
         return db_obj
 
     def remove(self, db: Session, metric_id: int) -> BodyMetric:
-        obj = db.query(BodyMetric).get(metric_id)
-        db.delete(obj)
-        db.commit()
+        stmt = select(BodyMetric).where(BodyMetric.id == metric_id)
+        obj = db.execute(stmt).scalar_one_or_none()
+        if obj:
+            db.delete(obj)
+            db.commit()
         return obj
 
 
