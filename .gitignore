@@ -49,3 +49,5 @@ regr.json
 *.pem
 *.key
 /nginx/
+/pytest-cache-files-*
+/pytest-cache-files-tp751pm7/
