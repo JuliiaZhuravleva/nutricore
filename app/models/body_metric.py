@@ -7,7 +7,7 @@ from app.db.base import Base
 class BodyMetric(Base, BaseClass):
     __tablename__ = "body_metrics"
 
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     timestamp = Column(DateTime, nullable=False)
     weight = Column(Float)
     metrics = Column(JSON)  # Other metrics from Mi Scale

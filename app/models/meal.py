@@ -7,7 +7,7 @@ from app.db.base import Base
 class Meal(Base, BaseClass):
     __tablename__ = "meals"
 
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     description = Column(String)
     meal_time = Column(DateTime, nullable=False)
     calories = Column(Float)

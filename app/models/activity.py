@@ -7,7 +7,7 @@ from app.db.base import Base
 class Activity(Base, BaseClass):
     __tablename__ = "activities"
 
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     timestamp = Column(DateTime, nullable=False)
     activity_type = Column(String)
     duration = Column(Float)  # in minutes

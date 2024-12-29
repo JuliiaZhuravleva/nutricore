@@ -7,7 +7,7 @@ from app.db.base import Base
 class AnalysisReport(Base, BaseClass):
     __tablename__ = "analysis_reports"
 
-    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     report_type = Column(String)  # 'weekly' or 'monthly'
     period_start = Column(DateTime, nullable=False)
     period_end = Column(DateTime, nullable=False)
