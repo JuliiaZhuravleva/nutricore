@@ -51,3 +51,6 @@ regr.json
 /nginx/
 /pytest-cache-files-*
 /pytest-cache-files-tp751pm7/
+
+# Temporary files
+*~

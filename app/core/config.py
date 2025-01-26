@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
-    POSTGRES_PORT: str = "5432"
+    POSTGRES_PORT: str
     SQLALCHEMY_DATABASE_URI: Optional[str] = None
 
     # Redis
@@ -34,40 +34,32 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_WEBHOOK_URL: Optional[str] = None
-    TELEGRAM_ADMIN_IDS: list[int] = []
+    TELEGRAM_ADMIN_IDS: List[int] = []
+
+    # Certbot
+    CERTBOT_EMAIL: Optional[str] = None
+    DOMAIN: Optional[str] = None
 
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4-turbo-preview"
+    OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.7
     OPENAI_MAX_TOKENS: int = 2000
 
-    # SSL/Domain settings
-    DOMAIN: Optional[str] = None
-    CERTBOT_EMAIL: Optional[str] = None
-
     # Application Settings
     DEBUG: bool = False
-    ENVIRONMENT: str = "production"
-    ALLOWED_HOSTS: list[str] = ["*"]
+    ENVIRONMENT: str = "development"
+    ALLOWED_HOSTS: List[str] = ["*"]
 
     # Nutrition Analysis Settings
-    DEFAULT_TIMEZONE: str = "Europe/Moscow"
-    MEAL_PHOTO_MAX_SIZE: int = 10 * 1024 * 1024  # 10MB
-    SUPPORTED_PHOTO_TYPES: list[str] = ["image/jpeg", "image/png"]
+    DEFAULT_TIMEZONE: str = "Asia/Tbilisi"
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=True,
-        extra='allow'  # Разрешаем дополнительные поля
-    )
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.SQLALCHEMY_DATABASE_URI = (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
+    @property
+    def database_url(self) -> str:
+        """Construct database URL from components."""
+        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
 
 settings = Settings()
