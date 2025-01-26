@@ -1,5 +1,8 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
+from telegram import Update
+from telegram.ext import Application
+import logging
 
 from app.api.v1.users import router as users_router
 from app.api.v1.meals import router as meals_router
@@ -10,12 +13,34 @@ from app.api.v1.analysis_reports import router as analysis_reports_router
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
+from app.services.telegram import create_bot_application
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
+# Initialize bot application
+bot_app = create_bot_application()
+
+@app.post("/webhook")
+async def webhook(update: dict):
+    """Handle incoming Telegram webhook updates."""
+    await bot_app.update_queue.put(Update.de_json(data=update, bot=bot_app.bot))
+    return {"ok": True}
+
+# Set webhook on startup
+@app.on_event("startup")
+async def setup_webhook():
+    """Set up webhook for Telegram bot on startup."""
+    webhook_url = settings.TELEGRAM_WEBHOOK_URL
+    if webhook_url:
+        await bot_app.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    else:
+        logger.warning("TELEGRAM_WEBHOOK_URL not set, webhook not configured")
 
 # @app.get("/test-db")
 # def test_db(db: Session = Depends(get_db)):
