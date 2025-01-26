@@ -5,7 +5,7 @@ services:
   app:
     build: .
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
     env_file:
@@ -43,28 +43,43 @@ services:
   celery_worker:
     build: .
     restart: unless-stopped
-    command: celery -A celery_app.celery_app worker --loglevel=info
+    command: python -m celery -A celery_app worker --loglevel=info
     volumes:
       - .:/app
     env_file:
       - .env
     depends_on:
       - redis
-      - app
+      - db
     networks:
       - bot-network
 
   celery_beat:
     build: .
     restart: unless-stopped
-    command: celery -A celery_app.celery_app beat --loglevel=info
+    command: python -m celery -A celery_app beat --loglevel=info
     volumes:
       - .:/app
     env_file:
       - .env
     depends_on:
       - redis
-      - app
+      - db
+      - celery_worker
+    networks:
+      - bot-network
+
+  telegram_bot:
+    build: .
+    restart: unless-stopped
+    command: python bot.py
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
     networks:
       - bot-network
 

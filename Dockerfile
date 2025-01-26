@@ -18,9 +18,12 @@ RUN pip install poetry
 # Copy poetry files
 COPY pyproject.toml poetry.lock ./
 
+# Install dependencies
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root
+
 # Copy project
 COPY . .
 
-# Install dependencies
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi
+# Install the project
+RUN poetry install --no-interaction --no-ansi

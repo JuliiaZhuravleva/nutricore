@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Telegram bot for nutrition tracking"
 authors = ["Jay Kuehn"]
 readme = "README.md"
+packages = [{include = "app"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"

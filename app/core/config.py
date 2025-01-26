@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     POSTGRES_PORT: str
-    SQLALCHEMY_DATABASE_URI: Optional[str] = None
+
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
+        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     # Redis
     REDIS_HOST: str
@@ -55,11 +58,6 @@ class Settings(BaseSettings):
     DEFAULT_TIMEZONE: str = "Asia/Tbilisi"
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
-
-    @property
-    def database_url(self) -> str:
-        """Construct database URL from components."""
-        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
 
 settings = Settings()
