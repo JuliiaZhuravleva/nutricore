@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, JSON, Integer, DateTime
+from sqlalchemy import Column, BigInteger, String, JSON, Integer, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.db.base_class import Base, BaseClass
@@ -8,7 +8,7 @@ class User(Base, BaseClass):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(String, unique=True, index=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
     username = Column(String, index=True)
     diet_preferences = Column(JSON)
     target_metrics = Column(JSON)  # For storing KBJU norms

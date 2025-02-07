@@ -267,10 +267,10 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             # Get or create user and save meal
             with SessionLocal() as db:
                 # Get or create user
-                user = db.query(User).filter(User.telegram_id == str(update.effective_user.id)).first()
+                user = db.query(User).filter(User.telegram_id == update.effective_user.id).first()
                 if not user:
                     user = User(
-                        telegram_id=str(update.effective_user.id),
+                        telegram_id=update.effective_user.id,
                         username=update.effective_user.username
                     )
                     db.add(user)
@@ -345,9 +345,11 @@ async def handle_subscription_inquiry(update: Update, context: ContextTypes.DEFA
 async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Grant subscription to user (admin only)"""
     admin_id = update.effective_user.id
+    logger.info(f"Grant subscription request from admin {admin_id}")
     
     # Check if user is admin
     if admin_id not in settings.admin_ids:
+        logger.warning(f"Unauthorized grant attempt from user {admin_id}")
         await update.message.reply_text("⛔️ У вас нет прав для выполнения этой команды")
         return
     
@@ -357,6 +359,8 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_id = int(user_id)
         months = int(months)
         
+        logger.info(f"Attempting to grant subscription: user_id={user_id}, months={months}, admin_id={admin_id}")
+        
         db = SessionLocal()
         subscription = crud_subscription.create_subscription(
             db, user_id, admin_id, months
@@ -364,13 +368,17 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         db.close()
         
         if subscription:
+            logger.info(f"Successfully granted subscription to user {user_id}")
             await update.message.reply_text(f"✅ Подписка выдана пользователю {user_id} на {months} месяцев")
         else:
+            logger.error(f"Failed to create subscription: user_id={user_id}, months={months}, admin_id={admin_id}")
             await update.message.reply_text("❌ Ошибка при выдаче подписки")
             
-    except ValueError:
+    except ValueError as ve:
+        logger.error(f"Invalid command format: {update.message.text}", exc_info=True)
         await update.message.reply_text("❌ Неверный формат команды. Используйте: /grant_sub user_id months")
     except Exception as e:
+        logger.error(f"Unexpected error while granting subscription: {str(e)}", exc_info=True)
         await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

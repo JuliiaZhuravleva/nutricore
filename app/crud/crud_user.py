@@ -11,16 +11,19 @@ class CRUDUser:
         stmt = select(User).where(User.id == user_id)
         return db.execute(stmt).scalar_one_or_none()
 
-    def get_by_telegram_id(self, db: Session, telegram_id: str) -> Optional[User]:
+    def get_by_telegram_id(self, db: Session, telegram_id: int) -> Optional[User]:
+        """Get user by telegram_id."""
         stmt = select(User).where(User.telegram_id == telegram_id)
         return db.execute(stmt).scalar_one_or_none()
 
-    def create(self, db: Session, obj_in: UserCreate) -> User:
+    def create(self, db: Session, *, obj_in: UserCreate) -> User:
+        """Create new user."""
         db_obj = User(
             telegram_id=obj_in.telegram_id,
             username=obj_in.username,
             diet_preferences=obj_in.diet_preferences,
-            target_metrics=obj_in.target_metrics
+            target_metrics=obj_in.target_metrics,
+            settings=obj_in.settings
         )
         db.add(db_obj)
         db.commit()
