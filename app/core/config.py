@@ -36,8 +36,18 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_ADMIN_USERNAME: str = "@JayKuehn"  # Default admin username
+    TELEGRAM_ADMIN_IDS: str = "123456789"  # Comma-separated list of admin Telegram IDs
     TELEGRAM_WEBHOOK_URL: Optional[str] = None
-    TELEGRAM_ADMIN_IDS: List[int] = []
+
+    @property
+    def admin_ids(self) -> List[int]:
+        """Convert comma-separated string of admin IDs to list of integers"""
+        if not self.TELEGRAM_ADMIN_IDS:
+            return []
+        # Remove brackets and split by comma
+        clean_ids = self.TELEGRAM_ADMIN_IDS.strip('[]').replace(' ', '')
+        return [int(id_) for id_ in clean_ids.split(',') if id_]
 
     # Certbot
     CERTBOT_EMAIL: Optional[str] = None

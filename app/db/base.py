@@ -1,7 +1,11 @@
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from app.core.config import settings
+from app.db.base_class import Base
 
+# Create SQLAlchemy engine
 engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+# Import all models here that SQLAlchemy should know about
+from app.models import user, subscription  # noqa

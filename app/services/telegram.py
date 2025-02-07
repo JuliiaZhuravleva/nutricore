@@ -4,6 +4,7 @@ import json
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
@@ -34,9 +35,18 @@ logger = logging.getLogger(__name__)
     ADDING_MEAL_TIME,
     ADDING_MEAL_PHOTO,
     CONFIRMING_MEAL,
-) = range(5)
+    SUBSCRIPTION_INQUIRY,
+) = range(6)
 
 # Keyboard layouts
+subscription_keyboard = ReplyKeyboardMarkup(
+    [
+        ["❓ О боте", "💎 Получить подписку"],
+        ["📱 Связаться с админом"],
+    ],
+    resize_keyboard=True,
+)
+
 main_keyboard = ReplyKeyboardMarkup(
     [
         ["🍽 Добавить прием пищи", "📊 Статистика"],
@@ -70,17 +80,47 @@ class TelegramService:
 # Create a single instance to be used throughout the application
 telegram_service = TelegramService()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Send a message when the command /start is issued."""
-    user = update.effective_user
-    await update.message.reply_text(
-        f"Привет, {user.first_name}! 👋\n\n"
-        "Я помогу тебе отслеживать питание и достигать твоих целей. "
-        "Выбери действие:",
-        reply_markup=main_keyboard,
-    )
-    return CHOOSING_ACTION
+async def check_subscription(telegram_id: int) -> bool:
+    """Check if user has active subscription"""
+    db = SessionLocal()
+    try:
+        return crud_subscription.is_active_subscription(db, telegram_id)
+    finally:
+        db.close()
 
+def subscription_required(func):
+    """Decorator to check subscription before executing function"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await check_subscription(update.effective_user.id):
+            text = ("🔒 Эта функция доступна только для пользователей с подпиской.\n\n"
+                   "Базовая версия бота позволяет:\n"
+                   "• Узнать о возможностях бота\n"
+                   "• Связаться с администратором\n"
+                   "• Получить подписку\n\n"
+                   "Нажмите кнопку 'Получить подписку' чтобы узнать больше!")
+            await update.message.reply_text(text, reply_markup=subscription_keyboard)
+            return SUBSCRIPTION_INQUIRY
+        return await func(update, context)
+    return wrapper
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a message when the command /start is issued."""
+    if not await check_subscription(update.effective_user.id):
+        text = ("👋 Привет! Я NutriCore бот - ваш персональный помощник в отслеживании питания и здоровья!\n\n"
+               "🤖 Что я умею:\n"
+               "• Анализировать приемы пищи с помощью AI\n"
+               "• Отслеживать калории и нутриенты\n"
+               "• Интегрироваться с Mi Scale и Samsung Health\n"
+               "• Предоставлять детальную аналитику\n\n"
+               "💎 Для доступа к этим функциям нужна подписка.")
+        await update.message.reply_text(text, reply_markup=subscription_keyboard)
+        return SUBSCRIPTION_INQUIRY
+    else:
+        text = ("✅ У вас активная подписка! Выберите действие:")
+        await update.message.reply_text(text, reply_markup=main_keyboard)
+        return CHOOSING_ACTION
+
+@subscription_required
 async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the meal addition process."""
     await update.message.reply_text(
@@ -89,6 +129,7 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ADDING_MEAL_TIME
 
+@subscription_required
 async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process the meal time and ask for the meal description."""
     text = update.message.text
@@ -115,6 +156,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return ADDING_MEAL
 
+@subscription_required
 async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process the meal description or photo."""
     user = update.message.from_user
@@ -200,6 +242,7 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     return CONFIRMING_MEAL
 
+@subscription_required
 async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Final confirmation of the meal."""
     if update.message.text == "Да":
@@ -258,6 +301,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data.clear()
     return CHOOSING_ACTION
 
+@subscription_required
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show user statistics."""
     await update.message.reply_text(
@@ -265,6 +309,69 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply_markup=main_keyboard,
     )
     return CHOOSING_ACTION
+
+async def handle_subscription_inquiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle subscription related questions"""
+    text = update.message.text
+    
+    if text == "❓ О боте":
+        response = ("🤖 NutriCore - это умный бот для отслеживания питания и здоровья.\n\n"
+                   "✨ С подпиской вы получите:\n"
+                   "• AI-анализ питания\n"
+                   "• Отслеживание калорий и нутриентов\n"
+                   "• Интеграцию с Mi Scale\n"
+                   "• Интеграцию с Samsung Health\n"
+                   "• Детальную аналитику\n"
+                   "• Персональные рекомендации")
+    
+    elif text == "💎 Получить подписку":
+        response = ("💫 Подписка открывает доступ ко всем функциям бота!\n\n"
+                   "Стоимость:\n"
+                   "• 1 месяц - X руб\n"
+                   "• 3 месяца - Y руб\n"
+                   "• 12 месяцев - Z руб\n\n"
+                   "Для оформления нажмите 'Связаться с админом'")
+    
+    elif text == "📱 Связаться с админом":
+        admin_username = settings.TELEGRAM_ADMIN_USERNAME
+        response = f"По вопросам подписки обращайтесь к администратору: {admin_username}"
+    
+    else:
+        return SUBSCRIPTION_INQUIRY
+        
+    await update.message.reply_text(response, reply_markup=subscription_keyboard)
+    return SUBSCRIPTION_INQUIRY
+
+async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grant subscription to user (admin only)"""
+    admin_id = update.effective_user.id
+    
+    # Check if user is admin
+    if admin_id not in settings.admin_ids:
+        await update.message.reply_text("⛔️ У вас нет прав для выполнения этой команды")
+        return
+    
+    try:
+        # Expected format: /grant_sub user_id months
+        _, user_id, months = update.message.text.split()
+        user_id = int(user_id)
+        months = int(months)
+        
+        db = SessionLocal()
+        subscription = crud_subscription.create_subscription(
+            db, user_id, admin_id, months
+        )
+        db.close()
+        
+        if subscription:
+            await update.message.reply_text(f"✅ Подписка выдана пользователю {user_id} на {months} месяцев")
+        else:
+            await update.message.reply_text("❌ Ошибка при выдаче подписки")
+            
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат команды. Используйте: /grant_sub user_id months")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel and end the conversation."""
@@ -281,11 +388,7 @@ def create_bot_application() -> Application:
 
     # Add conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
-            MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
-        ],
+        entry_points=[CommandHandler("start", start)],
         states={
             CHOOSING_ACTION: [
                 MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
@@ -303,9 +406,21 @@ def create_bot_application() -> Application:
             CONFIRMING_MEAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_meal),
             ],
+            SUBSCRIPTION_INQUIRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_subscription_inquiry)
+            ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("cancel", cancel),
+            MessageHandler(filters.Regex("^❓ О боте$"), start),
+            MessageHandler(filters.Regex("^💎 Получить подписку$"), handle_subscription_inquiry),
+        ],
     )
 
     application.add_handler(conv_handler)
+    
+    # Add subscription management commands
+    application.add_handler(CommandHandler("grant_sub", grant_subscription))
+
     return application

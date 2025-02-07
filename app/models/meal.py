@@ -12,6 +12,7 @@ UTC = datetime.timezone.utc
 class Meal(Base, BaseClass):
     __tablename__ = "meals"
 
+    id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     description = Column(String)
     meal_time = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
@@ -19,8 +20,9 @@ class Meal(Base, BaseClass):
     proteins = Column(Float)
     fats = Column(Float)
     carbohydrates = Column(Float)
-    nutrients = Column(JSON)  # Additional nutrients like vitamins, minerals
-    photos = Column(JSON)  # Array of photo URLs/IDs
-    ai_analysis = Column(JSON)  # Raw AI analysis response
+    nutrients = Column(JSON, nullable=True)  # For additional nutritional info
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC), onupdate=lambda: datetime.datetime.now(UTC))
 
-    user = relationship("User", backref="meals")
+    # Relationship with user
+    user = relationship("User", back_populates="meals")
