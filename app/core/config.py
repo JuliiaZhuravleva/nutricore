@@ -36,8 +36,8 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_ADMIN_USERNAME: str = "@JayKuehn"  # Default admin username
-    TELEGRAM_ADMIN_IDS: str = "123456789"  # Comma-separated list of admin Telegram IDs
+    TELEGRAM_ADMIN_USERNAME: str = "@admin_username"  # Default admin username
+    TELEGRAM_ADMIN_IDS: str = "123456789"  # Replace with your admin Telegram IDs (comma-separated)
     TELEGRAM_WEBHOOK_URL: Optional[str] = None
 
     @property
