@@ -88,6 +88,16 @@ def _fake_client_factory(captured, *, response=None, raise_exc=None):
     return _FakeAsyncClient
 
 
+@pytest.fixture(autouse=True)
+def as_owner(monkeypatch):
+    """Treat the test user (id 42) as the owner so the /consult admin gate passes.
+
+    `settings.admin_ids` is a property that re-parses TELEGRAM_ADMIN_IDS, so setting
+    the raw env value is enough. Tests that need a NON-owner override this.
+    """
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "42")
+
+
 @pytest.fixture
 def enabled_relay(monkeypatch):
     monkeypatch.setattr(
@@ -222,3 +232,19 @@ def test_non_dict_json_is_friendly(enabled_relay, monkeypatch):
     asyncio.run(tg.consult(update, _make_context(["вопрос"])))
 
     assert message.replies == ["Не удалось получить ответ. Попробуй позже."]
+
+
+def test_non_admin_denied(enabled_relay, monkeypatch):
+    """A non-owner is denied before any outbound call to the hub."""
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "999")  # user 42 is not admin
+    captured = {}
+    response = _FakeResponse({"answer": "should not be sent", "crisis_hint": None})
+    monkeypatch.setattr(
+        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+    )
+    update, message = _make_update()
+
+    asyncio.run(tg.consult(update, _make_context(["какой", "у", "меня", "вес"])))
+
+    assert message.replies == ["Эта команда доступна только владельцу."]
+    assert captured == {}  # gate short-circuits before the hub is contacted

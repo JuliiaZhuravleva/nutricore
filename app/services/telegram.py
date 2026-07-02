@@ -395,6 +395,12 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     call on this path (OpenAI stays for food parsing only). The hub owns all medical
     reasoning and the mental-health guardrails.
     """
+    # Owner-only: the hub is single-tenant (its answers are built from the owner's
+    # health data and carry no requester identity), so restrict /consult to admins.
+    if update.effective_user.id not in settings.admin_ids:
+        await update.message.reply_text("Эта команда доступна только владельцу.")
+        return
+
     question = " ".join(context.args) if context.args else ""
     if not question:
         await update.message.reply_text("Задай вопрос так: /consult <вопрос>")
