@@ -48,6 +48,7 @@ and no medical logic or medical data storage lives in the bot.
 | 3 | [03-retention.md](03-retention.md) | Reminders, streaks, weekly digest | ⛔ not started |
 | 4 | [04-ai-coaching.md](04-ai-coaching.md) | "What to eat", insights, voice logging | ⛔ not started |
 | 90 | [90-deferred-hub-integration.md](90-deferred-hub-integration.md) | my-health indicators in chat | 🧊 deferred |
+| — | [access-control.md](access-control.md) | Bot access modes (open/whitelist/closed) + whitelist | ✅ shipped (runtime `/mode` deferred) |
 
 Stages are implemented one at a time, each on its own branch, verified end-to-end by
 driving the bot in polling mode before moving on.

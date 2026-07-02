@@ -5,6 +5,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger(__name__)
 
 
+def _parse_id_list(raw: Optional[str], field_name: str) -> List[int]:
+    """Parse a comma-separated id string into ints, skipping malformed entries.
+
+    Tolerant by design: these lists are evaluated on the hot path (every access
+    check), so a config typo must never raise and break the bot for everyone.
+    """
+    if not raw:
+        return []
+    clean = raw.strip("[]").replace(" ", "")
+    ids: List[int] = []
+    for id_ in clean.split(","):
+        if not id_:
+            continue
+        try:
+            ids.append(int(id_))
+        except ValueError:
+            logger.warning("Ignoring non-integer %s entry: %r", field_name, id_)
+    return ids
+
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Nutrition Bot"
     API_V1_STR: str = "/api/v1"
@@ -43,27 +63,35 @@ class Settings(BaseSettings):
     TELEGRAM_ADMIN_IDS: str = "123456789"  # Replace with your admin Telegram IDs (comma-separated)
     TELEGRAM_WEBHOOK_URL: Optional[str] = None
 
+    # Access control (OpenClaw-style modes). Mode: open | whitelist | closed.
+    #   open      → everyone may use the bot
+    #   whitelist → only admins + ALLOWED_TELEGRAM_IDS; others are dropped silently
+    #   closed    → only admins (maintenance)
+    # Default is whitelist so an unconfigured bot never answers strangers.
+    BOT_ACCESS_MODE: str = "whitelist"
+    ALLOWED_TELEGRAM_IDS: str = ""  # comma-separated; admins are always allowed too
+
     @property
     def admin_ids(self) -> List[int]:
-        """Convert comma-separated string of admin IDs to list of integers.
+        """Admin (owner) telegram ids; tolerant of malformed config entries."""
+        return _parse_id_list(self.TELEGRAM_ADMIN_IDS, "TELEGRAM_ADMIN_IDS")
 
-        Tolerant of malformed entries: a bad token is skipped (and logged) rather
-        than raising. This is evaluated on the hot path (every subscription check),
-        so a config typo must never break access for the whole bot.
-        """
-        if not self.TELEGRAM_ADMIN_IDS:
-            return []
-        # Remove brackets and split by comma
-        clean_ids = self.TELEGRAM_ADMIN_IDS.strip('[]').replace(' ', '')
-        ids: List[int] = []
-        for id_ in clean_ids.split(','):
-            if not id_:
-                continue
-            try:
-                ids.append(int(id_))
-            except ValueError:
-                logger.warning("Ignoring non-integer TELEGRAM_ADMIN_IDS entry: %r", id_)
-        return ids
+    @property
+    def allowed_ids(self) -> List[int]:
+        """Whitelisted (non-admin) telegram ids; tolerant of malformed entries."""
+        return _parse_id_list(self.ALLOWED_TELEGRAM_IDS, "ALLOWED_TELEGRAM_IDS")
+
+    @property
+    def access_mode(self) -> str:
+        """Normalized access mode; unknown values fall back to the safe 'whitelist'."""
+        mode = (self.BOT_ACCESS_MODE or "").strip().lower()
+        if mode not in ("open", "whitelist", "closed"):
+            logger.warning(
+                "Unknown BOT_ACCESS_MODE %r; falling back to 'whitelist'",
+                self.BOT_ACCESS_MODE,
+            )
+            return "whitelist"
+        return mode
 
     # Certbot
     CERTBOT_EMAIL: Optional[str] = None

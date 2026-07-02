@@ -13,10 +13,12 @@ from app.schemas.meal import MealCreate
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     ContextTypes,
     ConversationHandler,
+    TypeHandler,
     filters,
 )
 
@@ -81,6 +83,43 @@ class TelegramService:
 
 # Create a single instance to be used throughout the application
 telegram_service = TelegramService()
+
+def is_user_allowed(telegram_id: Optional[int]) -> bool:
+    """Access-control check for the current bot mode (open | whitelist | closed).
+
+    Admins (the owner) are always allowed. In whitelist mode, only admins and
+    ALLOWED_TELEGRAM_IDS pass; in closed mode, only admins; in open mode, everyone.
+    Updates with no user (e.g. channel posts) pass only in open mode.
+    """
+    mode = settings.access_mode
+    if telegram_id is None:
+        return mode == "open"
+    if telegram_id in settings.admin_ids:
+        return True
+    if mode == "open":
+        return True
+    if mode == "closed":
+        return False
+    # whitelist (and any unknown mode, normalized to whitelist by access_mode)
+    return telegram_id in settings.allowed_ids
+
+
+async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global gate: silently drop updates from users not allowed by the mode.
+
+    Registered in an early handler group so it runs before every other handler;
+    raising ApplicationHandlerStop stops processing without sending any reply.
+    """
+    user = update.effective_user
+    telegram_id = user.id if user else None
+    if not is_user_allowed(telegram_id):
+        logger.info(
+            "Dropping update from non-allowed user %s (mode=%s)",
+            telegram_id,
+            settings.access_mode,
+        )
+        raise ApplicationHandlerStop
+
 
 async def check_subscription(telegram_id: int) -> bool:
     """Check if user has active subscription.
@@ -451,6 +490,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def create_bot_application() -> Application:
     """Create and configure the bot application."""
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+
+    # Global access gate — runs before every other handler (group=-1) and drops
+    # updates from users not allowed by the current BOT_ACCESS_MODE.
+    application.add_handler(TypeHandler(Update, access_gate), group=-1)
 
     # Add conversation handler
     conv_handler = ConversationHandler(
