@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from app.core.config import settings
+from app.services import consult_service as cs
 from app.services import telegram as tg
 from app.services.openai_service import OpenAIService
 
@@ -143,7 +144,7 @@ def test_happy_path_sends_answer_and_carries_token(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse({"answer": "Drink water.", "crisis_hint": None})
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
@@ -167,7 +168,7 @@ def test_crisis_hint_sent_first(enabled_relay, monkeypatch):
         }
     )
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
@@ -182,7 +183,7 @@ def test_crisis_hint_sent_first(enabled_relay, monkeypatch):
 def test_hub_connection_error_is_friendly(enabled_relay, monkeypatch):
     captured = {}
     monkeypatch.setattr(
-        tg.httpx,
+        cs.httpx,
         "AsyncClient",
         _fake_client_factory(captured, raise_exc=httpx.ConnectError("hub down")),
     )
@@ -197,7 +198,7 @@ def test_hub_403_is_friendly(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse({}, status_code=403)
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
@@ -211,7 +212,7 @@ def test_malformed_json_is_friendly(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse(None, json_exc=ValueError("not json"))
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
@@ -225,7 +226,7 @@ def test_non_dict_json_is_friendly(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse(["unexpected"])
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
@@ -240,11 +241,41 @@ def test_non_admin_denied(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse({"answer": "should not be sent", "crisis_hint": None})
     monkeypatch.setattr(
-        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )
     update, message = _make_update()
 
     asyncio.run(tg.consult(update, _make_context(["какой", "у", "меня", "вес"])))
 
-    assert message.replies == ["Эта команда доступна только владельцу."]
+    assert message.replies == ["⛔️ Эта команда доступна только владельцу."]
     assert captured == {}  # gate short-circuits before the hub is contacted
+
+
+def test_invalid_url_is_friendly(enabled_relay, monkeypatch):
+    """A misconfigured URL (httpx.InvalidURL, not an HTTPError) is handled."""
+    captured = {}
+    monkeypatch.setattr(
+        cs.httpx,
+        "AsyncClient",
+        _fake_client_factory(captured, raise_exc=httpx.InvalidURL("bad url")),
+    )
+    update, message = _make_update()
+
+    asyncio.run(tg.consult(update, _make_context(["вопрос"])))
+
+    assert message.replies == ["Не удалось получить ответ. Попробуй позже."]
+
+
+def test_non_string_answer_is_coerced(enabled_relay, monkeypatch):
+    """A non-string answer (e.g. a number) must not crash the reply."""
+    captured = {}
+    response = _FakeResponse({"answer": 42, "crisis_hint": None})
+    monkeypatch.setattr(
+        cs.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+    )
+    update, message = _make_update()
+
+    asyncio.run(tg.consult(update, _make_context(["вопрос"])))
+
+    assert len(message.replies) == 1
+    assert message.replies[0].startswith("42")

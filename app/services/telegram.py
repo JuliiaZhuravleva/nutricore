@@ -21,6 +21,7 @@ from telegram.ext import (
 )
 
 from app.core.config import settings
+from app.services.consult_service import consult_service
 from app.services.openai_service import OpenAIService
 
 # Enable logging
@@ -107,6 +108,23 @@ def subscription_required(func):
                    "Нажмите кнопку 'Получить подписку' чтобы узнать больше!")
             await update.message.reply_text(text, reply_markup=subscription_keyboard)
             return SUBSCRIPTION_INQUIRY
+        return await func(update, context)
+    return wrapper
+
+def admin_required(func):
+    """Decorator to restrict a handler to admins (the bot owner).
+
+    Consolidates the admin gate so every owner-only command shares one check and
+    one denial message. The check runs before the wrapped handler, so no argument
+    parsing or outbound call happens for a non-admin.
+    """
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id not in settings.admin_ids:
+            logger.warning(
+                f"Unauthorized access to {func.__name__} from user {update.effective_user.id}"
+            )
+            await update.message.reply_text("⛔️ Эта команда доступна только владельцу.")
+            return
         return await func(update, context)
     return wrapper
 
@@ -292,7 +310,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 reply_markup=main_keyboard,
             )
         except Exception as e:
-            logger.error(f"Error saving meal: {e}")
+            logger.error(f"Error saving meal: {e}", exc_info=True)
             await update.message.reply_text(
                 "Извините, произошла ошибка при сохранении. Пожалуйста, попробуйте еще раз.",
                 reply_markup=main_keyboard,
@@ -349,17 +367,12 @@ async def handle_subscription_inquiry(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(response, reply_markup=subscription_keyboard)
     return SUBSCRIPTION_INQUIRY
 
+@admin_required
 async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Grant subscription to user (admin only)"""
     admin_id = update.effective_user.id
     logger.info(f"Grant subscription request from admin {admin_id}")
-    
-    # Check if user is admin
-    if admin_id not in settings.admin_ids:
-        logger.warning(f"Unauthorized grant attempt from user {admin_id}")
-        await update.message.reply_text("⛔️ У вас нет прав для выполнения этой команды")
-        return
-    
+
     try:
         # Expected format: /grant_sub user_id months
         _, user_id, months = update.message.text.split()
@@ -388,19 +401,15 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Unexpected error while granting subscription: {str(e)}", exc_info=True)
         await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
 
+@admin_required
 async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Relay a health question to the my-health hub copilot and show its answer.
 
-    Thin relay: no medical logic, no medical storage, and — importantly — no OpenAI
-    call on this path (OpenAI stays for food parsing only). The hub owns all medical
-    reasoning and the mental-health guardrails.
+    Owner-only (via @admin_required): the hub is single-tenant and its answers carry
+    no requester identity. Thin relay: no medical logic, no medical storage, and —
+    importantly — no OpenAI call on this path (OpenAI stays for food parsing only).
+    The hub owns all medical reasoning and the mental-health guardrails.
     """
-    # Owner-only: the hub is single-tenant (its answers are built from the owner's
-    # health data and carry no requester identity), so restrict /consult to admins.
-    if update.effective_user.id not in settings.admin_ids:
-        await update.message.reply_text("Эта команда доступна только владельцу.")
-        return
-
     question = " ".join(context.args) if context.args else ""
     if not question:
         await update.message.reply_text("Задай вопрос так: /consult <вопрос>")
@@ -411,22 +420,11 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                settings.MYHEALTH_CONSULT_URL,
-                json={"question": question},
-                headers={"X-Consult-Token": settings.CONSULT_TOKEN},
-            )
-        resp.raise_for_status()
-        data = resp.json()
-    except (httpx.HTTPError, ValueError) as e:
-        # ValueError covers a malformed (non-JSON) 200 body from resp.json().
+        # ValueError covers a malformed/non-object body; InvalidURL covers a
+        # misconfigured MYHEALTH_CONSULT_URL (not an httpx.HTTPError subclass).
+        data = await consult_service.ask(question)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
         logger.error(f"Consult relay failed: {e}", exc_info=True)
-        await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
-        return
-
-    if not isinstance(data, dict):
-        logger.error(f"Consult relay: unexpected response shape: {type(data)}")
         await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
         return
 
@@ -434,9 +432,10 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Never hardcode psyche logic or a crisis number here; surface crisis_hint verbatim.
     if data.get("crisis_hint"):
         await update.message.reply_text(f"⚠️ {data['crisis_hint']}")
+    # str() guards against a non-string answer (e.g. a number) from the hub.
+    answer = str(data.get("answer") or "Пустой ответ.")
     await update.message.reply_text(
-        (data.get("answer") or "Пустой ответ.")
-        + "\n\n(описательно, не медицинская консультация)"
+        answer + "\n\n(описательно, не медицинская консультация)"
     )
 
 

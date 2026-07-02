@@ -13,7 +13,7 @@ def create_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db_user = crud_user.get_by_telegram_id(db, telegram_id=user_in.telegram_id)
     if db_user:
         raise HTTPException(status_code=400, detail="User already exists.")
-    return crud_user.create(db, user_in)
+    return crud_user.create(db, obj_in=user_in)
 
 
 @router.get("/{user_id}", response_model=User)

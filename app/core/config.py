@@ -1,5 +1,8 @@
+import logging
 from typing import Any, Dict, Optional, List
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -42,12 +45,25 @@ class Settings(BaseSettings):
 
     @property
     def admin_ids(self) -> List[int]:
-        """Convert comma-separated string of admin IDs to list of integers"""
+        """Convert comma-separated string of admin IDs to list of integers.
+
+        Tolerant of malformed entries: a bad token is skipped (and logged) rather
+        than raising. This is evaluated on the hot path (every subscription check),
+        so a config typo must never break access for the whole bot.
+        """
         if not self.TELEGRAM_ADMIN_IDS:
             return []
         # Remove brackets and split by comma
         clean_ids = self.TELEGRAM_ADMIN_IDS.strip('[]').replace(' ', '')
-        return [int(id_) for id_ in clean_ids.split(',') if id_]
+        ids: List[int] = []
+        for id_ in clean_ids.split(','):
+            if not id_:
+                continue
+            try:
+                ids.append(int(id_))
+            except ValueError:
+                logger.warning("Ignoring non-integer TELEGRAM_ADMIN_IDS entry: %r", id_)
+        return ids
 
     # Certbot
     CERTBOT_EMAIL: Optional[str] = None
