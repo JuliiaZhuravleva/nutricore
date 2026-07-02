@@ -32,6 +32,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Light anti-spam for /consult: min seconds between a user's hub calls.
+CONSULT_COOLDOWN_SECONDS = 3
+_last_consult: Dict[int, datetime] = {}
+
 # Conversation states
 (
     CHOOSING_ACTION,
@@ -457,6 +461,15 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not settings.MYHEALTH_CONSULT_URL or not settings.CONSULT_TOKEN:
         await update.message.reply_text("Консультации сейчас недоступны.")
         return
+
+    # Light per-user cooldown so a rapid burst doesn't hammer the hub.
+    now = datetime.now(UTC)
+    user_id = update.effective_user.id
+    last = _last_consult.get(user_id)
+    if last and (now - last).total_seconds() < CONSULT_COOLDOWN_SECONDS:
+        await update.message.reply_text("Слишком часто — подожди пару секунд.")
+        return
+    _last_consult[user_id] = now
 
     try:
         # ValueError covers a malformed/non-object body; InvalidURL covers a

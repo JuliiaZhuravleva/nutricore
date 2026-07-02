@@ -99,6 +99,14 @@ def as_owner(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "42")
 
 
+@pytest.fixture(autouse=True)
+def clear_consult_cooldown():
+    """Reset the per-user /consult cooldown so tests don't rate-limit each other."""
+    tg._last_consult.clear()
+    yield
+    tg._last_consult.clear()
+
+
 @pytest.fixture
 def enabled_relay(monkeypatch):
     monkeypatch.setattr(
@@ -279,3 +287,33 @@ def test_non_string_answer_is_coerced(enabled_relay, monkeypatch):
 
     assert len(message.replies) == 1
     assert message.replies[0].startswith("42")
+
+
+def test_consult_rate_limited(enabled_relay, monkeypatch):
+    """A rapid second call is rate-limited and does not contact the hub."""
+    response = _FakeResponse({"answer": "ok", "crisis_hint": None})
+
+    # First call goes through and contacts the hub.
+    captured1 = {}
+    monkeypatch.setattr(
+        cs.httpx, "AsyncClient", _fake_client_factory(captured1, response=response)
+    )
+    asyncio.run(tg.consult(*_call("вопрос")))
+    assert captured1 != {}
+
+    # Immediate second call (same user) is blocked before the hub.
+    captured2 = {}
+    monkeypatch.setattr(
+        cs.httpx, "AsyncClient", _fake_client_factory(captured2, response=response)
+    )
+    update, message = _make_update()
+    asyncio.run(tg.consult(update, _make_context(["вопрос"])))
+
+    assert message.replies == ["Слишком часто — подожди пару секунд."]
+    assert captured2 == {}
+
+
+def _call(*args):
+    """Helper: fresh (update, context) for a consult call."""
+    update, _ = _make_update()
+    return update, _make_context(list(args))

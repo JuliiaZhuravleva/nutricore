@@ -57,11 +57,19 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
+    # REST API auth. Callers send it as the X-API-Token header. Empty/unset →
+    # the API is disabled (every /api/v1 route returns 503), i.e. fail-closed.
+    API_TOKEN: Optional[str] = None
+
     # Telegram
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_ADMIN_USERNAME: str = "@admin_username"  # Default admin username
-    TELEGRAM_ADMIN_IDS: str = "123456789"  # Replace with your admin Telegram IDs (comma-separated)
+    # Empty by default (fail-closed): no admin until explicitly configured.
+    TELEGRAM_ADMIN_IDS: str = ""  # comma-separated admin Telegram IDs
     TELEGRAM_WEBHOOK_URL: Optional[str] = None
+    # Shared secret for webhook mode; Telegram echoes it in
+    # X-Telegram-Bot-Api-Secret-Token. Required to register a webhook.
+    TELEGRAM_WEBHOOK_SECRET: Optional[str] = None
 
     # Access control (OpenClaw-style modes). Mode: open | whitelist | closed.
     #   open      → everyone may use the bot
