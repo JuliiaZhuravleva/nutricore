@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from app.core.deps import require_api_token
 from app.services.openai_service import OpenAIService
 

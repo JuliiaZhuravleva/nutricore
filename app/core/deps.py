@@ -12,6 +12,17 @@ from fastapi import Header, HTTPException, status
 from app.core.config import settings
 
 
+def _token_matches(provided: Optional[str], expected: Optional[str]) -> bool:
+    """Constant-time compare of two secrets; False if either is missing.
+
+    Compares as bytes because header values may be non-ASCII (latin-1 decoded),
+    and hmac.compare_digest raises TypeError on non-ASCII str operands.
+    """
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
 def require_api_token(
     x_api_token: Optional[str] = Header(None, alias="X-API-Token"),
 ) -> None:
@@ -25,11 +36,7 @@ def require_api_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API is disabled (no API_TOKEN configured).",
         )
-    # Compare as bytes: header values may be non-ASCII (latin-1 decoded), and
-    # hmac.compare_digest raises TypeError on non-ASCII str operands.
-    if not x_api_token or not hmac.compare_digest(
-        x_api_token.encode("utf-8"), settings.API_TOKEN.encode("utf-8")
-    ):
+    if not _token_matches(x_api_token, settings.API_TOKEN):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API token.",
@@ -46,14 +53,8 @@ def require_webhook_secret(
     Fail-closed: if TELEGRAM_WEBHOOK_SECRET is unset, or the header is missing or
     does not match, the request is rejected (403). This prevents forged updates.
     """
-    secret = settings.TELEGRAM_WEBHOOK_SECRET
-    # Compare as bytes (see require_api_token) to avoid a TypeError on non-ASCII.
-    if (
-        not secret
-        or not x_telegram_bot_api_secret_token
-        or not hmac.compare_digest(
-            x_telegram_bot_api_secret_token.encode("utf-8"), secret.encode("utf-8")
-        )
+    if not _token_matches(
+        x_telegram_bot_api_secret_token, settings.TELEGRAM_WEBHOOK_SECRET
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

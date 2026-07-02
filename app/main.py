@@ -1,8 +1,6 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from sqlalchemy.orm import Session
 from telegram import Update
-from telegram.ext import Application
 import logging
 
 from app.api.v1.users import router as users_router
@@ -13,8 +11,6 @@ from app.api.v1.analysis_reports import router as analysis_reports_router
 
 from app.core.config import settings
 from app.core.deps import require_api_token, require_webhook_secret
-from app.db.session import get_db
-from app.models.user import User
 from app.services.telegram import create_bot_application
 
 logger = logging.getLogger(__name__)
@@ -63,33 +59,6 @@ async def setup_webhook():
         url=webhook_url, secret_token=settings.TELEGRAM_WEBHOOK_SECRET
     )
     logger.info(f"Webhook set to {webhook_url}")
-
-# @app.get("/test-db")
-# def test_db(db: Session = Depends(get_db)):
-#     try:
-#         # Попробуем создать тестового пользователя
-#         test_user = User(
-#             telegram_id="123456789",
-#             username="test_user"
-#         )
-#         db.add(test_user)
-#         db.commit()
-#         db.refresh(test_user)
-#
-#         # Получим пользователя обратно из БД
-#         user = db.query(User).first()
-#
-#         return {
-#             "status": "success",
-#             "user": {
-#                 "id": user.id,
-#                 "telegram_id": user.telegram_id,
-#                 "username": user.username,
-#                 "created_at": user.created_at
-#             }
-#         }
-#     except Exception as e:
-#         return {"status": "error", "detail": str(e)}
 
 # Every /api/v1 route requires a valid X-API-Token (fail-closed if unset).
 _api_auth = [Depends(require_api_token)]
