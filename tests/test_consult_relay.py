@@ -41,9 +41,10 @@ def _make_context(args):
 
 
 class _FakeResponse:
-    def __init__(self, json_data, status_code=200):
+    def __init__(self, json_data, status_code=200, json_exc=None):
         self._json = json_data
         self.status_code = status_code
+        self._json_exc = json_exc
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -54,6 +55,8 @@ class _FakeResponse:
             )
 
     def json(self):
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._json
 
 
@@ -183,6 +186,34 @@ def test_hub_connection_error_is_friendly(enabled_relay, monkeypatch):
 def test_hub_403_is_friendly(enabled_relay, monkeypatch):
     captured = {}
     response = _FakeResponse({}, status_code=403)
+    monkeypatch.setattr(
+        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+    )
+    update, message = _make_update()
+
+    asyncio.run(tg.consult(update, _make_context(["вопрос"])))
+
+    assert message.replies == ["Не удалось получить ответ. Попробуй позже."]
+
+
+def test_malformed_json_is_friendly(enabled_relay, monkeypatch):
+    """A 200 with a non-JSON body (resp.json() raises) is handled gracefully."""
+    captured = {}
+    response = _FakeResponse(None, json_exc=ValueError("not json"))
+    monkeypatch.setattr(
+        tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
+    )
+    update, message = _make_update()
+
+    asyncio.run(tg.consult(update, _make_context(["вопрос"])))
+
+    assert message.replies == ["Не удалось получить ответ. Попробуй позже."]
+
+
+def test_non_dict_json_is_friendly(enabled_relay, monkeypatch):
+    """A 200 whose JSON is not an object (e.g. a list) is handled gracefully."""
+    captured = {}
+    response = _FakeResponse(["unexpected"])
     monkeypatch.setattr(
         tg.httpx, "AsyncClient", _fake_client_factory(captured, response=response)
     )

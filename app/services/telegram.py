@@ -413,8 +413,14 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         resp.raise_for_status()
         data = resp.json()
-    except httpx.HTTPError as e:
+    except (httpx.HTTPError, ValueError) as e:
+        # ValueError covers a malformed (non-JSON) 200 body from resp.json().
         logger.error(f"Consult relay failed: {e}", exc_info=True)
+        await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
+        return
+
+    if not isinstance(data, dict):
+        logger.error(f"Consult relay: unexpected response shape: {type(data)}")
         await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
         return
 

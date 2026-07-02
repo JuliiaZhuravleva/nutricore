@@ -39,6 +39,9 @@ docker-compose.override.yml
 # Project specific
 .pytest_cache/
 
+# uv lockfile — this project uses Poetry (poetry.lock is the source of truth)
+uv.lock
+
 # IDE
 *.code-workspace
 
