@@ -28,11 +28,12 @@ class _FakeMessage:
         self.replies.append(text)
 
 
-def _make_update():
+def _make_update(user_id=42):
     message = _FakeMessage()
     update = SimpleNamespace(
         message=message,
-        effective_user=SimpleNamespace(id=42),
+        effective_message=message,
+        effective_user=SimpleNamespace(id=user_id),
     )
     return update, message
 
@@ -317,3 +318,28 @@ def _call(*args):
     """Helper: fresh (update, context) for a consult call."""
     update, _ = _make_update()
     return update, _make_context(list(args))
+
+
+def test_failed_call_does_not_consume_cooldown(enabled_relay, monkeypatch):
+    """A failed hub call must not block an immediate retry."""
+    # First call fails at the hub.
+    captured1 = {}
+    monkeypatch.setattr(
+        cs.httpx,
+        "AsyncClient",
+        _fake_client_factory(captured1, raise_exc=httpx.ConnectError("down")),
+    )
+    update1, message1 = _make_update()
+    asyncio.run(tg.consult(update1, _make_context(["вопрос"])))
+    assert message1.replies == ["Не удалось получить ответ. Попробуй позже."]
+
+    # Immediate retry succeeds — must NOT be rate-limited.
+    captured2 = {}
+    response = _FakeResponse({"answer": "ok", "crisis_hint": None})
+    monkeypatch.setattr(
+        cs.httpx, "AsyncClient", _fake_client_factory(captured2, response=response)
+    )
+    update2, message2 = _make_update()
+    asyncio.run(tg.consult(update2, _make_context(["вопрос"])))
+    assert captured2 != {}  # the hub was contacted on the retry
+    assert message2.replies[0].startswith("ok")

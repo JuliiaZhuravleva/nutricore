@@ -25,7 +25,11 @@ def require_api_token(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API is disabled (no API_TOKEN configured).",
         )
-    if not x_api_token or not hmac.compare_digest(x_api_token, settings.API_TOKEN):
+    # Compare as bytes: header values may be non-ASCII (latin-1 decoded), and
+    # hmac.compare_digest raises TypeError on non-ASCII str operands.
+    if not x_api_token or not hmac.compare_digest(
+        x_api_token.encode("utf-8"), settings.API_TOKEN.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API token.",
@@ -43,10 +47,13 @@ def require_webhook_secret(
     does not match, the request is rejected (403). This prevents forged updates.
     """
     secret = settings.TELEGRAM_WEBHOOK_SECRET
+    # Compare as bytes (see require_api_token) to avoid a TypeError on non-ASCII.
     if (
         not secret
         or not x_telegram_bot_api_secret_token
-        or not hmac.compare_digest(x_telegram_bot_api_secret_token, secret)
+        or not hmac.compare_digest(
+            x_telegram_bot_api_secret_token.encode("utf-8"), secret.encode("utf-8")
+        )
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -39,6 +39,14 @@ def test_api_correct_token_passes(monkeypatch):
     assert deps.require_api_token(x_api_token="s3cret") is None
 
 
+def test_api_non_ascii_token_rejected(monkeypatch):
+    """A non-ASCII header must yield a clean 401, not a TypeError/500."""
+    monkeypatch.setattr(settings, "API_TOKEN", "s3cret")
+    with pytest.raises(HTTPException) as exc:
+        deps.require_api_token(x_api_token="ключ")
+    assert exc.value.status_code == 401
+
+
 # --- require_webhook_secret --------------------------------------------------
 
 

@@ -19,12 +19,21 @@ from app.services.telegram import create_bot_application
 
 logger = logging.getLogger(__name__)
 
+# Docs/schema disabled: this is an internal, token-gated API — don't expose the
+# endpoint/field inventory unauthenticated via /docs, /redoc, /openapi.json.
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
 )
 
-# Restrict Host headers to the configured hosts (no-op while ALLOWED_HOSTS=["*"]).
+# Restrict Host headers to the configured hosts.
+if settings.ALLOWED_HOSTS == ["*"]:
+    logger.warning(
+        "ALLOWED_HOSTS is ['*'] — TrustedHostMiddleware is a no-op; "
+        "set specific hosts in production."
+    )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
 # Initialize bot application

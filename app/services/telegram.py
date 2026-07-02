@@ -13,7 +13,6 @@ from app.schemas.meal import MealCreate
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
-    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -23,6 +22,7 @@ from telegram.ext import (
 )
 
 from app.core.config import settings
+from app.services.access_control import access_gate, admin_required
 from app.services.consult_service import consult_service
 from app.services.openai_service import OpenAIService
 
@@ -88,43 +88,6 @@ class TelegramService:
 # Create a single instance to be used throughout the application
 telegram_service = TelegramService()
 
-def is_user_allowed(telegram_id: Optional[int]) -> bool:
-    """Access-control check for the current bot mode (open | whitelist | closed).
-
-    Admins (the owner) are always allowed. In whitelist mode, only admins and
-    ALLOWED_TELEGRAM_IDS pass; in closed mode, only admins; in open mode, everyone.
-    Updates with no user (e.g. channel posts) pass only in open mode.
-    """
-    mode = settings.access_mode
-    if telegram_id is None:
-        return mode == "open"
-    if telegram_id in settings.admin_ids:
-        return True
-    if mode == "open":
-        return True
-    if mode == "closed":
-        return False
-    # whitelist (and any unknown mode, normalized to whitelist by access_mode)
-    return telegram_id in settings.allowed_ids
-
-
-async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global gate: silently drop updates from users not allowed by the mode.
-
-    Registered in an early handler group so it runs before every other handler;
-    raising ApplicationHandlerStop stops processing without sending any reply.
-    """
-    user = update.effective_user
-    telegram_id = user.id if user else None
-    if not is_user_allowed(telegram_id):
-        logger.info(
-            "Dropping update from non-allowed user %s (mode=%s)",
-            telegram_id,
-            settings.access_mode,
-        )
-        raise ApplicationHandlerStop
-
-
 async def check_subscription(telegram_id: int) -> bool:
     """Check if user has active subscription.
 
@@ -151,23 +114,6 @@ def subscription_required(func):
                    "Нажмите кнопку 'Получить подписку' чтобы узнать больше!")
             await update.message.reply_text(text, reply_markup=subscription_keyboard)
             return SUBSCRIPTION_INQUIRY
-        return await func(update, context)
-    return wrapper
-
-def admin_required(func):
-    """Decorator to restrict a handler to admins (the bot owner).
-
-    Consolidates the admin gate so every owner-only command shares one check and
-    one denial message. The check runs before the wrapped handler, so no argument
-    parsing or outbound call happens for a non-admin.
-    """
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id not in settings.admin_ids:
-            logger.warning(
-                f"Unauthorized access to {func.__name__} from user {update.effective_user.id}"
-            )
-            await update.message.reply_text("⛔️ Эта команда доступна только владельцу.")
-            return
         return await func(update, context)
     return wrapper
 
@@ -469,7 +415,6 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if last and (now - last).total_seconds() < CONSULT_COOLDOWN_SECONDS:
         await update.message.reply_text("Слишком часто — подожди пару секунд.")
         return
-    _last_consult[user_id] = now
 
     try:
         # ValueError covers a malformed/non-object body; InvalidURL covers a
@@ -479,6 +424,10 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Consult relay failed: {e}", exc_info=True)
         await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
         return
+
+    # Record the cooldown only after a successful call, so a failed attempt
+    # doesn't block an immediate retry.
+    _last_consult[user_id] = now
 
     # Crisis path FIRST — deterministic, from the hub, before the model answer.
     # Never hardcode psyche logic or a crisis number here; surface crisis_hint verbatim.
