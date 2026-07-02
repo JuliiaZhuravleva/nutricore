@@ -8,6 +8,7 @@ class UserBase(BaseModel):
     username: Optional[str] = None
     diet_preferences: Optional[Dict[str, Any]] = None
     target_metrics: Optional[Dict[str, Any]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class UserCreate(UserBase):
@@ -18,6 +19,7 @@ class UserUpdate(BaseModel):
     username: Optional[str] = None
     diet_preferences: Optional[Dict[str, Any]] = None
     target_metrics: Optional[Dict[str, Any]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class UserInDBBase(UserBase):

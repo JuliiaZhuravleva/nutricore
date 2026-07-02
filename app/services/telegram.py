@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 import logging
 import json
 from typing import Dict, Optional
+import httpx
 from sqlalchemy.orm import Session
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_subscription import crud_subscription
@@ -81,7 +82,13 @@ class TelegramService:
 telegram_service = TelegramService()
 
 async def check_subscription(telegram_id: int) -> bool:
-    """Check if user has active subscription"""
+    """Check if user has active subscription.
+
+    Admins (the bot owner) always pass — this is a personal tool and the owner
+    should never be gated by the subscription check.
+    """
+    if telegram_id in settings.admin_ids:
+        return True
     db = SessionLocal()
     try:
         return crud_subscription.is_active_subscription(db, telegram_id)
@@ -381,6 +388,46 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Unexpected error while granting subscription: {str(e)}", exc_info=True)
         await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
 
+async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Relay a health question to the my-health hub copilot and show its answer.
+
+    Thin relay: no medical logic, no medical storage, and — importantly — no OpenAI
+    call on this path (OpenAI stays for food parsing only). The hub owns all medical
+    reasoning and the mental-health guardrails.
+    """
+    question = " ".join(context.args) if context.args else ""
+    if not question:
+        await update.message.reply_text("Задай вопрос так: /consult <вопрос>")
+        return
+
+    if not settings.MYHEALTH_CONSULT_URL or not settings.CONSULT_TOKEN:
+        await update.message.reply_text("Консультации сейчас недоступны.")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                settings.MYHEALTH_CONSULT_URL,
+                json={"question": question},
+                headers={"X-Consult-Token": settings.CONSULT_TOKEN},
+            )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Consult relay failed: {e}", exc_info=True)
+        await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
+        return
+
+    # Crisis path FIRST — deterministic, from the hub, before the model answer.
+    # Never hardcode psyche logic or a crisis number here; surface crisis_hint verbatim.
+    if data.get("crisis_hint"):
+        await update.message.reply_text(f"⚠️ {data['crisis_hint']}")
+    await update.message.reply_text(
+        (data.get("answer") or "Пустой ответ.")
+        + "\n\n(описательно, не медицинская консультация)"
+    )
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel and end the conversation."""
     await update.message.reply_text(
@@ -430,5 +477,8 @@ def create_bot_application() -> Application:
     
     # Add subscription management commands
     application.add_handler(CommandHandler("grant_sub", grant_subscription))
+
+    # Consult relay → my-health hub
+    application.add_handler(CommandHandler("consult", consult))
 
     return application

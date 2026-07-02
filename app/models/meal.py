@@ -21,6 +21,8 @@ class Meal(Base, BaseClass):
     fats = Column(Float)
     carbohydrates = Column(Float)
     nutrients = Column(JSON, nullable=True)  # For additional nutritional info
+    photos = Column(JSON, nullable=True)  # Telegram file references for the meal
+    ai_analysis = Column(JSON, nullable=True)  # Raw OpenAI analysis, kept for coaching
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC), onupdate=lambda: datetime.datetime.now(UTC))
 

@@ -37,6 +37,8 @@ class CRUDUser:
             db_obj.diet_preferences = obj_in.diet_preferences
         if obj_in.target_metrics is not None:
             db_obj.target_metrics = obj_in.target_metrics
+        if obj_in.settings is not None:
+            db_obj.settings = obj_in.settings
         db.commit()
         db.refresh(db_obj)
         return db_obj

@@ -14,6 +14,12 @@ class CRUDMeal:
         stmt = select(Meal).offset(skip).limit(limit)
         return db.scalars(stmt).all()
 
+    def get_user_meals(self, db: Session, user_id: int) -> list[Meal]:
+        stmt = (
+            select(Meal).where(Meal.user_id == user_id).order_by(Meal.meal_time.desc())
+        )
+        return list(db.scalars(stmt).all())
+
     def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
         db_obj = Meal(
             user_id=user_id,
@@ -49,4 +55,3 @@ class CRUDMeal:
 
 
 crud_meal = CRUDMeal()
-

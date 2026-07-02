@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # Nutrition Analysis Settings
     DEFAULT_TIMEZONE: str = "Asia/Tbilisi"
 
+    # Consult relay → my-health hub (loopback).
+    # Empty URL/token → the /consult command is disabled.
+    MYHEALTH_CONSULT_URL: Optional[str] = None  # e.g. http://127.0.0.1:8787/consult
+    CONSULT_TOKEN: Optional[str] = None  # matches the hub's COPILOT_CONSULT_TOKEN
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 
