@@ -11,9 +11,12 @@
 #   • DB and Redis are NOT published to the host; only the API, on loopback.
 #   • Secrets come from a .env rendered at deploy time from 1Password (never
 #     committed; .env is gitignored).
-#   • telegram_bot is intentionally omitted here — a bot token serves ONE
-#     instance, so running it on the mini would hijack the production bot. Add a
-#     bot service with a dedicated token when that's wanted.
+#   • telegram_bot runs in POLLING mode (python bot.py) — no public URL, works
+#     behind Tailscale/NAT, so the mini is never exposed to the internet. The
+#     webhook path (app startup set_webhook) stays OFF because TELEGRAM_WEBHOOK_URL
+#     is not set. ⚠️ A bot token serves ONE instance: run this bot on the mini
+#     ONLY if no other instance (e.g. nutricore.cloud) is polling the same token,
+#     or Telegram returns "Conflict: terminated by other getUpdates request".
 name: nutricore
 
 services:
@@ -76,6 +79,26 @@ services:
       - celery_worker
     networks:
       - bot-network
+
+  telegram_bot:
+    build: .
+    restart: unless-stopped
+    command: python bot.py          # POLLING (run_polling) — no public URL needed
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    depends_on:
+      - db
+      - redis
+    networks:
+      - bot-network                 # no host ports; reaches Telegram outbound only
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   bot-network:
