@@ -46,9 +46,37 @@ _Track for later._
   earlier `access_control.py` / `ai_call_log_service.py` extractions set out to avoid. Extract the
   self-heal orchestration into `app/services/model_selection.py`, mirroring `access_control.py`.
   - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
+- [ ] **TD-010**: TD-009 follow-ups intentionally deferred (the "at minimum file_id" pass shipped).
+  (1) **Disk-bytes archival** — `inbound_messages` keeps only the Telegram `file_id`; a photo is
+  lost if Telegram ever drops the file. For Telegram-independent replay, also persist the base64'd
+  bytes to a **host bind-mount under `/Users/claw/data/...`** on the mini (survives the disposable
+  Colima VM), with a path config + a compose volume. (2) **Delete-on-request** — a `/forget`-style
+  command to purge a user's inbound rows (+photos) on demand; low value while single-owner, but the
+  retention purge is currently the only deletion path. (3) **Reprocess → meal** — `/reprocess` only
+  re-analyzes and fills `ai_analysis`; it does not create a `meals` row (keeps the confirm step). A
+  future "replay straight into a confirmed meal" is possible but needs a `meal_time` decision.
+  - **Priority:** Low · **Source:** TD-009 scope decision 2026-07-06 · **Created:** 2026-07-06
 
 ## Resolved
 _Keep 90 days then remove._
+
+- [x] **TD-009**: Inbound messages are now persisted on receipt (history + replay). A new
+  `inbound_messages` table (model/schema/CRUD/`inbound_message_service.py`/migration `e4f5a6b7c8d9`)
+  captures each meal photo/text the moment it arrives — **before** the OpenAI call, so even a
+  photo-fetch or analysis failure leaves a `status=pending` row (the deprecated-model outage used to
+  lose the message entirely: Telegram had ack'd, the DB held nothing). `process_meal_input` records
+  it best-effort; `_run_meal_analysis` flips it `analyzed` (with parsed nutrition) / `failed` (with
+  the error), threaded through the TD-005 self-heal retry. Owner-only `/reprocess` re-analyzes
+  pending/failed rows with the current model (capped at `REPROCESS_BATCH_LIMIT=20`/call; stops early
+  if the model is still unavailable) — the "after a model fix, replay what failed" mechanism. Photos
+  kept as `file_id` (bytes-on-disk deferred → TD-010). Retention via `INBOUND_MESSAGE_RETENTION_DAYS`
+  (60d) + a daily Celery-beat `purge_inbound_messages`. Reviewed via /review-deep (bug/arch/silent/
+  claudemd) → applied fixes: reply-failure no longer mislabels a clean analysis as `failed`, shared
+  `_analyze_and_parse` (replay now hits the ai_call_logs audit trail + no duplicated pipeline),
+  `mark_*` return bool so /reprocess counts only persisted writes, `exc_info` on best-effort logs.
+  18 new tests; 109 green. Scope (owner-picked): file_id-only + `/reprocess` command;
+  disk-bytes/delete-on-request/reprocess→meal deferred to TD-010.
+  - **Priority:** High · **Source:** owner insight after the lost-message incident 2026-07-06 · **Resolved:** 2026-07-06
 
 - [x] **TD-005**: Model-deprecation self-heal — an OpenAI `model_not_found`/deprecation error no
   longer silently breaks meal logging. `OpenAIService._create` now translates it into a typed
