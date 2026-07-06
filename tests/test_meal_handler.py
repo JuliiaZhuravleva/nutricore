@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.db.base import Base
+from app.models.ai_call_log import AiCallLog
 from app.models.meal import Meal
 from app.services import telegram as tg
 
@@ -96,9 +97,14 @@ def entry_mock(monkeypatch):
     return mock
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def patched_db(monkeypatch):
-    """Point telegram.SessionLocal at a fresh in-memory SQLite DB for the test."""
+    """Point telegram.SessionLocal at a fresh in-memory SQLite DB for every test.
+
+    Autouse so the best-effort ai_call_logs recording (and confirm_meal's save)
+    write to a throwaway DB instead of attempting a real connection. Tests that
+    inspect the DB request `patched_db` by name to get the engine.
+    """
     engine = create_engine(
         "sqlite:///:memory:", connect_args={"check_same_thread": False}
     )
@@ -321,3 +327,54 @@ def test_photo_meal_reply_failure_leaves_no_partial_draft(image_mock):
     assert state == tg.ADDING_MEAL
     # Draft is committed only after a successful reply — nothing half-written.
     assert "nutrition" not in context.user_data["current_meal"]
+
+
+# --- ai_call_logs recording ------------------------------------------------
+
+
+def test_photo_meal_records_ai_call(patched_db, image_mock):
+    update, _ = _make_photo_update()
+    context = _make_photo_context()
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(AiCallLog).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.kind == "image"
+    assert row.status == "ok"
+    assert row.input_ref == "PHOTO_FILE_ID"
+    assert row.parsed_result == _NUTRITION
+    assert row.model == tg.telegram_service.openai_service.model
+    assert row.telegram_id == 42
+    assert row.latency_ms is not None
+
+
+def test_text_meal_records_ai_call(patched_db, entry_mock):
+    update, _ = _make_text_update("banana")
+    context = SimpleNamespace(user_data={})
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(AiCallLog).all()
+    assert len(rows) == 1
+    assert rows[0].kind == "text"
+    assert rows[0].status == "ok"
+    assert rows[0].input_ref == "banana"
+
+
+def test_records_error_status_on_analysis_failure(patched_db, image_mock):
+    image_mock.side_effect = RuntimeError("boom")
+    update, _ = _make_photo_update()
+    context = _make_photo_context()
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(AiCallLog).all()
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert "boom" in rows[0].error
+    assert rows[0].parsed_result is None

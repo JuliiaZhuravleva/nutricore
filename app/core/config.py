@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # Application Settings
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    # Root log level (DEBUG surfaces the raw OpenAI traces; INFO keeps them quiet).
+    LOG_LEVEL: str = "INFO"
+    # Retention for the ai_call_logs debug table; a daily Celery-beat job prunes
+    # rows older than this.
+    DEBUG_LOG_RETENTION_DAYS: int = 60
     # Loopback-only by default (the API is internal, not published). Prod
     # deployments behind a domain must add their host(s) via the env var.
     ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]

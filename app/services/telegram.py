@@ -2,14 +2,17 @@ from datetime import datetime, UTC
 import base64
 import logging
 import json
+import time
 from typing import Dict, Optional
 import httpx
 from sqlalchemy.orm import Session
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_ai_call_log import crud_ai_call_log
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
+from app.schemas.ai_call_log import AiCallLogCreate
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -29,7 +32,8 @@ from app.services.openai_service import OpenAIService
 
 # Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
 )
 logger = logging.getLogger(__name__)
 
@@ -201,6 +205,47 @@ def _nutrition_reply(data, header):
     )
 
 
+def _record_ai_call(**fields):
+    """Best-effort debug row for one OpenAI analysis call.
+
+    Never raises — a logging failure must not break the meal flow.
+    """
+    try:
+        with SessionLocal() as db:
+            crud_ai_call_log.create(db, AiCallLogCreate(**fields))
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to record ai_call_log: %s", exc)
+
+
+async def _analyze_and_log(coro, *, kind, input_ref, telegram_id):
+    """Await an OpenAI analysis coroutine, persist a debug row, return parsed dict.
+
+    Records `status="ok"` with the raw + parsed result on success, or
+    `status="error"` (and re-raises) on any analysis / parse failure.
+    """
+    model = telegram_service.openai_service.model
+    started = time.perf_counter()
+    raw = None
+    try:
+        raw = await coro
+        parsed = _parse_nutrition(raw)
+    except Exception as exc:
+        _record_ai_call(
+            telegram_id=telegram_id, kind=kind, input_ref=input_ref, model=model,
+            raw_response=raw if isinstance(raw, str) else None, parsed_result=None,
+            status="error", error=str(exc),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+        raise
+    _record_ai_call(
+        telegram_id=telegram_id, kind=kind, input_ref=input_ref, model=model,
+        raw_response=raw if isinstance(raw, str) else None, parsed_result=parsed,
+        status="ok", error=None,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+    )
+    return parsed
+
+
 @subscription_required
 async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process the meal description or photo."""
@@ -226,11 +271,13 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 + base64.b64encode(bytes(image_bytes)).decode()
             )
 
-            # Analyze the food image using OpenAI
-            nutrition_info = await telegram_service.openai_service.analyze_food_image(
-                image_data_url
+            # Analyze the food image using OpenAI (recorded to ai_call_logs)
+            nutrition_info = await _analyze_and_log(
+                telegram_service.openai_service.analyze_food_image(image_data_url),
+                kind="image",
+                input_ref=photo.file_id,
+                telegram_id=update.effective_user.id,
             )
-            nutrition_info = _parse_nutrition(nutrition_info)
             draft = {
                 'nutrition': nutrition_info,
                 'description': ', '.join(nutrition_info['foods']) or "Фото приёма пищи",
@@ -257,10 +304,14 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         meal_text = update.message.text
         try:
-            logger.info(f"Processing meal text: {meal_text}")
-            # Analyze the food text using OpenAI
-            nutrition_info = await telegram_service.openai_service.analyze_food_entry(meal_text)
-            nutrition_info = _parse_nutrition(nutrition_info)
+            logger.debug("Processing meal text: %s", meal_text)
+            # Analyze the food text using OpenAI (recorded to ai_call_logs)
+            nutrition_info = await _analyze_and_log(
+                telegram_service.openai_service.analyze_food_entry(meal_text),
+                kind="text",
+                input_ref=meal_text,
+                telegram_id=update.effective_user.id,
+            )
             draft = {'nutrition': nutrition_info, 'description': meal_text}
 
             await update.message.reply_text(
