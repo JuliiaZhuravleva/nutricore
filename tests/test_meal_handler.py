@@ -19,11 +19,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
+from app.crud.crud_app_setting import crud_app_setting
 from app.db.base import Base
 from app.models.ai_call_log import AiCallLog
 from app.models.meal import Meal
 from app.services import ai_call_log_service as ai_log
 from app.services import telegram as tg
+from app.services.openai_service import OPENAI_MODEL_SETTING_KEY
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -176,7 +178,7 @@ def test_photo_meal_analysis_error_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать фото" in message.replies[-1]
+    assert "не удалось проанализировать" in message.replies[-1]
     assert "current_meal" in context.user_data  # nothing half-written into nutrition
     assert "nutrition" not in context.user_data["current_meal"]
 
@@ -189,7 +191,7 @@ def test_photo_meal_invalid_json_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать фото" in message.replies[-1]
+    assert "не удалось проанализировать" in message.replies[-1]
 
 
 # --- process_meal_input: text branch ---------------------------------------
@@ -229,7 +231,7 @@ def test_text_meal_analysis_error_falls_back(entry_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "ошибка при анализе" in message.replies[-1]
+    assert "не удалось проанализировать" in message.replies[-1]
 
 
 # --- confirm_meal ----------------------------------------------------------
@@ -424,3 +426,109 @@ def test_parse_nutrition_rejects_malformed():
         tg._parse_nutrition("null")  # JSON null → not an object
     with pytest.raises(ValueError):
         tg._parse_nutrition(json.dumps({"foods": ["x"]}))  # missing calories/macros
+
+
+# --- model self-heal on deprecation (TD-005) -------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _restore_model():
+    """The OpenAIService is a process-wide singleton; a test that switches its
+    model must not leak that into later tests."""
+    svc = tg.telegram_service.openai_service
+    original = svc.model
+    yield
+    svc.model = original
+
+
+def test_model_deprecation_offers_picker(monkeypatch):
+    err = tg.ModelUnavailableError("gpt-old", Exception("deprecated"))
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_entry",
+        AsyncMock(side_effect=err),
+    )
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "list_suitable_models",
+        AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"]),
+    )
+    update, message = _make_text_update("apple")
+    context = SimpleNamespace(user_data={})
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.CHOOSING_MODEL
+    assert context.user_data["pending_analysis"]["payload"] == "apple"
+    assert context.user_data["model_choices"] == ["gpt-4o", "gpt-4o-mini"]
+    assert any("недоступна" in r for r in message.replies)
+
+
+def test_model_choice_switches_and_retries(patched_db, monkeypatch):
+    svc = tg.telegram_service.openai_service
+    # First analysis raises (dead model); after switching, the retry succeeds.
+    monkeypatch.setattr(
+        svc,
+        "analyze_food_entry",
+        AsyncMock(
+            side_effect=[
+                tg.ModelUnavailableError("gpt-old", Exception("x")),
+                json.dumps(_NUTRITION),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        svc, "list_suitable_models", AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
+    )
+    context = SimpleNamespace(user_data={})
+
+    # 1) First input trips the picker.
+    u1, _ = _make_text_update("apple")
+    assert asyncio.run(tg.process_meal_input(u1, context)) == tg.CHOOSING_MODEL
+
+    # 2) Picking a model switches it, persists it, and retries → confirmation.
+    u2, _ = _make_text_update("gpt-4o")
+    state = asyncio.run(tg.process_model_choice(u2, context))
+
+    assert state == tg.CONFIRMING_MEAL
+    assert svc.model == "gpt-4o"
+    assert context.user_data["current_meal"]["nutrition"] == _NUTRITION
+    assert "pending_analysis" not in context.user_data
+    # The choice was persisted to app_settings (survives a restart).
+    with sessionmaker(bind=patched_db)() as db:
+        assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) == "gpt-4o"
+
+
+def test_model_choice_invalid_stays_on_picker():
+    context = SimpleNamespace(user_data={"model_choices": ["gpt-4o"]})
+    update, message = _make_text_update("garbage")
+
+    state = asyncio.run(tg.process_model_choice(update, context))
+
+    assert state == tg.CHOOSING_MODEL
+    assert "кнопкой" in message.replies[-1]
+
+
+def test_model_choice_cancel_resets():
+    context = SimpleNamespace(
+        user_data={
+            "model_choices": ["gpt-4o"],
+            "pending_analysis": {"kind": "text", "input_ref": "a", "payload": "a"},
+        }
+    )
+    update, _ = _make_text_update("Отмена")
+
+    state = asyncio.run(tg.process_model_choice(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert context.user_data == {}
+
+
+def test_load_persisted_model_applies_on_startup(patched_db):
+    svc = tg.telegram_service.openai_service
+    with tg.SessionLocal() as db:
+        crud_app_setting.set(db, OPENAI_MODEL_SETTING_KEY, "gpt-persisted")
+
+    tg._load_persisted_model()
+
+    assert svc.model == "gpt-persisted"

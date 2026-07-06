@@ -1,10 +1,11 @@
-from .user import User
+from .activity import Activity
+from .ai_call_log import AiCallLog
+from .analysis_report import AnalysisReport
+from .app_setting import AppSetting
 from .body_metric import BodyMetric
 from .meal import Meal
-from .activity import Activity
-from .analysis_report import AnalysisReport
 from .subscription import Subscription
-from .ai_call_log import AiCallLog
+from .user import User
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "AnalysisReport",
     "Subscription",
     "AiCallLog",
+    "AppSetting",
 ]
