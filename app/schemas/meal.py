@@ -1,6 +1,7 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Optional, Any, Dict, List
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict
 
 
 class MealBase(BaseModel):
@@ -46,3 +47,9 @@ class Meal(MealInDBBase):
 
 class MealInDB(MealInDBBase):
     pass
+
+
+class MealsExport(BaseModel):
+    """Wrapper for the read-only meals export consumed by the my-health vault."""
+
+    meals: List[Meal]

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +15,19 @@ class CRUDMeal:
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> list[Meal]:
         stmt = select(Meal).offset(skip).limit(limit)
         return db.scalars(stmt).all()
+
+    def get_for_export(
+        self, db: Session, *, since: datetime | None = None
+    ) -> list[Meal]:
+        """All meals in meal_time order (optionally only those at/after ``since``).
+
+        Ordered so a downstream incremental pull can page by time; no ``limit`` —
+        the consumer dedups idempotently on the stable meal id.
+        """
+        stmt = select(Meal).order_by(Meal.meal_time)
+        if since is not None:
+            stmt = stmt.where(Meal.meal_time >= since)
+        return list(db.scalars(stmt).all())
 
     def get_user_meals(self, db: Session, user_id: int) -> list[Meal]:
         stmt = (

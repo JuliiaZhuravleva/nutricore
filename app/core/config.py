@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # the API is disabled (every /api/v1 route returns 503), i.e. fail-closed.
     API_TOKEN: Optional[str] = None
 
+    # Read-only meals export (consumed by the my-health vault). A second gate on
+    # top of API_TOKEN, sent as the X-Export-Token header. Unset → the /export
+    # endpoint is disabled (always 403), i.e. opt-in and fail-closed. Keep the
+    # token in .env / a secret store, never in git.
+    EXPORT_API_TOKEN: Optional[str] = None
+
     # Telegram
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_ADMIN_USERNAME: str = "@admin_username"  # Default admin username
