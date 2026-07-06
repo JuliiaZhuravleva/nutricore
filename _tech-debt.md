@@ -28,6 +28,15 @@ _Track for later._
 ## Resolved
 _Keep 90 days then remove._
 
+- [x] **TD-002**: Bot token leaked into logs — httpx logged the full Telegram Bot API
+  URL (token in path) at `INFO`. Fixed by clamping `httpx`/`httpcore` loggers to
+  `WARNING` in `create_bot_application()` (covers both polling and webhook entry points).
+  - **Priority:** High · **Source:** external review note 2026-07-06 · **Resolved:** 2026-07-06
+- [x] **TD-003**: `ALLOWED_HOSTS` defaulted to `['*']` (TrustedHostMiddleware no-op).
+  Narrowed the default to `["127.0.0.1", "localhost"]` in `config.py` + `.env.example`;
+  prod adds its domain via env.
+  - **Priority:** Low · **Source:** external review note 2026-07-06 · **Resolved:** 2026-07-06
+
 ---
 
 ### When to Add

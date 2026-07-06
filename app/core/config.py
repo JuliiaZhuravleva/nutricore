@@ -114,7 +114,9 @@ class Settings(BaseSettings):
     # Application Settings
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
-    ALLOWED_HOSTS: List[str] = ["*"]
+    # Loopback-only by default (the API is internal, not published). Prod
+    # deployments behind a domain must add their host(s) via the env var.
+    ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]
 
     # Nutrition Analysis Settings
     DEFAULT_TIMEZONE: str = "Asia/Tbilisi"
