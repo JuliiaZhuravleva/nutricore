@@ -43,6 +43,27 @@ def require_api_token(
         )
 
 
+def require_export_token(
+    x_export_token: Optional[str] = Header(None, alias="X-Export-Token"),
+) -> None:
+    """Second gate for the read-only meals export (on top of require_api_token).
+
+    Fail-closed: if EXPORT_API_TOKEN is unset the export is disabled (403); a
+    missing or wrong token is rejected (403). Constant-time compare, same as
+    require_api_token.
+    """
+    if not settings.EXPORT_API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Export is disabled (no EXPORT_API_TOKEN configured).",
+        )
+    if not _token_matches(x_export_token, settings.EXPORT_API_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing export token.",
+        )
+
+
 def require_webhook_secret(
     x_telegram_bot_api_secret_token: Optional[str] = Header(
         None, alias="X-Telegram-Bot-Api-Secret-Token"
