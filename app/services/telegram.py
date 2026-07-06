@@ -1,4 +1,5 @@
 from datetime import datetime, UTC
+import base64
 import logging
 import json
 from typing import Dict, Optional
@@ -183,11 +184,22 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Get the largest photo (best quality)
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
-        file_url = file.file_path
-        
+
         try:
+            # Send the image to OpenAI as a base64 data URL rather than Telegram's
+            # file URL — that URL embeds the bot token (api.telegram.org/file/bot<TOKEN>/…)
+            # and we don't want to hand it to a third party. It also avoids relying on
+            # OpenAI being able to fetch from api.telegram.org.
+            image_bytes = await file.download_as_bytearray()
+            image_data_url = (
+                "data:image/jpeg;base64,"
+                + base64.b64encode(bytes(image_bytes)).decode()
+            )
+
             # Analyze the food image using OpenAI
-            nutrition_info = await telegram_service.openai_service.analyze_food_image(file_url)
+            nutrition_info = await telegram_service.openai_service.analyze_food_image(
+                image_data_url
+            )
 
             # The service returns the raw JSON string (like analyze_food_entry) — parse it.
             if isinstance(nutrition_info, str):
@@ -198,6 +210,12 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 foods = [foods]
 
             context.user_data['current_meal']['nutrition'] = nutrition_info
+            context.user_data['current_meal']['description'] = (
+                ', '.join(foods) or "Фото приёма пищи"
+            )
+            # Persist the Telegram file_id so the saved meal keeps a reference to
+            # its photo (re-fetchable; cheaper than storing the bytes in the DB).
+            context.user_data['current_meal']['photos'] = [photo.file_id]
 
             await update.message.reply_text(
                 f"Я проанализировал фото. Вот что я нашел:\n"
