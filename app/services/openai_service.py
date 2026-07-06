@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import openai
 from openai import AsyncOpenAI
@@ -53,11 +53,11 @@ def is_model_not_found_error(exc: Exception) -> bool:
     if getattr(exc, "code", None) == "model_not_found":
         return True
     msg = str(exc).lower()
-    return (
-        "model_not_found" in msg
-        or "does not exist" in msg
-        or ("model" in msg and "deprecat" in msg)
-    )
+    if "model_not_found" in msg:
+        return True
+    # Require "model" to co-occur so a "does not exist" / "deprecated" message
+    # about some other resource isn't misread as a model deprecation.
+    return "model" in msg and ("does not exist" in msg or "deprecat" in msg)
 
 
 class OpenAIService:
@@ -74,7 +74,7 @@ class OpenAIService:
         """Point subsequent calls at `model` (used by the TD-005 self-heal flow)."""
         self.model = model
 
-    async def _create(self, **kwargs):
+    async def _create(self, **kwargs) -> Any:
         """chat.completions.create with the current model, translating a
         model-deprecation / 404 into ModelUnavailableError so callers can
         self-heal instead of failing the user's action.

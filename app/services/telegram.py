@@ -214,7 +214,10 @@ def _parse_nutrition(raw):
     if not isinstance(data, dict):
         raise ValueError(f"expected a JSON object, got {type(data).__name__}")
     foods = data.get("foods", [])
-    data["foods"] = [foods] if isinstance(foods, str) else (foods or [])
+    foods = [foods] if isinstance(foods, str) else (foods or [])
+    # Coerce elements to str: models the owner swaps in (o-series, etc.) may
+    # return foods as dicts/numbers, which would blow up ", ".join(...) later.
+    data["foods"] = [str(x) for x in foods]
     missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
     if missing:
         raise ValueError(f"nutrition response missing keys: {missing}")

@@ -29,7 +29,23 @@ _Slows development but doesn't block._
 ## Low
 _Track for later._
 
-_None open._
+- [ ] **TD-007**: Model self-heal (TD-005) only covers the bot path. `OpenAIService.__init__`
+  always uses `settings.OPENAI_MODEL`; the persisted override is loaded once in
+  `create_bot_application` and mutates the single bot-side `OpenAIService`. `app/api/v1/ai.py`
+  builds a fresh `OpenAIService()` per request via `Depends()` and has no `ModelUnavailableError`
+  handling, so if it were mounted it would ignore the owner's model choice and 500 on a deprecated
+  model. Currently latent: the `ai` router is **not mounted** in `main.py` (dead endpoints).
+  Clean fix (also addresses TD-008): load the persisted override inside `OpenAIService`
+  construction (a best-effort factory/`__init__` read) so every instance is consistent, and move
+  `_persist_model`/`_load_persisted_model` onto the service that owns `self.model`.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
+- [ ] **TD-008**: `telegram.py` keeps absorbing responsibilities. The TD-005 self-heal added
+  `_offer_model_choice`/`process_model_choice`/`_persist_model`/`_load_persisted_model` and a third
+  direct CRUD import (`crud_app_setting`) to a module that already owns the meal conversation,
+  subscription gating, the admin grant command, and the consult relay. This is the pattern the
+  earlier `access_control.py` / `ai_call_log_service.py` extractions set out to avoid. Extract the
+  self-heal orchestration into `app/services/model_selection.py`, mirroring `access_control.py`.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
 
 ## Resolved
 _Keep 90 days then remove._

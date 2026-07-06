@@ -296,6 +296,16 @@ def test_parse_nutrition_normalizes_foods():
     assert tg._parse_nutrition(json.dumps(no_foods))["foods"] == []
 
 
+def test_parse_nutrition_coerces_non_string_foods():
+    # A swapped-in model may return foods as dicts/numbers — coerce so the later
+    # ", ".join(...) can't raise TypeError.
+    data = tg._parse_nutrition(
+        json.dumps({**_NUTRITION, "foods": [{"name": "rice"}, 42]})
+    )
+    assert all(isinstance(x, str) for x in data["foods"])
+    assert len(data["foods"]) == 2
+
+
 def test_nutrition_reply_formats_all_fields():
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:")
     assert reply.startswith("Заголовок:\n")

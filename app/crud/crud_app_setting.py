@@ -23,7 +23,13 @@ class CRUDAppSetting:
             db.add(row)
         else:
             row.value = value
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            # Roll back so the session isn't left mid-transaction (matches
+            # crud_subscription); the best-effort caller handles the re-raise.
+            db.rollback()
+            raise
         db.refresh(row)
         return row
 

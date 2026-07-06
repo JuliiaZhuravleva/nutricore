@@ -28,6 +28,12 @@ def upgrade() -> None:
         sa.Column("key", sa.String(), nullable=False),
         sa.Column("value", sa.Text(), nullable=True),
         sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
             server_default=sa.func.now(),
