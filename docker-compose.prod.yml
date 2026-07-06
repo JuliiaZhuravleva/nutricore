@@ -1,0 +1,82 @@
+# Production compose — for the always-on Mac mini, driven by openclaw-setup's
+# `claw-deploy` menu. This is a STANDALONE file (not an overlay on
+# docker-compose.yml, which stays the local-dev file). Run it explicitly:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Differences from the dev compose (docker-compose.yml):
+#   • Postgres data on a HOST bind mount — the mini's Colima VM is disposable
+#     (a rebuild wipes named volumes); host data survives. See openclaw-setup
+#     info/08-Docker-Deploy.md.
+#   • No source bind mount and no --reload — the image ships the code (COPY . .).
+#   • DB and Redis are NOT published to the host; only the API, on loopback.
+#   • Secrets come from a .env rendered at deploy time from 1Password (never
+#     committed; .env is gitignored).
+#   • telegram_bot is intentionally omitted here — a bot token serves ONE
+#     instance, so running it on the mini would hijack the production bot. Add a
+#     bot service with a dedicated token when that's wanted.
+name: nutricore
+
+services:
+
+  app:
+    build: .
+    restart: unless-stopped
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8000:8000"   # API on the host loopback only (reach via Tailscale/SSH)
+    depends_on:
+      - db
+      - redis
+    networks:
+      - bot-network
+
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    # HOST bind mount (Mac path, mounted into the Colima VM) — survives colima delete.
+    # The claw-deploy install creates /Users/claw/data/<project>/ owned by claw.
+    volumes:
+      - /Users/claw/data/nutricore/postgres:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    networks:
+      - bot-network      # no host ports — reachable only inside the compose network
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    networks:
+      - bot-network      # no host ports; broker/cache is ephemeral
+
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    command: python -m celery -A celery_app worker --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - db
+    networks:
+      - bot-network
+
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    command: python -m celery -A celery_app beat --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - db
+      - celery_worker
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
