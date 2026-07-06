@@ -1,10 +1,11 @@
 import logging
 import sys
+from app.core.config import settings
 from app.services.telegram import create_bot_application
 
 # Set up root logger
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 
 # Create console handler with formatting
 console_handler = logging.StreamHandler(sys.stdout)

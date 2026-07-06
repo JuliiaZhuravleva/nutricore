@@ -5,35 +5,12 @@ Track deferred improvements. Review monthly.
 ## Critical
 _Blocks feature work or security risk._
 
-- [ ] **TD-004**: Food-image analysis is broken — `app/services/openai_service.py:53`
-  hardcodes `model="gpt-4-vision-preview"`, which OpenAI has **deprecated/removed**. Live on
-  the mini the bot answers text but any photo fails with `404 model_not_found`
-  (`Error analyzing food image: Error code: 404 ... gpt-4-vision-preview has been deprecated`).
-  Two problems in `analyze_food_image`:
-  1. Dead model, and it **ignores** the configured `settings.OPENAI_MODEL` (`gpt-4o-mini`).
-     Fix: `model=settings.OPENAI_MODEL` (gpt-4o / gpt-4o-mini are vision-capable), don't hardcode.
-  2. Latent: the image part is `{"type": "image_url", "image_url": image_url}` (bare string) —
-     current models require the nested form `{"type": "image_url", "image_url": {"url": image_url}}`.
-     Swapping the model alone will likely then fail on the image_url format; fix both together.
-  - **Priority:** Critical · **Source:** first live run on the mini 2026-07-06 · **Created:** 2026-07-06
+_None open._
 
 ## High
 _Causes recurring problems._
 
-- [ ] **TD-005**: Handle model-deprecation gracefully instead of failing — when an OpenAI call
-  returns `model_not_found` / a "model has been deprecated" error (see TD-004), don't abort the
-  user's action. Instead:
-  1. Catch the deprecation/404-model error in the OpenAI service.
-  2. Fetch the current model list (OpenAI `GET /v1/models`) and **filter to suitable ones**
-     (e.g. vision-capable chat models for image analysis).
-  3. Surface the candidates as **inline-keyboard buttons** in the bot ("the model is gone — pick a
-     new one"), let the user choose.
-  4. **Persist** the choice (settings / DB) and **continue/retry** the original operation with the
-     selected model — so the flow completes without the user re-sending.
-  - This makes the bot self-heal against model churn (models get deprecated periodically).
-  - **Caveat for the implementer:** `/v1/models` does not cleanly tag capabilities (vision, JSON
-    mode), so "suitable" needs a maintained allowlist or heuristic, not just the raw list.
-  - **Priority:** High · **Source:** owner request 2026-07-06 (follow-up to TD-004) · **Created:** 2026-07-06
+_None open._
 
 ## Medium
 _Slows development but doesn't block._
@@ -52,9 +29,53 @@ _Slows development but doesn't block._
 ## Low
 _Track for later._
 
+- [ ] **TD-007**: Model self-heal (TD-005) only covers the bot path. `OpenAIService.__init__`
+  always uses `settings.OPENAI_MODEL`; the persisted override is loaded once in
+  `create_bot_application` and mutates the single bot-side `OpenAIService`. `app/api/v1/ai.py`
+  builds a fresh `OpenAIService()` per request via `Depends()` and has no `ModelUnavailableError`
+  handling, so if it were mounted it would ignore the owner's model choice and 500 on a deprecated
+  model. Currently latent: the `ai` router is **not mounted** in `main.py` (dead endpoints).
+  Clean fix (also addresses TD-008): load the persisted override inside `OpenAIService`
+  construction (a best-effort factory/`__init__` read) so every instance is consistent, and move
+  `_persist_model`/`_load_persisted_model` onto the service that owns `self.model`.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
+- [ ] **TD-008**: `telegram.py` keeps absorbing responsibilities. The TD-005 self-heal added
+  `_offer_model_choice`/`process_model_choice`/`_persist_model`/`_load_persisted_model` and a third
+  direct CRUD import (`crud_app_setting`) to a module that already owns the meal conversation,
+  subscription gating, the admin grant command, and the consult relay. This is the pattern the
+  earlier `access_control.py` / `ai_call_log_service.py` extractions set out to avoid. Extract the
+  self-heal orchestration into `app/services/model_selection.py`, mirroring `access_control.py`.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
+
 ## Resolved
 _Keep 90 days then remove._
 
+- [x] **TD-005**: Model-deprecation self-heal — an OpenAI `model_not_found`/deprecation error no
+  longer silently breaks meal logging. `OpenAIService._create` now translates it into a typed
+  `ModelUnavailableError`; the meal handler catches it, fetches `/v1/models` filtered to a
+  maintained family allowlist (`list_suitable_models`), and offers the candidates in a new
+  `CHOOSING_MODEL` conversation state. Picking one switches the live model, persists it to a new
+  `app_settings` KV table (migration `d3e4f5a6b7c8`, loaded at startup so it survives restarts),
+  and **auto-retries** the stashed analysis — the flow completes without re-sending. Deviation
+  from the spec: used a ReplyKeyboard state rather than an inline-keyboard `CallbackQueryHandler`,
+  which keeps the retry inside the ConversationHandler with far less plumbing (same UX intent).
+  Allowlist caveat from the ticket stands: `/v1/models` doesn't tag capabilities, so the family
+  allowlist + non-chat-variant exclusions are a heuristic to maintain as models change.
+  - **Priority:** High · **Source:** owner request 2026-07-06 (follow-up to TD-004) · **Resolved:** 2026-07-06
+- [x] **TD-006**: `ai_call_logs.created_at` was `nullable=True` in the DDL while the retention
+  purge filters `created_at < cutoff` — a NULL-dated row would never be pruned. Made the column
+  `NOT NULL` with `server_default=func.now()` in both the model and migration `c2d3e4f5a6b7`
+  (edited in place — the migration was never deployed, so no follow-up migration needed).
+  - **Priority:** Low · **Source:** /review 2026-07-06 · **Resolved:** 2026-07-06
+- [x] **TD-004**: Food-image analysis was broken — `analyze_food_image` had **four** faults,
+  each fatal on its own: (1) hardcoded the removed `gpt-4-vision-preview` (→ `404
+  model_not_found`) instead of `self.model` (`settings.OPENAI_MODEL`); (2) bare-string
+  `image_url` instead of the nested `{"url": ...}` form; (3) the image handler never
+  `json.loads`-ed the returned JSON string before indexing it (→ `TypeError`); (4) the
+  prompt emitted `portion_estimate` while the handler read `portion` (→ `KeyError`). Fixed
+  all four in `openai_service.py` + the image branch of `telegram.py::process_meal_input`,
+  added `tests/test_openai_service.py`, and deleted the dead duplicate `app/services/openai.py`.
+  - **Priority:** Critical · **Source:** first live run on the mini 2026-07-06 · **Resolved:** 2026-07-06
 - [x] **TD-002**: Bot token leaked into logs — httpx logged the full Telegram Bot API
   URL (token in path) at `INFO`. Fixed by clamping `httpx`/`httpcore` loggers to
   `WARNING` in `create_bot_application()` (covers both polling and webhook entry points).

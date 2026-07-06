@@ -110,10 +110,18 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.7
     OPENAI_MAX_TOKENS: int = 2000
+    # Retries for transient OpenAI errors (429 / 5xx / network). The SDK applies
+    # exponential backoff; 0 disables retrying.
+    OPENAI_MAX_RETRIES: int = 2
 
     # Application Settings
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
+    # Root log level (DEBUG surfaces the raw OpenAI traces; INFO keeps them quiet).
+    LOG_LEVEL: str = "INFO"
+    # Retention for the ai_call_logs debug table; a daily Celery-beat job prunes
+    # rows older than this.
+    DEBUG_LOG_RETENTION_DAYS: int = 60
     # Loopback-only by default (the API is internal, not published). Prod
     # deployments behind a domain must add their host(s) via the env var.
     ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]

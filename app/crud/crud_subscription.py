@@ -1,8 +1,12 @@
+import logging
 from typing import Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.subscription import Subscription
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
 
 class CRUDSubscription:
     def get_by_telegram_id(self, db: Session, telegram_id: int) -> Optional[Subscription]:
@@ -68,6 +72,12 @@ class CRUDSubscription:
             db.refresh(subscription)
             return subscription
         except Exception:
+            logger.error(
+                "create_subscription commit failed (telegram_id=%s, months=%s)",
+                telegram_id,
+                months,
+                exc_info=True,
+            )
             db.rollback()
             return None
     
