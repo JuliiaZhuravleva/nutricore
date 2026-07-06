@@ -36,7 +36,12 @@ def upgrade() -> None:
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("latency_ms", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_ai_call_logs_id", "ai_call_logs", ["id"])

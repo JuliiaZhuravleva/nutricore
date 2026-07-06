@@ -1,7 +1,6 @@
 import datetime
 
-from sqlalchemy import (JSON, BigInteger, Column, DateTime, Integer, String,
-                        Text)
+from sqlalchemy import JSON, BigInteger, Column, DateTime, Integer, String, Text, func
 
 from app.db.base import Base
 from app.db.base_class import BaseClass
@@ -31,8 +30,13 @@ class AiCallLog(Base, BaseClass):
     latency_ms = Column(Integer, nullable=True)
     # No updated_at (unlike the domain models): rows are append-only debug
     # records — written once at the call, never mutated.
+    # NOT NULL + server_default so a row can never land NULL-dated and thereby
+    # escape the retention purge (which filters created_at < cutoff). The Python
+    # `default` keeps the in-memory object timestamped before a refresh.
     created_at = Column(
         DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
         default=lambda: datetime.datetime.now(UTC),
         index=True,
     )

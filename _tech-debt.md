@@ -44,16 +44,16 @@ _Slows development but doesn't block._
 ## Low
 _Track for later._
 
-- [ ] **TD-006**: `ai_call_logs.created_at` is `nullable=True` in the DDL while the retention
-  purge filters `created_at < cutoff`. Harmless today (the model's Python-side default always
-  sets it), but a NULL-dated row would never be pruned — silently leaking past retention.
-  Fix: make the column `NOT NULL` with a `server_default` (e.g. `func.now()`) in the model +
-  a follow-up migration.
-  - **Priority:** Low · **Source:** /review 2026-07-06 · **Created:** 2026-07-06
+_None open._
 
 ## Resolved
 _Keep 90 days then remove._
 
+- [x] **TD-006**: `ai_call_logs.created_at` was `nullable=True` in the DDL while the retention
+  purge filters `created_at < cutoff` — a NULL-dated row would never be pruned. Made the column
+  `NOT NULL` with `server_default=func.now()` in both the model and migration `c2d3e4f5a6b7`
+  (edited in place — the migration was never deployed, so no follow-up migration needed).
+  - **Priority:** Low · **Source:** /review 2026-07-06 · **Resolved:** 2026-07-06
 - [x] **TD-004**: Food-image analysis was broken — `analyze_food_image` had **four** faults,
   each fatal on its own: (1) hardcoded the removed `gpt-4-vision-preview` (→ `404
   model_not_found`) instead of `self.model` (`settings.OPENAI_MODEL`); (2) bare-string
