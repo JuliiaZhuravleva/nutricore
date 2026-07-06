@@ -52,8 +52,9 @@ nutricore/
 │   │   └── helpers.py          # Helper functions
 │   └── main.py                 # FastAPI application entry point
 ├── celery_app/                 # Celery configuration and tasks
-│   ├── celery_app.py           # Celery app setup
-│   └── tasks.py                # Async task definitions
+│   ├── celery_app.py           # Celery app setup + beat_schedule
+│   └── tasks/                  # Task package
+│       └── periodic.py         # Scheduled maintenance tasks (e.g. log purge)
 ├── alembic/                    # Database migrations
 │   ├── versions/               # Migration scripts
 │   └── env.py                  # Alembic environment config
@@ -497,9 +498,12 @@ application.add_handler(CommandHandler("newcommand", new_command))
 
 ### Working with Celery Tasks
 
-Add async tasks in `celery_app/tasks.py`:
+Tasks live in the `celery_app/tasks/` package (e.g. `celery_app/tasks/periodic.py`).
+Add a module there and list it in `celery_app.py`'s `include=[...]`. Scheduled tasks
+also get an entry in `app.conf.beat_schedule`.
 
 ```python
+# celery_app/tasks/periodic.py
 from celery_app.celery_app import app
 
 @app.task
@@ -509,7 +513,7 @@ def process_nutrition_data(user_id: int):
     return result
 
 # Call task
-from celery_app.tasks import process_nutrition_data
+from celery_app.tasks.periodic import process_nutrition_data
 process_nutrition_data.delay(user_id=123)
 ```
 

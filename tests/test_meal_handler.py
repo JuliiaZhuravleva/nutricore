@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.models.ai_call_log import AiCallLog
 from app.models.meal import Meal
+from app.services import ai_call_log_service as ai_log
 from app.services import telegram as tg
 
 _NUTRITION = {
@@ -109,7 +110,9 @@ def patched_db(monkeypatch):
         "sqlite:///:memory:", connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(bind=engine)
-    monkeypatch.setattr(tg, "SessionLocal", sessionmaker(bind=engine))
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(tg, "SessionLocal", Session)  # confirm_meal's save
+    monkeypatch.setattr(ai_log, "SessionLocal", Session)  # recording hook
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
@@ -267,8 +270,8 @@ def test_confirm_meal_declined_returns_to_time():
 
     assert state == tg.ADDING_MEAL_TIME
     assert "ещё раз" in message.replies[-1]
-    # Draft is preserved so the user can re-pick the time.
-    assert context.user_data["current_meal"]
+    # Draft is discarded on reject — the retry starts fresh (no stale carryover).
+    assert context.user_data["current_meal"] == {}
 
 
 # --- shared helpers --------------------------------------------------------
@@ -378,3 +381,46 @@ def test_records_error_status_on_analysis_failure(patched_db, image_mock):
     assert rows[0].status == "error"
     assert "boom" in rows[0].error
     assert rows[0].parsed_result is None
+
+
+# --- reject → re-log discards the stale draft -------------------------------
+
+
+def test_reject_then_relog_as_text_drops_stale_photo(patched_db, entry_mock):
+    # A photo meal built a draft carrying a photo file_id; the user rejects it
+    # and re-logs the meal as text in the same conversation.
+    ctx = SimpleNamespace(
+        user_data={
+            "current_meal": {
+                "nutrition": _NUTRITION,
+                "description": "banana, oatmeal",
+                "photos": ["OLD_PHOTO"],
+            }
+        }
+    )
+
+    # "Нет" → draft discarded, back to time selection.
+    reject_update, _ = _make_text_update("Нет")
+    assert asyncio.run(tg.confirm_meal(reject_update, ctx)) == tg.ADDING_MEAL_TIME
+    assert ctx.user_data["current_meal"] == {}
+
+    # Re-log as text, then confirm-save.
+    text_update, _ = _make_text_update("салат")
+    asyncio.run(tg.process_meal_input(text_update, ctx))
+    save_update, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(save_update, ctx))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert len(meals) == 1
+    assert meals[0].photos == []  # the rejected photo did not carry over
+
+
+# --- _parse_nutrition validation -------------------------------------------
+
+
+def test_parse_nutrition_rejects_malformed():
+    with pytest.raises(ValueError):
+        tg._parse_nutrition("null")  # JSON null → not an object
+    with pytest.raises(ValueError):
+        tg._parse_nutrition(json.dumps({"foods": ["x"]}))  # missing calories/macros

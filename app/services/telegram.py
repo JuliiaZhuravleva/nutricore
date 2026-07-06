@@ -2,17 +2,15 @@ from datetime import datetime, UTC
 import base64
 import logging
 import json
-import time
 from typing import Dict, Optional
 import httpx
 from sqlalchemy.orm import Session
 from app.crud.crud_meal import crud_meal
-from app.crud.crud_ai_call_log import crud_ai_call_log
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.schemas.ai_call_log import AiCallLogCreate
+from app.services.ai_call_log_service import analyze_and_log
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -179,15 +177,26 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return ADDING_MEAL
 
+_REQUIRED_NUTRITION_KEYS = ("calories", "protein", "fats", "carbs", "portion")
+
+
 def _parse_nutrition(raw):
-    """OpenAI analysis result → dict with a guaranteed list `foods`.
+    """OpenAI analysis result → validated dict with a guaranteed list `foods`.
 
     Both analysis methods return the raw JSON string; the model may also give
-    `foods` as a bare string. This normalizes both so callers get a dict.
+    `foods` as a bare string. Normalizes both, and raises ValueError on a
+    None/non-object payload or one missing the fields the reply needs — so a
+    malformed response is recorded as an error and surfaced, not turned into a
+    downstream KeyError.
     """
     data = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
     foods = data.get('foods', [])
     data['foods'] = [foods] if isinstance(foods, str) else (foods or [])
+    missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
+    if missing:
+        raise ValueError(f"nutrition response missing keys: {missing}")
     return data
 
 
@@ -203,47 +212,6 @@ def _nutrition_reply(data, header):
         f"Порция: {data['portion']}\n\n"
         f"Всё верно? (Да/Нет)"
     )
-
-
-def _record_ai_call(**fields):
-    """Best-effort debug row for one OpenAI analysis call.
-
-    Never raises — a logging failure must not break the meal flow.
-    """
-    try:
-        with SessionLocal() as db:
-            crud_ai_call_log.create(db, AiCallLogCreate(**fields))
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.warning("Failed to record ai_call_log: %s", exc)
-
-
-async def _analyze_and_log(coro, *, kind, input_ref, telegram_id):
-    """Await an OpenAI analysis coroutine, persist a debug row, return parsed dict.
-
-    Records `status="ok"` with the raw + parsed result on success, or
-    `status="error"` (and re-raises) on any analysis / parse failure.
-    """
-    model = telegram_service.openai_service.model
-    started = time.perf_counter()
-    raw = None
-    try:
-        raw = await coro
-        parsed = _parse_nutrition(raw)
-    except Exception as exc:
-        _record_ai_call(
-            telegram_id=telegram_id, kind=kind, input_ref=input_ref, model=model,
-            raw_response=raw if isinstance(raw, str) else None, parsed_result=None,
-            status="error", error=str(exc),
-            latency_ms=int((time.perf_counter() - started) * 1000),
-        )
-        raise
-    _record_ai_call(
-        telegram_id=telegram_id, kind=kind, input_ref=input_ref, model=model,
-        raw_response=raw if isinstance(raw, str) else None, parsed_result=parsed,
-        status="ok", error=None,
-        latency_ms=int((time.perf_counter() - started) * 1000),
-    )
-    return parsed
 
 
 @subscription_required
@@ -272,11 +240,13 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
             # Analyze the food image using OpenAI (recorded to ai_call_logs)
-            nutrition_info = await _analyze_and_log(
+            nutrition_info = await analyze_and_log(
                 telegram_service.openai_service.analyze_food_image(image_data_url),
                 kind="image",
                 input_ref=photo.file_id,
                 telegram_id=update.effective_user.id,
+                model=telegram_service.openai_service.model,
+                parse=_parse_nutrition,
             )
             draft = {
                 'nutrition': nutrition_info,
@@ -306,11 +276,13 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             logger.debug("Processing meal text: %s", meal_text)
             # Analyze the food text using OpenAI (recorded to ai_call_logs)
-            nutrition_info = await _analyze_and_log(
+            nutrition_info = await analyze_and_log(
                 telegram_service.openai_service.analyze_food_entry(meal_text),
                 kind="text",
                 input_ref=meal_text,
                 telegram_id=update.effective_user.id,
+                model=telegram_service.openai_service.model,
+                parse=_parse_nutrition,
             )
             draft = {'nutrition': nutrition_info, 'description': meal_text}
 
@@ -380,6 +352,9 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             )
             return CHOOSING_ACTION
     else:
+        # Rejecting discards the draft — the retry is a fresh entry and must not
+        # inherit stale nutrition/photos from the rejected attempt.
+        context.user_data['current_meal'] = {}
         await update.message.reply_text(
             "Давай попробуем ещё раз. Когда был прием пищи?",
             reply_markup=time_keyboard,
@@ -444,11 +419,10 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         logger.info(f"Attempting to grant subscription: user_id={user_id}, months={months}, admin_id={admin_id}")
         
-        db = SessionLocal()
-        subscription = crud_subscription.create_subscription(
-            db, user_id, admin_id, months
-        )
-        db.close()
+        with SessionLocal() as db:
+            subscription = crud_subscription.create_subscription(
+                db, user_id, admin_id, months
+            )
         
         if subscription:
             logger.info(f"Successfully granted subscription to user {user_id}")

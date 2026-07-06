@@ -29,6 +29,8 @@ class AiCallLog(Base, BaseClass):
     status = Column(String, nullable=False)  # "ok" | "error"
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)
+    # No updated_at (unlike the domain models): rows are append-only debug
+    # records — written once at the call, never mutated.
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.datetime.now(UTC),
