@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     OPENAI_TEMPERATURE: float = 0.7
     OPENAI_MAX_TOKENS: int = 2000
+    # Retries for transient OpenAI errors (429 / 5xx / network). The SDK applies
+    # exponential backoff; 0 disables retrying.
+    OPENAI_MAX_RETRIES: int = 2
 
     # Application Settings
     DEBUG: bool = False

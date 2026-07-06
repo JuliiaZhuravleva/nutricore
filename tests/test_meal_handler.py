@@ -292,3 +292,32 @@ def test_nutrition_reply_formats_all_fields():
     assert "Калории: 350 ккал" in reply
     assert "Порция: 1 bowl (300g)" in reply
     assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+# --- stale-draft reset + atomic write --------------------------------------
+
+
+def test_add_meal_resets_stale_draft():
+    update, _ = _make_text_update("🍽 Добавить прием пищи")
+    context = SimpleNamespace(
+        user_data={"current_meal": {"nutrition": {"old": 1}}, "meal_time": "stale"}
+    )
+
+    state = asyncio.run(tg.add_meal(update, context))
+
+    assert state == tg.ADDING_MEAL_TIME
+    assert context.user_data["current_meal"] == {}
+    assert "meal_time" not in context.user_data
+
+
+def test_photo_meal_reply_failure_leaves_no_partial_draft(image_mock):
+    update, message = _make_photo_update()
+    # The success reply fails to send; the fallback reply then succeeds.
+    message.reply_text = AsyncMock(side_effect=[RuntimeError("send failed"), None])
+    context = _make_photo_context()
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.ADDING_MEAL
+    # Draft is committed only after a successful reply — nothing half-written.
+    assert "nutrition" not in context.user_data["current_meal"]

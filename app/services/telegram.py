@@ -138,6 +138,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @subscription_required
 async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the meal addition process."""
+    # Start clean: drop any leftover draft from an abandoned previous entry so a
+    # new meal never inherits stale nutrition/photos/time.
+    context.user_data["current_meal"] = {}
+    context.user_data.pop("meal_time", None)
     await update.message.reply_text(
         "Когда был прием пищи?",
         reply_markup=time_keyboard,
@@ -227,20 +231,22 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 image_data_url
             )
             nutrition_info = _parse_nutrition(nutrition_info)
-
-            context.user_data['current_meal']['nutrition'] = nutrition_info
-            context.user_data['current_meal']['description'] = (
-                ', '.join(nutrition_info['foods']) or "Фото приёма пищи"
-            )
-            # Persist the Telegram file_id so the saved meal keeps a reference to
-            # its photo (re-fetchable; cheaper than storing the bytes in the DB).
-            context.user_data['current_meal']['photos'] = [photo.file_id]
+            draft = {
+                'nutrition': nutrition_info,
+                'description': ', '.join(nutrition_info['foods']) or "Фото приёма пищи",
+                # Telegram file_id so the saved meal keeps a photo reference
+                # (re-fetchable; cheaper than storing the bytes in the DB).
+                'photos': [photo.file_id],
+            }
 
             await update.message.reply_text(
                 _nutrition_reply(
                     nutrition_info, "Я проанализировал фото. Вот что я нашел:"
                 )
             )
+            # Commit to the draft only after the reply succeeded — a failed
+            # analysis or reply leaves no half-written state in user_data.
+            context.user_data['current_meal'].update(draft)
         except Exception as e:
             logger.error(f"Error analyzing food image: {e}")
             await update.message.reply_text(
@@ -255,15 +261,15 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Analyze the food text using OpenAI
             nutrition_info = await telegram_service.openai_service.analyze_food_entry(meal_text)
             nutrition_info = _parse_nutrition(nutrition_info)
-
-            context.user_data['current_meal']['nutrition'] = nutrition_info
-            context.user_data['current_meal']['description'] = meal_text
+            draft = {'nutrition': nutrition_info, 'description': meal_text}
 
             await update.message.reply_text(
                 _nutrition_reply(
                     nutrition_info, "Я проанализировал ваш приём пищи. Вот что получилось:"
                 )
             )
+            # Commit only after a successful reply — no partial draft on failure.
+            context.user_data['current_meal'].update(draft)
         except Exception as e:
             logger.error(f"Error analyzing food text: {str(e)}", exc_info=True)
             await update.message.reply_text(
