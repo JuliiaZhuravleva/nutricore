@@ -451,6 +451,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def create_bot_application() -> Application:
     """Create and configure the bot application."""
+    # httpx/httpcore log the full request URL at INFO, and the Telegram Bot API
+    # embeds the token in the path (.../bot<TOKEN>/getUpdates). Clamp them to
+    # WARNING so the live token never lands in the logs (still surfaces failures).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
     # Global access gate — runs before every other handler (group=-1) and drops
