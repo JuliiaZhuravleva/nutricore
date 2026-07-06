@@ -44,6 +44,13 @@ _Slows development but doesn't block._
 ## Low
 _Track for later._
 
+- [ ] **TD-006**: `ai_call_logs.created_at` is `nullable=True` in the DDL while the retention
+  purge filters `created_at < cutoff`. Harmless today (the model's Python-side default always
+  sets it), but a NULL-dated row would never be pruned — silently leaking past retention.
+  Fix: make the column `NOT NULL` with a `server_default` (e.g. `func.now()`) in the model +
+  a follow-up migration.
+  - **Priority:** Low · **Source:** /review 2026-07-06 · **Created:** 2026-07-06
+
 ## Resolved
 _Keep 90 days then remove._
 
