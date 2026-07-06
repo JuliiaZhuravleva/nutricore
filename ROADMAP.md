@@ -1,128 +1,74 @@
-# Nutricore Development Roadmap
+# Nutricore Roadmap
 
-This document outlines the planned development stages and future enhancements for Nutricore.
+High-level direction. The **detailed, source-of-truth plan lives in
+[`docs/stages/`](docs/stages/README.md)** (staged, one branch at a time); this file is the
+bird's-eye view and the list of things deliberately *not* being built.
 
-## Current Status
+## What Nutricore is
 
-Nutricore has successfully implemented the following components:
-- Basic infrastructure setup with FastAPI, PostgreSQL, Redis, and Celery
-- Core data models implementation
-- Telegram bot integration
-- Basic OpenAI integration for food analysis
-- Database migrations with Alembic
+A **personal** nutrition tracker on Telegram — capture meals with minimal friction
+(text/photo → КБЖУ via OpenAI) and chat about food. It is **not** a multi-user product.
 
-## Development Roadmap
+**Ecosystem boundary:** `my-health` = brain / data / guardrails; **nutricore = capture +
+chat surface.** Nutrition/food coaching uses nutricore's own OpenAI; medical/health
+questions go to my-health via the `/consult` relay. These never mix, and no medical logic
+or medical data lives in the bot.
 
-### Phase 1: Foundation Enhancement (Q3 2025)
+## Current status (2026-07)
 
-- **Complete OpenAI Integration**
-  - Enhance food recognition capabilities
-  - Improve nutrition data extraction accuracy
-  - Add multilingual food analysis support
+**Shipped & working:**
+- AI meal-logging: text/photo → foods + calories/macros, confirm → save. Photo path
+  hardened (base64 to OpenAI, atomic draft, retries) and self-healing against OpenAI model
+  deprecation (owner can pick a new model in-chat; choice persisted).
+- Access control (open / whitelist / closed, default **whitelist**) with a silent gate.
+- Secured REST API (`X-API-Token`, fail-closed) + Telegram webhook secret.
+- `/consult` relay to the my-health hub.
+- Subscription gate + `/grant_sub` admin grant (owner never blocked).
+- Debug substrate: `ai_call_logs` table with retention purge.
+- **Deployed live** on the home Mac mini (headless, Telegram polling) via the
+  openclaw-setup `claw-deploy` menu; Postgres data on a host bind mount.
 
-- **User Experience Improvements**
-  - Create intuitive onboarding flow
-  - Implement guided setup for first-time users
-  - Add customizable user preferences
+**Scaffolded but not built (the "intelligence" layer):** goals, remaining-budget replies,
+statistics, weight tracking, settings, reminders/digests, coaching — these are the staged
+plan below. The domain models/CRUD/REST exist; the logic does not yet.
 
-- **Testing and Documentation**
-  - Increase test coverage to 80%+
-  - Complete API documentation
-  - Add detailed code comments
+## Plan — see [`docs/stages/`](docs/stages/README.md)
 
-### Phase 2: Advanced Features (Q4 2025)
+| Stage | Scope | Status |
+|-------|-------|--------|
+| 0 | Unfreeze hygiene (consult relay, drift fixes, access control, secured API) | ✅ done |
+| 1 | Foundations: `/goal` wizard, remaining-budget replies, statistics | ⛔ next |
+| 2 | Weight tracking + settings | ⛔ planned |
+| 3 | Retention: reminders, streaks, weekly digest | ⛔ planned |
+| 4 | AI coaching: "what to eat", insights, voice logging | ⛔ planned |
+| 90 | my-health indicators in chat (reverse integration) | 🧊 deferred |
 
-- **Smart Scale Integration**
-  - Complete Mi Smart Scale API integration
-  - Enable automatic weight and body composition tracking
-  - Add synchronization between multiple data sources
+Stages ship one at a time, each on its own branch, verified end-to-end by driving the bot
+in polling mode before moving on.
 
-- **Activity Tracking**
-  - Complete Samsung Health/Google Fit integration
-  - Implement exercise recognition algorithms
-  - Create activity-based calorie adjustment
+## Enhancements (outside the locked stages)
 
-- **Enhanced Analytics**
-  - Develop advanced nutrition reports
-  - Create custom dashboards
-  - Implement trend analysis
+- **Product lookup for packaged food** — return a packaged product's *actual* КБЖУ
+  (barcode → Open Food Facts, or web-search identification) instead of a vision estimate,
+  with a source/confidence badge. Optional/opt-in. Draft spec:
+  [`docs/photo-product-lookup.md`](photo-product-lookup.md).
+- **Persist inbound messages/content + reprocess** — store photo+caption on receipt so
+  failed/dropped items aren't lost and can be re-analyzed after a fix. See `_tech-debt.md`
+  TD-009.
 
-### Phase 3: AI-Powered Insights (Q1-Q2 2026)
+## Technical debt
 
-- **Personalized Diet Plans**
-  - Implement AI-generated diet recommendations
-  - Create meal planning assistance
-  - Add recipe suggestions based on dietary preferences
+Tracked in [`_tech-debt.md`](_tech-debt.md). Current themes: poetry env stability (TD-001),
+self-heal refactor/coverage (TD-007/008), inbound persistence (TD-009).
 
-- **Health Pattern Recognition**
-  - Develop algorithms to identify nutrition patterns
-  - Implement correlation analysis between diet and health metrics
-  - Add progress prediction models
+## Non-goals (explicitly out of scope)
 
-- **Natural Language Processing**
-  - Enhance conversational capabilities
-  - Implement voice message understanding
-  - Add contextual responses
+This is a personal tool. The following — carried over from an earlier, product-oriented
+draft of this roadmap — are **not** planned:
 
-### Phase 4: Platform Expansion (Q3-Q4 2026)
+- Multi-user onboarding funnels, paywall/subscription polish for strangers.
+- Companion mobile app, web dashboard, cross-platform sync.
+- Third-party API/webhook platform, community/social features, enterprise/wellness
+  programs, anonymized data marketplace.
 
-- **Multiplatform Support**
-  - Develop companion mobile application
-  - Create web dashboard interface
-  - Implement cross-platform synchronization
-
-- **Integration Ecosystem**
-  - Add support for additional smart devices
-  - Create API for third-party applications
-  - Implement webhook system for external services
-
-- **Community Features**
-  - Implement anonymized data sharing options
-  - Create community challenges
-  - Add social support networks
-
-## Technical Improvements
-
-- **Scalability**
-  - Optimize database queries
-  - Implement caching strategies
-  - Enhance asynchronous task processing
-
-- **Security and Compliance**
-  - Implement comprehensive GDPR compliance
-  - Add advanced encryption for sensitive data
-  - Create detailed audit logs
-
-- **DevOps**
-  - Implement continuous integration/continuous deployment
-  - Create automated testing pipeline
-  - Add infrastructure as code for deployment
-
-## Future Considerations
-
-- **Research Integration**
-  - Partner with nutrition research institutions
-  - Develop anonymized data analysis platform
-  - Create nutrition science feedback loops
-
-- **Market Expansion**
-  - Localize for multiple languages and regions
-  - Adapt to regional food databases
-  - Implement cultural dietary patterns
-
-- **Enterprise Solutions**
-  - Develop corporate wellness programs
-  - Create team nutrition challenges
-  - Implement organization-level analytics
-
-## Contributing to the Roadmap
-
-This roadmap is a living document. If you have suggestions or would like to contribute to the development of any of these features, please open an issue or submit a pull request with your proposal.
-
-We prioritize features based on:
-1. User impact and demand
-2. Technical feasibility
-3. Integration potential with existing systems
-4. Development resource availability
-
-Your input helps shape the future of Nutricore!
+If the audience ever changes, revisit — but until then these don't drive decisions.

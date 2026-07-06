@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,10 @@ class Settings(BaseSettings):
     # Retention for the ai_call_logs debug table; a daily Celery-beat job prunes
     # rows older than this.
     DEBUG_LOG_RETENTION_DAYS: int = 60
+    # Retention for the inbound_messages history/replay table (TD-009). Its own
+    # knob because these rows are user content (photo references), not just debug
+    # traces; a daily Celery-beat job prunes rows older than this.
+    INBOUND_MESSAGE_RETENTION_DAYS: int = 60
     # Loopback-only by default (the API is internal, not published). Prod
     # deployments behind a domain must add their host(s) via the env var.
     ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]

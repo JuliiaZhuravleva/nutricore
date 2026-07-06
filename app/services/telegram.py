@@ -6,15 +6,9 @@ from typing import Dict
 
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    TypeHandler,
-    filters,
-)
+from telegram.ext import (Application, CommandHandler, ContextTypes,
+                          ConversationHandler, MessageHandler, TypeHandler,
+                          filters)
 
 from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
@@ -23,14 +17,12 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
+from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.openai_service import (
-    OPENAI_MODEL_SETTING_KEY,
-    ModelUnavailableError,
-    OpenAIService,
-)
+from app.services.openai_service import (OPENAI_MODEL_SETTING_KEY,
+                                         ModelUnavailableError, OpenAIService)
 
 # Enable logging
 logging.basicConfig(
@@ -42,6 +34,10 @@ logger = logging.getLogger(__name__)
 # Light anti-spam for /consult: min seconds between a user's hub calls.
 CONSULT_COOLDOWN_SECONDS = 3
 _last_consult: Dict[int, datetime] = {}
+
+# Max inbound messages re-analyzed per /reprocess call — a cap on OpenAI spend
+# per owner invocation. If more are pending, the owner just runs it again.
+REPROCESS_BATCH_LIMIT = 20
 
 # Conversation states
 (
@@ -224,6 +220,12 @@ def _parse_nutrition(raw):
     return data
 
 
+def _image_data_url(image_bytes) -> str:
+    """base64 data URL for OpenAI vision — never Telegram's token-bearing file URL
+    (api.telegram.org/file/bot<TOKEN>/…), and no dependency on OpenAI fetching it."""
+    return "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
+
+
 def _nutrition_reply(data, header):
     """Format the confirmation message shared by the photo and text branches."""
     return (
@@ -238,21 +240,16 @@ def _nutrition_reply(data, header):
     )
 
 
-async def _run_meal_analysis(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    kind: str,
-    input_ref: str,
-    payload: str,
-) -> int:
-    """Analyze one meal input (image data URL or text), reply, and stage the draft.
+async def _analyze_and_parse(
+    *, kind: str, payload: str, input_ref: str, telegram_id: int | None
+) -> dict:
+    """Run the OpenAI analysis for `kind`, record it to ai_call_logs, and return
+    the parsed nutrition.
 
-    Shared by the first attempt (``process_meal_input``) and the retry after a
-    model switch (``process_model_choice``). On a model deprecation it offers the
-    model picker (→ CHOOSING_MODEL); on any other failure it asks for the input
-    again (→ ADDING_MEAL). The draft is committed only after a successful reply,
-    so a failure never leaves half-written state in ``user_data``.
+    The single analyze pipeline shared by the live flow (``_run_meal_analysis``)
+    and the replay (``reprocess``) so both go through the same code AND the same
+    audit trail. Raises ``ModelUnavailableError`` on a dead model and ``ValueError``
+    on a malformed response (both handled by the callers).
     """
     svc = telegram_service.openai_service
     coro = (
@@ -260,44 +257,94 @@ async def _run_meal_analysis(
         if kind == "image"
         else svc.analyze_food_entry(payload)
     )
+    return await analyze_and_log(
+        coro,
+        kind=kind,
+        input_ref=input_ref,
+        telegram_id=telegram_id,
+        model=svc.model,
+        parse=_parse_nutrition,
+    )
+
+
+async def _run_meal_analysis(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    kind: str,
+    input_ref: str,
+    payload: str,
+    inbound_id: int | None = None,
+) -> int:
+    """Analyze one meal input (image data URL or text), reply, and stage the draft.
+
+    Shared by the first attempt (``process_meal_input``) and the retry after a
+    model switch (``process_model_choice``). On a model deprecation it offers the
+    model picker (→ CHOOSING_MODEL); on any other failure it asks for the input
+    again (→ ADDING_MEAL). The draft is committed only after a successful reply,
+    so a failure never leaves half-written state in ``user_data``. ``inbound_id``
+    (the persisted inbound message, TD-009) is flipped to analyzed/failed here.
+    """
     try:
-        # Analyze via OpenAI (recorded to ai_call_logs), then reply. Both the
-        # analysis and the confirmation reply are inside the try so any failure
-        # falls back cleanly and no half-written draft is committed below.
-        nutrition_info = await analyze_and_log(
-            coro,
+        nutrition_info = await _analyze_and_parse(
             kind=kind,
+            payload=payload,
             input_ref=input_ref,
             telegram_id=update.effective_user.id,
-            model=svc.model,
-            parse=_parse_nutrition,
         )
-        if kind == "image":
-            draft = {
-                "nutrition": nutrition_info,
-                "description": ", ".join(nutrition_info["foods"]) or "Фото приёма пищи",
-                # Telegram file_id so the saved meal keeps a photo reference
-                # (re-fetchable; cheaper than storing the bytes in the DB).
-                "photos": [input_ref],
-            }
-            header = "Я проанализировал фото. Вот что я нашел:"
-        else:
-            draft = {"nutrition": nutrition_info, "description": payload}
-            header = "Я проанализировал ваш приём пищи. Вот что получилось:"
-        await update.message.reply_text(_nutrition_reply(nutrition_info, header))
     except ModelUnavailableError as e:
-        # Configured model is gone — let the owner pick a new one and retry.
+        # Configured model is gone — record the miss, then let the owner pick a
+        # new model and retry (the same inbound_id is re-marked on success).
+        inbound_msg.mark_failed(inbound_id, str(e))
         return await _offer_model_choice(
-            update, context, e, kind=kind, input_ref=input_ref, payload=payload
+            update,
+            context,
+            e,
+            kind=kind,
+            input_ref=input_ref,
+            payload=payload,
+            inbound_id=inbound_id,
         )
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
+        inbound_msg.mark_failed(inbound_id, str(e))
         await update.message.reply_text(
             "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
             "или опишите приём пищи иначе."
         )
         return ADDING_MEAL
-    # Commit only after the reply succeeded, and clear any pending retry state.
+
+    # Analysis succeeded — record it now, independent of the reply below. A
+    # Telegram send failure must NOT relabel a clean analysis as failed (that
+    # would make /reprocess re-pay OpenAI for an already-analyzed message).
+    inbound_msg.mark_analyzed(inbound_id, nutrition_info)
+
+    if kind == "image":
+        draft = {
+            "nutrition": nutrition_info,
+            "description": ", ".join(nutrition_info["foods"]) or "Фото приёма пищи",
+            # Telegram file_id so the saved meal keeps a photo reference
+            # (re-fetchable; cheaper than storing the bytes in the DB).
+            "photos": [input_ref],
+        }
+        header = "Я проанализировал фото. Вот что я нашел:"
+    else:
+        draft = {"nutrition": nutrition_info, "description": payload}
+        header = "Я проанализировал ваш приём пищи. Вот что получилось:"
+
+    try:
+        await update.message.reply_text(_nutrition_reply(nutrition_info, header))
+    except Exception as e:
+        # Analysis is saved; only the confirmation reply failed. Keep the draft
+        # atomic (don't commit) and ask the owner to send the meal again.
+        logger.error("Error sending meal confirmation (%s): %s", kind, e, exc_info=True)
+        await update.message.reply_text(
+            "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
+            "или опишите приём пищи иначе."
+        )
+        return ADDING_MEAL
+
+    # Reply succeeded: commit the draft and clear any pending retry state.
     context.user_data.setdefault("current_meal", {}).update(draft)
     context.user_data.pop("pending_analysis", None)
     return CONFIRMING_MEAL
@@ -311,34 +358,46 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if update.message.photo:
         # Get the largest photo (best quality).
         photo = update.message.photo[-1]
+        kind, input_ref, content = "image", photo.file_id, update.message.caption
+    else:
+        kind, input_ref, content = "text", update.message.text, update.message.text
+
+    # Persist the raw inbound message on receipt, BEFORE any fetch/OpenAI work, so
+    # even a photo-fetch or analysis failure leaves a replayable trace (TD-009).
+    inbound_id = inbound_msg.record_inbound(
+        telegram_id=update.effective_user.id,
+        kind=kind,
+        content=content,
+        photo_file_id=input_ref if kind == "image" else None,
+    )
+
+    if kind == "image":
         try:
             # Send the image to OpenAI as a base64 data URL rather than Telegram's
             # file URL — that URL embeds the bot token (api.telegram.org/file/bot<TOKEN>/…)
             # and we don't want to hand it to a third party. It also avoids relying
             # on OpenAI being able to fetch from api.telegram.org.
-            file = await context.bot.get_file(photo.file_id)
+            file = await context.bot.get_file(input_ref)
             image_bytes = await file.download_as_bytearray()
         except Exception as e:
             logger.error("Error fetching photo: %s", e, exc_info=True)
+            inbound_msg.mark_failed(inbound_id, f"photo fetch failed: {e}")
             await update.message.reply_text(
                 "Не удалось загрузить фото. Пожалуйста, опишите приём пищи текстом."
             )
             return ADDING_MEAL
-        image_data_url = (
-            "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
-        )
-        return await _run_meal_analysis(
-            update,
-            context,
-            kind="image",
-            input_ref=photo.file_id,
-            payload=image_data_url,
-        )
+        payload = _image_data_url(image_bytes)
+    else:
+        payload = input_ref
+        logger.debug("Processing meal text: %s", payload)
 
-    meal_text = update.message.text
-    logger.debug("Processing meal text: %s", meal_text)
     return await _run_meal_analysis(
-        update, context, kind="text", input_ref=meal_text, payload=meal_text
+        update,
+        context,
+        kind=kind,
+        input_ref=input_ref,
+        payload=payload,
+        inbound_id=inbound_id,
     )
 
 
@@ -350,6 +409,7 @@ async def _offer_model_choice(
     kind: str,
     input_ref: str,
     payload: str,
+    inbound_id: int | None = None,
 ) -> int:
     """A model went missing mid-analysis: stash the input and show a picker so the
     owner can switch models and have the analysis retried automatically."""
@@ -357,6 +417,7 @@ async def _offer_model_choice(
         "kind": kind,
         "input_ref": input_ref,
         "payload": payload,
+        "inbound_id": inbound_id,
     }
     models = await telegram_service.openai_service.list_suitable_models()
     context.user_data["model_choices"] = models
@@ -427,6 +488,7 @@ async def process_model_choice(
         kind=pending["kind"],
         input_ref=pending["input_ref"],
         payload=pending["payload"],
+        inbound_id=pending.get("inbound_id"),
     )
 
 
@@ -642,6 +704,78 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+@admin_required
+async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-analyze pending/failed inbound messages (owner only — TD-009).
+
+    The replay mechanism after a model fix: switch the model via the self-heal
+    picker, then run /reprocess to re-run what failed. Each message is re-analyzed
+    through the same pipeline as the live flow (recorded to ai_call_logs) and the
+    result is written back to its row (fills ai_analysis, flips status). It does
+    NOT create a Meal — turning a recovered analysis into a logged meal is a
+    separate step (deferred, TD-010); this only repairs the record. Capped at
+    REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for more. If
+    the model is still unavailable it stops early and says so.
+    """
+    try:
+        rows = inbound_msg.get_reprocessable(limit=REPROCESS_BATCH_LIMIT)
+    except Exception as e:
+        logger.error("reprocess: could not load queue: %s", e, exc_info=True)
+        await update.message.reply_text("Не удалось получить список сообщений.")
+        return
+
+    if not rows:
+        await update.message.reply_text("Нет сообщений для повторной обработки. 👍")
+        return
+
+    analyzed = failed = 0
+    for row in rows:
+        try:
+            if row.kind == "image":
+                if not row.photo_file_id:
+                    raise ValueError("no photo reference to re-fetch")
+                file = await context.bot.get_file(row.photo_file_id)
+                image_bytes = await file.download_as_bytearray()
+                payload = _image_data_url(image_bytes)
+                input_ref = row.photo_file_id
+            else:
+                payload = row.content or ""
+                input_ref = row.content or ""
+            parsed = await _analyze_and_parse(
+                kind=row.kind,
+                payload=payload,
+                input_ref=input_ref,
+                telegram_id=row.telegram_id,
+            )
+        except ModelUnavailableError as e:
+            # Still broken — leave this row queued and tell the owner to switch.
+            await update.message.reply_text(
+                f"⚠️ Модель «{e.model}» всё ещё недоступна. Смени модель (отправь "
+                "приём пищи, выбери модель) и повтори /reprocess.\n"
+                f"Обработано до остановки: успешно {analyzed}, с ошибкой {failed}."
+            )
+            return
+        except Exception as e:
+            logger.error("reprocess: message %s failed: %s", row.id, e, exc_info=True)
+            inbound_msg.mark_failed(row.id, str(e))
+            failed += 1
+            continue
+        # Only count success once the status actually persisted — mark_analyzed is
+        # best-effort, so a swallowed DB write must not be reported as done (the
+        # row would otherwise silently reappear in the next /reprocess batch).
+        if inbound_msg.mark_analyzed(row.id, parsed):
+            analyzed += 1
+        else:
+            logger.warning(
+                "reprocess: analyzed row %s but could not persist its status", row.id
+            )
+            failed += 1
+
+    await update.message.reply_text(
+        f"Повторная обработка ({len(rows)}): успешно {analyzed}, с ошибкой {failed}."
+    )
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel and end the conversation."""
     await update.message.reply_text(
@@ -715,5 +849,8 @@ def create_bot_application() -> Application:
 
     # Consult relay → my-health hub
     application.add_handler(CommandHandler("consult", consult))
+
+    # Replay failed/pending inbound messages after a model fix (owner only).
+    application.add_handler(CommandHandler("reprocess", reprocess))
 
     return application

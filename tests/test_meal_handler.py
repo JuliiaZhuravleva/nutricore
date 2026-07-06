@@ -22,8 +22,10 @@ from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
 from app.db.base import Base
 from app.models.ai_call_log import AiCallLog
+from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
 from app.services import ai_call_log_service as ai_log
+from app.services import inbound_message_service as im_service
 from app.services import telegram as tg
 from app.services.openai_service import OPENAI_MODEL_SETTING_KEY
 
@@ -42,9 +44,10 @@ _IMAGE_BYTES = bytes(b"\xff\xd8\xff-fake-jpeg-bytes")
 
 
 class _FakeMessage:
-    def __init__(self, *, photo=None, text=None):
+    def __init__(self, *, photo=None, text=None, caption=None):
         self.photo = photo
         self.text = text
+        self.caption = caption
         self.from_user = SimpleNamespace(id=42, username="owner")
         self.replies = []
 
@@ -52,8 +55,8 @@ class _FakeMessage:
         self.replies.append(text)
 
 
-def _make_update(*, photo=None, text=None):
-    message = _FakeMessage(photo=photo, text=text)
+def _make_update(*, photo=None, text=None, caption=None):
+    message = _FakeMessage(photo=photo, text=text, caption=caption)
     update = SimpleNamespace(
         message=message,
         effective_user=SimpleNamespace(id=42, username="owner"),
@@ -114,7 +117,8 @@ def patched_db(monkeypatch):
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
     monkeypatch.setattr(tg, "SessionLocal", Session)  # confirm_meal's save
-    monkeypatch.setattr(ai_log, "SessionLocal", Session)  # recording hook
+    monkeypatch.setattr(ai_log, "SessionLocal", Session)  # ai_call_logs hook
+    monkeypatch.setattr(im_service, "SessionLocal", Session)  # inbound_messages hook
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
@@ -542,3 +546,171 @@ def test_load_persisted_model_applies_on_startup(patched_db):
     tg._load_persisted_model()
 
     assert svc.model == "gpt-persisted"
+
+
+# --- inbound message persistence + reprocess (TD-009) -----------------------
+
+
+def test_text_meal_records_inbound_analyzed(patched_db, entry_mock):
+    update, _ = _make_text_update("banana")
+    context = SimpleNamespace(user_data={})
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].kind == "text"
+    assert rows[0].content == "banana"
+    assert rows[0].telegram_id == 42
+    assert rows[0].status == "analyzed"
+    assert rows[0].ai_analysis == _NUTRITION
+
+
+def test_photo_meal_records_inbound_with_file_id(patched_db, image_mock):
+    update, _ = _make_photo_update()
+    context = _make_photo_context()
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].kind == "image"
+    assert rows[0].photo_file_id == "PHOTO_FILE_ID"
+    assert rows[0].status == "analyzed"
+
+
+def test_analysis_failure_marks_inbound_failed(patched_db, entry_mock):
+    entry_mock.side_effect = RuntimeError("boom")
+    update, _ = _make_text_update("something")
+    context = SimpleNamespace(user_data={})
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert "boom" in rows[0].error
+
+
+def test_photo_fetch_failure_still_records_inbound(patched_db, image_mock):
+    # A photo that never downloads used to vanish entirely; now it leaves a
+    # failed row that /reprocess can replay.
+    update, _ = _make_photo_update()
+    context = _make_photo_context()
+    context.bot.get_file = AsyncMock(side_effect=RuntimeError("fetch fail"))
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.ADDING_MEAL
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].status == "failed"
+    assert "photo fetch failed" in rows[0].error
+    assert rows[0].photo_file_id == "PHOTO_FILE_ID"
+
+
+def test_reprocess_reanalyzes_failed_text(patched_db, entry_mock):
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(
+            InboundMessage(
+                telegram_id=42,
+                kind="text",
+                content="oatmeal",
+                status="failed",
+                error="old model",
+            )
+        )
+        db.commit()
+
+    update, message = _make_text_update("/reprocess")
+    context = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+
+    asyncio.run(tg.reprocess(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].status == "analyzed"
+    assert rows[0].ai_analysis == _NUTRITION
+    assert "успешно 1" in message.replies[-1]
+
+
+def test_reply_failure_still_marks_inbound_analyzed(patched_db, image_mock):
+    # Analysis succeeds but the confirmation reply fails: the row must read
+    # 'analyzed' (not mislabeled 'failed'), else /reprocess re-pays for it.
+    update, message = _make_photo_update()
+    message.reply_text = AsyncMock(side_effect=[RuntimeError("send failed"), None])
+    context = _make_photo_context()
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.ADDING_MEAL
+    with sessionmaker(bind=patched_db)() as db:
+        rows = db.query(InboundMessage).all()
+    assert len(rows) == 1
+    assert rows[0].status == "analyzed"
+    assert rows[0].ai_analysis == _NUTRITION
+    # Draft still uncommitted — the reply failed, so it stays atomic.
+    assert "nutrition" not in context.user_data["current_meal"]
+
+
+def test_reprocess_records_ai_call_log(patched_db, entry_mock):
+    # The replay path goes through analyze_and_log, so a re-analysis is visible in
+    # ai_call_logs just like the live flow (not a silent, untraced OpenAI call).
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(
+            InboundMessage(
+                telegram_id=42, kind="text", content="oatmeal", status="failed"
+            )
+        )
+        db.commit()
+
+    update, _ = _make_text_update("/reprocess")
+    context = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+
+    asyncio.run(tg.reprocess(update, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        logs = db.query(AiCallLog).all()
+    assert len(logs) == 1
+    assert logs[0].kind == "text"
+    assert logs[0].status == "ok"
+    assert logs[0].telegram_id == 42
+
+
+def test_reprocess_empty_queue(patched_db):
+    update, message = _make_text_update("/reprocess")
+    context = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+
+    asyncio.run(tg.reprocess(update, context))
+
+    assert "Нет сообщений" in message.replies[-1]
+
+
+def test_reprocess_stops_when_model_still_unavailable(patched_db, monkeypatch):
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(
+            InboundMessage(
+                telegram_id=42, kind="text", content="oatmeal", status="failed"
+            )
+        )
+        db.commit()
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_entry",
+        AsyncMock(side_effect=tg.ModelUnavailableError("gpt-old", Exception("x"))),
+    )
+
+    update, message = _make_text_update("/reprocess")
+    context = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+
+    asyncio.run(tg.reprocess(update, context))
+
+    assert "всё ещё недоступна" in message.replies[-1]
+    with sessionmaker(bind=patched_db)() as db:
+        # Left queued (still failed) — not silently dropped.
+        assert db.query(InboundMessage).first().status == "failed"
