@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 import logging
 import json
 from typing import Dict, Optional
+import httpx
 from sqlalchemy.orm import Session
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_subscription import crud_subscription
@@ -16,10 +17,13 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     ConversationHandler,
+    TypeHandler,
     filters,
 )
 
 from app.core.config import settings
+from app.services.access_control import access_gate, admin_required
+from app.services.consult_service import consult_service
 from app.services.openai_service import OpenAIService
 
 # Enable logging
@@ -27,6 +31,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Light anti-spam for /consult: min seconds between a user's hub calls.
+CONSULT_COOLDOWN_SECONDS = 3
+_last_consult: Dict[int, datetime] = {}
 
 # Conversation states
 (
@@ -81,7 +89,13 @@ class TelegramService:
 telegram_service = TelegramService()
 
 async def check_subscription(telegram_id: int) -> bool:
-    """Check if user has active subscription"""
+    """Check if user has active subscription.
+
+    Admins (the bot owner) always pass — this is a personal tool and the owner
+    should never be gated by the subscription check.
+    """
+    if telegram_id in settings.admin_ids:
+        return True
     db = SessionLocal()
     try:
         return crud_subscription.is_active_subscription(db, telegram_id)
@@ -285,7 +299,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 reply_markup=main_keyboard,
             )
         except Exception as e:
-            logger.error(f"Error saving meal: {e}")
+            logger.error(f"Error saving meal: {e}", exc_info=True)
             await update.message.reply_text(
                 "Извините, произошла ошибка при сохранении. Пожалуйста, попробуйте еще раз.",
                 reply_markup=main_keyboard,
@@ -342,17 +356,12 @@ async def handle_subscription_inquiry(update: Update, context: ContextTypes.DEFA
     await update.message.reply_text(response, reply_markup=subscription_keyboard)
     return SUBSCRIPTION_INQUIRY
 
+@admin_required
 async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Grant subscription to user (admin only)"""
     admin_id = update.effective_user.id
     logger.info(f"Grant subscription request from admin {admin_id}")
-    
-    # Check if user is admin
-    if admin_id not in settings.admin_ids:
-        logger.warning(f"Unauthorized grant attempt from user {admin_id}")
-        await update.message.reply_text("⛔️ У вас нет прав для выполнения этой команды")
-        return
-    
+
     try:
         # Expected format: /grant_sub user_id months
         _, user_id, months = update.message.text.split()
@@ -381,6 +390,56 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.error(f"Unexpected error while granting subscription: {str(e)}", exc_info=True)
         await update.message.reply_text(f"❌ Произошла ошибка: {str(e)}")
 
+@admin_required
+async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Relay a health question to the my-health hub copilot and show its answer.
+
+    Owner-only (via @admin_required): the hub is single-tenant and its answers carry
+    no requester identity. Thin relay: no medical logic, no medical storage, and —
+    importantly — no OpenAI call on this path (OpenAI stays for food parsing only).
+    The hub owns all medical reasoning and the mental-health guardrails.
+    """
+    question = " ".join(context.args) if context.args else ""
+    if not question:
+        await update.message.reply_text("Задай вопрос так: /consult <вопрос>")
+        return
+
+    if not settings.MYHEALTH_CONSULT_URL or not settings.CONSULT_TOKEN:
+        await update.message.reply_text("Консультации сейчас недоступны.")
+        return
+
+    # Light per-user cooldown so a rapid burst doesn't hammer the hub.
+    now = datetime.now(UTC)
+    user_id = update.effective_user.id
+    last = _last_consult.get(user_id)
+    if last and (now - last).total_seconds() < CONSULT_COOLDOWN_SECONDS:
+        await update.message.reply_text("Слишком часто — подожди пару секунд.")
+        return
+
+    try:
+        # ValueError covers a malformed/non-object body; InvalidURL covers a
+        # misconfigured MYHEALTH_CONSULT_URL (not an httpx.HTTPError subclass).
+        data = await consult_service.ask(question)
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
+        logger.error(f"Consult relay failed: {e}", exc_info=True)
+        await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
+        return
+
+    # Record the cooldown only after a successful call, so a failed attempt
+    # doesn't block an immediate retry.
+    _last_consult[user_id] = now
+
+    # Crisis path FIRST — deterministic, from the hub, before the model answer.
+    # Never hardcode psyche logic or a crisis number here; surface crisis_hint verbatim.
+    if data.get("crisis_hint"):
+        await update.message.reply_text(f"⚠️ {data['crisis_hint']}")
+    # str() guards against a non-string answer (e.g. a number) from the hub.
+    answer = str(data.get("answer") or "Пустой ответ.")
+    await update.message.reply_text(
+        answer + "\n\n(описательно, не медицинская консультация)"
+    )
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel and end the conversation."""
     await update.message.reply_text(
@@ -393,6 +452,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 def create_bot_application() -> Application:
     """Create and configure the bot application."""
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+
+    # Global access gate — runs before every other handler (group=-1) and drops
+    # updates from users not allowed by the current BOT_ACCESS_MODE.
+    application.add_handler(TypeHandler(Update, access_gate), group=-1)
 
     # Add conversation handler
     conv_handler = ConversationHandler(
@@ -430,5 +493,8 @@ def create_bot_application() -> Application:
     
     # Add subscription management commands
     application.add_handler(CommandHandler("grant_sub", grant_subscription))
+
+    # Consult relay → my-health hub
+    application.add_handler(CommandHandler("consult", consult))
 
     return application

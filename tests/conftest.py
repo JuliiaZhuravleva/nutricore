@@ -1,7 +1,28 @@
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from app.db.base import Base
+import os
+
+# The app's pydantic Settings loads at import time (app.db.base → app.core.config)
+# and requires these vars. Seed them before any app import so the suite runs
+# without a real .env. setdefault → never override real/CI-provided values.
+_TEST_ENV_DEFAULTS = {
+    "POSTGRES_SERVER": "localhost",
+    "POSTGRES_USER": "test",
+    "POSTGRES_PASSWORD": "test",
+    "POSTGRES_DB": "test",
+    "POSTGRES_PORT": "5432",
+    "REDIS_HOST": "localhost",
+    "REDIS_PORT": "6379",
+    "SECRET_KEY": "test-secret-key",
+    "TELEGRAM_BOT_TOKEN": "test-bot-token",
+    "OPENAI_API_KEY": "test-openai-key",
+}
+for _k, _v in _TEST_ENV_DEFAULTS.items():
+    os.environ.setdefault(_k, _v)
+
+import pytest  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from app.db.base import Base  # noqa: E402
 
 # Создаем тестовый движок в памяти (SQLite in-memory)
 # Если вы хотите использовать реальную БД, укажите PostgreSQL URL

@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from app.core.deps import require_api_token
 from app.services.openai_service import OpenAIService
 
-router = APIRouter()
+# Router-level auth so this stays protected even if mounted without the
+# include_router(dependencies=...) the other routers get in main.py.
+router = APIRouter(dependencies=[Depends(require_api_token)])
 
 @router.post("/analyze-food")
 async def analyze_food(

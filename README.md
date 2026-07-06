@@ -68,12 +68,15 @@ nutricore/
 
 ### Configuration
 
-Edit the `.env` file with your specific settings:
+Edit the `.env` file with your specific settings (see `.env.example`):
 
 - Database credentials
 - Telegram Bot token
 - OpenAI API key
 - Admin settings
+- Access control — `BOT_ACCESS_MODE` (open/whitelist/closed) + `ALLOWED_TELEGRAM_IDS`
+- REST API auth — `API_TOKEN` (the API is disabled until this is set)
+- `my-health` consult relay — `MYHEALTH_CONSULT_URL` + `CONSULT_TOKEN`
 - Environment-specific configurations
 
 ## Development

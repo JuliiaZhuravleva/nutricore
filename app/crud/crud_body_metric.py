@@ -15,6 +15,14 @@ class CRUDBodyMetric:
         stmt = select(BodyMetric).offset(skip).limit(limit)
         return list(db.execute(stmt).scalars().all())
 
+    def get_user_metrics(self, db: Session, user_id: int) -> List[BodyMetric]:
+        stmt = (
+            select(BodyMetric)
+            .where(BodyMetric.user_id == user_id)
+            .order_by(BodyMetric.timestamp.desc())
+        )
+        return list(db.execute(stmt).scalars().all())
+
     def create(self, db: Session, obj_in: BodyMetricCreate, user_id: int) -> BodyMetric:
         db_obj = BodyMetric(
             user_id=user_id,
