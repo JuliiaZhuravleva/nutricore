@@ -171,6 +171,32 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     return ADDING_MEAL
 
+def _parse_nutrition(raw):
+    """OpenAI analysis result → dict with a guaranteed list `foods`.
+
+    Both analysis methods return the raw JSON string; the model may also give
+    `foods` as a bare string. This normalizes both so callers get a dict.
+    """
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    foods = data.get('foods', [])
+    data['foods'] = [foods] if isinstance(foods, str) else (foods or [])
+    return data
+
+
+def _nutrition_reply(data, header):
+    """Format the confirmation message shared by the photo and text branches."""
+    return (
+        f"{header}\n"
+        f"Продукты: {', '.join(data['foods'])}\n"
+        f"Калории: {data['calories']} ккал\n"
+        f"Белки: {data['protein']}г\n"
+        f"Жиры: {data['fats']}г\n"
+        f"Углеводы: {data['carbs']}г\n"
+        f"Порция: {data['portion']}\n\n"
+        f"Всё верно? (Да/Нет)"
+    )
+
+
 @subscription_required
 async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process the meal description or photo."""
@@ -200,32 +226,20 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             nutrition_info = await telegram_service.openai_service.analyze_food_image(
                 image_data_url
             )
-
-            # The service returns the raw JSON string (like analyze_food_entry) — parse it.
-            if isinstance(nutrition_info, str):
-                nutrition_info = json.loads(nutrition_info)
-
-            foods = nutrition_info.get('foods', [])
-            if isinstance(foods, str):
-                foods = [foods]
+            nutrition_info = _parse_nutrition(nutrition_info)
 
             context.user_data['current_meal']['nutrition'] = nutrition_info
             context.user_data['current_meal']['description'] = (
-                ', '.join(foods) or "Фото приёма пищи"
+                ', '.join(nutrition_info['foods']) or "Фото приёма пищи"
             )
             # Persist the Telegram file_id so the saved meal keeps a reference to
             # its photo (re-fetchable; cheaper than storing the bytes in the DB).
             context.user_data['current_meal']['photos'] = [photo.file_id]
 
             await update.message.reply_text(
-                f"Я проанализировал фото. Вот что я нашел:\n"
-                f"Продукты: {', '.join(foods)}\n"
-                f"Калории: {nutrition_info['calories']} ккал\n"
-                f"Белки: {nutrition_info['protein']}г\n"
-                f"Жиры: {nutrition_info['fats']}г\n"
-                f"Углеводы: {nutrition_info['carbs']}г\n"
-                f"Примерная порция: {nutrition_info['portion']}\n\n"
-                f"Всё верно? (Да/Нет)"
+                _nutrition_reply(
+                    nutrition_info, "Я проанализировал фото. Вот что я нашел:"
+                )
             )
         except Exception as e:
             logger.error(f"Error analyzing food image: {e}")
@@ -240,40 +254,16 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.info(f"Processing meal text: {meal_text}")
             # Analyze the food text using OpenAI
             nutrition_info = await telegram_service.openai_service.analyze_food_entry(meal_text)
-            logger.info(f"Got nutrition info from OpenAI: {nutrition_info}")
-            logger.info(f"Type of nutrition_info: {type(nutrition_info)}")
-            
-            # Если nutrition_info пришло как строка, пробуем распарсить JSON
-            if isinstance(nutrition_info, str):
-                logger.info("nutrition_info is a string, parsing as JSON")
-                nutrition_info = json.loads(nutrition_info)
-            
+            nutrition_info = _parse_nutrition(nutrition_info)
+
             context.user_data['current_meal']['nutrition'] = nutrition_info
             context.user_data['current_meal']['description'] = meal_text
-            
-            try:
-                foods_list = nutrition_info.get('foods', [])
-                if isinstance(foods_list, str):
-                    foods_list = [foods_list]
-                
-                await update.message.reply_text(
-                    f"Я проанализировал ваш приём пищи. Вот что получилось:\n"
-                    f"Продукты: {', '.join(foods_list)}\n"
-                    f"Калории: {nutrition_info['calories']} ккал\n"
-                    f"Белки: {nutrition_info['protein']}г\n"
-                    f"Жиры: {nutrition_info['fats']}г\n"
-                    f"Углеводы: {nutrition_info['carbs']}г\n"
-                    f"Порция: {nutrition_info['portion']}\n\n"
-                    f"Всё верно? (Да/Нет)"
+
+            await update.message.reply_text(
+                _nutrition_reply(
+                    nutrition_info, "Я проанализировал ваш приём пищи. Вот что получилось:"
                 )
-            except Exception as format_error:
-                logger.error(f"Error formatting response: {str(format_error)}", exc_info=True)
-                logger.error(f"Nutrition info that caused error: {nutrition_info}")
-                logger.error(f"Type of nutrition_info: {type(nutrition_info)}")
-                if isinstance(nutrition_info, dict):
-                    logger.error(f"Foods field: {nutrition_info.get('foods')}")
-                    logger.error(f"Type of foods field: {type(nutrition_info.get('foods'))}")
-                raise
+            )
         except Exception as e:
             logger.error(f"Error analyzing food text: {str(e)}", exc_info=True)
             await update.message.reply_text(
