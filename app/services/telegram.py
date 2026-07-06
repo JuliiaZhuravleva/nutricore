@@ -188,11 +188,20 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         try:
             # Analyze the food image using OpenAI
             nutrition_info = await telegram_service.openai_service.analyze_food_image(file_url)
+
+            # The service returns the raw JSON string (like analyze_food_entry) — parse it.
+            if isinstance(nutrition_info, str):
+                nutrition_info = json.loads(nutrition_info)
+
+            foods = nutrition_info.get('foods', [])
+            if isinstance(foods, str):
+                foods = [foods]
+
             context.user_data['current_meal']['nutrition'] = nutrition_info
-            
+
             await update.message.reply_text(
                 f"Я проанализировал фото. Вот что я нашел:\n"
-                f"Продукты: {', '.join(nutrition_info['foods'])}\n"
+                f"Продукты: {', '.join(foods)}\n"
                 f"Калории: {nutrition_info['calories']} ккал\n"
                 f"Белки: {nutrition_info['protein']}г\n"
                 f"Жиры: {nutrition_info['fats']}г\n"

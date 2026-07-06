@@ -46,11 +46,11 @@ class OpenAIService:
             "protein": float,          # in grams
             "fats": float,             # in grams
             "carbs": float,            # in grams
-            "portion_estimate": string  # estimated portion size
+            "portion": string           # estimated portion size
         }"""
         
         response = await self.client.chat.completions.create(
-            model="gpt-4-vision-preview",
+            model=self.model,
             messages=[
                 {
                     "role": "system",
@@ -60,7 +60,7 @@ class OpenAIService:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "What food items do you see in this image? Provide nutritional information."},
-                        {"type": "image_url", "image_url": image_url}
+                        {"type": "image_url", "image_url": {"url": image_url}}
                     ]
                 }
             ],
