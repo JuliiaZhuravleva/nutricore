@@ -17,7 +17,7 @@ execution:
   task_list_id: photo-product-lookup
 items:
 - id: A1
-  title: 'DB infra: product_cache table + meals.source column (model/schema/CRUD/migration)'
+  title: 'DB infra: product_cache table + meals resolution-source columns capturing the CHOSEN pipeline path + key signals (not just a flat source enum) so history/transparency + misprediction analysis are possible (model/schema/CRUD/migration)'
   specialist: backend-dev
   priority: P1
   status: pending
@@ -29,8 +29,8 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1 (human_feedback idx 0, product principle): the meals source recording must capture WHICH resolution path produced the numbers plus key signals (barcode/EAN read, matched product id, per-100g vs scaled grams, confidence tier), so a wrong turn is visible and mispredictions are analyzable later — coordinate the exact columns/shape with the A11 pipeline ADR.'
   result: null
 - id: A2
   title: Open Food Facts HTTP client service (barcode lookup, normalize KBJU, User-Agent, cache read/write, graceful not-found)
@@ -66,11 +66,12 @@ items:
     note: null
   result: null
 - id: A4
-  title: 'Pipeline integration: barcode->OFF path in process_meal_input/_run_meal_analysis, record source on meal, thread through /reprocess; extract into product_lookup_service.py (TD-008 spirit)'
+  title: 'Pipeline integration: implement barcode->OFF as the FIRST strategy in the pluggable resolution pipeline defined by A11''s ADR (not hard-wired into process_meal_input); record chosen path + signals on the meal and extend ai_call_logs for misprediction analysis; thread through process_meal_input/_run_meal_analysis + /reprocess (both live on main after TD-009 merge) and regression-test both; extract into product_lookup_service.py'
   specialist: backend-dev
   priority: P1
   status: pending
   depends_on:
+  - A11
   - A1
   - A2
   - A3
@@ -81,11 +82,11 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1. idx3: now depends on A11 (architect pipeline ADR) and implements barcode->OFF as the first pluggable strategy, so A8/A9/A10 drop in later. idx4: TD-009 (inbound persistence + /reprocess) is MERGED to main as of 2026-07-07 — the stale ''fix/td-004-food-image un-merged'' framing is dropped; _run_meal_analysis and /reprocess are on main and A4 must regression-test both the live flow and /reprocess. Not gated behind Stage 1. idx0: record chosen path + signals + extend ai_call_logs for transparency/misprediction logging.'
   result: null
 - id: A5
-  title: Telegram trigger UX + source/confidence badge in reply (_nutrition_reply badge; trigger per CQ1 decision)
+  title: 'Telegram trigger UX + transparent reply: AUTO-trigger the lookup path when vision detects a barcode (no inline button / no /scan by default), and fall back to BUTTON-based disambiguation only when the pipeline is unsure which method fits (CQ1). Reply surfaces the resolution path + key intermediate values (EAN read, matched product, per-100g vs scaled grams, confidence tier) and lets the user correct any of them at the existing confirm step'
   specialist: frontend-dev
   priority: P1
   status: pending
@@ -98,11 +99,11 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1. CQ1 answered (idx1): auto-trigger when confident (barcode detected), button-based chooser only for ambiguous photos — resolves the trigger question all 4 specialists raised. idx0 product principle: reply must expose the resolution path + intermediate signals and stay correctable at the existing confirm step (seamless-but-transparent). CQ1 is no longer open.'
   result: null
 - id: A6
-  title: 'Portion scaling when OFF returns per-100g (approach per CQ2 decision: reuse vision portion / new SCALING_PORTION state / accept at confirm)'
+  title: 'Portion scaling: when OFF returns per-100g, AUTO-scale to the eaten portion by reusing the vision-estimated grams (CQ2) and explicitly SHOW the gram basis used in the reply; user can correct the grams at the existing confirm step. No new mandatory ''how many grams?'' prompt / no SCALING_PORTION state — seamless by default, transparent + correctable'
   specialist: frontend-dev
   priority: P2
   status: pending
@@ -115,11 +116,11 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1. CQ2 answered (idx2): option (a) — auto-scale from vision grams, show the gram basis, correct at confirm; the SCALING_PORTION new-state option is dropped. Aligns with idx0 product principle (seamless best-guess, transparent + correctable). CQ2 no longer open.'
   result: null
 - id: A7
-  title: 'Test suite: barcode->OFF lookup (mocked, EAN fixtures), cache hit/miss, graceful fallback, source recording, opt-in gating keeps existing vision tests green'
+  title: 'Test suite: barcode->OFF lookup (mocked, EAN fixtures), cache hit/miss, graceful fallback, chosen-path + signals recording (transparency/misprediction logging), auto-trigger detection + button-disambiguation fallback, gram-basis display/scaling, and opt-in gating keeping existing vision tests green'
   specialist: qa
   priority: P1
   status: pending
@@ -132,15 +133,16 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1: scope extended to cover the transparency/misprediction-logging (idx0), auto-trigger + disambiguation (idx1), and gram-basis scaling (idx2) behaviors added this revision.'
   result: null
 - id: A8
-  title: 'DEFERRED: packaging-name -> OFF name-search path (approach 2, DB side; fuzzy match, no OpenAI change)'
+  title: 'DEFERRED (round 2): packaging-name -> OFF name-search path (approach 2, DB side; fuzzy match, no OpenAI change) — implemented as a DROP-IN strategy in the A11 pipeline framework'
   specialist: backend-dev
   priority: P2
   status: pending
   depends_on:
+  - A11
   - A2
   estimated_effort: 1.5h
   confidence: null
@@ -149,15 +151,16 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1 (idx3): now depends on A11 and plugs into the pluggable pipeline as an additional strategy rather than a separate branch. Still deferred out of round 1.'
   result: null
 - id: A9
-  title: 'DEFERRED/BLOCKED: Responses API migration + web_search product ID (approach 2 web side; needs ADR + web_search trust policy)'
+  title: 'DEFERRED/BLOCKED (round 2): Responses API migration + web_search product ID (approach 2 web side) — drop-in strategy in the A11 pipeline. Trust policy is now DECIDED (CQ5): best-guess + transparent + correctable; web_search may identify AND surface best-guess numbers with honest source/confidence, but a structured Open Food Facts number is preferred where it exists, and misses are logged to tune the policy. Still blocked ONLY on the API-migration ADR before dispatch'
   specialist: backend-dev
   priority: P2
   status: blocked
   depends_on:
+  - A11
   - A2
   estimated_effort: 8h
   confidence: null
@@ -165,16 +168,17 @@ items:
   specialist_session_id: null
   retry_count: 0
   last_update:
-    ts: '2026-07-07T10:29:32Z'
+    ts: '2026-07-07T10:56:28Z'
     executor: pm-orchestrator
-    note: 'Deferred out of first round per spec + unanimous specialist rec. Blocked pending: (1) an ADR for the chat.completions->Responses API migration (cost/latency structural change to OpenAIService), and (2) Julia''s web_search trust-policy decision (CQ open question: do we ever surface a web_search-sourced number, or only use it to identify the product then require OFF for the numbers?).'
+    note: 'Revision 1. CQ5 web_search trust policy RESOLVED (idx5): best-guess + transparent + correctable — web_search may be used to identify a product AND to surface its best-guess numbers, provided the source/confidence is shown honestly (a web-search number is clearly lower-confidence than a barcode-DB number) and a structured OFF number is preferred where available; pipeline misses are collected as tuning data. Remaining blocker is narrowed to just (1) the chat.completions->Responses API migration ADR (cost/latency structural change). The prior trust-policy blocker is cleared.'
   result: null
 - id: A10
-  title: 'DEFERRED: direct label OCR path (approach 3; vision reads nutrition table, no external call, source=label)'
+  title: 'DEFERRED (round 2): direct label OCR path (approach 3; vision reads the nutrition table, no external call, source=label) — implemented as a DROP-IN strategy in the A11 pipeline framework'
   specialist: backend-dev
   priority: P2
   status: pending
   depends_on:
+  - A11
   - A1
   estimated_effort: 1h
   confidence: null
@@ -183,8 +187,24 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: null
-    note: null
+    executor: pm-orchestrator
+    note: 'Revision 1 (idx3): now depends on A11 and plugs into the pluggable pipeline as an additional strategy. Still deferred out of round 1.'
+  result: null
+- id: A11
+  title: 'Architect: design a pluggable meal-nutrition resolution pipeline (ordered strategies barcode->OFF, name-search, label-OCR, vision-fallback) as an ADR/design doc under docs/; barcode->OFF ships as the FIRST strategy so A8/A9/A10 are drop-in later; bakes in the seamless-but-transparent north-star (surface resolution path + key intermediate values, correctable at the existing confirm step, log mispredictions via ai_call_logs/meal source). A4 implements against this design.'
+  specialist: architect
+  priority: P1
+  status: pending
+  depends_on: []
+  estimated_effort: 3h
+  confidence: null
+  consult_session_id: null
+  specialist_session_id: null
+  retry_count: 0
+  last_update:
+    ts: null
+    executor: pm-orchestrator
+    note: 'Added in revision 1 per Julia''s CQ3 answer (human_feedback idx 3): round 1 stays barcode->OFF only, but the architecture must be a pluggable resolution pipeline from the start rather than hard-wiring the barcode branch into process_meal_input. Architect proposes the design (ADR/design doc under docs/); exact shape open. Embeds the plan-wide product principle (idx 0).'
   result: null
 budget:
   max_usd_per_item: 2.0
@@ -195,13 +215,98 @@ review_gate:
   approve_action: /execute-plan /Users/julia/my-projects/nutricore.photo-product-lookup-wt/docs/plans/photo-product-lookup.execution.md --resume
   reject_action: /plan-fixes docs/photo-product-lookup.md --revise /Users/julia/my-projects/nutricore.photo-product-lookup-wt/docs/plans/photo-product-lookup.execution.md
 safe_to_replay_from: null
-clarifying_questions:
-- 'CQ1 (trigger UX; raised by all 4 specialists; blocks A5). How should the product-lookup path be triggered: (a) inline button on the photo-confirmation message, (b) explicit /scan command, or (c) auto-detect when vision reports a barcode? PM + architect recommend (a) inline button — least disruptive to the existing ConversationHandler and keeps the vision estimate visible with an opt-in lookup. Confirm or override.'
-- CQ2 (portion scaling; raised by backend/frontend/qa; blocks A6). Open Food Facts returns per-100g nutrition. When the lookup path is used, do we (a) silently reuse the vision-estimated portion grams and scale, (b) add a new SCALING_PORTION conversation step asking how many grams were eaten, or (c) show per-100g and let the user edit at the existing confirmation step? PM leans (a) for lowest friction on a personal tool.
-- 'CQ3 (MVP scope / defer confirmation). Proposed round 1 = Approach 1 only (barcode -> Open Food Facts): items A1-A7. Deferred to a later round: A8 (packaging-name -> OFF name search), A9 (Responses API migration + web_search, blocked pending ADR), A10 (direct label OCR). Confirm this MVP boundary, or pull any deferred item into round 1.'
-- 'CQ4 (sequencing / prerequisite). A4 edits _run_meal_analysis, which currently lives on the un-merged branch fix/td-004-food-image (TD-009: inbound persistence + /reprocess). Backend-dev flags A4 must regression-test both the live flow and /reprocess. Should TD-009 be merged before this plan executes? Also: architect notes this is a Stage 2/4 accuracy upgrade — confirm it is NOT gated behind Stage 1 (foundations) shipping first.'
-- 'CQ5 (web_search trust policy; tied to blocked A9). If/when A9 is unblocked: do we ever surface a web_search-sourced number to the user, or only use web_search to identify the product and then require a structured Open Food Facts source for the actual numbers? This policy must be settled in the A9 ADR before that item can dispatch.'
+clarifying_questions: []
+human_feedback:
+- ts: '2026-07-07T10:48:06Z'
+  by: julia
+  text: 'PRODUCT PRINCIPLE (north star; applies across A4/A5/A6 and the pipeline design). Give the user the best-guess result seamlessly — never nag with extra questions when the system can decide — but keep every step transparent and correctable. The user must always be able to see WHICH path produced the numbers and the key intermediate data (which barcode/EAN was read, which product matched, per-100g vs scaled grams, which confidence tier), so a wrong turn is visible instead of silently baked in. Concretely: surface the resolution path + key intermediate values in/near the reply, and let the user correct any of them at the existing confirm step. Additionally: log where the pipeline mispredicts (wrong product, wrong grams, wrong path) as data to improve the system later — extend ai_call_logs and/or the recorded meal source to capture the chosen path + signals. Goal = simplicity + flexibility + convenience + maximum accuracy, with transparency and the ability to intervene.'
+  applies_to: null
+  status: addressed
+  addressed_at: '2026-07-07T10:56:33Z'
+  addressed_by: pm-orchestrator
+- ts: '2026-07-07T10:48:12Z'
+  by: julia
+  text: 'CQ1 ANSWER (trigger UX). Default: AUTO-trigger the product-lookup path when vision detects a barcode — not an inline button, not /scan. BUT when the pipeline is unsure which method is best for a given photo, surface the candidate options as BUTTONS for the user to choose. So: automatic when confident, button-based disambiguation when ambiguous. Design A5''s trigger around this (auto-detect + fallback chooser), consistent with the plan-wide seamless-but-transparent principle.'
+  applies_to: A5
+  status: addressed
+  addressed_at: '2026-07-07T10:56:36Z'
+  addressed_by: pm-orchestrator
+- ts: '2026-07-07T10:48:17Z'
+  by: julia
+  text: CQ2 ANSWER (portion scaling). Auto-scale the OFF per-100g numbers to the eaten portion by reusing the vision-estimated grams, AND explicitly show the gram basis used in the reply; the user can correct the grams at the existing confirm step if it looks off. Seamless by default, transparent + correctable — no new mandatory 'how many grams?' prompt. See the plan-wide product principle.
+  applies_to: A6
+  status: addressed
+  addressed_at: '2026-07-07T10:56:40Z'
+  addressed_by: pm-orchestrator
+- ts: '2026-07-07T10:48:24Z'
+  by: julia
+  text: 'CQ3 ANSWER (MVP scope + architecture). Yes — round 1 = the barcode->Open Food Facts path only (A1-A7); defer A8/A9/A10. BUT lay down a FLEXIBLE PIPELINE architecture from the start: a pluggable resolution pipeline (ordered stages/strategies — barcode->OFF, name-search, label-OCR, vision-fallback) that we can extend and reorder per case, rather than hard-wiring only the barcode branch into process_meal_input. Build the barcode path as the FIRST strategy in that framework so A8/A10 become drop-in later. Exact shape is open to discussion — please have the architect propose the pipeline design (an ADR/design doc under docs/) that A4 then implements against.'
+  applies_to: null
+  status: addressed
+  addressed_at: '2026-07-07T10:56:43Z'
+  addressed_by: pm-orchestrator
+- ts: '2026-07-07T10:48:30Z'
+  by: julia
+  text: 'CQ4 ANSWER (sequencing). Resolved: TD-009 (inbound persistence + /reprocess) is ALREADY MERGED into main as of 2026-07-07 — _run_meal_analysis and /reprocess live on main now, so there is NO un-merged prerequisite branch (the draft''s ''fix/td-004-food-image un-merged'' note is stale). A4 must still regression-test both the live meal flow and /reprocess. Confirmed: this accuracy upgrade is NOT gated behind Stage 1 (foundations); it proceeds independently.'
+  applies_to: null
+  status: addressed
+  addressed_at: '2026-07-07T10:56:47Z'
+  addressed_by: pm-orchestrator
+- ts: '2026-07-07T10:48:37Z'
+  by: julia
+  text: 'CQ5 ANSWER (web_search trust policy). Same philosophy as CQ2: always give the user a best-guess result and don''t nag with re-questions — but show the resolution path and intermediate data so the user can notice a miss. So: web_search MAY be used to identify the product AND we may surface its best-guess numbers, but the source/confidence must be shown honestly (a web-search number is clearly lower-confidence than a barcode-DB number), and where a structured Open Food Facts number exists it is preferred. Also collect the cases where the pipeline missed (wrong product/number) as data to tune the policy later. A9 still needs its ADR before dispatch, but the trust stance is: best-guess + transparent + correctable, NOT ''refuse to show unless a structured source exists''.'
+  applies_to: A9
+  status: addressed
+  addressed_at: '2026-07-07T10:56:51Z'
+  addressed_by: pm-orchestrator
+revision_number: 2
+last_revised_at: '2026-07-07T10:56:59Z'
+last_revised_by: pm-orchestrator
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
