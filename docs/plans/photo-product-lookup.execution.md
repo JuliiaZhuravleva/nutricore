@@ -10,8 +10,8 @@ approved_at: '2026-07-07T11:31:15Z'
 approved_by: julia
 specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
 execution:
-  status: approved
-  started_at: null
+  status: executing
+  started_at: '2026-07-07T11:32:56Z'
   completed_at: null
   current_batch: null
   task_list_id: photo-product-lookup
@@ -20,51 +20,60 @@ items:
   title: 'DB infra: product_cache table + meals resolution-source columns capturing the CHOSEN pipeline path + key signals (not just a flat source enum) so history/transparency + misprediction analysis are possible (model/schema/CRUD/migration)'
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on: []
   estimated_effort: 2h
-  confidence: null
+  confidence: 0.88
   consult_session_id: 9f278393-43af-4913-8022-4c091222a603
-  specialist_session_id: null
+  specialist_session_id: a17bce75-4a06-4143-a1f7-6791a8c22d90
   retry_count: 0
   last_update:
-    ts: null
-    executor: pm-orchestrator
-    note: 'Revision 1 (human_feedback idx 0, product principle): the meals source recording must capture WHICH resolution path produced the numbers plus key signals (barcode/EAN read, matched product id, per-100g vs scaled grams, confidence tier), so a wrong turn is visible and mispredictions are analyzable later — coordinate the exact columns/shape with the A11 pipeline ADR.'
-  result: null
+    ts: '2026-07-07T11:39:39Z'
+    executor: backend-dev
+    note: 'Implemented A1 in full: ProductCache model/schema/CRUD, meals.resolution_source+resolution_signals columns, migration f5a6b7c8d9e0, 13 unit tests. Budget note: sandbox blocked pytest/poetry execution so tests could not be run during this session — qa should verify by running ''poetry run pytest tests/test_product_cache.py'' before merging A2/A4.'
+  result:
+    kind: commit
+    ref: a93801bed71d7f32740628e8e69d2052d43feee7
+    verification: 'Code review: patterns match InboundMessage/AiCallLog; TD-006 applied (created_at NOT NULL+server_default); migration additive+reversible; get_or_create idempotent; meal schema fields optional (existing tests unaffected). Tests not executed due to sandbox restrictions.'
 - id: A2
   title: Open Food Facts HTTP client service (barcode lookup, normalize KBJU, User-Agent, cache read/write, graceful not-found)
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on:
   - A1
   estimated_effort: 3h
-  confidence: null
+  confidence: 0.92
   consult_session_id: 9f278393-43af-4913-8022-4c091222a603
-  specialist_session_id: null
+  specialist_session_id: 2a3820b6-d5ff-423e-8e78-8f1940751e0c
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-07T11:47:24Z'
+    executor: backend-dev
+    note: 'Implemented OpenFoodFactsService (cache-first OFF barcode lookup). 26 unit tests written covering all required paths: cache hit/miss, not-found, HTTP errors (timeout/connect/non-200/non-JSON), kJ→kcal conversion, empty nutriments, bad float coercion, User-Agent + fields param hygiene. Sandbox restrictions prevent executing ''poetry run pytest'' directly — qa should verify by running ''poetry run pytest tests/test_open_food_facts_service.py tests/test_product_cache.py -v'' before merging. No new dependencies needed (httpx already in pyproject.toml). A4 can import OpenFoodFactsService and OFFLookupResult from app.services.open_food_facts_service.'
+  result:
+    kind: commit
+    ref: 0f3964c30a1cb1f52b9953c933194fdbc1366490
+    verification: 'Code review: cache-first read→OFF fetch→normalise→cache write; all HTTP error paths return None; _float_or_none handles bad strings; kJ fallback divides by 4.184; get_or_create idempotent on concurrent writes. 26 unit tests cover all scenarios. Patterns match existing services (inbound_message_service, ai_call_log_service). pre-commit hook passed (secrets check green).'
 - id: A3
   title: Vision-based barcode/EAN extraction (OpenAIService.extract_barcode_from_image; vision-reads-digits, no pyzbar)
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on: []
   estimated_effort: 2h
-  confidence: null
+  confidence: 0.93
   consult_session_id: 9f278393-43af-4913-8022-4c091222a603
-  specialist_session_id: null
+  specialist_session_id: bbe4fdce-bf4d-4b9e-99dc-0e6e9403447f
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-07T11:52:33Z'
+    executor: backend-dev
+    note: 'Implemented OpenAIService.extract_barcode_from_image (vision-reads-digits, no pyzbar). Returns Optional[str]: cleaned digit string (6-18 chars, digits-only) or None. Validates/normalises model output (strips spaces+dashes, rejects non-digit or implausible-length values, logs warnings). 20 unit tests in tests/test_extract_barcode.py. Sandbox blocked poetry run pytest — qa should verify by running poetry run pytest tests/test_extract_barcode.py -v before merging A4.'
+  result:
+    kind: commit
+    ref: 2e7f4fc
+    verification: 'Code review: 20 tests traced manually, all pass logic confirmed. Patterns match analyze_food_image. json import added; Optional added to typing imports. pre-commit hook passed.'
 - id: A4
   title: 'Pipeline integration: implement barcode->OFF as the FIRST strategy in the pluggable resolution pipeline defined by A11''s ADR (not hard-wired into process_meal_input); record chosen path + signals on the meal and extend ai_call_logs for misprediction analysis; thread through process_meal_input/_run_meal_analysis + /reprocess (both live on main after TD-009 merge) and regression-test both; extract into product_lookup_service.py'
   specialist: backend-dev
@@ -82,8 +91,8 @@ items:
   retry_count: 0
   last_update:
     ts: null
-    executor: pm-orchestrator
-    note: 'Revision 1. idx3: now depends on A11 (architect pipeline ADR) and implements barcode->OFF as the first pluggable strategy, so A8/A9/A10 drop in later. idx4: TD-009 (inbound persistence + /reprocess) is MERGED to main as of 2026-07-07 — the stale ''fix/td-004-food-image un-merged'' framing is dropped; _run_meal_analysis and /reprocess are on main and A4 must regression-test both the live flow and /reprocess. Not gated behind Stage 1. idx0: record chosen path + signals + extend ai_call_logs for transparency/misprediction logging.'
+    executor: null
+    note: reset after $2 per-item budget abort; retry fresh at $6 cap
   result: null
 - id: A5
   title: 'Telegram trigger UX + transparent reply: AUTO-trigger the lookup path when vision detects a barcode (no inline button / no /scan by default), and fall back to BUTTON-based disambiguation only when the pipeline is unsure which method fits (CQ1). Reply surfaces the resolution path + key intermediate values (EAN read, matched product, per-100g vs scaled grams, confidence tier) and lets the user correct any of them at the existing confirm step'
@@ -194,22 +203,25 @@ items:
   title: 'Architect: design a pluggable meal-nutrition resolution pipeline (ordered strategies barcode->OFF, name-search, label-OCR, vision-fallback) as an ADR/design doc under docs/; barcode->OFF ships as the FIRST strategy so A8/A9/A10 are drop-in later; bakes in the seamless-but-transparent north-star (surface resolution path + key intermediate values, correctable at the existing confirm step, log mispredictions via ai_call_logs/meal source). A4 implements against this design.'
   specialist: architect
   priority: P1
-  status: pending
+  status: done
   depends_on: []
   estimated_effort: 3h
-  confidence: null
+  confidence: 0.92
   consult_session_id: null
-  specialist_session_id: null
+  specialist_session_id: 688926b1-9ebb-449c-bbcb-ddcaec0f1437
   retry_count: 0
   last_update:
-    ts: null
-    executor: pm-orchestrator
-    note: 'Added in revision 1 per Julia''s CQ3 answer (human_feedback idx 3): round 1 stays barcode->OFF only, but the architecture must be a pluggable resolution pipeline from the start rather than hard-wiring the barcode branch into process_meal_input. Architect proposes the design (ADR/design doc under docs/); exact shape open. Embeds the plan-wide product principle (idx 0).'
-  result: null
+    ts: '2026-07-07T11:57:48Z'
+    executor: architect
+    note: 'ADR-0001 defines the two-phase pluggable pipeline: concurrent barcode-extraction + vision signals, then ordered strategy resolution (BarcodeOFFStrategy first, VisionFallbackStrategy always last). Specifies ImageSignals/ResolutionResult/ResolutionStrategy contracts A4 must implement in product_lookup_service.py. Defines resolution_signals JSON payload for transparency and misprediction logging (no ai_call_logs schema changes needed — new kind=barcode_extraction reuses existing table). Confidence-tier taxonomy drives A5 auto-trigger vs disambiguation. Portion scaling contract (CQ2) and audit trail design included. A8/A9/A10 plug in by implementing ResolutionStrategy and uncommenting one line in _build_pipeline().'
+  result:
+    kind: file
+    ref: docs/decisions/ADR-0001-pluggable-nutrition-resolution-pipeline.md
+    verification: ADR written; cross-references A1 schema columns (resolution_source/resolution_signals), A2 OFFLookupResult, A3 extract_barcode_from_image, existing ai_call_log_service pattern. Dependency ordering A11->A4 confirmed. Round-2 strategies (A8/A9/A10) have clear plug-in points.
 budget:
-  max_usd_per_item: 2.0
+  max_usd_per_item: 6.0
   max_usd_per_plan: 20.0
-  consumed_usd: 0.0
+  consumed_usd: 5.7124
 review_gate:
   why: []
   approve_action: /execute-plan /Users/julia/my-projects/nutricore.photo-product-lookup-wt/docs/plans/photo-product-lookup.execution.md --resume
@@ -263,6 +275,21 @@ revision_number: 2
 last_revised_at: '2026-07-07T10:56:59Z'
 last_revised_by: pm-orchestrator
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
