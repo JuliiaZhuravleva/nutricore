@@ -1,5 +1,4 @@
 import base64
-import json
 import logging
 from datetime import UTC, datetime
 from typing import Dict
@@ -23,6 +22,8 @@ from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
 from app.services.openai_service import (OPENAI_MODEL_SETTING_KEY,
                                          ModelUnavailableError, OpenAIService)
+from app.services.product_lookup_service import (parse_nutrition,
+                                                 resolve_meal_nutrition)
 
 # Enable logging
 logging.basicConfig(
@@ -194,30 +195,10 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ADDING_MEAL
 
 
-_REQUIRED_NUTRITION_KEYS = ("calories", "protein", "fats", "carbs", "portion")
-
-
-def _parse_nutrition(raw):
-    """OpenAI analysis result → validated dict with a guaranteed list `foods`.
-
-    Both analysis methods return the raw JSON string; the model may also give
-    `foods` as a bare string. Normalizes both, and raises ValueError on a
-    None/non-object payload or one missing the fields the reply needs — so a
-    malformed response is recorded as an error and surfaced, not turned into a
-    downstream KeyError.
-    """
-    data = json.loads(raw) if isinstance(raw, str) else raw
-    if not isinstance(data, dict):
-        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
-    foods = data.get("foods", [])
-    foods = [foods] if isinstance(foods, str) else (foods or [])
-    # Coerce elements to str: models the owner swaps in (o-series, etc.) may
-    # return foods as dicts/numbers, which would blow up ", ".join(...) later.
-    data["foods"] = [str(x) for x in foods]
-    missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
-    if missing:
-        raise ValueError(f"nutrition response missing keys: {missing}")
-    return data
+# parse_nutrition is imported from product_lookup_service (where the pipeline
+# logic lives).  Keep a private alias so existing tests referencing
+# tg._parse_nutrition continue to work without change.
+_parse_nutrition = parse_nutrition
 
 
 def _image_data_url(image_bytes) -> str:
@@ -286,12 +267,23 @@ async def _run_meal_analysis(
     (the persisted inbound message, TD-009) is flipped to analyzed/failed here.
     """
     try:
-        nutrition_info = await _analyze_and_parse(
-            kind=kind,
-            payload=payload,
-            input_ref=input_ref,
-            telegram_id=update.effective_user.id,
-        )
+        if kind == "image":
+            # Phase 1+2 pipeline: concurrent barcode+vision extraction, then
+            # ordered strategy resolution (BarcodeOFFStrategy → VisionFallback).
+            resolution_result = await resolve_meal_nutrition(
+                payload,
+                telegram_id=update.effective_user.id,
+                input_ref=input_ref,
+            )
+            nutrition_info = resolution_result.nutrition
+        else:
+            resolution_result = None
+            nutrition_info = await _analyze_and_parse(
+                kind=kind,
+                payload=payload,
+                input_ref=input_ref,
+                telegram_id=update.effective_user.id,
+            )
     except ModelUnavailableError as e:
         # Configured model is gone — record the miss, then let the owner pick a
         # new model and retry (the same inbound_id is re-marked on success).
@@ -322,10 +314,13 @@ async def _run_meal_analysis(
     if kind == "image":
         draft = {
             "nutrition": nutrition_info,
-            "description": ", ".join(nutrition_info["foods"]) or "Фото приёма пищи",
+            "description": ", ".join(nutrition_info.get("foods", [])) or "Фото приёма пищи",
             # Telegram file_id so the saved meal keeps a photo reference
             # (re-fetchable; cheaper than storing the bytes in the DB).
             "photos": [input_ref],
+            # Resolution pipeline metadata (A1 columns): persisted in confirm_meal.
+            "resolution_source": resolution_result.source if resolution_result else None,
+            "resolution_signals": resolution_result.signals if resolution_result else None,
         }
         header = "Я проанализировал фото. Вот что я нашел:"
     else:
@@ -512,6 +507,9 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 nutrients=nutrition,
                 photos=current_meal.get("photos", []),
                 ai_analysis=nutrition,
+                # Pipeline resolution tracking (A1 columns).
+                resolution_source=current_meal.get("resolution_source"),
+                resolution_signals=current_meal.get("resolution_signals"),
             )
 
             # Get or create user and save meal
@@ -738,15 +736,23 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 image_bytes = await file.download_as_bytearray()
                 payload = _image_data_url(image_bytes)
                 input_ref = row.photo_file_id
+                # Use the full pipeline so reprocessed images also benefit from
+                # barcode→OFF lookup (same quality as the live flow).
+                resolution_result = await resolve_meal_nutrition(
+                    payload,
+                    telegram_id=row.telegram_id,
+                    input_ref=input_ref,
+                )
+                parsed = resolution_result.nutrition
             else:
                 payload = row.content or ""
                 input_ref = row.content or ""
-            parsed = await _analyze_and_parse(
-                kind=row.kind,
-                payload=payload,
-                input_ref=input_ref,
-                telegram_id=row.telegram_id,
-            )
+                parsed = await _analyze_and_parse(
+                    kind=row.kind,
+                    payload=payload,
+                    input_ref=input_ref,
+                    telegram_id=row.telegram_id,
+                )
         except ModelUnavailableError as e:
             # Still broken — leave this row queued and tell the owner to switch.
             await update.message.reply_text(

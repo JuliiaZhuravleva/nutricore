@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.services.product_lookup_service as pls_module
 from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
 from app.db.base import Base
@@ -105,7 +106,7 @@ def entry_mock(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def patched_db(monkeypatch):
-    """Point telegram.SessionLocal at a fresh in-memory SQLite DB for every test.
+    """Point all SessionLocals at a fresh in-memory SQLite DB for every test.
 
     Autouse so the best-effort ai_call_logs recording (and confirm_meal's save)
     write to a throwaway DB instead of attempting a real connection. Tests that
@@ -119,9 +120,25 @@ def patched_db(monkeypatch):
     monkeypatch.setattr(tg, "SessionLocal", Session)  # confirm_meal's save
     monkeypatch.setattr(ai_log, "SessionLocal", Session)  # ai_call_logs hook
     monkeypatch.setattr(im_service, "SessionLocal", Session)  # inbound_messages hook
+    monkeypatch.setattr(pls_module, "SessionLocal", Session)  # pipeline session
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def barcode_mock(monkeypatch):
+    """Return None (no barcode) for all photo tests.
+
+    Without this, the pipeline's barcode extraction call hits the real OpenAI
+    API (→ 401 with the test key) and leaves an unexpected ai_call_logs row.
+    The barcode path is tested separately in test_product_lookup_service.py.
+    """
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service, "extract_barcode_from_image", mock
+    )
+    return mock
 
 
 # --- process_meal_input: photo branch --------------------------------------
@@ -359,8 +376,11 @@ def test_photo_meal_records_ai_call(patched_db, image_mock):
 
     with sessionmaker(bind=patched_db)() as db:
         rows = db.query(AiCallLog).all()
-    assert len(rows) == 1
-    row = rows[0]
+    # Pipeline makes 2 concurrent calls: barcode_extraction + image.
+    assert len(rows) == 2
+    image_rows = [r for r in rows if r.kind == "image"]
+    assert len(image_rows) == 1
+    row = image_rows[0]
     assert row.kind == "image"
     assert row.status == "ok"
     assert row.input_ref == "PHOTO_FILE_ID"
@@ -393,10 +413,13 @@ def test_records_error_status_on_analysis_failure(patched_db, image_mock):
 
     with sessionmaker(bind=patched_db)() as db:
         rows = db.query(AiCallLog).all()
-    assert len(rows) == 1
-    assert rows[0].status == "error"
-    assert "boom" in rows[0].error
-    assert rows[0].parsed_result is None
+    # Pipeline: barcode_extraction (ok/None) + image (error).
+    assert len(rows) == 2
+    error_rows = [r for r in rows if r.status == "error"]
+    assert len(error_rows) == 1
+    assert error_rows[0].kind == "image"
+    assert "boom" in error_rows[0].error
+    assert error_rows[0].parsed_result is None
 
 
 # --- reject → re-log discards the stale draft -------------------------------
