@@ -49,6 +49,11 @@ _OFF_FIELDS = "product_name,product_name_en,brands,code,nutriments,nutriscore_gr
 _TIMEOUT_CONNECT = 5.0
 _TIMEOUT_READ = 10.0
 
+# Cap the OFF response we parse/cache. A slimmed product (fields=… below) is a
+# few KB; 1 MB is a generous ceiling that stops a malformed/oversized body from
+# bloating memory or the cached raw_data JSON column.
+_MAX_RESPONSE_BYTES = 1_000_000
+
 # Open Food Facts fair-use policy requires a descriptive User-Agent.
 OFF_USER_AGENT = (
     "NutricoreBot/1.0 " "(meal-tracking personal tool; imnicecat@gmail.com)"
@@ -139,6 +144,14 @@ class OpenFoodFactsService:
            so the caller can fall back to the vision pipeline seamlessly.
         """
         barcode = barcode.strip()
+
+        # 0. Defense-in-depth: only ASCII digits of a plausible length ever reach
+        # the OFF URL path / cache key. Callers validate upstream, but this guard
+        # keeps a future caller (or a malformed cache key) from injecting into the
+        # request path — the value is interpolated into OFF_PRODUCT_PATH below.
+        if not (barcode.isascii() and barcode.isdigit() and 6 <= len(barcode) <= 18):
+            logger.warning("OFF lookup rejected implausible barcode %r", barcode)
+            return None
 
         # 1. Cache read. A DB error here is an INFRA failure, not a "product not
         # found" — log it distinctly (with a stack trace) and continue to the
@@ -234,6 +247,15 @@ class OpenFoodFactsService:
                 response.status_code,
                 barcode,
                 latency_ms,
+            )
+            return None
+
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            logger.warning(
+                "OFF API response for barcode %s is %d bytes (> %d cap) — ignoring",
+                barcode,
+                len(response.content),
+                _MAX_RESPONSE_BYTES,
             )
             return None
 

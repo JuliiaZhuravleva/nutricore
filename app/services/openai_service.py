@@ -238,8 +238,13 @@ class OpenAIService:
                 return None
             # Normalise: strip spaces and dashes the model might include.
             cleaned = str(value).strip().replace(" ", "").replace("-", "")
-            # Validate: digits only, length 6–18 (covers EAN-8 through ITF-14).
-            if not cleaned.isdigit() or not (6 <= len(cleaned) <= 18):
+            # Validate: ASCII digits only, length 6–18 (covers EAN-8 through
+            # ITF-14). isascii() guards against non-ASCII "digit" characters
+            # (e.g. superscripts) that str.isdigit() accepts but that must never
+            # reach the OFF URL path.
+            if not (cleaned.isascii() and cleaned.isdigit()) or not (
+                6 <= len(cleaned) <= 18
+            ):
                 logger.warning(
                     "extract_barcode_from_image: invalid barcode value %r", value
                 )

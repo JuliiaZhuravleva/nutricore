@@ -246,3 +246,13 @@ def test_gs1_check_digit(code, valid):
     # review H1: reject most single-digit vision misreads before they resolve
     # to a *different* real product badged "точно".
     assert _has_valid_gs1_check_digit(code) is valid
+
+
+def test_rejects_non_ascii_digits(caplog):
+    # Security review: fullwidth digits pass str.isdigit() but must be rejected
+    # so a non-ASCII value can never reach the OFF URL path.
+    svc = _service(json.dumps({"barcode": "１２３４５６７８"}))
+    with caplog.at_level("WARNING"):
+        result = _call(svc)
+    assert result is None
+    assert "invalid barcode value" in caplog.text

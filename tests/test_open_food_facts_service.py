@@ -497,3 +497,19 @@ def test_has_macros_all_none_is_false():
 def test_has_macros_any_present_is_true():
     assert _mk_result(calories_per_100g=52.0).has_macros is True
     assert _mk_result(proteins_per_100g=0.0).has_macros is True
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../../etc/passwd",  # path-injection-y
+        "abc123",  # non-digit
+        "12",  # too short
+        "1" * 20,  # too long
+        "１２３４５６７８",  # non-ASCII (fullwidth) digits — pass str.isdigit()
+    ],
+)
+def test_lookup_rejects_implausible_barcode(db_session, bad):
+    # Defense-in-depth (security review): an implausible/non-ASCII-digit value
+    # never reaches the OFF URL path or the cache — rejected before any I/O.
+    assert asyncio.run(_svc(db_session).lookup(bad)) is None
