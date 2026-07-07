@@ -22,8 +22,11 @@ from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
 from app.services.openai_service import (OPENAI_MODEL_SETTING_KEY,
                                          ModelUnavailableError, OpenAIService)
-from app.services.product_lookup_service import (parse_nutrition,
-                                                 resolve_meal_nutrition)
+from app.services.product_lookup_service import (
+    ResolutionResult,
+    parse_nutrition,
+    resolve_meal_nutrition,
+)
 
 # Enable logging
 logging.basicConfig(
@@ -49,7 +52,8 @@ REPROCESS_BATCH_LIMIT = 20
     CONFIRMING_MEAL,
     SUBSCRIPTION_INQUIRY,
     CHOOSING_MODEL,
-) = range(7)
+    DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
+) = range(8)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -207,18 +211,79 @@ def _image_data_url(image_bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
 
 
-def _nutrition_reply(data, header):
-    """Format the confirmation message shared by the photo and text branches."""
-    return (
-        f"{header}\n"
-        f"Продукты: {', '.join(data['foods'])}\n"
-        f"Калории: {data['calories']} ккал\n"
-        f"Белки: {data['protein']}г\n"
-        f"Жиры: {data['fats']}г\n"
-        f"Углеводы: {data['carbs']}г\n"
-        f"Порция: {data['portion']}\n\n"
-        f"Всё верно? (Да/Нет)"
-    )
+def _source_badge(result: ResolutionResult | None) -> str:
+    """Localised source/confidence badge for the reply, or empty for text inputs.
+
+    Matches the ADR-0001 §6 confidence-tier taxonomy so the user always knows how
+    much to trust the numbers (see also: docs/product-philosophy.md).
+    """
+    if result is None:
+        return ""
+    if result.source == "barcode_off":
+        return "📦 по штрих-коду (точно)"
+    if result.confidence_tier == "high":
+        return "✅ из базы (точно)"
+    if result.confidence_tier == "medium":
+        return "🔍 нашли в базе (проверь)"
+    if result.confidence_tier == "ambiguous":
+        return "❓ несколько вариантов"
+    return "📷 оценка по фото"
+
+
+def _resolution_detail_lines(result: ResolutionResult | None) -> list:
+    """Key intermediate values surfaced for high/medium-confidence results.
+
+    Returns the EAN read, matched product name, and (when the portion estimate
+    is missing) a warning that the numbers are per-100g and should be corrected.
+    Vision-only results carry no meaningful intermediate signals beyond the
+    nutrition fields already shown in the reply.
+
+    These lines let the user catch a wrong barcode read or wrong product match
+    before confirming the meal (ADR-0001 §6, north-star transparency principle).
+    """
+    if result is None or result.source == "vision":
+        return []
+    signals = result.signals or {}
+    lines: list = []
+    barcode_raw = signals.get("barcode_raw")
+    if barcode_raw:
+        lines.append(f"Штрих-код: {barcode_raw}")
+    product_name = signals.get("product_name")
+    if product_name:
+        lines.append(f"Продукт: {product_name}")
+    # Explicit gram-basis transparency (ADR-0001 §7 / CQ2):
+    # when the pipeline had no vision portion estimate it falls back to per-100g.
+    if result.portion_grams is None:
+        lines.append(
+            "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
+        )
+    return lines
+
+
+def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
+    """Format the confirmation message shared by the photo and text branches.
+
+    ``resolution_result`` is provided for image inputs so the reply can surface
+    the source/confidence badge and key intermediate values (EAN, product name,
+    gram-basis warning).  Text inputs pass ``None`` — the existing format is
+    unchanged.
+    """
+    badge = _source_badge(resolution_result)
+    detail_lines = _resolution_detail_lines(resolution_result)
+
+    parts = [header]
+    if badge:
+        parts.append(f"Источник: {badge}")
+    parts.extend(detail_lines)
+    parts.append(f"Продукты: {', '.join(data['foods'])}")
+    parts.append(f"Калории: {data['calories']} ккал")
+    parts.append(f"Белки: {data['protein']}г")
+    parts.append(f"Жиры: {data['fats']}г")
+    parts.append(f"Углеводы: {data['carbs']}г")
+    parts.append(f"Порция: {data['portion']}")
+    parts.append("")
+    parts.append("Всё верно? (Да/Нет)")
+    return "\n".join(parts)
 
 
 async def _analyze_and_parse(
@@ -328,7 +393,9 @@ async def _run_meal_analysis(
         header = "Я проанализировал ваш приём пищи. Вот что получилось:"
 
     try:
-        await update.message.reply_text(_nutrition_reply(nutrition_info, header))
+        await update.message.reply_text(
+            _nutrition_reply(nutrition_info, header, resolution_result)
+        )
     except Exception as e:
         # Analysis is saved; only the confirmation reply failed. Keep the draft
         # atomic (don't commit) and ask the owner to send the meal again.

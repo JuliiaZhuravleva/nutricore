@@ -336,6 +336,135 @@ def test_nutrition_reply_formats_all_fields():
     assert reply.endswith("Всё верно? (Да/Нет)")
 
 
+# --- _source_badge + _resolution_detail_lines (A5 transparency helpers) ---
+
+
+def _make_resolution_result(
+    source="barcode_off",
+    confidence_tier="high",
+    portion_grams=150.0,
+    signals=None,
+):
+    """Build a ResolutionResult for badge/detail tests without importing the dataclass."""
+    from app.services.product_lookup_service import ResolutionResult
+
+    return ResolutionResult(
+        source=source,
+        confidence_tier=confidence_tier,
+        nutrition=_NUTRITION,
+        description="test",
+        portion_grams=portion_grams,
+        signals=signals or {
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+
+
+def test_source_badge_barcode_off():
+    badge = tg._source_badge(_make_resolution_result(source="barcode_off"))
+    assert "штрих-коду" in badge
+    assert "точно" in badge
+
+
+def test_source_badge_medium_confidence():
+    badge = tg._source_badge(
+        _make_resolution_result(source="name_off", confidence_tier="medium")
+    )
+    assert "нашли в базе" in badge
+    assert "проверь" in badge
+
+
+def test_source_badge_vision():
+    badge = tg._source_badge(
+        _make_resolution_result(source="vision", confidence_tier="low", signals={})
+    )
+    assert "фото" in badge
+
+
+def test_source_badge_ambiguous():
+    badge = tg._source_badge(
+        _make_resolution_result(source="tbd", confidence_tier="ambiguous", signals={})
+    )
+    assert "вариант" in badge
+
+
+def test_source_badge_none_returns_empty():
+    assert tg._source_badge(None) == ""
+
+
+def test_resolution_detail_lines_barcode_off_with_portion():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={"barcode_raw": "4607195501226", "product_name": "Pringles Original"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert any("4607195501226" in l for l in lines)
+    assert any("Pringles" in l for l in lines)
+    # Portion is known — no warning
+    assert not any("не определена" in l for l in lines)
+
+
+def test_resolution_detail_lines_barcode_off_no_portion_warns():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=None,
+        signals={"barcode_raw": "1234567890", "product_name": "Test Product"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert any("не определена" in l for l in lines)
+    assert any("100г" in l for l in lines)
+
+
+def test_resolution_detail_lines_vision_returns_empty():
+    result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
+    assert tg._resolution_detail_lines(result) == []
+
+
+def test_resolution_detail_lines_none_returns_empty():
+    assert tg._resolution_detail_lines(None) == []
+
+
+def test_nutrition_reply_barcode_off_shows_badge_and_ean():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert reply.startswith("Заголовок:\n")
+    assert "штрих-коду" in reply  # badge
+    assert "4607195501226" in reply  # EAN
+    assert "Pringles" in reply  # product name
+    assert "Продукты: banana, oatmeal" in reply  # nutrition block intact
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_nutrition_reply_vision_shows_source_badge():
+    result = _make_resolution_result(
+        source="vision", confidence_tier="low", signals={}
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "фото" in reply
+    assert "Продукты: banana, oatmeal" in reply
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_nutrition_reply_no_portion_shows_warning():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=None,
+        signals={"barcode_raw": "999", "product_name": "Item"},
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "не определена" in reply
+    assert "100г" in reply
+
+
 # --- stale-draft reset + atomic write --------------------------------------
 
 
