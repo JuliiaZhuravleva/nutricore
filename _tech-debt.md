@@ -46,6 +46,10 @@ _Track for later._
   earlier `access_control.py` / `ai_call_log_service.py` extractions set out to avoid. Extract the
   self-heal orchestration into `app/services/model_selection.py`, mirroring `access_control.py`.
   - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
+  - **Note 2026-07-07:** re-flagged by the photo-product-lookup specialist consult ("already-ballooning
+    `telegram.py`"). That plan's A4 will extract a `product_lookup_service.py` (same pattern) — a second
+    data point that `telegram.py` needs decomposition, not just per-feature carve-outs. Consider a
+    broader pass (meal-conversation orchestration vs. service modules) once product-lookup lands.
 - [ ] **TD-010**: TD-009 follow-ups intentionally deferred (the "at minimum file_id" pass shipped).
   (1) **Disk-bytes archival** — `inbound_messages` keeps only the Telegram `file_id`; a photo is
   lost if Telegram ever drops the file. For Telegram-independent replay, also persist the base64'd
