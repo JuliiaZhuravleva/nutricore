@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import openai
 from openai import AsyncOpenAI
@@ -167,6 +168,68 @@ class OpenAIService:
             response_format={"type": "json_object"},
         )
         return response.choices[0].message.content
+
+    async def extract_barcode_from_image(self, image_url: str) -> Optional[str]:
+        """Extract a barcode (EAN/UPC) from a product image using vision.
+
+        Asks the vision model to read the numeric barcode digits directly from
+        the image. Avoids pyzbar/libzbar system-lib dependencies.
+
+        Returns the barcode string (digits only) if one is clearly readable,
+        or None if no barcode is visible or the digits cannot be reliably read.
+        """
+        system_prompt = (
+            "You are a barcode reader. Your only job is to find and accurately read "
+            "barcode digits from product images. Look for EAN-13 (13 digits), EAN-8 "
+            "(8 digits), UPC-A (12 digits), or UPC-E (6–8 digits) barcodes.\n\n"
+            'Return ONLY this JSON: {"barcode": "digits_here"}\n'
+            'or if no barcode is visible or readable: {"barcode": null}\n\n'
+            "Rules:\n"
+            "- Return ONLY the numeric digits — no spaces, no dashes.\n"
+            "- If you cannot clearly read ALL digits, return null.\n"
+            "- Do NOT guess or fill in digits you cannot see.\n"
+            "- Ignore QR codes and Data Matrix codes — only linear barcodes."
+        )
+
+        response = await self._create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Read the barcode from this product image. Return only the numeric digits.",
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ],
+            # Barcode is at most ~15 digits + small JSON envelope — 64 tokens is ample.
+            max_tokens=64,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content
+        try:
+            data = json.loads(raw)
+            value = data.get("barcode")
+            if not value:
+                return None
+            # Normalise: strip spaces and dashes the model might include.
+            cleaned = str(value).strip().replace(" ", "").replace("-", "")
+            # Validate: digits only, length 6–18 (covers EAN-8 through ITF-14).
+            if not cleaned.isdigit() or not (6 <= len(cleaned) <= 18):
+                logger.warning(
+                    "extract_barcode_from_image: invalid barcode value %r", value
+                )
+                return None
+            return cleaned
+        except (json.JSONDecodeError, AttributeError) as exc:
+            logger.warning(
+                "extract_barcode_from_image: failed to parse response %r: %s", raw, exc
+            )
+            return None
 
     async def generate_health_insights(self, user_data: Dict) -> str:
         """Generate health insights based on user's nutrition and activity data."""
