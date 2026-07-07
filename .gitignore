@@ -63,3 +63,7 @@ regr.json
 
 # Orchestrator raw claude -p payloads (may contain auth tokens/secrets — TD-021)
 *.execution.md.raw/
+# Orchestrator run sidecars (generated per dispatch — not source)
+*.execution.md.log.jsonl
+*.execution.md.progress
+*.execution.md.verdicts/
