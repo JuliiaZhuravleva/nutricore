@@ -7,12 +7,17 @@
 ## What Nutricore is
 
 A **personal** nutrition tracker on Telegram: capture meals with minimal friction
-(text/photo → КБЖУ via AI) and chat about food. It is **not** a multi-user product.
+(text/photo → КБЖУ via AI) and chat about food. It is **not** a multi-user product — though
+the repo is **public** (a showcase/portfolio), so docs and README are kept presentable for
+an outside reader.
 
 **Ecosystem boundary:** `my-health` = brain / data / guardrails; **nutricore = the capture
 + chat surface.** Nutrition/food coaching uses nutricore's own OpenAI; medical/health
-questions go to my-health via the `/consult` relay. These never mix, and no medical logic
-or medical data lives in the bot.
+questions go to my-health via the `/consult` relay. **The firm line is _medical_ logic** —
+no medical reasoning or medical data lives in the bot. Non-medical nudges that serve the
+capture/habit loop (water reminders, logging streaks, gentle "did you eat?" prompts) are
+fine *in* nutricore; anything that interprets health or gives medical advice belongs to
+my-health.
 
 ## North star
 
@@ -29,6 +34,13 @@ things together, not one at the expense of the others:
   product database beats an eyeballed guess).
 - **Transparency + the ability to intervene** — the user can always see *how* a number was
   produced and can correct it.
+
+**Tie-breaker when these conflict: long-term insight wins.** The ultimate point of the tool
+isn't any single meal entry — it's the trends, patterns, and coaching that emerge over time.
+So when a trade-off is forced, favor the choice that keeps the *long-run data* trustworthy
+and continuous (accurate, attributed, correctable history) over a one-off friction saving.
+This is not a license to nag — principle #1 still holds — but it means we never sacrifice the
+integrity of the record just to shave a tap.
 
 ## Operating principles
 
