@@ -50,6 +50,11 @@ _Track for later._
     `telegram.py`"). That plan's A4 will extract a `product_lookup_service.py` (same pattern) — a second
     data point that `telegram.py` needs decomposition, not just per-feature carve-outs. Consider a
     broader pass (meal-conversation orchestration vs. service modules) once product-lookup lands.
+  - **Note 2026-07-07 (post-review):** the /review-deep fix pass added a `get_openai_service()` factory
+    in `openai_service.py` (H2) that removed the `product_lookup_service → telegram` circular import —
+    one dependency untangled. Still open: the pipeline reply formatting (`_source_badge` /
+    `_resolution_detail_lines`) lives in `telegram.py`; moving it onto `ResolutionResult`
+    (e.g. `.to_reply_lines()`) would keep the handler thinner as A8/A9/A10 add strategies.
 - [ ] **TD-010**: TD-009 follow-ups intentionally deferred (the "at minimum file_id" pass shipped).
   (1) **Disk-bytes archival** — `inbound_messages` keeps only the Telegram `file_id`; a photo is
   lost if Telegram ever drops the file. For Telegram-independent replay, also persist the base64'd
@@ -60,6 +65,27 @@ _Track for later._
   re-analyzes and fills `ai_analysis`; it does not create a `meals` row (keeps the confirm step). A
   future "replay straight into a confirmed meal" is possible but needs a `meal_time` decision.
   - **Priority:** Low · **Source:** TD-009 scope decision 2026-07-06 · **Created:** 2026-07-06
+- [ ] **TD-011**: photo-product-lookup accuracy residuals (accepted during the /review-deep fix pass;
+  all mitigated by the transparency reply — path/product/gram-basis shown, correctable at confirm).
+  (1) **Misread barcode passing the check digit** — the new GS1 mod-10 validation (H1) rejects most
+  single-digit vision misreads, but a misread that both passes the check digit AND is a registered
+  product would still return that *other* product's КБЖУ at high confidence. A name-vs-vision overlap
+  downgrade was deliberately **not** implemented: OFF names are often English/brand while vision
+  returns Russian, so token-overlap would false-positive on correct matches and make UX worse. Revisit
+  if a cheap language-robust cross-check appears (e.g. compare on brand tokens only, or a translation
+  step). (2) **Portion semantics** — `BarcodeOFFStrategy` scales OFF per-100g by vision's *whole-photo*
+  portion estimate; for a packaged item vision may estimate the whole package, not the eaten serving,
+  inflating КБЖУ. Mitigated by the shown gram basis + correct-at-confirm.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-07 (photo-product-lookup) · **Created:** 2026-07-07
+- [ ] **TD-012**: pre-existing flake8 debt in the photo-product-lookup specialist-authored test files
+  (not introduced by the review fixes): unused imports (`test_extract_barcode.py` `patch`,
+  `test_open_food_facts_service.py` `SimpleNamespace`, `test_product_lookup_service.py`
+  `dataclass`/`SimpleNamespace`/`Optional`/`_build_pipeline`), an unused `result1`, and a **dead no-op
+  helper** in `test_product_lookup_service.py` (~L400): a `with patch.object(pls, "_extract_signals",
+  wraps=lambda ...: _patched_extract_signals(...)): pass` — empty body, and `_patched_extract_signals`
+  is undefined (F821); it never runs, so 249 tests still pass, but it's dead cruft. Also the
+  long-standing `telegram.py` F841 `'ve'`. Clean up in an isort/flake8 pass over the new modules.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-07 (flake8 on touched files) · **Created:** 2026-07-07
 
 ## Resolved
 _Keep 90 days then remove._
