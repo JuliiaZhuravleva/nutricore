@@ -10,7 +10,7 @@ approved_at: '2026-07-07T11:31:15Z'
 approved_by: julia
 specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
 execution:
-  status: executing
+  status: partial
   started_at: '2026-07-07T11:32:56Z'
   completed_at: null
   current_batch: null
@@ -78,78 +78,90 @@ items:
   title: 'Pipeline integration: implement barcode->OFF as the FIRST strategy in the pluggable resolution pipeline defined by A11''s ADR (not hard-wired into process_meal_input); record chosen path + signals on the meal and extend ai_call_logs for misprediction analysis; thread through process_meal_input/_run_meal_analysis + /reprocess (both live on main after TD-009 merge) and regression-test both; extract into product_lookup_service.py'
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on:
   - A11
   - A1
   - A2
   - A3
   estimated_effort: 5h
-  confidence: null
+  confidence: 0.93
   consult_session_id: 9f278393-43af-4913-8022-4c091222a603
-  specialist_session_id: null
+  specialist_session_id: 345d9883-7ae0-4f63-bb49-ad990e537241
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: reset after $2 per-item budget abort; retry fresh at $6 cap
-  result: null
+    ts: '2026-07-07T13:05:04Z'
+    executor: backend-dev
+    note: 'Implemented product_lookup_service.py with full ADR-0001 two-phase pipeline: concurrent barcode+vision extraction (asyncio.gather), BarcodeOFFStrategy (barcode→OFF lookup, portion scaling, cache-first), VisionFallbackStrategy (wraps existing vision result). Wired into _run_meal_analysis (image path replaces _analyze_and_parse), confirm_meal persists resolution_source+resolution_signals to MealCreate, /reprocess image path uses pipeline. Text path and text reprocess unchanged. parse_nutrition moved to product_lookup_service (telegram.py aliases it for backward compat). barcode_mock autouse fixture added to test_meal_handler.py; patched_db extended to cover pls_module.SessionLocal. 201 total tests green (36 new in test_product_lookup_service.py). qa should add integration tests (real OFF responses, end-to-end barcode photo flow) in A7.'
+  result:
+    kind: commit
+    ref: d12a3d1
+    verification: 201 tests green (./scripts/test.sh); pre-commit hook passed; 36 new unit tests cover parse_nutrition, _parse_portion_grams, BarcodeOFFStrategy (hit/miss/no-barcode/no-portion/exception), VisionFallbackStrategy (happy/None), pipeline runner (barcode wins/vision fallback/both fail/ModelUnavailable), ADR §5 signals contract, telegram.py integration.
 - id: A5
   title: 'Telegram trigger UX + transparent reply: AUTO-trigger the lookup path when vision detects a barcode (no inline button / no /scan by default), and fall back to BUTTON-based disambiguation only when the pipeline is unsure which method fits (CQ1). Reply surfaces the resolution path + key intermediate values (EAN read, matched product, per-100g vs scaled grams, confidence tier) and lets the user correct any of them at the existing confirm step'
   specialist: frontend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on:
   - A4
   estimated_effort: 2h
-  confidence: null
+  confidence: 0.97
   consult_session_id: 67ac7086-e064-446d-bb42-7f0befc195b7
-  specialist_session_id: null
+  specialist_session_id: c1132fbd-f3f2-48e6-a24e-532f23ffdef7
   retry_count: 0
   last_update:
-    ts: null
-    executor: pm-orchestrator
-    note: 'Revision 1. CQ1 answered (idx1): auto-trigger when confident (barcode detected), button-based chooser only for ambiguous photos — resolves the trigger question all 4 specialists raised. idx0 product principle: reply must expose the resolution path + intermediate signals and stay correctable at the existing confirm step (seamless-but-transparent). CQ1 is no longer open.'
-  result: null
+    ts: '2026-07-07T13:13:42Z'
+    executor: frontend-dev
+    note: 'Implemented transparent reply badge and resolution detail lines. _source_badge() maps all ADR-0001 §6 confidence tiers to localised Russian strings. _resolution_detail_lines() surfaces EAN, product name, and per-100g warning when no vision portion estimate. _nutrition_reply() updated with backwards-compatible optional resolution_result param. DISAMBIGUATING_PRODUCT state constant added as future-ready hook for A8/A9 multi-candidate flows. Auto-trigger UX was already handled by A4. 12 new unit tests. qa note: A7 should add integration test covering photo→badge reply flow with mocked barcode+OFF hit.'
+  result:
+    kind: commit
+    ref: e965900
+    verification: ./scripts/test.sh tests/test_meal_handler.py → 47 passed; ./scripts/test.sh (full) → 213 passed; pre-commit secrets check green
 - id: A6
   title: 'Portion scaling: when OFF returns per-100g, AUTO-scale to the eaten portion by reusing the vision-estimated grams (CQ2) and explicitly SHOW the gram basis used in the reply; user can correct the grams at the existing confirm step. No new mandatory ''how many grams?'' prompt / no SCALING_PORTION state — seamless by default, transparent + correctable'
   specialist: frontend-dev
   priority: P2
-  status: pending
+  status: done
   depends_on:
   - A4
   estimated_effort: 1h
-  confidence: null
+  confidence: 0.97
   consult_session_id: 67ac7086-e064-446d-bb42-7f0befc195b7
-  specialist_session_id: null
+  specialist_session_id: c0d282da-f60c-4063-805c-bea547f34f0a
   retry_count: 0
   last_update:
-    ts: null
-    executor: pm-orchestrator
-    note: 'Revision 1. CQ2 answered (idx2): option (a) — auto-scale from vision grams, show the gram basis, correct at confirm; the SCALING_PORTION new-state option is dropped. Aligns with idx0 product principle (seamless best-guess, transparent + correctable). CQ2 no longer open.'
-  result: null
+    ts: '2026-07-07T13:27:17Z'
+    executor: frontend-dev
+    note: 'Implemented A6 (ADR-0001 §7 / CQ2): updated _resolution_detail_lines() in telegram.py to add an explicit gram-basis line when BarcodeOFFStrategy scaled OFF per-100g values to vision-estimated portion. Zero-gram degenerate case falls back to per-100g warning. 5 new unit tests. All A5+A7 tests pass unchanged.'
+  result:
+    kind: commit
+    ref: aed9aabddb71adef3d04e10272d177a3013dc868
+    verification: ./scripts/test.sh tests/test_meal_handler.py tests/test_barcode_integration.py → 66 passed; ./scripts/test.sh (full) → 232 passed; pre-commit secrets check green
 - id: A7
   title: 'Test suite: barcode->OFF lookup (mocked, EAN fixtures), cache hit/miss, graceful fallback, chosen-path + signals recording (transparency/misprediction logging), auto-trigger detection + button-disambiguation fallback, gram-basis display/scaling, and opt-in gating keeping existing vision tests green'
   specialist: qa
   priority: P1
-  status: pending
+  status: done
   depends_on:
   - A4
   estimated_effort: 2.5h
-  confidence: null
+  confidence: 0.98
   consult_session_id: 7189de09-1b0b-4115-9364-9c8815e4f1c3
-  specialist_session_id: null
+  specialist_session_id: 8f1fbbc0-8d5e-4d6c-9ac0-999edf558e1d
   retry_count: 0
   last_update:
-    ts: null
-    executor: pm-orchestrator
-    note: 'Revision 1: scope extended to cover the transparency/misprediction-logging (idx0), auto-trigger + disambiguation (idx1), and gram-basis scaling (idx2) behaviors added this revision.'
-  result: null
+    ts: '2026-07-07T13:20:16Z'
+    executor: qa
+    note: 'Created tests/test_barcode_integration.py with 14 end-to-end integration tests covering the full A7 scope: barcode->OFF hit badge+EAN, draft resolution metadata, cache hit in signals, graceful fallback (OFF miss), no-barcode vision fallback, scaled gram-basis reply, per-100g warning, auto-trigger to CONFIRMING_MEAL, confirm_meal persists resolution columns to DB, /reprocess image barcode->OFF path, /reprocess image vision fallback, /reprocess barcode+OFF-miss saved. Regression guard: existing vision flow unaffected. All 14 pass; full suite 227/227 green.'
+  result:
+    kind: file
+    ref: tests/test_barcode_integration.py
+    verification: 'Ran ./scripts/test.sh tests/test_barcode_integration.py -v: 14 passed; ./scripts/test.sh --tb=short -q: 227 passed, 0 failures.'
 - id: A8
   title: 'DEFERRED (round 2): packaging-name -> OFF name-search path (approach 2, DB side; fuzzy match, no OpenAI change) — implemented as a DROP-IN strategy in the A11 pipeline framework'
   specialist: backend-dev
   priority: P2
-  status: pending
+  status: blocked
   depends_on:
   - A11
   - A2
@@ -159,9 +171,9 @@ items:
   specialist_session_id: null
   retry_count: 0
   last_update:
-    ts: null
+    ts: '2026-07-07T13:28:54Z'
     executor: pm-orchestrator
-    note: 'Revision 1 (idx3): now depends on A11 and plugs into the pluggable pipeline as an additional strategy rather than a separate branch. Still deferred out of round 1.'
+    note: 'skipped: --only filter excludes'
   result: null
 - id: A9
   title: 'DEFERRED/BLOCKED (round 2): Responses API migration + web_search product ID (approach 2 web side) — drop-in strategy in the A11 pipeline. Trust policy is now DECIDED (CQ5): best-guess + transparent + correctable; web_search may identify AND surface best-guess numbers with honest source/confidence, but a structured Open Food Facts number is preferred where it exists, and misses are logged to tune the policy. Still blocked ONLY on the API-migration ADR before dispatch'
@@ -185,7 +197,7 @@ items:
   title: 'DEFERRED (round 2): direct label OCR path (approach 3; vision reads the nutrition table, no external call, source=label) — implemented as a DROP-IN strategy in the A11 pipeline framework'
   specialist: backend-dev
   priority: P2
-  status: pending
+  status: blocked
   depends_on:
   - A11
   - A1
@@ -195,9 +207,9 @@ items:
   specialist_session_id: null
   retry_count: 0
   last_update:
-    ts: null
+    ts: '2026-07-07T13:28:56Z'
     executor: pm-orchestrator
-    note: 'Revision 1 (idx3): now depends on A11 and plugs into the pluggable pipeline as an additional strategy. Still deferred out of round 1.'
+    note: 'skipped: --only filter excludes'
   result: null
 - id: A11
   title: 'Architect: design a pluggable meal-nutrition resolution pipeline (ordered strategies barcode->OFF, name-search, label-OCR, vision-fallback) as an ADR/design doc under docs/; barcode->OFF ships as the FIRST strategy so A8/A9/A10 are drop-in later; bakes in the seamless-but-transparent north-star (surface resolution path + key intermediate values, correctable at the existing confirm step, log mispredictions via ai_call_logs/meal source). A4 implements against this design.'
@@ -221,7 +233,7 @@ items:
 budget:
   max_usd_per_item: 6.0
   max_usd_per_plan: 20.0
-  consumed_usd: 5.7124
+  consumed_usd: 13.2537
 review_gate:
   why: []
   approve_action: /execute-plan /Users/julia/my-projects/nutricore.photo-product-lookup-wt/docs/plans/photo-product-lookup.execution.md --resume
@@ -275,6 +287,21 @@ revision_number: 2
 last_revised_at: '2026-07-07T10:56:59Z'
 last_revised_by: pm-orchestrator
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
