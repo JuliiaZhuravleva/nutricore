@@ -40,7 +40,7 @@ def upgrade() -> None:
     # 1. product_cache
     # ------------------------------------------------------------------
     op.create_table(
-        "product_cache",
+        "product_caches",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("barcode", sa.String(), nullable=False),
         sa.Column("off_code", sa.String(), nullable=True),
@@ -65,13 +65,13 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_product_cache_id", "product_cache", ["id"])
+    op.create_index("ix_product_caches_id", "product_caches", ["id"])
     # Unique index on barcode — primary lookup key; unique=True also enforces the
     # no-duplicate-barcode constraint without a separate UniqueConstraint.
     op.create_index(
-        "ix_product_cache_barcode", "product_cache", ["barcode"], unique=True
+        "ix_product_caches_barcode", "product_caches", ["barcode"], unique=True
     )
-    op.create_index("ix_product_cache_created_at", "product_cache", ["created_at"])
+    op.create_index("ix_product_caches_created_at", "product_caches", ["created_at"])
 
     # ------------------------------------------------------------------
     # 2. meals — resolution tracking columns (nullable, additive)
@@ -94,7 +94,7 @@ def downgrade() -> None:
     op.drop_column("meals", "resolution_signals")
     op.drop_column("meals", "resolution_source")
 
-    op.drop_index("ix_product_cache_created_at", table_name="product_cache")
-    op.drop_index("ix_product_cache_barcode", table_name="product_cache")  # unique
-    op.drop_index("ix_product_cache_id", table_name="product_cache")
-    op.drop_table("product_cache")
+    op.drop_index("ix_product_caches_created_at", table_name="product_caches")
+    op.drop_index("ix_product_caches_barcode", table_name="product_caches")  # unique
+    op.drop_index("ix_product_caches_id", table_name="product_caches")
+    op.drop_table("product_caches")

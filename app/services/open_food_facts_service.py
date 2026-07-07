@@ -43,9 +43,7 @@ OFF_BASE_URL = "https://world.openfoodfacts.org"
 OFF_PRODUCT_PATH = "/api/v2/product/{barcode}.json"
 
 # Slim the payload: we only need these fields.
-_OFF_FIELDS = (
-    "product_name,product_name_en,brands,code,nutriments,nutriscore_grade"
-)
+_OFF_FIELDS = "product_name,product_name_en,brands,code,nutriments,nutriscore_grade"
 
 # Timeouts (seconds). OFF is generally fast but this is an external call.
 _TIMEOUT_CONNECT = 5.0
@@ -53,8 +51,7 @@ _TIMEOUT_READ = 10.0
 
 # Open Food Facts fair-use policy requires a descriptive User-Agent.
 OFF_USER_AGENT = (
-    "NutricoreBot/1.0 "
-    "(meal-tracking personal tool; imnicecat@gmail.com)"
+    "NutricoreBot/1.0 " "(meal-tracking personal tool; imnicecat@gmail.com)"
 )
 
 
@@ -84,6 +81,27 @@ class OFFLookupResult:
     carbohydrates_per_100g: Optional[float]
     raw_data: Optional[Dict[str, Any]]
     from_cache: bool
+
+    @property
+    def has_macros(self) -> bool:
+        """True if OFF actually returned at least one usable nutrition value.
+
+        An OFF product can exist with an *empty* ``nutriments`` block (common
+        for regional / store-brand items). Such a result must NOT be surfaced
+        as a high-confidence КБЖУ — coercing the missing values to 0 would show
+        ``0 ккал / 0 БЖУ`` badged "по штрих-коду (точно)", i.e. a bogus zero
+        indistinguishable from a genuinely verified one. Callers treat
+        ``has_macros=False`` as a miss and fall through to the vision estimate.
+        """
+        return any(
+            v is not None
+            for v in (
+                self.calories_per_100g,
+                self.proteins_per_100g,
+                self.fats_per_100g,
+                self.carbohydrates_per_100g,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +140,23 @@ class OpenFoodFactsService:
         """
         barcode = barcode.strip()
 
-        # 1. Cache read
-        cached = crud_product_cache.get_by_barcode(self._db, barcode)
+        # 1. Cache read. A DB error here is an INFRA failure, not a "product not
+        # found" — log it distinctly (with a stack trace) and continue to the
+        # API rather than silently degrading the scan to a vision estimate.
+        try:
+            cached = crud_product_cache.get_by_barcode(self._db, barcode)
+        except Exception as exc:
+            logger.warning(
+                "product_cache read failed for barcode %s (treating as cache "
+                "miss, continuing to OFF API): %s",
+                barcode,
+                exc,
+                exc_info=True,
+            )
+            cached = None
         if cached is not None:
             logger.debug("OFF cache hit for barcode %s", barcode)
-            return OFFLookupResult(
+            cached_result = OFFLookupResult(
                 barcode=cached.barcode,
                 off_code=cached.off_code or cached.barcode,
                 product_name=cached.product_name,
@@ -138,6 +168,9 @@ class OpenFoodFactsService:
                 raw_data=cached.raw_data,
                 from_cache=True,
             )
+            # A cached row with no usable macros is a "found but no nutrition"
+            # entry — treat as a miss so the caller falls back to vision.
+            return cached_result if cached_result.has_macros else None
 
         # 2. OFF API call
         product_data = await self._fetch_from_off(barcode)
@@ -149,7 +182,18 @@ class OpenFoodFactsService:
         if result is None:
             return None
 
-        # 4. Cache write (best-effort)
+        # 4. OFF product exists but carries no usable nutrition → do NOT cache a
+        # zero-nutrition row and do NOT surface it as КБЖУ; report a miss so the
+        # pipeline falls through to the vision estimate (honest low confidence).
+        if not result.has_macros:
+            logger.info(
+                "OFF product %s has no usable nutriments — treating as miss "
+                "(fall through to vision)",
+                barcode,
+            )
+            return None
+
+        # 5. Cache write (best-effort)
         self._write_cache(result)
 
         return result
@@ -158,9 +202,7 @@ class OpenFoodFactsService:
     # Private — HTTP
     # ------------------------------------------------------------------
 
-    async def _fetch_from_off(
-        self, barcode: str
-    ) -> Optional[Dict[str, Any]]:
+    async def _fetch_from_off(self, barcode: str) -> Optional[Dict[str, Any]]:
         """Call the OFF API and return the raw ``product`` dict, or ``None``."""
         url = OFF_BASE_URL + OFF_PRODUCT_PATH.format(barcode=barcode)
         headers = {"User-Agent": OFF_USER_AGENT}
@@ -181,9 +223,7 @@ class OpenFoodFactsService:
             logger.warning("OFF API timeout for barcode %s: %s", barcode, exc)
             return None
         except httpx.RequestError as exc:
-            logger.warning(
-                "OFF API request error for barcode %s: %s", barcode, exc
-            )
+            logger.warning("OFF API request error for barcode %s: %s", barcode, exc)
             return None
 
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -200,9 +240,7 @@ class OpenFoodFactsService:
         try:
             data: Dict[str, Any] = response.json()
         except Exception as exc:
-            logger.warning(
-                "OFF API returned non-JSON for barcode %s: %s", barcode, exc
-            )
+            logger.warning("OFF API returned non-JSON for barcode %s: %s", barcode, exc)
             return None
 
         # OFF status field: 1 = found, 0 = not found.
@@ -246,8 +284,7 @@ class OpenFoodFactsService:
         calories = self._float_or_none(nutriments.get("energy-kcal_100g"))
         if calories is None:
             kj = self._float_or_none(
-                nutriments.get("energy-kj_100g")
-                or nutriments.get("energy_100g")
+                nutriments.get("energy-kj_100g") or nutriments.get("energy_100g")
             )
             if kj is not None:
                 calories = round(kj / 4.184, 1)
@@ -257,9 +294,7 @@ class OpenFoodFactsService:
         carbs = self._float_or_none(nutriments.get("carbohydrates_100g"))
 
         product_name: Optional[str] = (
-            product.get("product_name")
-            or product.get("product_name_en")
-            or None
+            product.get("product_name") or product.get("product_name_en") or None
         )
         brand: Optional[str] = product.get("brands") or None
         off_code: str = str(product.get("code") or barcode)
@@ -312,6 +347,13 @@ class OpenFoodFactsService:
                 exc,
                 exc_info=True,
             )
+            # Leave the session clean regardless of the caller's session
+            # lifetime — a failed write otherwise strands a shared/long-lived
+            # session in a PendingRollback state for its next operation.
+            try:
+                self._db.rollback()
+            except Exception:  # pragma: no cover — defensive
+                logger.debug("rollback after cache-write failure also failed")
 
     # ------------------------------------------------------------------
     # Static helpers

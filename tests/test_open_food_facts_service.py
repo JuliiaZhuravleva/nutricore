@@ -219,7 +219,9 @@ def test_product_not_found_returns_none(db_session):
     """OFF status=0 (not found) must produce ``None``, not an exception."""
     resp = _make_response(200, _make_off_json(status=0))
     resp.json.return_value.pop("product", None)
-    resp.json = MagicMock(return_value={"status": 0, "status_verbose": "product not found"})
+    resp.json = MagicMock(
+        return_value={"status": 0, "status_verbose": "product not found"}
+    )
     patch_ctx, _ = _patch_client(resp)
 
     with patch_ctx:
@@ -335,9 +337,12 @@ def test_normalise_kj_fallback_conversion(db_session):
     assert result.calories_per_100g == pytest.approx(100.0, abs=0.5)
 
 
-def test_normalise_empty_nutriments(db_session):
-    """A product with empty nutriments dict must still return a result (all
-    macro fields are None), not raise."""
+def test_empty_nutriments_treated_as_miss(db_session):
+    """A product that EXISTS in OFF but carries no usable macros (empty
+    nutriments — common for regional/store-brand items) must be treated as a
+    miss (lookup → None) so the pipeline falls through to the vision estimate.
+    It must never surface as a high-confidence 0-ккал/0-БЖУ result badged
+    'точно' (review finding C1)."""
     off_json = {
         "status": 1,
         "product": {
@@ -353,12 +358,7 @@ def test_normalise_empty_nutriments(db_session):
     with patch_ctx:
         result = asyncio.run(_svc(db_session).lookup(_EAN))
 
-    assert result is not None
-    assert result.calories_per_100g is None
-    assert result.proteins_per_100g is None
-    assert result.fats_per_100g is None
-    assert result.carbohydrates_per_100g is None
-    assert result.product_name == "Mystery product"
+    assert result is None
 
 
 def test_normalise_non_numeric_nutriment_returns_none_not_error(db_session):
@@ -371,7 +371,7 @@ def test_normalise_non_numeric_nutriment_returns_none_not_error(db_session):
             "product_name": "Weird product",
             "brands": "Brand",
             "nutriments": {
-                "energy-kcal_100g": "n/a",   # bad string — should silently → None
+                "energy-kcal_100g": "n/a",  # bad string — should silently → None
                 "proteins_100g": 10.0,
                 "fat_100g": 3.0,
                 "carbohydrates_100g": 15.0,
@@ -385,8 +385,8 @@ def test_normalise_non_numeric_nutriment_returns_none_not_error(db_session):
         result = asyncio.run(_svc(db_session).lookup(_EAN))
 
     assert result is not None
-    assert result.calories_per_100g is None   # coerced, not raised
-    assert result.proteins_per_100g == 10.0   # other fields unaffected
+    assert result.calories_per_100g is None  # coerced, not raised
+    assert result.proteins_per_100g == 10.0  # other fields unaffected
 
 
 def test_normalise_product_name_en_fallback(db_session):
@@ -469,3 +469,31 @@ def test_float_or_none_with_non_numeric_string():
 
 def test_float_or_none_with_empty_string():
     assert OpenFoodFactsService._float_or_none("") is None
+
+
+def _mk_result(**macros):
+    base = dict(
+        barcode="4006381333931",
+        off_code="4006381333931",
+        product_name="X",
+        brand=None,
+        raw_data=None,
+        from_cache=False,
+        calories_per_100g=None,
+        proteins_per_100g=None,
+        fats_per_100g=None,
+        carbohydrates_per_100g=None,
+    )
+    base.update(macros)
+    return OFFLookupResult(**base)
+
+
+def test_has_macros_all_none_is_false():
+    # review C1: an OFF entry with no usable macros must report has_macros=False
+    # so the caller treats it as a miss (falls through to vision).
+    assert _mk_result().has_macros is False
+
+
+def test_has_macros_any_present_is_true():
+    assert _mk_result(calories_per_100g=52.0).has_macros is True
+    assert _mk_result(proteins_per_100g=0.0).has_macros is True

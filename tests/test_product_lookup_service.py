@@ -164,6 +164,14 @@ def test_parse_nutrition_rejects_missing_keys():
         ("150 g", 150.0),
         ("1 tube (150g)", 150.0),
         ("1 порция (75 г)", 75.0),
+        # review M2: spelled-out Russian grams (the \b-based regex missed these)
+        ("около 250 грамм", 250.0),
+        ("250 граммов", 250.0),
+        ("300 гр", 300.0),
+        # review M2: kilograms (were unhandled → silently fell to per-100g)
+        ("1 кг", 1000.0),
+        ("1,5 кг", 1500.0),
+        ("0.5 kg", 500.0),
         ("2 cups (480 ml)", None),  # ml, not grams
         ("", None),
         (None, None),
@@ -235,7 +243,9 @@ def test_barcode_off_strategy_hit_with_portion(db_session, monkeypatch):
 
     # 520 * 1.5 = 780; round(..., 1) applied so allow 0.1 tolerance
     assert result.nutrition["calories"] == pytest.approx(780.0, abs=0.2)
-    assert result.nutrition["protein"] == pytest.approx(8.25, abs=0.1)  # round(8.25,1)→8.2
+    assert result.nutrition["protein"] == pytest.approx(
+        8.25, abs=0.1
+    )  # round(8.25,1)→8.2
     assert result.nutrition["fats"] == pytest.approx(46.5, abs=0.2)
     assert result.nutrition["carbs"] == pytest.approx(79.5, abs=0.2)
     assert result.nutrition["portion"] == "150г"
@@ -407,7 +417,9 @@ async def _build_signals(barcode_return, vision_return, image_data_url):
     """Build ImageSignals directly (bypasses the real OpenAI calls)."""
     from app.services.product_lookup_service import _parse_portion_grams
 
-    vision_parsed = parse_nutrition(json.dumps(vision_return)) if vision_return else None
+    vision_parsed = (
+        parse_nutrition(json.dumps(vision_return)) if vision_return else None
+    )
     return ImageSignals(
         image_data_url=image_data_url,
         barcode=barcode_return,
@@ -595,8 +607,12 @@ def test_resolution_source_stored_in_draft(monkeypatch):
         portion_grams=150.0,
         signals={"barcode_raw": "4607195501226", "strategy_chosen": "barcode_off"},
     )
-    monkeypatch.setattr(pls, "resolve_meal_nutrition", AsyncMock(return_value=resolution))
-    monkeypatch.setattr(tg, "resolve_meal_nutrition", AsyncMock(return_value=resolution))
+    monkeypatch.setattr(
+        pls, "resolve_meal_nutrition", AsyncMock(return_value=resolution)
+    )
+    monkeypatch.setattr(
+        tg, "resolve_meal_nutrition", AsyncMock(return_value=resolution)
+    )
 
     # Minimal fake update / context
     from tests.test_meal_handler import _make_photo_update, _make_photo_context
@@ -604,13 +620,15 @@ def test_resolution_source_stored_in_draft(monkeypatch):
     update, _ = _make_photo_update()
     context = _make_photo_context()
 
-    state = asyncio.run(tg._run_meal_analysis(
-        update,
-        context,
-        kind="image",
-        input_ref="PHOTO_FILE_ID",
-        payload="data:image/jpeg;base64,abc",
-    ))
+    state = asyncio.run(
+        tg._run_meal_analysis(
+            update,
+            context,
+            kind="image",
+            input_ref="PHOTO_FILE_ID",
+            payload="data:image/jpeg;base64,abc",
+        )
+    )
 
     assert state == tg.CONFIRMING_MEAL
     meal = context.user_data["current_meal"]
@@ -634,13 +652,15 @@ def test_resolution_source_none_for_text_inputs(monkeypatch):
     update, _ = _make_text_update("chicken breast 200g")
     context = SimpleNamespace(user_data={})
 
-    state = asyncio.run(tg._run_meal_analysis(
-        update,
-        context,
-        kind="text",
-        input_ref="chicken breast 200g",
-        payload="chicken breast 200g",
-    ))
+    state = asyncio.run(
+        tg._run_meal_analysis(
+            update,
+            context,
+            kind="text",
+            input_ref="chicken breast 200g",
+            payload="chicken breast 200g",
+        )
+    )
 
     assert state == tg.CONFIRMING_MEAL
     meal = context.user_data["current_meal"]

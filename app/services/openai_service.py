@@ -61,6 +61,26 @@ def is_model_not_found_error(exc: Exception) -> bool:
     return "model" in msg and ("does not exist" in msg or "deprecat" in msg)
 
 
+def _has_valid_gs1_check_digit(code: str) -> bool:
+    """Validate the GS1 mod-10 check digit for EAN-8 / UPC-A / EAN-13.
+
+    A single misread digit (glare, tilt, smudge) usually invalidates the check
+    digit, so this rejects most vision misreads before they hit the product DB
+    and return a *different* real product's КБЖУ under a "точно" badge. Only the
+    fixed standard lengths carry a mod-10 check digit; other lengths (UPC-E,
+    ITF-14, …) are left best-effort and accepted by the caller.
+    """
+    if len(code) not in (8, 12, 13) or not code.isdigit():
+        return False
+    digits = [int(c) for c in code]
+    check = digits[-1]
+    # From the rightmost data digit leftward, weights alternate 3, 1, 3, 1, …
+    total = sum(
+        d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1]))
+    )
+    return (10 - (total % 10)) % 10 == check
+
+
 class OpenAIService:
     def __init__(self):
         self.client = AsyncOpenAI(
@@ -224,6 +244,16 @@ class OpenAIService:
                     "extract_barcode_from_image: invalid barcode value %r", value
                 )
                 return None
+            # For the fixed standard lengths, reject a bad GS1 check digit — it
+            # catches most single-digit vision misreads before they resolve to a
+            # different real product. Non-standard lengths stay best-effort.
+            if len(cleaned) in (8, 12, 13) and not _has_valid_gs1_check_digit(cleaned):
+                logger.warning(
+                    "extract_barcode_from_image: %r fails GS1 check digit — "
+                    "likely a misread, rejecting",
+                    cleaned,
+                )
+                return None
             return cleaned
         except (json.JSONDecodeError, AttributeError) as exc:
             logger.warning(
@@ -255,3 +285,25 @@ class OpenAIService:
             max_tokens=self.max_tokens,
         )
         return response.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton
+# ---------------------------------------------------------------------------
+
+_openai_service_instance: Optional["OpenAIService"] = None
+
+
+def get_openai_service() -> "OpenAIService":
+    """Return the process-wide OpenAIService singleton.
+
+    Both the bot handler layer (telegram.py) and the meal-resolution pipeline
+    (product_lookup_service.py) share ONE instance, so a runtime model switch
+    (TD-005 self-heal) stays visible everywhere. This factory lives here — not
+    on TelegramService — so service-layer code can obtain the client WITHOUT
+    importing the handler module, which previously forced a circular import.
+    """
+    global _openai_service_instance
+    if _openai_service_instance is None:
+        _openai_service_instance = OpenAIService()
+    return _openai_service_instance

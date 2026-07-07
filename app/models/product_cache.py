@@ -20,7 +20,7 @@ class ProductCache(Base, BaseClass):
     (products don't change often; the table is tiny), but the column is ready for it.
     """
 
-    __tablename__ = "product_cache"
+    __tablename__ = "product_caches"
 
     id = Column(Integer, primary_key=True, index=True)
     # The barcode string (EAN-13, UPC-A, etc.) — the primary lookup key.
@@ -51,4 +51,3 @@ class ProductCache(Base, BaseClass):
         default=lambda: datetime.datetime.now(UTC),
         onupdate=lambda: datetime.datetime.now(UTC),
     )
-

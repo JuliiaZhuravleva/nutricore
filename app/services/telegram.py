@@ -5,9 +5,15 @@ from typing import Dict
 
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import (Application, CommandHandler, ContextTypes,
-                          ConversationHandler, MessageHandler, TypeHandler,
-                          filters)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
@@ -20,8 +26,11 @@ from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.openai_service import (OPENAI_MODEL_SETTING_KEY,
-                                         ModelUnavailableError, OpenAIService)
+from app.services.openai_service import (
+    OPENAI_MODEL_SETTING_KEY,
+    ModelUnavailableError,
+    get_openai_service,
+)
 from app.services.product_lookup_service import (
     ResolutionResult,
     parse_nutrition,
@@ -88,7 +97,10 @@ class TelegramService:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(TelegramService, cls).__new__(cls)
-            cls._instance.openai_service = OpenAIService()
+            # Shared process-wide singleton (see openai_service.get_openai_service):
+            # the resolution pipeline uses the same instance, so a runtime model
+            # switch (TD-005) is visible everywhere without a circular import.
+            cls._instance.openai_service = get_openai_service()
         return cls._instance
 
     def __init__(self):
@@ -225,8 +237,6 @@ def _source_badge(result: ResolutionResult | None) -> str:
         return "✅ из базы (точно)"
     if result.confidence_tier == "medium":
         return "🔍 нашли в базе (проверь)"
-    if result.confidence_tier == "ambiguous":
-        return "❓ несколько вариантов"
     return "📷 оценка по фото"
 
 
@@ -390,13 +400,18 @@ async def _run_meal_analysis(
     if kind == "image":
         draft = {
             "nutrition": nutrition_info,
-            "description": ", ".join(nutrition_info.get("foods", [])) or "Фото приёма пищи",
+            "description": ", ".join(nutrition_info.get("foods", []))
+            or "Фото приёма пищи",
             # Telegram file_id so the saved meal keeps a photo reference
             # (re-fetchable; cheaper than storing the bytes in the DB).
             "photos": [input_ref],
             # Resolution pipeline metadata (A1 columns): persisted in confirm_meal.
-            "resolution_source": resolution_result.source if resolution_result else None,
-            "resolution_signals": resolution_result.signals if resolution_result else None,
+            "resolution_source": (
+                resolution_result.source if resolution_result else None
+            ),
+            "resolution_signals": (
+                resolution_result.signals if resolution_result else None
+            ),
         }
         header = "Я проанализировал фото. Вот что я нашел:"
     else:

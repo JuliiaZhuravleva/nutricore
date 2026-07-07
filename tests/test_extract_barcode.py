@@ -15,7 +15,11 @@ import httpx
 import openai
 import pytest
 
-from app.services.openai_service import ModelUnavailableError, OpenAIService
+from app.services.openai_service import (
+    ModelUnavailableError,
+    OpenAIService,
+    _has_valid_gs1_check_digit,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -222,3 +226,23 @@ def test_model_unavailable_error_propagates():
 
     with pytest.raises(ModelUnavailableError):
         _call(svc)
+
+
+@pytest.mark.parametrize(
+    "code, valid",
+    [
+        ("4006381333931", True),  # valid EAN-13
+        ("4006381333932", False),  # EAN-13, wrong check digit (single misread)
+        ("96385074", True),  # valid EAN-8
+        ("96385070", False),  # EAN-8, wrong check digit
+        ("036000291452", True),  # valid UPC-A (12)
+        ("036000291453", False),  # UPC-A, wrong check digit
+        ("123456", False),  # non-standard length — not validated here
+        ("", False),
+        ("abc", False),
+    ],
+)
+def test_gs1_check_digit(code, valid):
+    # review H1: reject most single-digit vision misreads before they resolve
+    # to a *different* real product badged "точно".
+    assert _has_valid_gs1_check_digit(code) is valid

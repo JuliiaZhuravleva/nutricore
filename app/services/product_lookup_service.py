@@ -25,9 +25,10 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.services.ai_call_log_service import analyze_and_log, record_ai_call
-from app.services.open_food_facts_service import OpenFoodFactsService
 from app.db.session import SessionLocal
+from app.services.ai_call_log_service import analyze_and_log
+from app.services.open_food_facts_service import OpenFoodFactsService
+from app.services.openai_service import get_openai_service
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +143,16 @@ class BarcodeOFFStrategy(ResolutionStrategy):
         try:
             svc = OpenFoodFactsService(db)
             off_result = await svc.lookup(signals.barcode)
-        except Exception as exc:  # pragma: no cover — OFF client already swallows
-            logger.warning("BarcodeOFFStrategy: lookup raised: %s", exc)
+        except Exception as exc:
+            # The OFF client swallows network/parse/cache errors to None, so this
+            # is a genuinely unexpected failure — log the stack trace (an infra
+            # bug here would otherwise masquerade as a routine "no match").
+            logger.warning(
+                "BarcodeOFFStrategy: lookup raised for %s: %s",
+                signals.barcode,
+                exc,
+                exc_info=True,
+            )
             off_result = None
         latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -336,10 +345,11 @@ async def _extract_signals(
     re-raised; other exceptions → vision_result=None (pipeline falls to vision
     fallback, which then also returns None → RuntimeError in the runner).
     """
-    from app.services.telegram import telegram_service  # lazy — breaks circular import
     from app.services.openai_service import ModelUnavailableError
 
-    svc = telegram_service.openai_service
+    # Shared process-wide singleton — same instance the bot uses, so a runtime
+    # model switch (TD-005) is honoured here too. No import of the handler layer.
+    svc = get_openai_service()
 
     barcode_coro = analyze_and_log(
         svc.extract_barcode_from_image(image_data_url),
@@ -364,9 +374,7 @@ async def _extract_signals(
 
     # --- Barcode -------------------------------------------------------
     if isinstance(barcode_log_result, Exception):
-        logger.warning(
-            "Barcode extraction failed (non-fatal): %s", barcode_log_result
-        )
+        logger.warning("Barcode extraction failed (non-fatal): %s", barcode_log_result)
         barcode: Optional[str] = None
     else:
         barcode = (barcode_log_result or {}).get("barcode")
@@ -375,9 +383,7 @@ async def _extract_signals(
     if isinstance(vision_result, ModelUnavailableError):
         raise vision_result  # propagate → _run_meal_analysis offers model picker
     if isinstance(vision_result, Exception):
-        logger.error(
-            "Vision analysis failed: %s", vision_result, exc_info=True
-        )
+        logger.error("Vision analysis failed: %s", vision_result, exc_info=True)
         vision_parsed: Optional[dict] = None
     else:
         vision_parsed = vision_result  # already parse_nutrition'd by analyze_and_log
@@ -401,6 +407,8 @@ def _parse_portion_grams(vision_result: Optional[dict]) -> Optional[float]:
     Examples that should match:
       "1 serving (300g)"  → 300.0
       "200г"              → 200.0
+      "около 250 граммов" → 250.0
+      "1,5 кг"            → 1500.0
       "150 g"             → 150.0
       "2 cups (480 ml)"   → None  (ml, not grams)
     """
@@ -410,8 +418,25 @@ def _parse_portion_grams(vision_result: Optional[dict]) -> Optional[float]:
     if not portion:
         return None
     portion_str = str(portion)
-    # Match a number immediately followed by 'г' or 'g' (with optional space before unit).
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(?:г|g)\b", portion_str, re.IGNORECASE)
-    if match:
-        return float(match.group(1))
+
+    # Kilograms FIRST, so 'кг'/'kg' isn't consumed by the grams pattern below.
+    kg = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:кг|kg|килограмм\w*|kilogram\w*)",
+        portion_str,
+        re.IGNORECASE,
+    )
+    if kg:
+        return float(kg.group(1).replace(",", ".")) * 1000.0
+
+    # Grams: full words ('граммов'/'грамм'/'гр', 'grams'/'gram') and the bare
+    # unit ('г'/'g'). The negative lookahead replaces a plain \b (which failed
+    # for Cyrillic 'граммов' — 'г' is followed by another word char) and keeps a
+    # bare 'г'/'g' from matching inside an unrelated word.
+    g = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:граммов|грамм|гр|г|grams|gram|g)(?![а-яёa-z])",
+        portion_str,
+        re.IGNORECASE,
+    )
+    if g:
+        return float(g.group(1).replace(",", "."))
     return None

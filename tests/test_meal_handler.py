@@ -354,7 +354,8 @@ def _make_resolution_result(
         nutrition=_NUTRITION,
         description="test",
         portion_grams=portion_grams,
-        signals=signals or {
+        signals=signals
+        or {
             "barcode_raw": "4607195501226",
             "product_name": "Чипсы Pringles Original",
         },
@@ -382,11 +383,14 @@ def test_source_badge_vision():
     assert "фото" in badge
 
 
-def test_source_badge_ambiguous():
+def test_source_badge_unknown_tier_falls_back_to_vision():
+    # The taxonomy only emits high/medium/low; an unrecognised tier must fall
+    # back to the honest low-confidence vision badge, never an "exact" one
+    # (the dead "ambiguous" branch was removed during review cleanup).
     badge = tg._source_badge(
         _make_resolution_result(source="tbd", confidence_tier="ambiguous", signals={})
     )
-    assert "вариант" in badge
+    assert badge == "📷 оценка по фото"
 
 
 def test_source_badge_none_returns_empty():
@@ -445,9 +449,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
 
 
 def test_nutrition_reply_vision_shows_source_badge():
-    result = _make_resolution_result(
-        source="vision", confidence_tier="low", signals={}
-    )
+    result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
     assert "фото" in reply
     assert "Продукты: banana, oatmeal" in reply
@@ -480,9 +482,9 @@ def test_resolution_detail_lines_shows_gram_basis_line_when_scaled():
     gram_lines = [l for l in lines if "150" in l]
     assert gram_lines, "Gram-basis line missing when scaling was applied"
     # It must reference vision estimate origin so user knows this is an estimate.
-    assert any("фото" in l for l in gram_lines), (
-        "Gram-basis line should indicate the value came from the vision estimate"
-    )
+    assert any(
+        "фото" in l for l in gram_lines
+    ), "Gram-basis line should indicate the value came from the vision estimate"
 
 
 def test_resolution_detail_lines_gram_basis_includes_correction_hint():
@@ -495,9 +497,9 @@ def test_resolution_detail_lines_gram_basis_includes_correction_hint():
     lines = tg._resolution_detail_lines(result)
     gram_lines = [l for l in lines if "200" in l]
     assert gram_lines, "Gram-basis line must include the gram value (200г)"
-    assert any("подтверждени" in l for l in gram_lines), (
-        "Gram-basis line should hint the user can correct at confirm step"
-    )
+    assert any(
+        "подтверждени" in l for l in gram_lines
+    ), "Gram-basis line should hint the user can correct at confirm step"
 
 
 def test_resolution_detail_lines_gram_basis_not_shown_for_zero():
@@ -509,12 +511,12 @@ def test_resolution_detail_lines_gram_basis_not_shown_for_zero():
     )
     lines = tg._resolution_detail_lines(result)
     # Zero grams means no valid scaling → treated like None → per-100g warning.
-    assert any("не определена" in l for l in lines), (
-        "Zero-gram case should fall back to per-100g warning"
-    )
-    assert not any("Пересчитано" in l for l in lines), (
-        "Zero-gram case must not show the scaled gram-basis line"
-    )
+    assert any(
+        "не определена" in l for l in lines
+    ), "Zero-gram case should fall back to per-100g warning"
+    assert not any(
+        "Пересчитано" in l for l in lines
+    ), "Zero-gram case must not show the scaled gram-basis line"
 
 
 def test_nutrition_reply_barcode_off_scaled_shows_gram_basis_line():
