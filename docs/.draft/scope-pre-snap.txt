@@ -1,3 +1,0 @@
-.claude/account-scope
-docs/.draft/pm-run.json
-docs/.draft/scope-pre-snap.txt
