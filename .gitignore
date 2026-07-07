@@ -60,3 +60,6 @@ regr.json
 
 
 .windsurfrules
+
+# Orchestrator raw claude -p payloads (may contain auth tokens/secrets — TD-021)
+*.execution.md.raw/
