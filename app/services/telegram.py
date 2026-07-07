@@ -233,13 +233,17 @@ def _source_badge(result: ResolutionResult | None) -> str:
 def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     """Key intermediate values surfaced for high/medium-confidence results.
 
-    Returns the EAN read, matched product name, and (when the portion estimate
-    is missing) a warning that the numbers are per-100g and should be corrected.
+    Returns the EAN read, matched product name, and the gram-basis used for
+    scaling (A6 — CQ2): when the pipeline scaled per-100g values to the
+    vision-estimated portion, shows that gram basis so the user can verify
+    and correct it at the existing confirm step.  When the portion estimate is
+    missing entirely, shows a per-100g warning instead.
     Vision-only results carry no meaningful intermediate signals beyond the
     nutrition fields already shown in the reply.
 
-    These lines let the user catch a wrong barcode read or wrong product match
-    before confirming the meal (ADR-0001 §6, north-star transparency principle).
+    These lines let the user catch a wrong barcode read, wrong product match,
+    or wrong portion estimate before confirming the meal
+    (ADR-0001 §6 + §7, north-star transparency principle).
     """
     if result is None or result.source == "vision":
         return []
@@ -251,9 +255,16 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     product_name = signals.get("product_name")
     if product_name:
         lines.append(f"Продукт: {product_name}")
-    # Explicit gram-basis transparency (ADR-0001 §7 / CQ2):
-    # when the pipeline had no vision portion estimate it falls back to per-100g.
-    if result.portion_grams is None:
+    # Explicit gram-basis transparency (ADR-0001 §7 / CQ2 / A6):
+    if result.portion_grams is not None and result.portion_grams > 0:
+        # Scaled: show the vision-estimated gram basis so the user can verify
+        # it is correct and correct it at the confirm step if needed.
+        lines.append(
+            f"Пересчитано на {result.portion_grams:.0f}г (оценка по фото)"
+            " — скорректируй при подтверждении"
+        )
+    else:
+        # No vision portion estimate — per-100g fallback; warn the user.
         lines.append(
             "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
         )

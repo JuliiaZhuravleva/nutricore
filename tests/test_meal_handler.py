@@ -465,6 +465,93 @@ def test_nutrition_reply_no_portion_shows_warning():
     assert "100г" in reply
 
 
+# --- A6: gram-basis display when OFF per-100g values were scaled (CQ2) -----
+
+
+def test_resolution_detail_lines_shows_gram_basis_line_when_scaled():
+    """A6 CQ2: when scaling was applied, _resolution_detail_lines shows the gram basis."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={"barcode_raw": "4607195501226", "product_name": "Pringles"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    # The gram-basis line must be present.
+    gram_lines = [l for l in lines if "150" in l]
+    assert gram_lines, "Gram-basis line missing when scaling was applied"
+    # It must reference vision estimate origin so user knows this is an estimate.
+    assert any("фото" in l for l in gram_lines), (
+        "Gram-basis line should indicate the value came from the vision estimate"
+    )
+
+
+def test_resolution_detail_lines_gram_basis_includes_correction_hint():
+    """A6: gram-basis line tells the user they can correct the value at confirm step."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=200.0,
+        signals={"barcode_raw": "1234", "product_name": "Test"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    gram_lines = [l for l in lines if "200" in l]
+    assert gram_lines, "Gram-basis line must include the gram value (200г)"
+    assert any("подтверждени" in l for l in gram_lines), (
+        "Gram-basis line should hint the user can correct at confirm step"
+    )
+
+
+def test_resolution_detail_lines_gram_basis_not_shown_for_zero():
+    """A6: a zero gram value (degenerate case) triggers the per-100g warning instead."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=0.0,
+        signals={"barcode_raw": "1234", "product_name": "Test"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    # Zero grams means no valid scaling → treated like None → per-100g warning.
+    assert any("не определена" in l for l in lines), (
+        "Zero-gram case should fall back to per-100g warning"
+    )
+    assert not any("Пересчитано" in l for l in lines), (
+        "Zero-gram case must not show the scaled gram-basis line"
+    )
+
+
+def test_nutrition_reply_barcode_off_scaled_shows_gram_basis_line():
+    """A6: full reply contains the explicit gram-basis scaling line."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    # Gram-basis line from A6
+    assert "150" in reply
+    assert "фото" in reply  # vision estimate origin
+    assert "подтверждени" in reply  # correction hint
+    # Other elements unaffected
+    assert "штрих-коду" in reply  # badge
+    assert "4607195501226" in reply  # EAN
+    assert "Pringles" in reply  # product name
+    assert "Продукты: banana, oatmeal" in reply  # nutrition block
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_resolution_detail_lines_no_gram_basis_for_vision_even_with_portion():
+    """A6: vision-only results never show the gram-basis line (no OFF scaling used)."""
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=300.0,  # known, but irrelevant — vision path, not scaled
+        signals={},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert lines == [], "Vision-only results must have no intermediate detail lines"
+
+
 # --- stale-draft reset + atomic write --------------------------------------
 
 
