@@ -50,8 +50,14 @@ in polling mode before moving on.
 
 - **Product lookup for packaged food** — return a packaged product's *actual* КБЖУ
   (barcode → Open Food Facts, or web-search identification) instead of a vision estimate,
-  with a source/confidence badge. Optional/opt-in. Draft spec:
-  [`docs/photo-product-lookup.md`](photo-product-lookup.md).
+  with a source/confidence badge. Optional/opt-in. Spec:
+  [`docs/photo-product-lookup.md`](photo-product-lookup.md); design:
+  [`docs/decisions/ADR-0001`](decisions/ADR-0001-pluggable-nutrition-resolution-pipeline.md).
+  - **Round 1 shipped (2026-07):** auto-trigger on a vision-read barcode → OFF lookup on a
+    pluggable resolution pipeline, per-100g scaled to the vision portion, transparent
+    source/confidence badge, cached in `product_caches`. **Round 2 (deferred):** A8 name
+    search, A10 label OCR, A9 web_search (needs a Responses-API-migration ADR). Residuals in
+    `_tech-debt.md` TD-011.
 - **Persist inbound messages/content + reprocess** — store photo+caption on receipt so
   failed/dropped items aren't lost and can be re-analyzed after a fix. See `_tech-debt.md`
   TD-009.
