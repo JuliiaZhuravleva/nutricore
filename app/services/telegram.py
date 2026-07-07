@@ -1,14 +1,19 @@
 import base64
-import json
 import logging
 from datetime import UTC, datetime
 from typing import Dict
 
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import (Application, CommandHandler, ContextTypes,
-                          ConversationHandler, MessageHandler, TypeHandler,
-                          filters)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
@@ -21,8 +26,16 @@ from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.openai_service import (OPENAI_MODEL_SETTING_KEY,
-                                         ModelUnavailableError, OpenAIService)
+from app.services.openai_service import (
+    OPENAI_MODEL_SETTING_KEY,
+    ModelUnavailableError,
+    get_openai_service,
+)
+from app.services.product_lookup_service import (
+    ResolutionResult,
+    parse_nutrition,
+    resolve_meal_nutrition,
+)
 
 # Enable logging
 logging.basicConfig(
@@ -48,7 +61,8 @@ REPROCESS_BATCH_LIMIT = 20
     CONFIRMING_MEAL,
     SUBSCRIPTION_INQUIRY,
     CHOOSING_MODEL,
-) = range(7)
+    DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
+) = range(8)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -83,7 +97,10 @@ class TelegramService:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(TelegramService, cls).__new__(cls)
-            cls._instance.openai_service = OpenAIService()
+            # Shared process-wide singleton (see openai_service.get_openai_service):
+            # the resolution pipeline uses the same instance, so a runtime model
+            # switch (TD-005) is visible everywhere without a circular import.
+            cls._instance.openai_service = get_openai_service()
         return cls._instance
 
     def __init__(self):
@@ -194,30 +211,10 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ADDING_MEAL
 
 
-_REQUIRED_NUTRITION_KEYS = ("calories", "protein", "fats", "carbs", "portion")
-
-
-def _parse_nutrition(raw):
-    """OpenAI analysis result → validated dict with a guaranteed list `foods`.
-
-    Both analysis methods return the raw JSON string; the model may also give
-    `foods` as a bare string. Normalizes both, and raises ValueError on a
-    None/non-object payload or one missing the fields the reply needs — so a
-    malformed response is recorded as an error and surfaced, not turned into a
-    downstream KeyError.
-    """
-    data = json.loads(raw) if isinstance(raw, str) else raw
-    if not isinstance(data, dict):
-        raise ValueError(f"expected a JSON object, got {type(data).__name__}")
-    foods = data.get("foods", [])
-    foods = [foods] if isinstance(foods, str) else (foods or [])
-    # Coerce elements to str: models the owner swaps in (o-series, etc.) may
-    # return foods as dicts/numbers, which would blow up ", ".join(...) later.
-    data["foods"] = [str(x) for x in foods]
-    missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
-    if missing:
-        raise ValueError(f"nutrition response missing keys: {missing}")
-    return data
+# parse_nutrition is imported from product_lookup_service (where the pipeline
+# logic lives).  Keep a private alias so existing tests referencing
+# tg._parse_nutrition continue to work without change.
+_parse_nutrition = parse_nutrition
 
 
 def _image_data_url(image_bytes) -> str:
@@ -226,18 +223,88 @@ def _image_data_url(image_bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
 
 
-def _nutrition_reply(data, header):
-    """Format the confirmation message shared by the photo and text branches."""
-    return (
-        f"{header}\n"
-        f"Продукты: {', '.join(data['foods'])}\n"
-        f"Калории: {data['calories']} ккал\n"
-        f"Белки: {data['protein']}г\n"
-        f"Жиры: {data['fats']}г\n"
-        f"Углеводы: {data['carbs']}г\n"
-        f"Порция: {data['portion']}\n\n"
-        f"Всё верно? (Да/Нет)"
-    )
+def _source_badge(result: ResolutionResult | None) -> str:
+    """Localised source/confidence badge for the reply, or empty for text inputs.
+
+    Matches the ADR-0001 §6 confidence-tier taxonomy so the user always knows how
+    much to trust the numbers (see also: docs/product-philosophy.md).
+    """
+    if result is None:
+        return ""
+    if result.source == "barcode_off":
+        return "📦 по штрих-коду (точно)"
+    if result.confidence_tier == "high":
+        return "✅ из базы (точно)"
+    if result.confidence_tier == "medium":
+        return "🔍 нашли в базе (проверь)"
+    return "📷 оценка по фото"
+
+
+def _resolution_detail_lines(result: ResolutionResult | None) -> list:
+    """Key intermediate values surfaced for high/medium-confidence results.
+
+    Returns the EAN read, matched product name, and the gram-basis used for
+    scaling (A6 — CQ2): when the pipeline scaled per-100g values to the
+    vision-estimated portion, shows that gram basis so the user can verify
+    and correct it at the existing confirm step.  When the portion estimate is
+    missing entirely, shows a per-100g warning instead.
+    Vision-only results carry no meaningful intermediate signals beyond the
+    nutrition fields already shown in the reply.
+
+    These lines let the user catch a wrong barcode read, wrong product match,
+    or wrong portion estimate before confirming the meal
+    (ADR-0001 §6 + §7, north-star transparency principle).
+    """
+    if result is None or result.source == "vision":
+        return []
+    signals = result.signals or {}
+    lines: list = []
+    barcode_raw = signals.get("barcode_raw")
+    if barcode_raw:
+        lines.append(f"Штрих-код: {barcode_raw}")
+    product_name = signals.get("product_name")
+    if product_name:
+        lines.append(f"Продукт: {product_name}")
+    # Explicit gram-basis transparency (ADR-0001 §7 / CQ2 / A6):
+    if result.portion_grams is not None and result.portion_grams > 0:
+        # Scaled: show the vision-estimated gram basis so the user can verify
+        # it is correct and correct it at the confirm step if needed.
+        lines.append(
+            f"Пересчитано на {result.portion_grams:.0f}г (оценка по фото)"
+            " — скорректируй при подтверждении"
+        )
+    else:
+        # No vision portion estimate — per-100g fallback; warn the user.
+        lines.append(
+            "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
+        )
+    return lines
+
+
+def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
+    """Format the confirmation message shared by the photo and text branches.
+
+    ``resolution_result`` is provided for image inputs so the reply can surface
+    the source/confidence badge and key intermediate values (EAN, product name,
+    gram-basis warning).  Text inputs pass ``None`` — the existing format is
+    unchanged.
+    """
+    badge = _source_badge(resolution_result)
+    detail_lines = _resolution_detail_lines(resolution_result)
+
+    parts = [header]
+    if badge:
+        parts.append(f"Источник: {badge}")
+    parts.extend(detail_lines)
+    parts.append(f"Продукты: {', '.join(data['foods'])}")
+    parts.append(f"Калории: {data['calories']} ккал")
+    parts.append(f"Белки: {data['protein']}г")
+    parts.append(f"Жиры: {data['fats']}г")
+    parts.append(f"Углеводы: {data['carbs']}г")
+    parts.append(f"Порция: {data['portion']}")
+    parts.append("")
+    parts.append("Всё верно? (Да/Нет)")
+    return "\n".join(parts)
 
 
 async def _analyze_and_parse(
@@ -286,12 +353,23 @@ async def _run_meal_analysis(
     (the persisted inbound message, TD-009) is flipped to analyzed/failed here.
     """
     try:
-        nutrition_info = await _analyze_and_parse(
-            kind=kind,
-            payload=payload,
-            input_ref=input_ref,
-            telegram_id=update.effective_user.id,
-        )
+        if kind == "image":
+            # Phase 1+2 pipeline: concurrent barcode+vision extraction, then
+            # ordered strategy resolution (BarcodeOFFStrategy → VisionFallback).
+            resolution_result = await resolve_meal_nutrition(
+                payload,
+                telegram_id=update.effective_user.id,
+                input_ref=input_ref,
+            )
+            nutrition_info = resolution_result.nutrition
+        else:
+            resolution_result = None
+            nutrition_info = await _analyze_and_parse(
+                kind=kind,
+                payload=payload,
+                input_ref=input_ref,
+                telegram_id=update.effective_user.id,
+            )
     except ModelUnavailableError as e:
         # Configured model is gone — record the miss, then let the owner pick a
         # new model and retry (the same inbound_id is re-marked on success).
@@ -322,10 +400,18 @@ async def _run_meal_analysis(
     if kind == "image":
         draft = {
             "nutrition": nutrition_info,
-            "description": ", ".join(nutrition_info["foods"]) or "Фото приёма пищи",
+            "description": ", ".join(nutrition_info.get("foods", []))
+            or "Фото приёма пищи",
             # Telegram file_id so the saved meal keeps a photo reference
             # (re-fetchable; cheaper than storing the bytes in the DB).
             "photos": [input_ref],
+            # Resolution pipeline metadata (A1 columns): persisted in confirm_meal.
+            "resolution_source": (
+                resolution_result.source if resolution_result else None
+            ),
+            "resolution_signals": (
+                resolution_result.signals if resolution_result else None
+            ),
         }
         header = "Я проанализировал фото. Вот что я нашел:"
     else:
@@ -333,7 +419,9 @@ async def _run_meal_analysis(
         header = "Я проанализировал ваш приём пищи. Вот что получилось:"
 
     try:
-        await update.message.reply_text(_nutrition_reply(nutrition_info, header))
+        await update.message.reply_text(
+            _nutrition_reply(nutrition_info, header, resolution_result)
+        )
     except Exception as e:
         # Analysis is saved; only the confirmation reply failed. Keep the draft
         # atomic (don't commit) and ask the owner to send the meal again.
@@ -512,6 +600,9 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 nutrients=nutrition,
                 photos=current_meal.get("photos", []),
                 ai_analysis=nutrition,
+                # Pipeline resolution tracking (A1 columns).
+                resolution_source=current_meal.get("resolution_source"),
+                resolution_signals=current_meal.get("resolution_signals"),
             )
 
             # Get or create user and save meal
@@ -738,15 +829,23 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 image_bytes = await file.download_as_bytearray()
                 payload = _image_data_url(image_bytes)
                 input_ref = row.photo_file_id
+                # Use the full pipeline so reprocessed images also benefit from
+                # barcode→OFF lookup (same quality as the live flow).
+                resolution_result = await resolve_meal_nutrition(
+                    payload,
+                    telegram_id=row.telegram_id,
+                    input_ref=input_ref,
+                )
+                parsed = resolution_result.nutrition
             else:
                 payload = row.content or ""
                 input_ref = row.content or ""
-            parsed = await _analyze_and_parse(
-                kind=row.kind,
-                payload=payload,
-                input_ref=input_ref,
-                telegram_id=row.telegram_id,
-            )
+                parsed = await _analyze_and_parse(
+                    kind=row.kind,
+                    payload=payload,
+                    input_ref=input_ref,
+                    telegram_id=row.telegram_id,
+                )
         except ModelUnavailableError as e:
             # Still broken — leave this row queued and tell the owner to switch.
             await update.message.reply_text(

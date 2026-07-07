@@ -47,6 +47,8 @@ class CRUDMeal:
             nutrients=obj_in.nutrients,
             photos=obj_in.photos,
             ai_analysis=obj_in.ai_analysis,
+            resolution_source=obj_in.resolution_source,
+            resolution_signals=obj_in.resolution_signals,
         )
         db.add(db_obj)
         db.commit()

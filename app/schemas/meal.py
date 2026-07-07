@@ -14,6 +14,11 @@ class MealBase(BaseModel):
     nutrients: Optional[Dict[str, Any]] = None
     photos: Optional[List[str]] = None
     ai_analysis: Optional[Dict[str, Any]] = None
+    # Pipeline resolution tracking (photo-product-lookup, A1).
+    # "barcode_off" | "name_off" | "label_ocr" | "vision" | None (legacy/unknown)
+    resolution_source: Optional[str] = None
+    # Key intermediate signals for transparency + misprediction analysis.
+    resolution_signals: Optional[Dict[str, Any]] = None
 
 
 class MealCreate(MealBase):
@@ -30,6 +35,8 @@ class MealUpdate(BaseModel):
     nutrients: Optional[Dict[str, Any]] = None
     photos: Optional[List[str]] = None
     ai_analysis: Optional[Dict[str, Any]] = None
+    resolution_source: Optional[str] = None
+    resolution_signals: Optional[Dict[str, Any]] = None
 
 
 class MealInDBBase(MealBase):

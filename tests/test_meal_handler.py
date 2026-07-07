@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.services.product_lookup_service as pls_module
 from app.core.config import settings
 from app.crud.crud_app_setting import crud_app_setting
 from app.db.base import Base
@@ -105,7 +106,7 @@ def entry_mock(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def patched_db(monkeypatch):
-    """Point telegram.SessionLocal at a fresh in-memory SQLite DB for every test.
+    """Point all SessionLocals at a fresh in-memory SQLite DB for every test.
 
     Autouse so the best-effort ai_call_logs recording (and confirm_meal's save)
     write to a throwaway DB instead of attempting a real connection. Tests that
@@ -119,9 +120,25 @@ def patched_db(monkeypatch):
     monkeypatch.setattr(tg, "SessionLocal", Session)  # confirm_meal's save
     monkeypatch.setattr(ai_log, "SessionLocal", Session)  # ai_call_logs hook
     monkeypatch.setattr(im_service, "SessionLocal", Session)  # inbound_messages hook
+    monkeypatch.setattr(pls_module, "SessionLocal", Session)  # pipeline session
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def barcode_mock(monkeypatch):
+    """Return None (no barcode) for all photo tests.
+
+    Without this, the pipeline's barcode extraction call hits the real OpenAI
+    API (→ 401 with the test key) and leaves an unexpected ai_call_logs row.
+    The barcode path is tested separately in test_product_lookup_service.py.
+    """
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service, "extract_barcode_from_image", mock
+    )
+    return mock
 
 
 # --- process_meal_input: photo branch --------------------------------------
@@ -319,6 +336,224 @@ def test_nutrition_reply_formats_all_fields():
     assert reply.endswith("Всё верно? (Да/Нет)")
 
 
+# --- _source_badge + _resolution_detail_lines (A5 transparency helpers) ---
+
+
+def _make_resolution_result(
+    source="barcode_off",
+    confidence_tier="high",
+    portion_grams=150.0,
+    signals=None,
+):
+    """Build a ResolutionResult for badge/detail tests without importing the dataclass."""
+    from app.services.product_lookup_service import ResolutionResult
+
+    return ResolutionResult(
+        source=source,
+        confidence_tier=confidence_tier,
+        nutrition=_NUTRITION,
+        description="test",
+        portion_grams=portion_grams,
+        signals=signals
+        or {
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+
+
+def test_source_badge_barcode_off():
+    badge = tg._source_badge(_make_resolution_result(source="barcode_off"))
+    assert "штрих-коду" in badge
+    assert "точно" in badge
+
+
+def test_source_badge_medium_confidence():
+    badge = tg._source_badge(
+        _make_resolution_result(source="name_off", confidence_tier="medium")
+    )
+    assert "нашли в базе" in badge
+    assert "проверь" in badge
+
+
+def test_source_badge_vision():
+    badge = tg._source_badge(
+        _make_resolution_result(source="vision", confidence_tier="low", signals={})
+    )
+    assert "фото" in badge
+
+
+def test_source_badge_unknown_tier_falls_back_to_vision():
+    # The taxonomy only emits high/medium/low; an unrecognised tier must fall
+    # back to the honest low-confidence vision badge, never an "exact" one
+    # (the dead "ambiguous" branch was removed during review cleanup).
+    badge = tg._source_badge(
+        _make_resolution_result(source="tbd", confidence_tier="ambiguous", signals={})
+    )
+    assert badge == "📷 оценка по фото"
+
+
+def test_source_badge_none_returns_empty():
+    assert tg._source_badge(None) == ""
+
+
+def test_resolution_detail_lines_barcode_off_with_portion():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={"barcode_raw": "4607195501226", "product_name": "Pringles Original"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert any("4607195501226" in l for l in lines)
+    assert any("Pringles" in l for l in lines)
+    # Portion is known — no warning
+    assert not any("не определена" in l for l in lines)
+
+
+def test_resolution_detail_lines_barcode_off_no_portion_warns():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=None,
+        signals={"barcode_raw": "1234567890", "product_name": "Test Product"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert any("не определена" in l for l in lines)
+    assert any("100г" in l for l in lines)
+
+
+def test_resolution_detail_lines_vision_returns_empty():
+    result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
+    assert tg._resolution_detail_lines(result) == []
+
+
+def test_resolution_detail_lines_none_returns_empty():
+    assert tg._resolution_detail_lines(None) == []
+
+
+def test_nutrition_reply_barcode_off_shows_badge_and_ean():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert reply.startswith("Заголовок:\n")
+    assert "штрих-коду" in reply  # badge
+    assert "4607195501226" in reply  # EAN
+    assert "Pringles" in reply  # product name
+    assert "Продукты: banana, oatmeal" in reply  # nutrition block intact
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_nutrition_reply_vision_shows_source_badge():
+    result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "фото" in reply
+    assert "Продукты: banana, oatmeal" in reply
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_nutrition_reply_no_portion_shows_warning():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=None,
+        signals={"barcode_raw": "999", "product_name": "Item"},
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "не определена" in reply
+    assert "100г" in reply
+
+
+# --- A6: gram-basis display when OFF per-100g values were scaled (CQ2) -----
+
+
+def test_resolution_detail_lines_shows_gram_basis_line_when_scaled():
+    """A6 CQ2: when scaling was applied, _resolution_detail_lines shows the gram basis."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={"barcode_raw": "4607195501226", "product_name": "Pringles"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    # The gram-basis line must be present.
+    gram_lines = [l for l in lines if "150" in l]
+    assert gram_lines, "Gram-basis line missing when scaling was applied"
+    # It must reference vision estimate origin so user knows this is an estimate.
+    assert any(
+        "фото" in l for l in gram_lines
+    ), "Gram-basis line should indicate the value came from the vision estimate"
+
+
+def test_resolution_detail_lines_gram_basis_includes_correction_hint():
+    """A6: gram-basis line tells the user they can correct the value at confirm step."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=200.0,
+        signals={"barcode_raw": "1234", "product_name": "Test"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    gram_lines = [l for l in lines if "200" in l]
+    assert gram_lines, "Gram-basis line must include the gram value (200г)"
+    assert any(
+        "подтверждени" in l for l in gram_lines
+    ), "Gram-basis line should hint the user can correct at confirm step"
+
+
+def test_resolution_detail_lines_gram_basis_not_shown_for_zero():
+    """A6: a zero gram value (degenerate case) triggers the per-100g warning instead."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=0.0,
+        signals={"barcode_raw": "1234", "product_name": "Test"},
+    )
+    lines = tg._resolution_detail_lines(result)
+    # Zero grams means no valid scaling → treated like None → per-100g warning.
+    assert any(
+        "не определена" in l for l in lines
+    ), "Zero-gram case should fall back to per-100g warning"
+    assert not any(
+        "Пересчитано" in l for l in lines
+    ), "Zero-gram case must not show the scaled gram-basis line"
+
+
+def test_nutrition_reply_barcode_off_scaled_shows_gram_basis_line():
+    """A6: full reply contains the explicit gram-basis scaling line."""
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=150.0,
+        signals={
+            "barcode_raw": "4607195501226",
+            "product_name": "Чипсы Pringles Original",
+        },
+    )
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    # Gram-basis line from A6
+    assert "150" in reply
+    assert "фото" in reply  # vision estimate origin
+    assert "подтверждени" in reply  # correction hint
+    # Other elements unaffected
+    assert "штрих-коду" in reply  # badge
+    assert "4607195501226" in reply  # EAN
+    assert "Pringles" in reply  # product name
+    assert "Продукты: banana, oatmeal" in reply  # nutrition block
+    assert reply.endswith("Всё верно? (Да/Нет)")
+
+
+def test_resolution_detail_lines_no_gram_basis_for_vision_even_with_portion():
+    """A6: vision-only results never show the gram-basis line (no OFF scaling used)."""
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=300.0,  # known, but irrelevant — vision path, not scaled
+        signals={},
+    )
+    lines = tg._resolution_detail_lines(result)
+    assert lines == [], "Vision-only results must have no intermediate detail lines"
+
+
 # --- stale-draft reset + atomic write --------------------------------------
 
 
@@ -359,8 +594,11 @@ def test_photo_meal_records_ai_call(patched_db, image_mock):
 
     with sessionmaker(bind=patched_db)() as db:
         rows = db.query(AiCallLog).all()
-    assert len(rows) == 1
-    row = rows[0]
+    # Pipeline makes 2 concurrent calls: barcode_extraction + image.
+    assert len(rows) == 2
+    image_rows = [r for r in rows if r.kind == "image"]
+    assert len(image_rows) == 1
+    row = image_rows[0]
     assert row.kind == "image"
     assert row.status == "ok"
     assert row.input_ref == "PHOTO_FILE_ID"
@@ -393,10 +631,13 @@ def test_records_error_status_on_analysis_failure(patched_db, image_mock):
 
     with sessionmaker(bind=patched_db)() as db:
         rows = db.query(AiCallLog).all()
-    assert len(rows) == 1
-    assert rows[0].status == "error"
-    assert "boom" in rows[0].error
-    assert rows[0].parsed_result is None
+    # Pipeline: barcode_extraction (ok/None) + image (error).
+    assert len(rows) == 2
+    error_rows = [r for r in rows if r.status == "error"]
+    assert len(error_rows) == 1
+    assert error_rows[0].kind == "image"
+    assert "boom" in error_rows[0].error
+    assert error_rows[0].parsed_result is None
 
 
 # --- reject → re-log discards the stale draft -------------------------------

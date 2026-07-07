@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import openai
 from openai import AsyncOpenAI
@@ -58,6 +59,26 @@ def is_model_not_found_error(exc: Exception) -> bool:
     # Require "model" to co-occur so a "does not exist" / "deprecated" message
     # about some other resource isn't misread as a model deprecation.
     return "model" in msg and ("does not exist" in msg or "deprecat" in msg)
+
+
+def _has_valid_gs1_check_digit(code: str) -> bool:
+    """Validate the GS1 mod-10 check digit for EAN-8 / UPC-A / EAN-13.
+
+    A single misread digit (glare, tilt, smudge) usually invalidates the check
+    digit, so this rejects most vision misreads before they hit the product DB
+    and return a *different* real product's КБЖУ under a "точно" badge. Only the
+    fixed standard lengths carry a mod-10 check digit; other lengths (UPC-E,
+    ITF-14, …) are left best-effort and accepted by the caller.
+    """
+    if len(code) not in (8, 12, 13) or not code.isdigit():
+        return False
+    digits = [int(c) for c in code]
+    check = digits[-1]
+    # From the rightmost data digit leftward, weights alternate 3, 1, 3, 1, …
+    total = sum(
+        d * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(digits[:-1]))
+    )
+    return (10 - (total % 10)) % 10 == check
 
 
 class OpenAIService:
@@ -168,6 +189,83 @@ class OpenAIService:
         )
         return response.choices[0].message.content
 
+    async def extract_barcode_from_image(self, image_url: str) -> Optional[str]:
+        """Extract a barcode (EAN/UPC) from a product image using vision.
+
+        Asks the vision model to read the numeric barcode digits directly from
+        the image. Avoids pyzbar/libzbar system-lib dependencies.
+
+        Returns the barcode string (digits only) if one is clearly readable,
+        or None if no barcode is visible or the digits cannot be reliably read.
+        """
+        system_prompt = (
+            "You are a barcode reader. Your only job is to find and accurately read "
+            "barcode digits from product images. Look for EAN-13 (13 digits), EAN-8 "
+            "(8 digits), UPC-A (12 digits), or UPC-E (6–8 digits) barcodes.\n\n"
+            'Return ONLY this JSON: {"barcode": "digits_here"}\n'
+            'or if no barcode is visible or readable: {"barcode": null}\n\n'
+            "Rules:\n"
+            "- Return ONLY the numeric digits — no spaces, no dashes.\n"
+            "- If you cannot clearly read ALL digits, return null.\n"
+            "- Do NOT guess or fill in digits you cannot see.\n"
+            "- Ignore QR codes and Data Matrix codes — only linear barcodes."
+        )
+
+        response = await self._create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Read the barcode from this product image. Return only the numeric digits.",
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ],
+            # Barcode is at most ~15 digits + small JSON envelope — 64 tokens is ample.
+            max_tokens=64,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content
+        try:
+            data = json.loads(raw)
+            value = data.get("barcode")
+            if not value:
+                return None
+            # Normalise: strip spaces and dashes the model might include.
+            cleaned = str(value).strip().replace(" ", "").replace("-", "")
+            # Validate: ASCII digits only, length 6–18 (covers EAN-8 through
+            # ITF-14). isascii() guards against non-ASCII "digit" characters
+            # (e.g. superscripts) that str.isdigit() accepts but that must never
+            # reach the OFF URL path.
+            if not (cleaned.isascii() and cleaned.isdigit()) or not (
+                6 <= len(cleaned) <= 18
+            ):
+                logger.warning(
+                    "extract_barcode_from_image: invalid barcode value %r", value
+                )
+                return None
+            # For the fixed standard lengths, reject a bad GS1 check digit — it
+            # catches most single-digit vision misreads before they resolve to a
+            # different real product. Non-standard lengths stay best-effort.
+            if len(cleaned) in (8, 12, 13) and not _has_valid_gs1_check_digit(cleaned):
+                logger.warning(
+                    "extract_barcode_from_image: %r fails GS1 check digit — "
+                    "likely a misread, rejecting",
+                    cleaned,
+                )
+                return None
+            return cleaned
+        except (json.JSONDecodeError, AttributeError) as exc:
+            logger.warning(
+                "extract_barcode_from_image: failed to parse response %r: %s", raw, exc
+            )
+            return None
+
     async def generate_health_insights(self, user_data: Dict) -> str:
         """Generate health insights based on user's nutrition and activity data."""
         system_prompt = """You are a nutrition and health expert assistant. Analyze user's nutrition and activity data
@@ -192,3 +290,25 @@ class OpenAIService:
             max_tokens=self.max_tokens,
         )
         return response.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton
+# ---------------------------------------------------------------------------
+
+_openai_service_instance: Optional["OpenAIService"] = None
+
+
+def get_openai_service() -> "OpenAIService":
+    """Return the process-wide OpenAIService singleton.
+
+    Both the bot handler layer (telegram.py) and the meal-resolution pipeline
+    (product_lookup_service.py) share ONE instance, so a runtime model switch
+    (TD-005 self-heal) stays visible everywhere. This factory lives here — not
+    on TelegramService — so service-layer code can obtain the client WITHOUT
+    importing the handler module, which previously forced a circular import.
+    """
+    global _openai_service_instance
+    if _openai_service_instance is None:
+        _openai_service_instance = OpenAIService()
+    return _openai_service_instance

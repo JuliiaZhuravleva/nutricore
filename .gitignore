@@ -67,3 +67,5 @@ regr.json
 *.execution.md.log.jsonl
 *.execution.md.progress
 *.execution.md.verdicts/
+# Orchestrator draft scratch (pm-run.json etc. — may hold raw payloads, TD-021)
+docs/.draft/

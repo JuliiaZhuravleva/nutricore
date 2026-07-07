@@ -6,6 +6,7 @@ from app.models.app_setting import AppSetting
 from app.models.body_metric import BodyMetric
 from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
+from app.models.product_cache import ProductCache
 from app.models.subscription import Subscription
 from app.models.user import User
 
@@ -22,4 +23,5 @@ __all__ = [
     "AiCallLog",
     "AppSetting",
     "InboundMessage",
+    "ProductCache",
 ]
