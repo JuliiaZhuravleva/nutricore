@@ -235,6 +235,12 @@ def _source_badge(result: ResolutionResult | None) -> str:
         return "📦 по штрих-коду (точно)"
     if result.source == "label_ocr":
         return "🏷️ с этикетки (проверь)"
+    if result.source == "name_web":
+        # Dynamic confidence_tier: "medium" when OFF re-query succeeded,
+        # "low" when only web-prose numbers are available (ADR-0002 §6).
+        if result.confidence_tier == "low":
+            return "🌐 нашли в сети (сверь — веб)"
+        return "🌐 нашли в сети (проверь)"
     if result.confidence_tier == "high":
         return "✅ из базы (точно)"
     if result.confidence_tier == "medium":

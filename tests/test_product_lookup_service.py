@@ -33,10 +33,12 @@ from app.services.product_lookup_service import (
     ImageSignals,
     LabelOCRStrategy,
     NameOFFStrategy,
+    NameWebSearchStrategy,
     ResolutionResult,
     VisionFallbackStrategy,
     _build_pipeline,
     _parse_portion_grams,
+    _parse_web_nutrition_response,
     _scale_label_nutrition,
     parse_nutrition,
     resolve_meal_nutrition,
@@ -132,6 +134,19 @@ def default_no_label_ocr(monkeypatch):
         ois.OpenAIService,
         "extract_nutrition_label",
         AsyncMock(return_value=json.dumps({"basis": None})),
+    )
+
+
+@pytest.fixture(autouse=True)
+def default_no_web_search(monkeypatch):
+    """Default the A9 web_search to a no-identification miss so existing pipeline
+    tests make no real Responses-API calls; NameWebSearchStrategy tests override this."""
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "web_search_nutrition",
+        AsyncMock(return_value=json.dumps({"identification": None})),
     )
 
 
@@ -639,6 +654,7 @@ def test_pipeline_falls_back_to_vision_when_off_not_found(monkeypatch):
         "barcode_off",
         "name_off",
         "label_ocr",
+        "name_web",
         "vision",
     ]
 
@@ -695,10 +711,9 @@ def test_pipeline_propagates_model_unavailable_error(monkeypatch):
 
 
 def test_build_pipeline_order():
-    """Pipeline order: barcode_off → name_off → label_ocr → vision.
-    A9 (name_web) will insert before vision once A12 ADR is ratified."""
+    """Pipeline order: barcode_off → name_off → label_ocr → name_web → vision."""
     order = [s.source_id for s in _build_pipeline()]
-    assert order == ["barcode_off", "name_off", "label_ocr", "vision"]
+    assert order == ["barcode_off", "name_off", "label_ocr", "name_web", "vision"]
 
 
 def test_pipeline_name_off_wins_when_no_barcode(monkeypatch):
@@ -750,6 +765,7 @@ def test_pipeline_name_off_skipped_multi_food_falls_to_vision(monkeypatch):
         "barcode_off",
         "name_off",
         "label_ocr",
+        "name_web",
         "vision",
     ]
     search.assert_not_called()
@@ -1267,3 +1283,429 @@ def test_scale_label_nutrition_no_portion_uses_basis():
     )
     assert nutrition["calories"] == 500.0
     assert nutrition["portion"] == "100г"
+
+
+# ---------------------------------------------------------------------------
+# _parse_web_nutrition_response unit tests (A9)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_web_response_clean_json():
+    """Clean JSON with identification and all macros → dict with all fields."""
+    raw = json.dumps({
+        "identification": "Pringles Original",
+        "calories_per_100g": 524.0,
+        "protein_per_100g": 6.0,
+        "fats_per_100g": 30.0,
+        "carbs_per_100g": 55.0,
+    })
+    result = _parse_web_nutrition_response(raw)
+    assert result["identification"] == "Pringles Original"
+    assert result["off_query"] == "Pringles Original"
+    assert result["confidence_path"] == "off_requery"
+    assert result["calories_per_100g"] == 524.0
+    assert result["protein_per_100g"] == 6.0
+    assert result["fats_per_100g"] == 30.0
+    assert result["carbs_per_100g"] == 55.0
+    assert "nutrition_prose" in result
+
+
+def test_parse_web_response_embedded_in_prose():
+    """JSON embedded in prose (model adds preamble) → still parsed."""
+    raw = (
+        'Based on web search results:\n'
+        '{"identification": "Lay\'s Classic", "calories_per_100g": 536, '
+        '"protein_per_100g": 7, "fats_per_100g": 31, "carbs_per_100g": 55}'
+    )
+    result = _parse_web_nutrition_response(raw)
+    assert result["identification"] == "Lay's Classic"
+    assert result["calories_per_100g"] == 536.0
+
+
+def test_parse_web_response_markdown_block():
+    """JSON wrapped in ```json ... ``` markdown block → still parsed."""
+    raw = (
+        "Here is the nutrition info:\n"
+        "```json\n"
+        '{"identification": "Kind Bar", "calories_per_100g": 430, '
+        '"protein_per_100g": 10, "fats_per_100g": 20, "carbs_per_100g": 50}\n'
+        "```"
+    )
+    result = _parse_web_nutrition_response(raw)
+    assert result["identification"] == "Kind Bar"
+    assert result["calories_per_100g"] == 430.0
+
+
+def test_parse_web_response_null_macros_still_parsed():
+    """Null macro values are allowed — prose path uses them gracefully."""
+    raw = json.dumps({
+        "identification": "Generic Chips",
+        "calories_per_100g": None,
+        "protein_per_100g": None,
+        "fats_per_100g": None,
+        "carbs_per_100g": None,
+    })
+    result = _parse_web_nutrition_response(raw)
+    assert result["identification"] == "Generic Chips"
+    assert result["calories_per_100g"] is None
+
+
+def test_parse_web_response_null_identification_raises():
+    """null identification → ValueError (no product found)."""
+    raw = json.dumps({
+        "identification": None,
+        "calories_per_100g": 500.0,
+        "protein_per_100g": 5.0,
+        "fats_per_100g": 25.0,
+        "carbs_per_100g": 60.0,
+    })
+    with pytest.raises(ValueError, match="no product identification"):
+        _parse_web_nutrition_response(raw)
+
+
+def test_parse_web_response_empty_string_raises():
+    """Empty response → ValueError."""
+    with pytest.raises(ValueError, match="empty response"):
+        _parse_web_nutrition_response("")
+
+
+def test_parse_web_response_no_json_raises():
+    """Totally unparseable (no JSON) → ValueError."""
+    with pytest.raises(ValueError):
+        _parse_web_nutrition_response("The product could not be found in any database.")
+
+
+def test_parse_web_response_non_dict_json_raises():
+    """JSON array or scalar (not object) → ValueError."""
+    with pytest.raises(ValueError):
+        _parse_web_nutrition_response('["Pringles", 524]')
+
+
+# ---------------------------------------------------------------------------
+# NameWebSearchStrategy unit tests (A9)
+# ---------------------------------------------------------------------------
+
+
+def _patch_web_search(monkeypatch, return_value=None, side_effect=None):
+    """Monkeypatch web_search_nutrition on the OpenAIService class."""
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "web_search_nutrition",
+        AsyncMock(return_value=return_value, side_effect=side_effect),
+    )
+
+
+_WEB_HIT_RESPONSE = json.dumps({
+    "identification": "Pringles Original",
+    "calories_per_100g": 520.0,
+    "protein_per_100g": 5.5,
+    "fats_per_100g": 31.0,
+    "carbs_per_100g": 53.0,
+})
+
+
+def test_name_web_vision_none_returns_none(db_session):
+    """If Phase-1 vision failed (vision_result=None) → None without web call."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=None,
+        portion_grams=None,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_name_web_no_vision_foods_returns_none(db_session, monkeypatch):
+    """Empty vision foods list → None without web call."""
+    web_mock = AsyncMock(return_value=_WEB_HIT_RESPONSE)
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_NUTRITION, "foods": []},
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_name_web_too_many_foods_skips(db_session, monkeypatch):
+    """Multi-item plate (> 2 foods) → skip web search."""
+    import app.services.openai_service as ois
+
+    web_mock = AsyncMock(return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(ois.OpenAIService, "web_search_nutrition", web_mock)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_NUTRITION, "foods": ["rice", "chicken", "broccoli"]},
+        portion_grams=300.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+    web_mock.assert_not_called()
+
+
+def test_name_web_off_requery_hit_medium_confidence(db_session, monkeypatch):
+    """Web search identifies product, OFF re-query succeeds → medium confidence."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=_OFF_RESULT),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "name_web"
+    assert result.confidence_tier == "medium"
+    # OFF result: 520 * 1.5 = 780
+    assert result.nutrition["calories"] == pytest.approx(780.0, abs=0.2)
+    assert result.nutrition["portion"] == "150г"
+    assert result.nutrition["foods"] == ["Чипсы Pringles Original"]
+    assert result.description == "Чипсы Pringles Original"
+
+
+def test_name_web_off_requery_hit_no_portion(db_session, monkeypatch):
+    """OFF re-query hit but no portion estimate → per-100g numbers, '100г'."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=_OFF_RESULT),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_SINGLE_FOOD, "portion": "1 serving"},
+        portion_grams=None,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.confidence_tier == "medium"
+    assert result.nutrition["calories"] == 520.0
+    assert result.nutrition["portion"] == "100г"
+
+
+def test_name_web_prose_fallback_low_confidence(db_session, monkeypatch):
+    """OFF re-query misses + complete prose macros → low confidence prose path."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=None),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=100.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "name_web"
+    assert result.confidence_tier == "low"
+    # Prose path uses web numbers scaled per-100g: portion=100g → factor=1.0
+    assert result.nutrition["calories"] == pytest.approx(520.0, abs=0.2)
+    assert result.nutrition["portion"] == "100г"
+    assert "web_prose_macros" in result.signals
+
+
+def test_name_web_prose_fallback_scales_to_portion(db_session, monkeypatch):
+    """Prose path: per-100g web numbers scaled to vision portion."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=None),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.confidence_tier == "low"
+    # 520 * 1.5 = 780; round(..., 1)
+    assert result.nutrition["calories"] == pytest.approx(780.0, abs=0.2)
+    assert result.nutrition["portion"] == "150г"
+
+
+def test_name_web_null_identification_returns_none(db_session, monkeypatch):
+    """Web search returns null identification → _parse_web raises ValueError → None."""
+    _patch_web_search(
+        monkeypatch,
+        return_value=json.dumps({"identification": None}),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_name_web_off_requery_miss_no_prose_numbers_returns_none(db_session, monkeypatch):
+    """OFF miss + prose macros all null → nothing usable → None."""
+    _patch_web_search(
+        monkeypatch,
+        return_value=json.dumps({
+            "identification": "Unknown Product",
+            "calories_per_100g": None,
+            "protein_per_100g": None,
+            "fats_per_100g": None,
+            "carbs_per_100g": None,
+        }),
+    )
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=None),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_name_web_search_raises_returns_none(db_session, monkeypatch):
+    """If web_search_nutrition raises (network/auth error) → None (non-blocking)."""
+    _patch_web_search(monkeypatch, side_effect=RuntimeError("API error"))
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_name_web_off_requery_raises_falls_to_prose(db_session, monkeypatch):
+    """If OFF re-query raises, fall through to prose path (if numbers available)."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(side_effect=RuntimeError("OFF network error")),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=100.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    # OFF raised → fallback to prose (which has complete macros in _WEB_HIT_RESPONSE)
+    assert result is not None
+    assert result.source == "name_web"
+    assert result.confidence_tier == "low"
+
+
+def test_name_web_signals_medium_path(db_session, monkeypatch):
+    """Medium-confidence signals: barcode_raw off, name_query recorded, off_code set."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=_OFF_RESULT),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=100.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    s = result.signals
+    # ADR §5 required keys
+    required_keys = {
+        "barcode_raw", "barcode_detected", "product_name", "brand",
+        "off_code", "off_from_cache", "off_latency_ms", "portion_grams",
+        "confidence_tier", "strategy_tried", "strategy_chosen",
+        "vision_foods", "vision_portion_raw",
+    }
+    assert required_keys.issubset(s.keys())
+    assert s["barcode_raw"] is None  # not a barcode result
+    assert s["barcode_detected"] is False
+    assert s["confidence_tier"] == "medium"
+    assert s["strategy_chosen"] == "name_web"
+    assert s["off_from_cache"] is False
+    assert "name_query" in s
+    assert "web_identification" in s
+    assert "barcode_unresolved" not in s  # no barcode present
+
+
+def test_name_web_signals_records_unresolved_barcode(db_session, monkeypatch):
+    """When a barcode was detected but unresolved, signals preserve it."""
+    _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=_OFF_RESULT),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode="4607195501226",
+        vision_result=_SINGLE_FOOD,
+        portion_grams=100.0,
+    )
+    result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    s = result.signals
+    assert s["barcode_raw"] is None  # not surfaced in reply
+    assert s["barcode_detected"] is True
+    assert s["barcode_unresolved"] == "4607195501226"
+
+
+def test_name_web_pipeline_wins_after_label_ocr_miss(monkeypatch):
+    """No barcode, name-search miss, label-OCR miss, web search prose path wins.
+
+    NameOFFStrategy and NameWebSearchStrategy share search_by_name; both miss
+    (autouse default_no_name_search keeps it at None).  NameWebSearchStrategy
+    falls through to the prose path and returns low-confidence numbers.
+    """
+    import app.services.product_lookup_service as pls
+    import app.services.openai_service as ois
+
+    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+        return await _build_signals(None, _SINGLE_FOOD, image_data_url)
+
+    monkeypatch.setattr(pls, "_extract_signals", fake_extract)
+    # label_ocr: miss (autouse handles it)
+    # name_off: miss (autouse default_no_name_search keeps search_by_name → None)
+    # web search: hit with identification + prose numbers
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "web_search_nutrition",
+        AsyncMock(return_value=_WEB_HIT_RESPONSE),
+    )
+    # search_by_name still returns None (autouse) → name_web falls to prose path
+
+    result = asyncio.run(
+        resolve_meal_nutrition("data:image/jpeg;base64,abc", telegram_id=42)
+    )
+
+    # name_off misses, label_ocr misses, name_web uses prose → low confidence
+    assert result.source == "name_web"
+    assert result.confidence_tier == "low"
+    assert result.signals["strategy_tried"] == [
+        "barcode_off", "name_off", "label_ocr", "name_web"
+    ]
+    assert result.signals["strategy_chosen"] == "name_web"

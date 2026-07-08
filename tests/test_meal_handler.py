@@ -177,6 +177,21 @@ def label_ocr_mock(monkeypatch):
     return mock
 
 
+@pytest.fixture(autouse=True)
+def web_search_mock(monkeypatch):
+    """Return None (no match) for the A9 NameWebSearchStrategy in all photo tests.
+
+    Mocked at the strategy level so no Responses-API call is made and no extra
+    ai_call_logs row is written.  The A9 path is tested directly in
+    test_product_lookup_service.py.
+    """
+    from app.services.product_lookup_service import NameWebSearchStrategy
+
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(NameWebSearchStrategy, "resolve", mock)
+    return mock
+
+
 # --- process_meal_input: photo branch --------------------------------------
 
 
@@ -418,6 +433,25 @@ def test_source_badge_medium_confidence():
     )
     assert "нашли в базе" in badge
     assert "проверь" in badge
+
+
+def test_source_badge_name_web_medium():
+    """name_web + medium tier (OFF re-query succeeded) → cautious web badge."""
+    badge = tg._source_badge(
+        _make_resolution_result(source="name_web", confidence_tier="medium", signals={})
+    )
+    assert "нашли в сети" in badge
+    assert "проверь" in badge
+    assert "сверь — веб" not in badge  # not the lowest-trust badge
+
+
+def test_source_badge_name_web_low():
+    """name_web + low tier (prose-only path) → most cautious badge."""
+    badge = tg._source_badge(
+        _make_resolution_result(source="name_web", confidence_tier="low", signals={})
+    )
+    assert "нашли в сети" in badge
+    assert "сверь — веб" in badge
 
 
 def test_source_badge_vision():

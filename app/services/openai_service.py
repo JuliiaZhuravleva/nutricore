@@ -340,6 +340,45 @@ class OpenAIService:
         )
         return response.choices[0].message.content
 
+    async def web_search_nutrition(self, query_foods: list) -> str:
+        """Call the Responses API web_search tool to retrieve product nutrition text.
+
+        Returns the raw text content from the model's response (plain string), so
+        analyze_and_log(kind="web_search", parse=...) can consume it unchanged.
+
+        Uses the split-client approach (ADR-0002): only this method goes through
+        the Responses API.  All existing methods remain on chat.completions.
+
+        Does NOT catch exceptions — all network / API / parse errors propagate to
+        the caller (NameWebSearchStrategy.resolve → try/except → return None).
+        Does NOT trigger the TD-005 self-heal mechanism (that path is chat.completions
+        only).
+
+        Parameters
+        ----------
+        query_foods:
+            Vision-extracted food name(s) used as the search query.
+        """
+        query = ", ".join(query_foods)
+        response = await self.client.responses.create(
+            model=self.model,
+            tools=[{"type": "web_search_preview"}],
+            input=(
+                f"Find the exact КБЖУ (calories, protein, fat, carbohydrates per 100g) "
+                f"for: {query}\n\n"
+                "Output ONLY a JSON object in this exact format (no prose, no markdown):\n"
+                '{"identification": "product name and brand", '
+                '"calories_per_100g": number_or_null, '
+                '"protein_per_100g": number_or_null, '
+                '"fats_per_100g": number_or_null, '
+                '"carbs_per_100g": number_or_null}\n'
+                'If you cannot identify the specific product, set "identification" to null.'
+            ),
+        )
+        # Return the text content as a plain string — shape matches existing text methods
+        # so analyze_and_log(kind="web_search", parse=...) works unchanged.
+        return response.output_text
+
     async def generate_health_insights(self, user_data: Dict) -> str:
         """Generate health insights based on user's nutrition and activity data."""
         system_prompt = """You are a nutrition and health expert assistant. Analyze user's nutrition and activity data

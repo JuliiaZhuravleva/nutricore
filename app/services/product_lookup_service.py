@@ -11,8 +11,10 @@ Round-1 strategies:
   BarcodeOFFStrategy   (high confidence, A4)
   VisionFallbackStrategy  (low confidence, always last)
 
-Future strategies (A8/A9/A10) plug in by uncommenting one line in
-``_build_pipeline()`` — no other code changes required.
+Round-2 strategies (A8/A10/A9 — all additive, one line each in _build_pipeline):
+  NameOFFStrategy      (medium confidence, A8)
+  LabelOCRStrategy     (medium confidence, A10)
+  NameWebSearchStrategy (medium/low confidence, A9)
 """
 
 import asyncio
@@ -558,6 +560,315 @@ class LabelOCRStrategy(ResolutionStrategy):
         )
 
 
+# ---------------------------------------------------------------------------
+# Web-search helpers (A9)
+# ---------------------------------------------------------------------------
+
+
+def _extract_json_from_text(text: str) -> dict:
+    """Extract the first JSON object from a text string.
+
+    Handles: clean JSON, markdown code blocks (```json … ```), and JSON
+    embedded in prose.  Raises ``ValueError`` if no valid JSON object is found.
+    """
+    stripped = text.strip()
+    # 1. Try direct parse (cleanest case).
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Try to extract from ```json ... ``` or ``` ... ``` markdown blocks.
+    block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
+    if block_match:
+        try:
+            data = json.loads(block_match.group(1))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Find first '{' and last '}' (handles JSON embedded in prose).
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        try:
+            data = json.loads(stripped[start : end + 1])
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(
+        f"web_search: could not extract a JSON object from response: {text[:200]!r}"
+    )
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Convert a value to float, returning ``None`` for null/non-numeric values."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_web_nutrition_response(raw: str) -> dict:
+    """Parse the web search response into a structured dict.
+
+    Used as the ``parse=`` callback for :func:`analyze_and_log` (``kind="web_search"``).
+    Raises ``ValueError`` if the response is empty, contains no product identification,
+    or is structurally unparseable, so ``analyze_and_log`` records ``status="error"``
+    and the strategy falls through cleanly.
+
+    Returns a dict with the ADR-0002 §5 shape plus caller-convenience macro keys:
+
+    .. code-block:: python
+
+        {
+            "identification": str,
+            "off_query": str,           # same as identification; for OFF re-lookup
+            "nutrition_prose": str,     # JSON-encoded macro snapshot for audit
+            "confidence_path": "off_requery",
+            # convenience extras used by NameWebSearchStrategy:
+            "calories_per_100g": float | None,
+            "protein_per_100g": float | None,
+            "fats_per_100g": float | None,
+            "carbs_per_100g": float | None,
+        }
+
+    ``confidence_path`` is always ``"off_requery"`` when identification is found —
+    the strategy tries OFF first and falls to web numbers on a miss.
+    """
+    if not raw or not raw.strip():
+        raise ValueError("web_search: empty response")
+
+    data = _extract_json_from_text(raw)
+
+    identification = data.get("identification")
+    if not identification or not str(identification).strip():
+        raise ValueError(
+            "web_search: response contains no product identification"
+        )
+    identification = str(identification).strip()
+
+    calories = _safe_float(data.get("calories_per_100g"))
+    protein = _safe_float(data.get("protein_per_100g"))
+    fats = _safe_float(data.get("fats_per_100g"))
+    carbs = _safe_float(data.get("carbs_per_100g"))
+
+    return {
+        "identification": identification,
+        "off_query": identification,
+        # Serialised macro snapshot — logged by analyze_and_log as parsed_result.
+        "nutrition_prose": json.dumps(
+            {
+                "calories_per_100g": calories,
+                "protein_per_100g": protein,
+                "fats_per_100g": fats,
+                "carbs_per_100g": carbs,
+            }
+        ),
+        # Primary path: try OFF re-query with the identified product name.
+        "confidence_path": "off_requery",
+        # Convenience: let resolve() use these directly for the prose fallback path.
+        "calories_per_100g": calories,
+        "protein_per_100g": protein,
+        "fats_per_100g": fats,
+        "carbs_per_100g": carbs,
+    }
+
+
+class NameWebSearchStrategy(ResolutionStrategy):
+    """Vision food name → Responses-API web_search → OFF re-query (A9).
+
+    Two internal outcome paths (ADR-0002 §6):
+
+    * **Primary / medium confidence**: web search identifies the product by name;
+      OFF re-query fetches structured per-100g macros → scaled to portion.
+    * **Fallback / low confidence**: OFF re-query misses but web search returned
+      usable prose numbers → scaled per-100g, lowest trust.
+
+    Both paths are non-blocking: all failures → ``None`` (fall through to vision).
+    Never cached.  Runs after ``LabelOCRStrategy``, before ``VisionFallbackStrategy``.
+
+    ``confidence_tier`` class attribute is the **nominal** tier used for pipeline
+    introspection; the actual tier is set dynamically on :class:`ResolutionResult`
+    at resolve time (ADR-0002 §6).
+    """
+
+    source_id = "name_web"
+    confidence_tier = "medium"  # nominal; actual set at resolve time
+
+    async def resolve(
+        self,
+        signals: ImageSignals,
+        db: Session,
+    ) -> Optional[ResolutionResult]:
+        # Short-circuit: vision result needed for food names + portion estimate.
+        if signals.vision_result is None:
+            return None
+
+        vision = signals.vision_result
+        foods = [
+            f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()
+        ]
+
+        if not foods:
+            return None
+
+        # Multi-item gate (mirrors A8/A10): a multi-food plate is unlikely to be
+        # a single packaged product → skip to avoid a confident-wrong match.
+        if len(foods) > _NAME_SEARCH_MAX_FOODS:
+            logger.debug(
+                "NameWebSearchStrategy: %d foods (> %d) — skipping web search "
+                "(looks like a multi-item plate)",
+                len(foods),
+                _NAME_SEARCH_MAX_FOODS,
+            )
+            return None
+
+        name_query = " ".join(foods).strip()
+        svc = get_openai_service()
+
+        # --- Phase 1: web search to identify the product + optionally get numbers ---
+        try:
+            parsed = await analyze_and_log(
+                svc.web_search_nutrition(foods),
+                kind="web_search",
+                input_ref=", ".join(foods),
+                telegram_id=signals.telegram_id,
+                model=svc.model,
+                parse=_parse_web_nutrition_response,
+            )
+        except Exception as exc:
+            # analyze_and_log re-raises after logging; swallow here so the
+            # pipeline continues to the next strategy (non-blocking contract).
+            logger.warning(
+                "NameWebSearchStrategy: web_search_nutrition failed for %r: %s",
+                name_query,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+        off_query = parsed.get("off_query")
+        identification = parsed.get("identification")
+        portion_grams = signals.portion_grams
+
+        # --- Phase 2a: OFF re-query for structured numbers (medium confidence) ---
+        if off_query:
+            try:
+                off_svc = OpenFoodFactsService(db)
+                off_result = await off_svc.search_by_name(off_query)
+            except Exception as exc:
+                logger.warning(
+                    "NameWebSearchStrategy: OFF re-query raised for %r: %s",
+                    off_query,
+                    exc,
+                    exc_info=True,
+                )
+                off_result = None
+
+            if off_result is not None:
+                nutrition = _scale_off_nutrition(
+                    off_result, portion_grams, fallback_food=off_query
+                )
+                signals_dict: Dict[str, Any] = {
+                    "barcode_raw": None,
+                    "barcode_detected": signals.barcode is not None,
+                    "product_name": off_result.product_name or identification,
+                    "brand": off_result.brand,
+                    "off_code": off_result.off_code,
+                    "off_from_cache": False,  # name search is never cached
+                    "off_latency_ms": None,
+                    "portion_grams": portion_grams,
+                    "confidence_tier": "medium",
+                    "strategy_tried": [self.source_id],  # runner updates this
+                    "strategy_chosen": self.source_id,
+                    "vision_foods": vision.get("foods", []),
+                    "vision_portion_raw": vision.get("portion"),
+                    "name_query": name_query,
+                    "web_identification": identification,
+                    "web_off_requery": off_query,
+                }
+                if signals.barcode is not None:
+                    signals_dict["barcode_unresolved"] = signals.barcode
+                return ResolutionResult(
+                    source=self.source_id,
+                    confidence_tier="medium",
+                    nutrition=nutrition,
+                    description=off_result.product_name or off_query,
+                    portion_grams=portion_grams,
+                    signals=signals_dict,
+                )
+
+        # --- Phase 2b: prose fallback — web numbers at low confidence ---
+        calories = parsed.get("calories_per_100g")
+        protein = parsed.get("protein_per_100g")
+        fats = parsed.get("fats_per_100g")
+        carbs = parsed.get("carbs_per_100g")
+
+        if any(v is None for v in (calories, protein, fats, carbs)):
+            logger.debug(
+                "NameWebSearchStrategy: OFF miss and incomplete prose macros "
+                "for %r — falling through to vision",
+                name_query,
+            )
+            return None
+
+        # Web prose numbers are per-100g; reuse _scale_label_nutrition with
+        # basis_grams=100 to avoid constructing a fake OFFLookupResult.
+        food_list = foods or [identification or name_query]
+        nutrition = _scale_label_nutrition(
+            calories=float(calories),
+            protein=float(protein),
+            fats=float(fats),
+            carbs=float(carbs),
+            basis_grams=100.0,
+            portion_grams=portion_grams,
+            foods=food_list,
+        )
+
+        signals_dict = {
+            "barcode_raw": None,
+            "barcode_detected": signals.barcode is not None,
+            "product_name": identification,
+            "brand": None,
+            "off_code": None,
+            "off_from_cache": False,
+            "off_latency_ms": None,
+            "portion_grams": portion_grams,
+            "confidence_tier": "low",
+            "strategy_tried": [self.source_id],  # runner updates this
+            "strategy_chosen": self.source_id,
+            "vision_foods": vision.get("foods", []),
+            "vision_portion_raw": vision.get("portion"),
+            "name_query": name_query,
+            "web_identification": identification,
+            "web_prose_macros": {
+                "calories": calories,
+                "protein": protein,
+                "fats": fats,
+                "carbs": carbs,
+            },
+        }
+        if signals.barcode is not None:
+            signals_dict["barcode_unresolved"] = signals.barcode
+
+        return ResolutionResult(
+            source=self.source_id,
+            confidence_tier="low",
+            nutrition=nutrition,
+            description=identification or name_query,
+            portion_grams=portion_grams,
+            signals=signals_dict,
+        )
+
+
 class VisionFallbackStrategy(ResolutionStrategy):
     """Wrap the already-computed vision result.  Always last in the pipeline.
 
@@ -610,17 +921,16 @@ class VisionFallbackStrategy(ResolutionStrategy):
 
 
 def _build_pipeline() -> List[ResolutionStrategy]:
-    """Ordered strategy list: barcode_off → name_off → label_ocr → [name_web] → vision.
+    """Ordered strategy list: barcode_off → name_off → label_ocr → name_web → vision.
 
-    A9 (NameWebSearchStrategy) inserts before VisionFallbackStrategy once the
-    Responses-API ADR (A12) is ratified.
+    Final order ratified in human_feedback 2026-07-08 and documented in ADR-0002.
     """
     return [
-        BarcodeOFFStrategy(),  # A4 (round 1) — high confidence
-        NameOFFStrategy(),  # A8 (round 2) — medium confidence
-        LabelOCRStrategy(),  # A10 (round 2) — medium confidence
-        # NameWebSearchStrategy(),   # A9 (round 2, blocked on A12 ADR)
-        VisionFallbackStrategy(),  # always last — low confidence
+        BarcodeOFFStrategy(),       # A4 (round 1) — high confidence
+        NameOFFStrategy(),          # A8 (round 2) — medium confidence
+        LabelOCRStrategy(),         # A10 (round 2) — medium confidence
+        NameWebSearchStrategy(),    # A9 (round 2) — medium/low confidence
+        VisionFallbackStrategy(),   # always last — low confidence
     ]
 
 
