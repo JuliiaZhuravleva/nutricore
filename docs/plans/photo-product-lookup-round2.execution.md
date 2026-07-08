@@ -6,11 +6,11 @@ source_artifact:
   sha256: af2448c4bc762dfd84471833b34fc6ac54fc751acefed9f12944c46217406781
   type: feature-prd
 created_at: '2026-07-08T14:16:30Z'
-approved_at: null
-approved_by: null
+approved_at: '2026-07-08T18:13:59Z'
+approved_by: julia
 specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
 execution:
-  status: draft
+  status: approved
   started_at: null
   completed_at: null
   current_batch: null
@@ -93,12 +93,22 @@ review_gate:
   reject_action: /plan-fixes docs/photo-product-lookup-round2.md --revise /Users/julia/my-projects/nutricore.photo-product-lookup-round2-wt/docs/plans/photo-product-lookup-round2.execution.md
 safe_to_replay_from: null
 clarifying_questions:
-- "A8 PRECONDITION (gates the whole plan): A8's NameOFFStrategy + the shared _scale_off_nutrition helper are NOT on this worktree — verified: product_lookup_service.py L274 has NameOFFStrategy() commented out ('A8 (round 2, deferred)') and _scale_off_nutrition is absent — despite the doc stating A8 shipped (it lives on branch feat/product-lookup-a8-name-off). Will the round-2 execute branch fork-from/merge that A8 branch BEFORE A10/A9 are dispatched? A10 reuses _scale_off_nutrition and both A10 and A9 assume name_off is already in the pipeline. All three specialists (architect, backend-dev, qa) flagged this independently."
-- "STRATEGY ORDER (doc Q1): confirm final pipeline order barcode_off -> name_off -> label_ocr -> name_web -> vision. All three specialists concur (on-pack OCR is ground truth, so label_ocr precedes web inference; web is highest-latency/lowest-reliability so it sits last-but-one). Adopted as default and as the A13 order-test target."
-- "A9 WEB NUMBERS (doc Q2): may web_search supply the KBJU numbers directly (at lowest confidence + most cautious badge), or only IDENTIFY the product so we re-query OFF for the structured numbers? Default adopted: identify -> re-query OFF where possible; a pure web number gets the lowest medium/low confidence. The A12 ADR settles this; confirm the default."
-- "LABEL OCR BASIS (doc Q3): when the nutrition table is legible but the serving basis is ambiguous (e.g. 'per serving' with no gram weight), fall through to vision (specialist-recommended: never surface confidently-wrong numbers) OR best-effort per-serving scaling with an 'uncertain' flag + lowered confidence? Default adopted: basis unparseable -> return None -> fall through to vision."
-- "BADGE = telegram.py TOUCH (specialist-surfaced; contradicts the doc): the doc says 'no telegram.py change beyond the badge string', but _source_badge today dispatches on confidence_tier only and returns one generic medium badge for all non-barcode medium sources. Distinct badges for label_ocr (the doc's example: label-tag emoji + 'с этикетки (проверь)') and name_web (globe emoji + 'нашли в сети (сверь)') require new per-source cases in telegram.py (a one-liner each, folded into A10/A9). Confirm distinct badges are wanted, or both intentionally share the generic medium badge. NOTE: doc Q4 (migration blast-radius) is not a separate question — the architect recommends the split-client approach; it is decided in the A12 ADR."
+- 'A8 PRECONDITION (gates the whole plan): A8''s NameOFFStrategy + the shared _scale_off_nutrition helper are NOT on this worktree — verified: product_lookup_service.py L274 has NameOFFStrategy() commented out (''A8 (round 2, deferred)'') and _scale_off_nutrition is absent — despite the doc stating A8 shipped (it lives on branch feat/product-lookup-a8-name-off). Will the round-2 execute branch fork-from/merge that A8 branch BEFORE A10/A9 are dispatched? A10 reuses _scale_off_nutrition and both A10 and A9 assume name_off is already in the pipeline. All three specialists (architect, backend-dev, qa) flagged this independently.'
+- 'STRATEGY ORDER (doc Q1): confirm final pipeline order barcode_off -> name_off -> label_ocr -> name_web -> vision. All three specialists concur (on-pack OCR is ground truth, so label_ocr precedes web inference; web is highest-latency/lowest-reliability so it sits last-but-one). Adopted as default and as the A13 order-test target.'
+- 'A9 WEB NUMBERS (doc Q2): may web_search supply the KBJU numbers directly (at lowest confidence + most cautious badge), or only IDENTIFY the product so we re-query OFF for the structured numbers? Default adopted: identify -> re-query OFF where possible; a pure web number gets the lowest medium/low confidence. The A12 ADR settles this; confirm the default.'
+- 'LABEL OCR BASIS (doc Q3): when the nutrition table is legible but the serving basis is ambiguous (e.g. ''per serving'' with no gram weight), fall through to vision (specialist-recommended: never surface confidently-wrong numbers) OR best-effort per-serving scaling with an ''uncertain'' flag + lowered confidence? Default adopted: basis unparseable -> return None -> fall through to vision.'
+- 'BADGE = telegram.py TOUCH (specialist-surfaced; contradicts the doc): the doc says ''no telegram.py change beyond the badge string'', but _source_badge today dispatches on confidence_tier only and returns one generic medium badge for all non-barcode medium sources. Distinct badges for label_ocr (the doc''s example: label-tag emoji + ''с этикетки (проверь)'') and name_web (globe emoji + ''нашли в сети (сверь)'') require new per-source cases in telegram.py (a one-liner each, folded into A10/A9). Confirm distinct badges are wanted, or both intentionally share the generic medium badge. NOTE: doc Q4 (migration blast-radius) is not a separate question — the architect recommends the split-client approach; it is decided in the A12 ADR.'
+human_feedback:
+- ts: '2026-07-08T18:13:41Z'
+  by: julia
+  text: 'Decisions on the 5 clarifying questions (2026-07-08), grounded in the ratified target diagram docs/diagrams/input-processing-flow.md. (1) A8 precondition RESOLVED: A8 merged to main (4e8f458); plan branch rebased onto it. (2) Strategy order ACCEPTED: barcode_off -> name_off -> label_ocr -> name_web -> vision. (3) A9 web numbers: identify-then-requery-OFF for structured numbers; pure web prose = lowest confidence + most cautious badge (default accepted). (4) Label-OCR ambiguous basis -> return None -> fall through to vision (default accepted). (5) Distinct per-source badges for label and web, accepting the one-line telegram.py touch per strategy. All PM defaults accepted; nothing conflicts with the ratified diagram. APPROVED TO HOLD -- do not execute yet.'
+  applies_to: null
+  status: addressed
+  addressed_at: '2026-07-08T18:13:52Z'
 ---
+
+
+
 
 
 
