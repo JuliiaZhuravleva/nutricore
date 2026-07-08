@@ -75,6 +75,9 @@ class ImageSignals:
     barcode: Optional[str]  # A3 result — digits-only string or None
     vision_result: Optional[dict]  # parsed nutrition dict from analyze_food_image
     portion_grams: Optional[float]  # extracted from vision_result["portion"]
+    # Logging context for strategies that make their own OpenAI calls (A10+).
+    telegram_id: Optional[int] = None
+    input_ref: Optional[str] = None
 
 
 @dataclass
@@ -156,6 +159,69 @@ def _scale_off_nutrition(
         "fats": off_result.fats_per_100g or 0,
         "carbs": off_result.carbohydrates_per_100g or 0,
         "portion": "100г",
+        "foods": foods,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Label-OCR helpers (A10)
+# ---------------------------------------------------------------------------
+
+
+def _parse_label_json(raw: Any) -> dict:
+    """Parse the JSON returned by ``extract_nutrition_label``.
+
+    Used as the ``parse=`` callback for :func:`analyze_and_log`.  Raises
+    ``ValueError`` on a non-object payload so the call-log records the parse
+    error rather than silently ignoring it.  Returns an empty dict when the
+    model signals illegibility by returning JSON ``null`` — the strategy treats
+    ``basis=None`` (empty dict) as a fall-through to vision.
+    """
+    if raw is None:
+        return {}
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    if data is None:  # JSON null — model couldn't read the label
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"label_ocr: expected a JSON object, got {type(data).__name__}"
+        )
+    return data
+
+
+def _scale_label_nutrition(
+    *,
+    calories: float,
+    protein: float,
+    fats: float,
+    carbs: float,
+    basis_grams: float,
+    portion_grams: Optional[float],
+    foods: List[str],
+) -> dict:
+    """Scale per-basis-weight label numbers to the eaten portion.
+
+    When ``portion_grams`` is known and positive, multiplies all macros by
+    ``portion_grams / basis_grams`` and labels the portion in grams; otherwise
+    returns the label's numbers as-is with a basis-gram string as the portion
+    (the reply layer warns the user that the gram basis is unconfirmed).
+    """
+    if portion_grams is not None and portion_grams > 0:
+        factor = portion_grams / basis_grams
+        return {
+            "calories": round(calories * factor, 1),
+            "protein": round(protein * factor, 1),
+            "fats": round(fats * factor, 1),
+            "carbs": round(carbs * factor, 1),
+            "portion": f"{portion_grams:.0f}г",
+            "foods": foods,
+        }
+    return {
+        "calories": round(calories, 1),
+        "protein": round(protein, 1),
+        "fats": round(fats, 1),
+        "carbs": round(carbs, 1),
+        "portion": f"{basis_grams:.0f}г",
         "foods": foods,
     }
 
@@ -326,6 +392,172 @@ class NameOFFStrategy(ResolutionStrategy):
         )
 
 
+class LabelOCRStrategy(ResolutionStrategy):
+    """On-pack nutrition label OCR (A10).  Medium confidence.
+
+    Reads the nutrition facts table directly from the product's packaging using
+    the vision model.  Handles per-100g / per-serving / per-package tables; when
+    the gram basis cannot be determined the strategy returns ``None`` and falls
+    through to vision.  This is documented intentional policy: never surface
+    confidently-wrong numbers (ADR-0001 §7 / A10 clarifying Q4).  Never cached.
+
+    Runs after ``NameOFFStrategy``, before ``NameWebSearchStrategy``/``VisionFallbackStrategy``.
+    """
+
+    source_id = "label_ocr"
+    confidence_tier = "medium"
+
+    async def resolve(
+        self,
+        signals: ImageSignals,
+        db: Session,
+    ) -> Optional[ResolutionResult]:
+        # Short-circuit: if Phase-1 vision failed there is no food context and
+        # no gram-portion estimate for scaling — fall through immediately.
+        if signals.vision_result is None:
+            return None
+
+        vision = signals.vision_result
+        foods = [
+            f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()
+        ]
+
+        # Single-item gate (mirrors A8): a multi-item plate is unlikely to be a
+        # packaged product with a legible label → skip to avoid a confident-wrong
+        # match.
+        if len(foods) > _NAME_SEARCH_MAX_FOODS:
+            logger.debug(
+                "LabelOCRStrategy: %d foods (> %d) — skipping label OCR "
+                "(looks like a multi-item plate)",
+                len(foods),
+                _NAME_SEARCH_MAX_FOODS,
+            )
+            return None
+
+        svc = get_openai_service()
+        started = time.perf_counter()
+        try:
+            label_data = await analyze_and_log(
+                svc.extract_nutrition_label(signals.image_data_url),
+                kind="label_ocr",
+                input_ref=signals.input_ref,
+                telegram_id=signals.telegram_id,
+                model=svc.model,
+                parse=_parse_label_json,
+            )
+        except Exception as exc:
+            # analyze_and_log re-raises after logging — swallow here so the
+            # pipeline can continue to the next strategy.
+            logger.warning(
+                "LabelOCRStrategy: extract_nutrition_label raised: %s",
+                exc,
+                exc_info=True,
+            )
+            return None
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        if not label_data:
+            return None
+
+        basis = label_data.get("basis")
+        if not basis:
+            # Label absent or illegible — fall through to vision.
+            logger.debug(
+                "LabelOCRStrategy: basis=null — label illegible, falling through"
+            )
+            return None
+
+        calories = label_data.get("calories")
+        protein = label_data.get("protein")
+        fats = label_data.get("fats")
+        carbs = label_data.get("carbs")
+
+        if any(v is None for v in (calories, protein, fats, carbs)):
+            logger.debug(
+                "LabelOCRStrategy: incomplete macro values (%s) — falling through",
+                {k: label_data.get(k) for k in ("calories", "protein", "fats", "carbs")},
+            )
+            return None
+
+        # Determine the gram basis for scaling.
+        portion_grams = signals.portion_grams
+        if basis == "per_100g":
+            basis_grams = 100.0
+        elif basis == "per_serving":
+            serving_grams = label_data.get("serving_grams")
+            if not serving_grams or float(serving_grams) <= 0:
+                # "per serving" with no gram weight → basis-ambiguous → None.
+                # Documented intentional policy: never surface confidently-wrong
+                # numbers (ADR-0001 §7 / A10 clarifying Q4).
+                logger.debug(
+                    "LabelOCRStrategy: basis=per_serving but serving_grams=%r "
+                    "— ambiguous, falling through to vision",
+                    serving_grams,
+                )
+                return None
+            basis_grams = float(serving_grams)
+        elif basis == "per_package":
+            package_grams = label_data.get("package_grams")
+            if not package_grams or float(package_grams) <= 0:
+                logger.debug(
+                    "LabelOCRStrategy: basis=per_package but package_grams=%r "
+                    "— ambiguous, falling through to vision",
+                    package_grams,
+                )
+                return None
+            basis_grams = float(package_grams)
+        else:
+            logger.debug(
+                "LabelOCRStrategy: unknown basis=%r — falling through", basis
+            )
+            return None
+
+        food_list = foods or ["продукт с этикетки"]
+        nutrition = _scale_label_nutrition(
+            calories=float(calories),
+            protein=float(protein),
+            fats=float(fats),
+            carbs=float(carbs),
+            basis_grams=basis_grams,
+            portion_grams=portion_grams,
+            foods=food_list,
+        )
+
+        signals_dict: Dict[str, Any] = {
+            # No barcode surface — this result came from label OCR, not a barcode
+            # scan.  Keep barcode_raw=None so the reply doesn't show a stray EAN.
+            "barcode_raw": None,
+            "barcode_detected": signals.barcode is not None,
+            "product_name": None,  # no OFF product name
+            "brand": None,
+            "off_code": None,
+            "off_from_cache": False,  # never cached
+            "off_latency_ms": None,
+            "portion_grams": portion_grams,
+            "confidence_tier": self.confidence_tier,
+            "strategy_tried": [self.source_id],  # runner updates this
+            "strategy_chosen": self.source_id,
+            "vision_foods": vision.get("foods", []),
+            "vision_portion_raw": vision.get("portion"),
+            "label_basis": basis,
+            "label_basis_grams": basis_grams,
+            "label_ocr_latency_ms": latency_ms,
+        }
+        # Preserve a detected-but-unresolved barcode for analytics without
+        # surfacing it in the reply (mirrors NameOFFStrategy).
+        if signals.barcode is not None:
+            signals_dict["barcode_unresolved"] = signals.barcode
+
+        return ResolutionResult(
+            source=self.source_id,
+            confidence_tier=self.confidence_tier,
+            nutrition=nutrition,
+            description=", ".join(food_list),
+            portion_grams=portion_grams,
+            signals=signals_dict,
+        )
+
+
 class VisionFallbackStrategy(ResolutionStrategy):
     """Wrap the already-computed vision result.  Always last in the pipeline.
 
@@ -378,12 +610,16 @@ class VisionFallbackStrategy(ResolutionStrategy):
 
 
 def _build_pipeline() -> List[ResolutionStrategy]:
-    """Ordered strategy list.  A8/A9/A10 insert before VisionFallbackStrategy."""
+    """Ordered strategy list: barcode_off → name_off → label_ocr → [name_web] → vision.
+
+    A9 (NameWebSearchStrategy) inserts before VisionFallbackStrategy once the
+    Responses-API ADR (A12) is ratified.
+    """
     return [
         BarcodeOFFStrategy(),  # A4 (round 1) — high confidence
         NameOFFStrategy(),  # A8 (round 2) — medium confidence
-        # LabelOCRStrategy(),        # A10 (round 2, deferred)
-        # WebSearchStrategy(),       # A9 (round 2, blocked on ADR)
+        LabelOCRStrategy(),  # A10 (round 2) — medium confidence
+        # NameWebSearchStrategy(),   # A9 (round 2, blocked on A12 ADR)
         VisionFallbackStrategy(),  # always last — low confidence
     ]
 
@@ -503,6 +739,8 @@ async def _extract_signals(
         barcode=barcode,
         vision_result=vision_parsed,
         portion_grams=_parse_portion_grams(vision_parsed),
+        telegram_id=telegram_id,
+        input_ref=input_ref,
     )
 
 

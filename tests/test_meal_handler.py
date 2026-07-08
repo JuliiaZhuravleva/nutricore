@@ -159,6 +159,24 @@ def name_search_mock(monkeypatch):
     return mock
 
 
+@pytest.fixture(autouse=True)
+def label_ocr_mock(monkeypatch):
+    """Return a null-basis response for the A10 label-OCR strategy in all photo
+    tests so it falls through to vision without making real OpenAI calls.
+
+    The label-OCR path is tested directly in test_product_lookup_service.py.
+    The mock goes through analyze_and_log and adds one ``label_ocr`` row to
+    ai_call_logs (expected by tests that count logged rows).
+    """
+    import json
+
+    import app.services.openai_service as ois
+
+    mock = AsyncMock(return_value=json.dumps({"basis": None}))
+    monkeypatch.setattr(ois.OpenAIService, "extract_nutrition_label", mock)
+    return mock
+
+
 # --- process_meal_input: photo branch --------------------------------------
 
 
@@ -384,6 +402,14 @@ def test_source_badge_barcode_off():
     badge = tg._source_badge(_make_resolution_result(source="barcode_off"))
     assert "штрих-коду" in badge
     assert "точно" in badge
+
+
+def test_source_badge_label_ocr():
+    badge = tg._source_badge(
+        _make_resolution_result(source="label_ocr", confidence_tier="medium", signals={})
+    )
+    assert "этикетки" in badge
+    assert "проверь" in badge
 
 
 def test_source_badge_medium_confidence():
@@ -612,8 +638,11 @@ def test_photo_meal_records_ai_call(patched_db, image_mock):
 
     with sessionmaker(bind=patched_db)() as db:
         rows = db.query(AiCallLog).all()
-    # Pipeline makes 2 concurrent calls: barcode_extraction + image.
-    assert len(rows) == 2
+    # Pipeline makes 3 calls: barcode_extraction + image (Phase 1, concurrent)
+    # + label_ocr (LabelOCRStrategy, A10 — mocked to null-basis, falls through).
+    assert len(rows) == 3
+    kinds = {r.kind for r in rows}
+    assert kinds == {"barcode_extraction", "image", "label_ocr"}
     image_rows = [r for r in rows if r.kind == "image"]
     assert len(image_rows) == 1
     row = image_rows[0]

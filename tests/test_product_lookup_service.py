@@ -31,11 +31,13 @@ from app.services.open_food_facts_service import OFFLookupResult
 from app.services.product_lookup_service import (
     BarcodeOFFStrategy,
     ImageSignals,
+    LabelOCRStrategy,
     NameOFFStrategy,
     ResolutionResult,
     VisionFallbackStrategy,
     _build_pipeline,
     _parse_portion_grams,
+    _scale_label_nutrition,
     parse_nutrition,
     resolve_meal_nutrition,
 )
@@ -117,6 +119,19 @@ def default_no_name_search(monkeypatch):
     monkeypatch.setattr(
         "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
         AsyncMock(return_value=None),
+    )
+
+
+@pytest.fixture(autouse=True)
+def default_no_label_ocr(monkeypatch):
+    """Default the A10 label-OCR to a null-basis miss so existing pipeline
+    tests make no real OpenAI calls; LabelOCRStrategy tests override this."""
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "extract_nutrition_label",
+        AsyncMock(return_value=json.dumps({"basis": None})),
     )
 
 
@@ -619,8 +634,13 @@ def test_pipeline_falls_back_to_vision_when_off_not_found(monkeypatch):
 
     assert result.source == "vision"
     assert result.confidence_tier == "low"
-    # All three strategies were tried in order before vision won.
-    assert result.signals["strategy_tried"] == ["barcode_off", "name_off", "vision"]
+    # All strategies were tried in order before vision won.
+    assert result.signals["strategy_tried"] == [
+        "barcode_off",
+        "name_off",
+        "label_ocr",
+        "vision",
+    ]
 
 
 def test_pipeline_falls_back_when_no_barcode(monkeypatch):
@@ -675,10 +695,10 @@ def test_pipeline_propagates_model_unavailable_error(monkeypatch):
 
 
 def test_build_pipeline_order():
-    """Pipeline order locks A8 between the barcode (high) and vision (low)
-    strategies so confidence tiers resolve most-trusted first."""
+    """Pipeline order: barcode_off → name_off → label_ocr → vision.
+    A9 (name_web) will insert before vision once A12 ADR is ratified."""
     order = [s.source_id for s in _build_pipeline()]
-    assert order == ["barcode_off", "name_off", "vision"]
+    assert order == ["barcode_off", "name_off", "label_ocr", "vision"]
 
 
 def test_pipeline_name_off_wins_when_no_barcode(monkeypatch):
@@ -726,7 +746,12 @@ def test_pipeline_name_off_skipped_multi_food_falls_to_vision(monkeypatch):
     )
 
     assert result.source == "vision"
-    assert result.signals["strategy_tried"] == ["barcode_off", "name_off", "vision"]
+    assert result.signals["strategy_tried"] == [
+        "barcode_off",
+        "name_off",
+        "label_ocr",
+        "vision",
+    ]
     search.assert_not_called()
 
 
@@ -872,3 +897,373 @@ def test_resolution_source_none_for_text_inputs(monkeypatch):
     meal = context.user_data["current_meal"]
     # Text path has no resolution_source field in draft
     assert meal.get("resolution_source") is None
+
+
+# ---------------------------------------------------------------------------
+# LabelOCRStrategy (A10)
+# ---------------------------------------------------------------------------
+
+_LABEL_SINGLE_FOOD = {**_NUTRITION, "foods": ["Pringles Original"], "portion": "150г"}
+_LABEL_PER_100G = json.dumps(
+    {
+        "basis": "per_100g",
+        "serving_grams": None,
+        "package_grams": None,
+        "calories": 520.0,
+        "protein": 5.5,
+        "fats": 31.0,
+        "carbs": 53.0,
+    }
+)
+
+
+def _patch_label_ocr(monkeypatch, return_value=None, side_effect=None):
+    """Monkeypatch extract_nutrition_label on the OpenAIService class."""
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "extract_nutrition_label",
+        AsyncMock(return_value=return_value, side_effect=side_effect),
+    )
+
+
+def test_label_ocr_vision_result_none_returns_none(db_session):
+    """If Phase-1 vision failed (vision_result=None) → None without OCR call."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=None,
+        portion_grams=None,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_too_many_foods_returns_none(db_session):
+    """Multi-item plate (> 2 foods) → skip label OCR."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_NUTRITION, "foods": ["rice", "chicken", "broccoli"]},
+        portion_grams=300.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_per_100g_scales_to_portion(db_session, monkeypatch):
+    """per_100g label + vision portion → macros scaled to portion."""
+    _patch_label_ocr(monkeypatch, return_value=_LABEL_PER_100G)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "label_ocr"
+    assert result.confidence_tier == "medium"
+    # 520 * 1.5 = 780; round(..., 1)
+    assert result.nutrition["calories"] == pytest.approx(780.0, abs=0.2)
+    assert result.nutrition["protein"] == pytest.approx(8.2, abs=0.2)  # 5.5*1.5=8.25→8.2
+    assert result.nutrition["fats"] == pytest.approx(46.5, abs=0.2)
+    assert result.nutrition["carbs"] == pytest.approx(79.5, abs=0.2)
+    assert result.nutrition["portion"] == "150г"
+    assert result.nutrition["foods"] == ["Pringles Original"]
+    assert result.portion_grams == 150.0
+
+
+def test_label_ocr_per_100g_no_portion_uses_label_numbers(db_session, monkeypatch):
+    """per_100g + no vision portion estimate → label numbers as-is, '100г' portion."""
+    _patch_label_ocr(monkeypatch, return_value=_LABEL_PER_100G)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_LABEL_SINGLE_FOOD, "portion": "1 serving"},  # no grams
+        portion_grams=None,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.nutrition["calories"] == 520.0
+    assert result.nutrition["portion"] == "100г"
+    assert result.portion_grams is None
+
+
+def test_label_ocr_per_serving_with_grams_scales(db_session, monkeypatch):
+    """per_serving with serving_grams=30 + vision portion 90g → scaled ×3."""
+    label = json.dumps(
+        {
+            "basis": "per_serving",
+            "serving_grams": 30.0,
+            "package_grams": None,
+            "calories": 156.0,  # per 30g serving
+            "protein": 1.65,
+            "fats": 9.3,
+            "carbs": 15.9,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_LABEL_SINGLE_FOOD, "portion": "90г"},
+        portion_grams=90.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "label_ocr"
+    # 90 / 30 = factor 3 → 156 * 3 = 468
+    assert result.nutrition["calories"] == pytest.approx(468.0, abs=0.5)
+    assert result.nutrition["portion"] == "90г"
+
+
+def test_label_ocr_per_package_with_grams_scales(db_session, monkeypatch):
+    """per_package with package_grams=100 + vision portion 50g → scaled ×0.5."""
+    label = json.dumps(
+        {
+            "basis": "per_package",
+            "serving_grams": None,
+            "package_grams": 100.0,
+            "calories": 200.0,
+            "protein": 4.0,
+            "fats": 8.0,
+            "carbs": 28.0,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result={**_LABEL_SINGLE_FOOD, "portion": "50г"},
+        portion_grams=50.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.nutrition["calories"] == pytest.approx(100.0, abs=0.5)
+    assert result.nutrition["portion"] == "50г"
+
+
+def test_label_ocr_per_serving_no_grams_returns_none(db_session, monkeypatch):
+    """per_serving with no serving_grams → basis-ambiguous → None (fall through)."""
+    label = json.dumps(
+        {
+            "basis": "per_serving",
+            "serving_grams": None,
+            "package_grams": None,
+            "calories": 156.0,
+            "protein": 1.65,
+            "fats": 9.3,
+            "carbs": 15.9,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_per_package_no_grams_returns_none(db_session, monkeypatch):
+    """per_package with no package_grams → basis-ambiguous → None."""
+    label = json.dumps(
+        {
+            "basis": "per_package",
+            "serving_grams": None,
+            "package_grams": None,
+            "calories": 520.0,
+            "protein": 5.5,
+            "fats": 31.0,
+            "carbs": 53.0,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_basis_null_returns_none(db_session, monkeypatch):
+    """basis=null (illegible label) → None (fall through to vision)."""
+    _patch_label_ocr(monkeypatch, return_value=json.dumps({"basis": None}))
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_incomplete_macros_returns_none(db_session, monkeypatch):
+    """If any macro value is null (illegible digit) → None."""
+    label = json.dumps(
+        {
+            "basis": "per_100g",
+            "serving_grams": None,
+            "package_grams": None,
+            "calories": 520.0,
+            "protein": None,  # illegible
+            "fats": 31.0,
+            "carbs": 53.0,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_extract_raises_returns_none(db_session, monkeypatch):
+    """If extract_nutrition_label raises (network / model error) → None (non-blocking)."""
+    _patch_label_ocr(monkeypatch, side_effect=RuntimeError("OpenAI unavailable"))
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_signals_payload(db_session, monkeypatch):
+    """Signals dict has the required ADR §5 keys + label-specific extras."""
+    _patch_label_ocr(monkeypatch, return_value=_LABEL_PER_100G)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    s = result.signals
+    # ADR §5 required keys
+    required_keys = {
+        "barcode_raw",
+        "barcode_detected",
+        "product_name",
+        "brand",
+        "off_code",
+        "off_from_cache",
+        "off_latency_ms",
+        "portion_grams",
+        "confidence_tier",
+        "strategy_tried",
+        "strategy_chosen",
+        "vision_foods",
+        "vision_portion_raw",
+    }
+    assert required_keys.issubset(s.keys())
+    # label-specific extras
+    assert s["barcode_raw"] is None
+    assert s["barcode_detected"] is False
+    assert s["off_from_cache"] is False  # never cached
+    assert s["confidence_tier"] == "medium"
+    assert s["strategy_chosen"] == "label_ocr"
+    assert s["label_basis"] == "per_100g"
+    assert s["label_basis_grams"] == 100.0
+    assert isinstance(s["label_ocr_latency_ms"], int)
+
+
+def test_label_ocr_records_unresolved_barcode(db_session, monkeypatch):
+    """When a barcode was detected but didn't resolve, label_ocr preserves it
+    in signals for analytics without surfacing it in the reply."""
+    _patch_label_ocr(monkeypatch, return_value=_LABEL_PER_100G)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode="4607195501226",
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=100.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    s = result.signals
+    assert s["barcode_raw"] is None  # not surfaced in reply
+    assert s["barcode_detected"] is True
+    assert s["barcode_unresolved"] == "4607195501226"
+
+
+def test_label_ocr_pipeline_wins_when_name_off_misses(monkeypatch):
+    """No barcode, name-search miss, label OCR hits per_100g → label_ocr wins."""
+    import app.services.product_lookup_service as pls
+    import app.services.openai_service as ois
+
+    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+        return await _build_signals(None, _LABEL_SINGLE_FOOD, image_data_url)
+
+    monkeypatch.setattr(pls, "_extract_signals", fake_extract)
+    # name_off: miss (autouse handles it)
+    # label_ocr: hit
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "extract_nutrition_label",
+        AsyncMock(return_value=_LABEL_PER_100G),
+    )
+
+    result = asyncio.run(
+        resolve_meal_nutrition("data:image/jpeg;base64,abc", telegram_id=42)
+    )
+
+    assert result.source == "label_ocr"
+    assert result.confidence_tier == "medium"
+    assert result.signals["strategy_tried"] == ["barcode_off", "name_off", "label_ocr"]
+    assert result.signals["strategy_chosen"] == "label_ocr"
+
+
+# ---------------------------------------------------------------------------
+# _scale_label_nutrition unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_scale_label_nutrition_with_portion():
+    nutrition = _scale_label_nutrition(
+        calories=500.0,
+        protein=5.0,
+        fats=30.0,
+        carbs=50.0,
+        basis_grams=100.0,
+        portion_grams=200.0,
+        foods=["test food"],
+    )
+    assert nutrition["calories"] == pytest.approx(1000.0, abs=0.1)
+    assert nutrition["protein"] == pytest.approx(10.0, abs=0.1)
+    assert nutrition["portion"] == "200г"
+    assert nutrition["foods"] == ["test food"]
+
+
+def test_scale_label_nutrition_no_portion_uses_basis():
+    nutrition = _scale_label_nutrition(
+        calories=500.0,
+        protein=5.0,
+        fats=30.0,
+        carbs=50.0,
+        basis_grams=100.0,
+        portion_grams=None,
+        foods=["test food"],
+    )
+    assert nutrition["calories"] == 500.0
+    assert nutrition["portion"] == "100г"

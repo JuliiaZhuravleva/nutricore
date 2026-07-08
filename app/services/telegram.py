@@ -233,6 +233,8 @@ def _source_badge(result: ResolutionResult | None) -> str:
         return ""
     if result.source == "barcode_off":
         return "📦 по штрих-коду (точно)"
+    if result.source == "label_ocr":
+        return "🏷️ с этикетки (проверь)"
     if result.confidence_tier == "high":
         return "✅ из базы (точно)"
     if result.confidence_tier == "medium":
