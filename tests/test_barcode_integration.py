@@ -230,6 +230,37 @@ def _default_no_name_search(monkeypatch):
     _patch_search(monkeypatch, None)
 
 
+@pytest.fixture(autouse=True)
+def _default_no_label_ocr(monkeypatch):
+    """A10 LabelOCRStrategy calls extract_nutrition_label (OpenAI vision) whenever
+    the pipeline reaches it.  Default to a null-basis miss so all pre-A10 barcode
+    integration tests make no real OpenAI calls and the pipeline falls through to
+    vision as originally written.  The label-OCR path is tested directly in
+    test_product_lookup_service.py.
+    """
+    import json
+
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService,
+        "extract_nutrition_label",
+        AsyncMock(return_value=json.dumps({"basis": None})),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_no_web_search(monkeypatch):
+    """A9 NameWebSearchStrategy makes a Responses-API call whenever the pipeline
+    reaches it.  Stub the entire resolve() so no real call is made and no
+    ai_call_logs row is added.  The name-web path is tested directly in
+    test_product_lookup_service.py.
+    """
+    from app.services.product_lookup_service import NameWebSearchStrategy
+
+    monkeypatch.setattr(NameWebSearchStrategy, "resolve", AsyncMock(return_value=None))
+
+
 # ===========================================================================
 # 1. End-to-end: barcode→OFF hit → badge + EAN in reply
 # ===========================================================================
