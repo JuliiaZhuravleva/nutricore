@@ -126,6 +126,11 @@ _Track for later._
   (aliases, last-used, embeddings). **Not** part of round-2. Likely the largest friction/cost win of the
   "Next" tier for a single-owner bot that logs the same foods repeatedly.
   - **Priority:** Low · **Source:** input-processing-flow diagram + round-2 scope analysis 2026-07-08 · **Created:** 2026-07-08
+- [ ] **TD-016**: A9 web-search uses the **legacy** Responses-API tool type `web_search_preview`
+  (`OpenAIService.web_search_nutrition`), not the GA `web_search`. Works today (no GA-only controls
+  used), but modernize to `web_search` when convenient — and revisit if the preview type is
+  deprecated. Surfaced by the round-2 /review-deep as a "future modernization note only" (not a bug).
+  - **Priority:** Low · **Source:** /review-deep 2026-07-08 (round-2) · **Created:** 2026-07-08
 
 ## Resolved
 _Keep 90 days then remove._
