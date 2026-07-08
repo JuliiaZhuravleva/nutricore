@@ -26,26 +26,6 @@ _Slows development but doesn't block._
   - **Source:** /wrap session 2026-07-02 (env broke mid-wrap; code was green)
   - **Created:** 2026-07-02
 
-- [ ] **TD-015**: Meal-confirm step — no Да/Нет buttons **and** a free-text reply silently restarts the
-  flow (losing the draft). The "Всё верно? (Да/Нет)" prompt (`_run_meal_analysis` → `_nutrition_reply`,
-  `telegram.py:422`) is sent with **no `reply_markup`** — there are no buttons, the owner must type `Да`.
-  Worse, `confirm_meal` (`telegram.py:586`) is `if text == "Да": save … else: discard + restart`, so **any**
-  other text — a typed correction, lowercase `да`, a mistyped `Нет` — falls into the reject branch, wipes
-  `context.user_data["current_meal"]`, and re-asks "Давай попробуем ещё раз. Когда был прием пищи?". The
-  analyzed draft (nutrition/photo/`ai_analysis`) is lost and the owner starts over from the meal-time step.
-  Owner hit this live **2026-07-08** (sent a text correction in reply to the confirm prompt → bot restarted).
-  Two fixes: **(1) attach explicit Да/Нет buttons** to the confirm prompt (inline `CallbackQueryHandler`, or a
-  `ReplyKeyboardMarkup` consistent with the TD-005 model-picker choice); **(2) accept a text reply as a
-  correction** rather than a blind reject — treat free text at `CONFIRMING_MEAL` as an edit to the current
-  draft (re-run analysis with the correction, keep the draft context), and reserve reject for an explicit
-  `Нет`/`Отмена`. At minimum, stop silently discarding the draft on unrecognized input — re-prompt in place
-  ("нажми Да или Нет, либо опиши правку") instead of restarting.
-  - **Priority:** Medium (daily-flow papercut + silent loss of the analyzed draft)
-  - **Source:** owner live report 2026-07-08 (text reply to confirm → flow restarted)
-  - **Created:** 2026-07-08
-  - **Related:** TD-013 — the ratified confidence-gate redesign already notes "reject-and-resend is the only
-    path" and targets quick-select buttons; TD-015 is the immediate papercut fix, fold in if TD-013 is scheduled.
-
 ## Low
 _Track for later._
 
@@ -134,6 +114,22 @@ _Track for later._
 
 ## Resolved
 _Keep 90 days then remove._
+
+- [x] **TD-015**: Meal-confirm step no longer silently loses the analyzed draft, and now ships
+  buttons. **(1)** The "Всё верно? (Да/Нет)" prompt (`_run_meal_analysis`) is sent with a
+  `confirm_keyboard` **ReplyKeyboardMarkup** (`[["Да", "Нет"]]`, consistent with the TD-005 model
+  picker). **(2)** `confirm_meal` now classifies the reply via `_confirm_intent` (case-insensitive,
+  trailing-punctuation-tolerant) into **affirm / reject / correction**: an explicit `Да` (incl.
+  lowercase `да`, `ага`, `верно`, 👍) saves; an explicit `Нет`/`Отмена` discards + restarts; **any
+  other free text is treated as a correction** — re-analyzed as a new text description while staying
+  in `CONFIRMING_MEAL` (meal_time preserved; the prior attempt's stale photo/`resolution_source` are
+  dropped, same hygiene as the reject path). The old `if text == "Да": save else: discard+restart`
+  wiped the draft on a mistyped/lowercase reply or a real correction (owner hit it live 2026-07-08).
+  Photo+text *merge* for a photo-draft correction is still out of scope (re-analyzes text only — Gap ①
+  in the input-processing diagram → TD-013). 5 new tests; 325 green.
+  - **Priority:** Medium · **Source:** owner live report 2026-07-08 · **Resolved:** 2026-07-08
+  - **Related:** TD-013 — the confidence-gate redesign supersedes this with quick-select buttons +
+    inline correction; TD-015 is the shipped papercut fix.
 
 - [x] **TD-009**: Inbound messages are now persisted on receipt (history + replay). A new
   `inbound_messages` table (model/schema/CRUD/`inbound_message_service.py`/migration `e4f5a6b7c8d9`)

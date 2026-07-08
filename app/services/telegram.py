@@ -90,6 +90,30 @@ time_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# Confirm-step keyboard (TD-015): explicit Да / Нет so the owner never has to
+# guess the exact word, and a free-text reply is handled as a correction rather
+# than a silent reject-and-restart.
+confirm_keyboard = ReplyKeyboardMarkup(
+    [["Да", "Нет"]],
+    resize_keyboard=True,
+)
+
+# Accepted spellings for the confirm prompt. Matched case-insensitively and with
+# trailing punctuation stripped, so a lowercase ``да`` or a stray ``Нет.`` is not
+# misread as a correction (the TD-015 papercut).
+_CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅"}
+_CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
+
+
+def _confirm_intent(text: str | None) -> str:
+    """Classify a reply to "Всё верно? (Да/Нет)" as affirm | reject | correction."""
+    norm = (text or "").strip().lower().strip(".!…? ")
+    if norm in _CONFIRM_AFFIRM:
+        return "affirm"
+    if norm in _CONFIRM_REJECT:
+        return "reject"
+    return "correction"
+
 
 class TelegramService:
     _instance = None
@@ -428,7 +452,8 @@ async def _run_meal_analysis(
 
     try:
         await update.message.reply_text(
-            _nutrition_reply(nutrition_info, header, resolution_result)
+            _nutrition_reply(nutrition_info, header, resolution_result),
+            reply_markup=confirm_keyboard,
         )
     except Exception as e:
         # Analysis is saved; only the confirmation reply failed. Keep the draft
@@ -590,8 +615,44 @@ async def process_model_choice(
 
 @subscription_required
 async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Final confirmation of the meal."""
-    if update.message.text == "Да":
+    """Final confirmation of the meal.
+
+    Three outcomes (TD-015): an explicit **Да** saves; an explicit **Нет/Отмена**
+    discards the draft and restarts; anything else is treated as a typed
+    *correction* — re-analyzed as a new text description while keeping the flow in
+    CONFIRMING_MEAL. The old behavior silently wiped the analyzed draft on any
+    non-"Да" text (a mistyped/lowercase reply, or a real correction).
+    """
+    intent = _confirm_intent(update.message.text)
+
+    if intent == "correction":
+        # A free-text reply to the confirm prompt is a correction, not a reject —
+        # re-run the analysis on it and re-ask, instead of discarding the draft.
+        # NOTE: for a photo draft this re-analyzes the *text* only; combining the
+        # original photo with a text correction needs the photo+text merge that is
+        # still a gap (docs/diagrams/input-processing-flow.md, Gap ①) → TD-013.
+        text = update.message.text
+        # Drop the prior attempt's photo/resolution metadata so the corrected,
+        # text-based draft doesn't inherit a stale photo or resolution_source
+        # (same hygiene as the reject path). meal_time lives outside current_meal
+        # and is intentionally preserved.
+        context.user_data["current_meal"] = {}
+        inbound_id = inbound_msg.record_inbound(
+            telegram_id=update.effective_user.id,
+            kind="text",
+            content=text,
+            photo_file_id=None,
+        )
+        return await _run_meal_analysis(
+            update,
+            context,
+            kind="text",
+            input_ref=text,
+            payload=text,
+            inbound_id=inbound_id,
+        )
+
+    if intent == "affirm":
         try:
             # Get meal data from context
             current_meal = context.user_data.get("current_meal", {})
