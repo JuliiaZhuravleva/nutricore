@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.services.ai_call_log_service import analyze_and_log
-from app.services.open_food_facts_service import OpenFoodFactsService
+from app.services.open_food_facts_service import OFFLookupResult, OpenFoodFactsService
 from app.services.openai_service import get_openai_service
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,46 @@ class ResolutionStrategy:
 
 
 # ---------------------------------------------------------------------------
+# Shared strategy helpers
+# ---------------------------------------------------------------------------
+
+
+def _scale_off_nutrition(
+    off_result: OFFLookupResult,
+    portion_grams: Optional[float],
+    *,
+    fallback_food: str,
+) -> dict:
+    """Scale an OFF per-100g result to the eaten portion (ADR-0001 §7).
+
+    Shared by every OFF-backed strategy (barcode, name-search, …). When
+    ``portion_grams`` is known and positive, multiply the per-100g macros by
+    ``portion/100`` and label the portion in grams; otherwise keep the per-100g
+    numbers as-is with a ``"100г"`` portion (the reply layer warns the user).
+    ``fallback_food`` names the item when OFF has no ``product_name``.
+    """
+    foods = [off_result.product_name] if off_result.product_name else [fallback_food]
+    if portion_grams is not None and portion_grams > 0:
+        factor = portion_grams / 100.0
+        return {
+            "calories": round((off_result.calories_per_100g or 0) * factor, 1),
+            "protein": round((off_result.proteins_per_100g or 0) * factor, 1),
+            "fats": round((off_result.fats_per_100g or 0) * factor, 1),
+            "carbs": round((off_result.carbohydrates_per_100g or 0) * factor, 1),
+            "portion": f"{portion_grams:.0f}г",
+            "foods": foods,
+        }
+    return {
+        "calories": off_result.calories_per_100g or 0,
+        "protein": off_result.proteins_per_100g or 0,
+        "fats": off_result.fats_per_100g or 0,
+        "carbs": off_result.carbohydrates_per_100g or 0,
+        "portion": "100г",
+        "foods": foods,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Round-1 strategies
 # ---------------------------------------------------------------------------
 
@@ -161,34 +201,9 @@ class BarcodeOFFStrategy(ResolutionStrategy):
 
         # --- Portion scaling (ADR §7) ------------------------------------
         portion_grams = signals.portion_grams
-        if portion_grams is not None and portion_grams > 0:
-            factor = portion_grams / 100.0
-            nutrition = {
-                "calories": round((off_result.calories_per_100g or 0) * factor, 1),
-                "protein": round((off_result.proteins_per_100g or 0) * factor, 1),
-                "fats": round((off_result.fats_per_100g or 0) * factor, 1),
-                "carbs": round((off_result.carbohydrates_per_100g or 0) * factor, 1),
-                "portion": f"{portion_grams:.0f}г",
-                "foods": (
-                    [off_result.product_name]
-                    if off_result.product_name
-                    else [signals.barcode]
-                ),
-            }
-        else:
-            # No vision portion estimate — use per-100g as-is; flagged in signals.
-            nutrition = {
-                "calories": off_result.calories_per_100g or 0,
-                "protein": off_result.proteins_per_100g or 0,
-                "fats": off_result.fats_per_100g or 0,
-                "carbs": off_result.carbohydrates_per_100g or 0,
-                "portion": "100г",
-                "foods": (
-                    [off_result.product_name]
-                    if off_result.product_name
-                    else [signals.barcode]
-                ),
-            }
+        nutrition = _scale_off_nutrition(
+            off_result, portion_grams, fallback_food=signals.barcode
+        )
 
         signals_dict: Dict[str, Any] = {
             "barcode_raw": signals.barcode,
@@ -211,6 +226,101 @@ class BarcodeOFFStrategy(ResolutionStrategy):
             confidence_tier=self.confidence_tier,
             nutrition=nutrition,
             description=off_result.product_name or signals.barcode,
+            portion_grams=portion_grams,
+            signals=signals_dict,
+        )
+
+
+# A name search only makes sense for a *packaged* single product. A plate with
+# several distinct foods would match some arbitrary packaged item at medium
+# confidence, so above this many vision foods we skip name search and let vision
+# handle the plate (honest low confidence beats a confident-wrong medium).
+_NAME_SEARCH_MAX_FOODS = 2
+
+
+class NameOFFStrategy(ResolutionStrategy):
+    """Vision food name → OFF full-text search (A8).  Medium confidence.
+
+    Runs only when the barcode strategy did not resolve (no barcode visible, or
+    the scanned product carried no nutrition).  Uses the vision-read food
+    name(s) as a search query and takes OFF's best relevance-ranked match that
+    has real macros.  Returns ``None`` (fall through to vision) when there is no
+    usable food name, the plate has too many distinct foods, or OFF finds
+    nothing — so a miss degrades gracefully to the vision estimate.
+    """
+
+    source_id = "name_off"
+    confidence_tier = "medium"
+
+    async def resolve(
+        self,
+        signals: ImageSignals,
+        db: Session,
+    ) -> Optional[ResolutionResult]:
+        vision = signals.vision_result or {}
+        foods = [
+            f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()
+        ]
+        if not foods:
+            return None
+        if len(foods) > _NAME_SEARCH_MAX_FOODS:
+            logger.debug(
+                "NameOFFStrategy: %d foods (> %d) — skipping name search "
+                "(looks like a multi-item plate)",
+                len(foods),
+                _NAME_SEARCH_MAX_FOODS,
+            )
+            return None
+
+        query = " ".join(foods).strip()
+        started = time.perf_counter()
+        try:
+            svc = OpenFoodFactsService(db)
+            off_result = await svc.search_by_name(query)
+        except Exception as exc:
+            # search_by_name swallows network/parse errors to None, so a raise
+            # here is genuinely unexpected — log the stack trace.
+            logger.warning(
+                "NameOFFStrategy: search raised for %r: %s", query, exc, exc_info=True
+            )
+            off_result = None
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        if off_result is None:
+            return None
+
+        portion_grams = signals.portion_grams
+        nutrition = _scale_off_nutrition(off_result, portion_grams, fallback_food=query)
+
+        signals_dict: Dict[str, Any] = {
+            # This result came from a name search, not a barcode — keep the
+            # reply's "Штрих-код:" line off (barcode_raw=None) so a detected but
+            # unresolved barcode isn't misattributed to a name-matched product.
+            "barcode_raw": None,
+            "barcode_detected": signals.barcode is not None,
+            "product_name": off_result.product_name,
+            "brand": off_result.brand,
+            "off_code": off_result.off_code,
+            "off_from_cache": False,  # name search is never cached
+            "off_latency_ms": latency_ms,
+            "portion_grams": portion_grams,
+            "confidence_tier": self.confidence_tier,
+            "strategy_tried": [self.source_id],  # runner updates this
+            "strategy_chosen": self.source_id,
+            "vision_foods": vision.get("foods", []),
+            "vision_portion_raw": vision.get("portion"),
+            "name_query": query,  # what we searched — for misprediction analysis
+        }
+        # Preserve a detected-but-unresolved barcode for analytics without
+        # surfacing it in the reply (see barcode_raw note above).
+        if signals.barcode is not None:
+            signals_dict["barcode_unresolved"] = signals.barcode
+
+        return ResolutionResult(
+            source=self.source_id,
+            confidence_tier=self.confidence_tier,
+            nutrition=nutrition,
+            description=off_result.product_name or query,
             portion_grams=portion_grams,
             signals=signals_dict,
         )
@@ -270,11 +380,11 @@ class VisionFallbackStrategy(ResolutionStrategy):
 def _build_pipeline() -> List[ResolutionStrategy]:
     """Ordered strategy list.  A8/A9/A10 insert before VisionFallbackStrategy."""
     return [
-        BarcodeOFFStrategy(),  # A4 (round 1)
-        # NameOFFStrategy(),         # A8 (round 2, deferred)
+        BarcodeOFFStrategy(),  # A4 (round 1) — high confidence
+        NameOFFStrategy(),  # A8 (round 2) — medium confidence
         # LabelOCRStrategy(),        # A10 (round 2, deferred)
         # WebSearchStrategy(),       # A9 (round 2, blocked on ADR)
-        VisionFallbackStrategy(),  # always last
+        VisionFallbackStrategy(),  # always last — low confidence
     ]
 
 

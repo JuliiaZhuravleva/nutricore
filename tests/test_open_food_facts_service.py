@@ -499,6 +499,142 @@ def test_has_macros_any_present_is_true():
     assert _mk_result(proteins_per_100g=0.0).has_macros is True
 
 
+# ---------------------------------------------------------------------------
+# search_by_name (A8) — OFF full-text search
+# ---------------------------------------------------------------------------
+
+
+def _search_product(
+    *,
+    code: str = _EAN,
+    product_name: str = "Чипсы Pringles Original",
+    brand: str = "Pringles",
+    nutriments: dict | None = None,
+) -> dict:
+    """One product entry as returned in the cgi/search.pl products list."""
+    if nutriments is None:
+        nutriments = {
+            "energy-kcal_100g": 520.0,
+            "proteins_100g": 5.5,
+            "fat_100g": 31.0,
+            "carbohydrates_100g": 53.0,
+        }
+    return {
+        "code": code,
+        "product_name": product_name,
+        "brands": brand,
+        "nutriments": nutriments,
+    }
+
+
+def _make_search_json(products: list) -> dict:
+    return {"count": len(products), "page": 1, "page_size": 5, "products": products}
+
+
+def test_search_by_name_returns_best_match(db_session):
+    resp = _make_response(200, _make_search_json([_search_product()]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("Pringles Original"))
+
+    assert result is not None
+    assert isinstance(result, OFFLookupResult)
+    assert result.product_name == "Чипсы Pringles Original"
+    assert result.calories_per_100g == 520.0
+    assert result.from_cache is False
+
+
+def test_search_by_name_skips_candidates_without_macros(db_session):
+    """The first relevance-ranked hit with real nutrition wins; an earlier hit
+    with an empty nutriments block is skipped (same rule as the barcode path)."""
+    no_macros = _search_product(product_name="Empty regional item", nutriments={})
+    good = _search_product(product_name="Real product")
+    resp = _make_response(200, _make_search_json([no_macros, good]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("query"))
+
+    assert result is not None
+    assert result.product_name == "Real product"
+
+
+def test_search_by_name_all_candidates_no_macros_returns_none(db_session):
+    empty = _search_product(nutriments={})
+    resp = _make_response(200, _make_search_json([empty, empty]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("query"))
+
+    assert result is None
+
+
+def test_search_by_name_empty_query_makes_no_http_call(db_session):
+    with patch(
+        "app.services.open_food_facts_service.httpx.AsyncClient"
+    ) as mock_client_cls:
+        result = asyncio.run(_svc(db_session).search_by_name("   "))
+        mock_client_cls.assert_not_called()
+    assert result is None
+
+
+def test_search_by_name_no_products_returns_none(db_session):
+    resp = _make_response(200, _make_search_json([]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("nothing here"))
+
+    assert result is None
+
+
+def test_search_by_name_http_timeout_returns_none(db_session):
+    mock_inner = AsyncMock()
+    mock_inner.get = AsyncMock(
+        side_effect=httpx.TimeoutException("timed out", request=MagicMock())
+    )
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_inner)
+    mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+    with patch(
+        "app.services.open_food_facts_service.httpx.AsyncClient",
+        return_value=mock_cm,
+    ):
+        result = asyncio.run(_svc(db_session).search_by_name("query"))
+
+    assert result is None
+
+
+def test_search_by_name_does_not_write_cache(db_session):
+    """Name-search results are fuzzy and must NOT be persisted to product_cache
+    (only exact barcode lookups are authoritative)."""
+    from app.crud.crud_product_cache import crud_product_cache
+
+    resp = _make_response(200, _make_search_json([_search_product()]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        asyncio.run(_svc(db_session).search_by_name("Pringles Original"))
+
+    assert crud_product_cache.get_by_barcode(db_session, _EAN) is None
+
+
+def test_search_by_name_sends_user_agent_and_search_terms(db_session):
+    resp = _make_response(200, _make_search_json([_search_product()]))
+    patch_ctx, mock_inner = _patch_client(resp)
+
+    with patch_ctx:
+        asyncio.run(_svc(db_session).search_by_name("Pringles Original"))
+
+    _args, kwargs = mock_inner.get.call_args
+    assert kwargs["headers"]["User-Agent"] == OFF_USER_AGENT
+    assert kwargs["params"]["search_terms"] == "Pringles Original"
+    assert "fields" in kwargs["params"]
+
+
 @pytest.mark.parametrize(
     "bad",
     [

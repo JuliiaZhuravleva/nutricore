@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 
 OFF_BASE_URL = "https://world.openfoodfacts.org"
 OFF_PRODUCT_PATH = "/api/v2/product/{barcode}.json"
+# Legacy full-text search endpoint (A8). The v2 API has no plain name search;
+# cgi/search.pl is the documented, key-free way to query by free text.
+OFF_SEARCH_PATH = "/cgi/search.pl"
+
+# How many candidates to pull for a name search. Small: we only take the first
+# hit that carries usable macros, and OFF ranks by relevance.
+_SEARCH_PAGE_SIZE = 5
+
+# Guard the free-text query length before it goes on the wire.
+_MAX_QUERY_LEN = 200
 
 # Slim the payload: we only need these fields.
 _OFF_FIELDS = "product_name,product_name_en,brands,code,nutriments,nutriscore_grade"
@@ -211,6 +221,39 @@ class OpenFoodFactsService:
 
         return result
 
+    async def search_by_name(self, query: str) -> Optional[OFFLookupResult]:
+        """Full-text search OFF and return the best match with usable macros (A8).
+
+        Used by ``NameOFFStrategy`` when no barcode resolved. Returns the first
+        relevance-ranked product that actually carries nutrition (``has_macros``),
+        or ``None`` on empty query / no match / no-nutrition match / any network
+        or parse error — so the caller falls through to the vision estimate.
+
+        Unlike :meth:`lookup`, this does **not** touch ``product_cache``: the
+        query→product mapping is fuzzy and must not be persisted as an
+        authoritative barcode result. It is a live call each time (fine for a
+        low-volume personal tool).
+        """
+        query = (query or "").strip()
+        if not query:
+            return None
+        if len(query) > _MAX_QUERY_LEN:
+            query = query[:_MAX_QUERY_LEN]
+
+        products = await self._search_from_off(query)
+        if not products:
+            return None
+
+        # First candidate that carries real nutrition wins (OFF ranks by
+        # relevance). A hit with an empty nutriments block is skipped, same as
+        # the barcode path treats it as a miss.
+        for product in products:
+            off_code = str(product.get("code") or "")
+            result = self._normalise(off_code, product)
+            if result is not None and result.has_macros:
+                return result
+        return None
+
     # ------------------------------------------------------------------
     # Private — HTTP
     # ------------------------------------------------------------------
@@ -290,6 +333,79 @@ class OpenFoodFactsService:
             "OFF: found product for barcode %s in %.0f ms", barcode, latency_ms
         )
         return product
+
+    async def _search_from_off(self, query: str) -> list:
+        """Call the OFF full-text search endpoint; return the products list.
+
+        Returns an empty list on any network / HTTP / parse error or an
+        oversized body, so :meth:`search_by_name` degrades to a miss.
+        """
+        url = OFF_BASE_URL + OFF_SEARCH_PATH
+        headers = {"User-Agent": OFF_USER_AGENT}
+        params = {
+            "search_terms": query,
+            "search_simple": 1,
+            "action": "process",
+            "json": 1,
+            "page_size": _SEARCH_PAGE_SIZE,
+            "fields": _OFF_FIELDS,
+        }
+        timeout = httpx.Timeout(
+            connect=_TIMEOUT_CONNECT,
+            read=_TIMEOUT_READ,
+            write=5.0,
+            pool=5.0,
+        )
+
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, headers=headers, params=params)
+        except httpx.TimeoutException as exc:
+            logger.warning("OFF search timeout for %r: %s", query, exc)
+            return []
+        except httpx.RequestError as exc:
+            logger.warning("OFF search request error for %r: %s", query, exc)
+            return []
+
+        latency_ms = int((time.perf_counter() - started) * 1000)
+
+        if response.status_code != 200:
+            logger.warning(
+                "OFF search returned HTTP %s for %r (%.0f ms)",
+                response.status_code,
+                query,
+                latency_ms,
+            )
+            return []
+
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            logger.warning(
+                "OFF search response for %r is %d bytes (> %d cap) — ignoring",
+                query,
+                len(response.content),
+                _MAX_RESPONSE_BYTES,
+            )
+            return []
+
+        try:
+            data: Dict[str, Any] = response.json()
+        except Exception as exc:
+            logger.warning("OFF search returned non-JSON for %r: %s", query, exc)
+            return []
+
+        products = data.get("products")
+        if not isinstance(products, list):
+            logger.debug("OFF search: no products for %r (%.0f ms)", query, latency_ms)
+            return []
+
+        logger.debug(
+            "OFF search: %d candidates for %r in %.0f ms",
+            len(products),
+            query,
+            latency_ms,
+        )
+        return products
 
     # ------------------------------------------------------------------
     # Private — normalization
