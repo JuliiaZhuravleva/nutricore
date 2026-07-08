@@ -213,6 +213,23 @@ def _patch_off(monkeypatch, return_value):
     )
 
 
+def _patch_search(monkeypatch, return_value):
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        AsyncMock(return_value=return_value),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _default_no_name_search(monkeypatch):
+    """A8 inserted a name-search strategy that runs whenever the barcode path
+    misses.  Default it to a miss so the pre-A8 integration tests exercise the
+    barcode→vision fallback they were written for (and make no real OFF search
+    call).  Tests that specifically exercise name_off override via _patch_search.
+    """
+    _patch_search(monkeypatch, None)
+
+
 # ===========================================================================
 # 1. End-to-end: barcode→OFF hit → badge + EAN in reply
 # ===========================================================================

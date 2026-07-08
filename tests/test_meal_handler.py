@@ -141,6 +141,24 @@ def barcode_mock(monkeypatch):
     return mock
 
 
+@pytest.fixture(autouse=True)
+def name_search_mock(monkeypatch):
+    """Return None (no name match) for the A8 name-search strategy in all photo
+    tests.
+
+    The autouse ``barcode_mock`` above makes the barcode path miss, so the
+    pipeline now reaches ``NameOFFStrategy``; without this its ``search_by_name``
+    hits the real OFF API (nondeterministic network). The name-search path is
+    tested directly in test_product_lookup_service.py / test_open_food_facts_service.py.
+    """
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
+        mock,
+    )
+    return mock
+
+
 # --- process_meal_input: photo branch --------------------------------------
 
 
