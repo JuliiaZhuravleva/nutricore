@@ -1,43 +1,49 @@
 # Handoff — main (2026-07-08)
 
 ## State
-On **`main`** (`7fb51e1`), clean tree, **5 docs-only commits ahead of `origin/main` (NOT pushed)**:
-input-processing diagram, `.gitignore` (macOS), TD-013/014, TD-015, research doc + TD-016.
-**276 tests green** on main (`./scripts/test.sh` — cache-venv wrapper; `poetry run` broken, TD-001).
-A sibling worktree holds the round-2 branch (below).
+On **`main`**, in sync with **`origin/main`** (`846fb28`), clean tree. **325 tests green**
+(`./scripts/test.sh` — cache-venv; `poetry run` **also works now**, TD-001 fixed on the branch below).
+Round-2 product-lookup is **merged + deployed** — `origin/main` `d6f0c64` is the `nutricore-release`
+merge of `plan/photo-product-lookup-round2` (label-OCR 🏷 + web-search 🌐 strategies live).
 
-**Release protocol** (`docs/RELEASE.md`): runtime work ships as a **pushed feature branch** handed to
-openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly (not pushed here yet).
+**Release protocol** (`docs/RELEASE.md`): runtime work ships as a pushed feature branch handed to
+openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly.
 
-## What shipped this session
-- **photo-product-lookup round-2 — DONE + reviewed, on a pushed branch** (`plan/photo-product-lookup-round2`,
-  worktree `../nutricore.photo-product-lookup-round2-wt`, tip `2b10a73`, pushed). Built via the multi-agent
-  **plan-fixes → execute-plan** flow: **A12** ADR-0002 (Responses-API split-client), **A10** `LabelOCRStrategy`
-  (on-pack label OCR, `label_ocr`), **A9** `NameWebSearchStrategy` (Responses-API `web_search`, `name_web`,
-  dynamic medium/low), **A13** pipeline-order + autouse-mock gate. Pipeline order now
-  `barcode_off → name_off → label_ocr → name_web → vision`; distinct badges 🏷/🌐. Then a **4-agent
-  /review-deep** → 1 CRITICAL (LabelOCR bare `float()` on model output → hard-fail; 3× corroborated) + 2
-  findings, all fixed (+3 regression tests). **320 green.** Code-only: **no migration, no new env.**
-- **Input-processing diagram** (`docs/diagrams/input-processing-flow.{html,md}`) — 4-phase × 3-tier maturity
-  matrix (Сейчас → Следующее → North-star); HTML for humans, MD mirror for LLMs. Ratified by Julia.
-- **Debt tracked:** TD-013 (confidence gate), TD-014 (personal-DB/RAG), TD-015 (confirm Да/Нет buttons —
-  Julia hit live), TD-016 (Responses-API `web_search_preview` → GA).
+## Awaiting release — one branch
+**`fix/td-015-confirm-buttons`** (pushed; 2 commits, clean diff vs `origin/main`):
+- **TD-015** (`46b1357`, runtime) — meal-confirm step: added **Да/Нет** buttons (`confirm_keyboard`),
+  and a free-text reply is now treated as a **correction** (re-analyzed as text, stays in
+  `CONFIRMING_MEAL`, `meal_time` preserved, prior attempt's stale photo/`resolution_source` dropped)
+  instead of the old `if text == "Да": save else: discard+restart` that silently wiped the analyzed
+  draft on a lowercase `да` / mistyped `Нет` / real correction (owner hit it live). `_confirm_intent`
+  classifies affirm/reject/correction (case-insensitive, punctuation-tolerant). Touches only
+  `app/services/telegram.py` (`confirm_meal` / `_run_meal_analysis`). Photo+text *merge* still out of
+  scope (Gap ① → TD-013). 5 new tests.
+- **TD-001** (`2ffada7`, dev-only) — `.python-version` (3.12.1) pins the interpreter so the poetry
+  venv base can't dangle again; `poetry run` works. No Docker/deploy impact. (Bundled here rather than
+  merged to main directly to avoid a `_tech-debt.md` split.)
+- **No migration, no new env, no manual step.** 325 green.
+- **Relay:** `nutricore-release fix/td-015-confirm-buttons`.
 
-## Next up
-1. **Push `main`** (5 docs commits) when ready — docs go to main directly per the protocol (not pushed yet).
-2. **Deploy round-2** — openclaw's side. Relay the ready handoff (see below / this session's tail):
-   `bin/nutricore-release plan/photo-product-lookup-round2` — no migration, no env, no manual step, 320 green.
-   (A8 already released → `4e8f458`. Round-1 migration `f5a6b7c8d9e0` is on main.)
-3. **Round-2 residual / future:** TD-016 (GA web_search), then the bigger «Следующее» tracks — TD-013
-   (confidence gate + quick buttons) and TD-014 (personal-DB/RAG). TD-015 is the immediate confirm papercut.
+## Shipped to origin/main this session (docs-lane, pushed)
+6 docs commits (`d6f0c64..846fb28`): input-processing diagram, `.gitignore` (macOS), TD-013/014,
+TD-015 entry, research doc + TD-016, handoff refresh.
+
+## Open debt — all Low (Critical/High/Medium: none)
+TD-007/008 (self-heal coverage + `telegram.py` decomposition), TD-010 (inbound bytes/delete/
+reprocess→meal), TD-011 (product-lookup accuracy residuals), TD-012 (flake8 in product-lookup tests),
+**TD-013** (confidence gate — 3 scores + quick-select buttons), **TD-014** (personal-DB/RAG reuse),
+TD-016 (Responses-API `web_search` GA). **TD-013 / TD-014 are the big «Следующее» tracks** (from the
+input-processing diagram) — most weight, largest friction/cost win for a repeat-logging single owner.
+_(TD-015 + TD-001 → Resolved once `fix/td-015-confirm-buttons` merges; the Resolved entries already
+live on that branch's `_tech-debt.md`.)_
 
 ## Gotchas / learnings
-- **Tests:** `./scripts/test.sh` (cache-venv python) — NOT `poetry run` (TD-001).
-- **execute-plan specialists sometimes don't commit** doc/test deliverables (evaluator PASSes them off-disk).
-  After a run: `git status` in the worktree and commit strays (this session: A12 ADR + A13 mocks were uncommitted).
-- **SessionStart HANDOFF-hook cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the plan-fixes/execute
-  **scope gate** → false-positive `GATE FAIL … exit 71`. Clean the cruft (`git checkout HANDOFF.md; rm HANDOFF-*.md`)
-  and the run is fine — the envelope/deliverables are real.
-- **plan-fixes wrapper** needs source path + flags as **separate** args; quoting them into one string → exit 66.
-- **envelope approve** only blocks on pending `human_feedback`, not `clarifying_questions`.
-- `get_openai_service()` is the shared singleton — services use it, never import the handler layer (H2 lesson).
+- **Tests:** `./scripts/test.sh` (cache-venv) is canonical/allowlisted. `poetry run` now works too
+  (TD-001 pin), but test.sh stays the source of truth.
+- **SessionStart HANDOFF-hook cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the
+  plan-fixes/execute **scope gate** → false-positive `GATE FAIL … exit 71`. Clean with
+  `git checkout HANDOFF.md; rm HANDOFF-*.md`.
+- **execute-plan specialists sometimes don't commit** doc/test deliverables — `git status` in the
+  worktree after a run and commit strays.
+- `get_openai_service()` is the shared singleton — services use it, never import the handler layer.
