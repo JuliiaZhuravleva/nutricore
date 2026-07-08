@@ -26,6 +26,26 @@ _Slows development but doesn't block._
   - **Source:** /wrap session 2026-07-02 (env broke mid-wrap; code was green)
   - **Created:** 2026-07-02
 
+- [ ] **TD-015**: Meal-confirm step — no Да/Нет buttons **and** a free-text reply silently restarts the
+  flow (losing the draft). The "Всё верно? (Да/Нет)" prompt (`_run_meal_analysis` → `_nutrition_reply`,
+  `telegram.py:422`) is sent with **no `reply_markup`** — there are no buttons, the owner must type `Да`.
+  Worse, `confirm_meal` (`telegram.py:586`) is `if text == "Да": save … else: discard + restart`, so **any**
+  other text — a typed correction, lowercase `да`, a mistyped `Нет` — falls into the reject branch, wipes
+  `context.user_data["current_meal"]`, and re-asks "Давай попробуем ещё раз. Когда был прием пищи?". The
+  analyzed draft (nutrition/photo/`ai_analysis`) is lost and the owner starts over from the meal-time step.
+  Owner hit this live **2026-07-08** (sent a text correction in reply to the confirm prompt → bot restarted).
+  Two fixes: **(1) attach explicit Да/Нет buttons** to the confirm prompt (inline `CallbackQueryHandler`, or a
+  `ReplyKeyboardMarkup` consistent with the TD-005 model-picker choice); **(2) accept a text reply as a
+  correction** rather than a blind reject — treat free text at `CONFIRMING_MEAL` as an edit to the current
+  draft (re-run analysis with the correction, keep the draft context), and reserve reject for an explicit
+  `Нет`/`Отмена`. At minimum, stop silently discarding the draft on unrecognized input — re-prompt in place
+  ("нажми Да или Нет, либо опиши правку") instead of restarting.
+  - **Priority:** Medium (daily-flow papercut + silent loss of the analyzed draft)
+  - **Source:** owner live report 2026-07-08 (text reply to confirm → flow restarted)
+  - **Created:** 2026-07-08
+  - **Related:** TD-013 — the ratified confidence-gate redesign already notes "reject-and-resend is the only
+    path" and targets quick-select buttons; TD-015 is the immediate papercut fix, fold in if TD-013 is scheduled.
+
 ## Low
 _Track for later._
 
