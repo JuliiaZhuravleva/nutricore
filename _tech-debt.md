@@ -86,6 +86,26 @@ _Track for later._
   is undefined (F821); it never runs, so 249 tests still pass, but it's dead cruft. Also the
   long-standing `telegram.py` F841 `'ve'`. Clean up in an isort/flake8 pass over the new modules.
   - **Priority:** Low · **Source:** /review-deep 2026-07-07 (flake8 on touched files) · **Created:** 2026-07-07
+- [ ] **TD-013**: Confidence gate — three separate scores + minimal clarification. Resolution today
+  yields a single per-strategy tier (high/med/low) shown as one badge, and the only check is human
+  Да/Нет — no inline portion/gram correction (reject-and-resend is the only path). The ratified target
+  (`docs/diagrams/input-processing-flow.md`, «Следующее» tier) splits confidence into **identity /
+  portion / nutrition** with reconciliation rules → auto-accept when confident, else **minimal
+  clarification via quick-select buttons** (portion S/M/L, candidate pick). Research basis: "smallest
+  question that resolves the largest uncertainty" + separate identity/portion/nutrition confidences
+  (`docs/researches/…ecosystem.md`). **Not** part of round-2 (which only adds resolution strategies —
+  the confidence phase is unchanged). Pairs with the `_source_badge`/`_resolution_detail_lines` →
+  `ResolutionResult.to_reply_lines()` move noted in TD-008.
+  - **Priority:** Low · **Source:** input-processing-flow diagram + round-2 scope analysis 2026-07-08 · **Created:** 2026-07-08
+- [ ] **TD-014**: Personal-food DB + RAG reuse. Every meal entry makes a fresh OpenAI call; previously
+  confirmed foods are never reused. The ratified target («Следующее» tier) adds (1) a **quick-pick from
+  saved/recent meals** → change quantity, skipping analysis entirely, and (2) **text → structured JSON →
+  retrieval (RAG)** over a personal + product base so a described, already-known product is suggested.
+  Research basis: personal DB as the first stop for repeated meals, text+image embeddings in `pgvector`,
+  and user edits persisted back as confirmed aliases (learning loop). Needs a personal-food store
+  (aliases, last-used, embeddings). **Not** part of round-2. Likely the largest friction/cost win of the
+  "Next" tier for a single-owner bot that logs the same foods repeatedly.
+  - **Priority:** Low · **Source:** input-processing-flow diagram + round-2 scope analysis 2026-07-08 · **Created:** 2026-07-08
 
 ## Resolved
 _Keep 90 days then remove._
