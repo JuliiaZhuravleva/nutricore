@@ -705,6 +705,17 @@ Look for:
 - **API testing**: Use FastAPI's automatic docs at `/docs`
 - **Interactive testing**: Use `python -i` with imports to test components
 
+## Release Protocol
+
+Nutricore is **built here** and **shipped by openclaw-setup** on the Mac mini — see
+[`docs/RELEASE.md`](docs/RELEASE.md) for the full seam. In short: release work is **not
+merged to `main` from this side**. Finish on a **feature branch**, verify
+(`./scripts/test.sh` + review), push it, and hand off with **"готово, ветка X"** + a release
+note (flag any new *required* env var — it's the one manual `sudo` step on their side). Their
+`nutricore-release <branch>` owns the test/migration gates, the merge→main, the deploy
+(migrate-before-start) and verify. Docs-only / no-runtime-change work merges to `main`
+directly. Work already on `main` deploys via `claw-deploy release nutricore` (no branch).
+
 ## Security Considerations
 
 ### Important Security Practices
