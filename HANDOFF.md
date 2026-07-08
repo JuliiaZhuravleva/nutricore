@@ -1,42 +1,37 @@
-# Handoff — main (2026-07-08)
+# Handoff — main (2026-07-09)
 
 ## State
-On **`main`**, in sync with **`origin/main`** (`846fb28`), clean tree. **325 tests green**
-(`./scripts/test.sh` — cache-venv; `poetry run` **also works now**, TD-001 fixed on the branch below).
-Round-2 product-lookup is **merged + deployed** — `origin/main` `d6f0c64` is the `nutricore-release`
-merge of `plan/photo-product-lookup-round2` (label-OCR 🏷 + web-search 🌐 strategies live).
+On **`main`**, in sync with **`origin/main`** (`36d9118`), clean tree, no stray branches or worktrees.
+**325 tests green** (`./scripts/test.sh` — cache-venv; `poetry run` also works now, TD-001 fixed).
+Nothing awaiting release. Git is tidy: `main` is the only branch (local + remote).
 
-**Release protocol** (`docs/RELEASE.md`): runtime work ships as a pushed feature branch handed to
-openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly.
+**Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed feature
+branch handed to openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly.
 
-## Awaiting release — one branch
-**`fix/td-015-confirm-buttons`** (pushed; 2 commits, clean diff vs `origin/main`):
-- **TD-015** (`46b1357`, runtime) — meal-confirm step: added **Да/Нет** buttons (`confirm_keyboard`),
-  and a free-text reply is now treated as a **correction** (re-analyzed as text, stays in
-  `CONFIRMING_MEAL`, `meal_time` preserved, prior attempt's stale photo/`resolution_source` dropped)
-  instead of the old `if text == "Да": save else: discard+restart` that silently wiped the analyzed
-  draft on a lowercase `да` / mistyped `Нет` / real correction (owner hit it live). `_confirm_intent`
-  classifies affirm/reject/correction (case-insensitive, punctuation-tolerant). Touches only
-  `app/services/telegram.py` (`confirm_meal` / `_run_meal_analysis`). Photo+text *merge* still out of
-  scope (Gap ① → TD-013). 5 new tests.
-- **TD-001** (`2ffada7`, dev-only) — `.python-version` (3.12.1) pins the interpreter so the poetry
-  venv base can't dangle again; `poetry run` works. No Docker/deploy impact. (Bundled here rather than
-  merged to main directly to avoid a `_tech-debt.md` split.)
-- **No migration, no new env, no manual step.** 325 green.
-- **Relay:** `nutricore-release fix/td-015-confirm-buttons`.
+## Shipped & deployed (recent)
+- **TD-015** (`46b1357`) — meal-confirm step: **Да/Нет** buttons (`confirm_keyboard`) + a free-text
+  reply is treated as a **correction** (re-analyzed as text, stays in `CONFIRMING_MEAL`, `meal_time`
+  preserved, stale photo/`resolution_source` dropped) instead of silently discarding the draft.
+  `_confirm_intent` classifies affirm/reject/correction (case-insensitive). Photo+text *merge* still
+  out of scope (Gap ① → TD-013). Merged+deployed via `nutricore-release` (`36d9118`).
+- **TD-001** (`2ffada7`) — `.python-version` (3.12.1) pins the interpreter so the poetry venv base
+  can't dangle; `poetry run` works again. `./scripts/test.sh` stays canonical/allowlisted.
+- Earlier: round-2 product-lookup (label-OCR 🏷 + web-search 🌐) merged+deployed (`d6f0c64`).
 
-## Shipped to origin/main this session (docs-lane, pushed)
-6 docs commits (`d6f0c64..846fb28`): input-processing diagram, `.gitignore` (macOS), TD-013/014,
-TD-015 entry, research doc + TD-016, handoff refresh.
+## Next up — work through the rest of `_tech-debt.md` (all **Low** now)
+Medium/High/Critical: **none**. Open (Low):
+- **TD-013** — confidence gate: three separate scores (identity/portion/nutrition) + minimal
+  clarification via quick-select buttons. Big «Следующее» track (from `docs/diagrams/input-processing-flow.md`).
+- **TD-014** — personal-food DB + RAG reuse (quick-pick saved meals, text→JSON→retrieval). Big track;
+  likely the largest friction/cost win for a repeat-logging single owner.
+- **TD-007 / TD-008** — self-heal coverage on the unmounted `ai.py`; extract self-heal + reply
+  formatting out of the ballooning `telegram.py` (`model_selection.py`, `ResolutionResult.to_reply_lines()`).
+- **TD-010** — inbound bytes archival / `/forget` / reprocess→meal.
+- **TD-011** — product-lookup accuracy residuals (misread barcode past check-digit; portion semantics).
+- **TD-012** — flake8 cleanup in product-lookup test files (quick win).
+- **TD-016** — Responses-API `web_search_preview` → GA `web_search`.
 
-## Open debt — all Low (Critical/High/Medium: none)
-TD-007/008 (self-heal coverage + `telegram.py` decomposition), TD-010 (inbound bytes/delete/
-reprocess→meal), TD-011 (product-lookup accuracy residuals), TD-012 (flake8 in product-lookup tests),
-**TD-013** (confidence gate — 3 scores + quick-select buttons), **TD-014** (personal-DB/RAG reuse),
-TD-016 (Responses-API `web_search` GA). **TD-013 / TD-014 are the big «Следующее» tracks** (from the
-input-processing diagram) — most weight, largest friction/cost win for a repeat-logging single owner.
-_(TD-015 + TD-001 → Resolved once `fix/td-015-confirm-buttons` merges; the Resolved entries already
-live on that branch's `_tech-debt.md`.)_
+TD-013 / TD-014 are large → start each with `/plan-fixes`. TD-012 is a quick isort/flake8 pass.
 
 ## Gotchas / learnings
 - **Tests:** `./scripts/test.sh` (cache-venv) is canonical/allowlisted. `poetry run` now works too
