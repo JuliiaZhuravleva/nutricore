@@ -86,7 +86,7 @@ class ImageSignals:
 class ResolutionResult:
     """The final nutrition numbers + metadata for one meal entry."""
 
-    source: str  # "barcode_off" | "name_off" | "label_ocr" | "vision"
+    source: str  # "barcode_off" | "name_off" | "label_ocr" | "name_web" | "vision"
     confidence_tier: str  # "high" | "medium" | "low"
     # Nutrition keys match the existing schema: calories, protein, fats, carbs,
     # portion, foods — so _nutrition_reply and confirm_meal need no changes.
@@ -188,6 +188,21 @@ def _parse_label_json(raw: Any) -> dict:
         raise ValueError(
             f"label_ocr: expected a JSON object, got {type(data).__name__}"
         )
+    # Coerce model-supplied numerics to float-or-None so a JSON-valid but
+    # non-numeric value (units like "120 kcal", a comma decimal, "n/a") can't
+    # raise a ValueError later in the strategy — the strategy's None-guards then
+    # fall through to vision cleanly.  Parity with the web path, which sanitises
+    # the same fields via _safe_float in _parse_web_nutrition_response.
+    for _k in (
+        "calories",
+        "protein",
+        "fats",
+        "carbs",
+        "serving_grams",
+        "package_grams",
+    ):
+        if _k in data:
+            data[_k] = _safe_float(data.get(_k))
     return data
 
 
@@ -436,6 +451,8 @@ class LabelOCRStrategy(ResolutionStrategy):
             )
             return None
 
+        from app.services.openai_service import ModelUnavailableError
+
         svc = get_openai_service()
         started = time.perf_counter()
         try:
@@ -447,6 +464,12 @@ class LabelOCRStrategy(ResolutionStrategy):
                 model=svc.model,
                 parse=_parse_label_json,
             )
+        except ModelUnavailableError:
+            # extract_nutrition_label goes through _create() (chat.completions),
+            # so a deprecated/missing model must reach _run_meal_analysis's
+            # self-heal handler — not be masked as a routine label-OCR miss
+            # (parity with _extract_signals).
+            raise
         except Exception as exc:
             # analyze_and_log re-raises after logging — swallow here so the
             # pipeline can continue to the next strategy.
@@ -477,7 +500,10 @@ class LabelOCRStrategy(ResolutionStrategy):
         if any(v is None for v in (calories, protein, fats, carbs)):
             logger.debug(
                 "LabelOCRStrategy: incomplete macro values (%s) — falling through",
-                {k: label_data.get(k) for k in ("calories", "protein", "fats", "carbs")},
+                {
+                    k: label_data.get(k)
+                    for k in ("calories", "protein", "fats", "carbs")
+                },
             )
             return None
 
@@ -487,7 +513,7 @@ class LabelOCRStrategy(ResolutionStrategy):
             basis_grams = 100.0
         elif basis == "per_serving":
             serving_grams = label_data.get("serving_grams")
-            if not serving_grams or float(serving_grams) <= 0:
+            if not serving_grams or serving_grams <= 0:
                 # "per serving" with no gram weight → basis-ambiguous → None.
                 # Documented intentional policy: never surface confidently-wrong
                 # numbers (ADR-0001 §7 / A10 clarifying Q4).
@@ -497,29 +523,29 @@ class LabelOCRStrategy(ResolutionStrategy):
                     serving_grams,
                 )
                 return None
-            basis_grams = float(serving_grams)
+            basis_grams = serving_grams
         elif basis == "per_package":
             package_grams = label_data.get("package_grams")
-            if not package_grams or float(package_grams) <= 0:
+            if not package_grams or package_grams <= 0:
                 logger.debug(
                     "LabelOCRStrategy: basis=per_package but package_grams=%r "
                     "— ambiguous, falling through to vision",
                     package_grams,
                 )
                 return None
-            basis_grams = float(package_grams)
+            basis_grams = package_grams
         else:
-            logger.debug(
-                "LabelOCRStrategy: unknown basis=%r — falling through", basis
-            )
+            logger.debug("LabelOCRStrategy: unknown basis=%r — falling through", basis)
             return None
 
         food_list = foods or ["продукт с этикетки"]
+        # calories/protein/fats/carbs are already float (coerced in
+        # _parse_label_json) and guaranteed non-None by the guard above.
         nutrition = _scale_label_nutrition(
-            calories=float(calories),
-            protein=float(protein),
-            fats=float(fats),
-            carbs=float(carbs),
+            calories=calories,
+            protein=protein,
+            fats=fats,
+            carbs=carbs,
             basis_grams=basis_grams,
             portion_grams=portion_grams,
             foods=food_list,
@@ -650,9 +676,7 @@ def _parse_web_nutrition_response(raw: str) -> dict:
 
     identification = data.get("identification")
     if not identification or not str(identification).strip():
-        raise ValueError(
-            "web_search: response contains no product identification"
-        )
+        raise ValueError("web_search: response contains no product identification")
     identification = str(identification).strip()
 
     calories = _safe_float(data.get("calories_per_100g"))
@@ -926,11 +950,11 @@ def _build_pipeline() -> List[ResolutionStrategy]:
     Final order ratified in human_feedback 2026-07-08 and documented in ADR-0002.
     """
     return [
-        BarcodeOFFStrategy(),       # A4 (round 1) — high confidence
-        NameOFFStrategy(),          # A8 (round 2) — medium confidence
-        LabelOCRStrategy(),         # A10 (round 2) — medium confidence
-        NameWebSearchStrategy(),    # A9 (round 2) — medium/low confidence
-        VisionFallbackStrategy(),   # always last — low confidence
+        BarcodeOFFStrategy(),  # A4 (round 1) — high confidence
+        NameOFFStrategy(),  # A8 (round 2) — medium confidence
+        LabelOCRStrategy(),  # A10 (round 2) — medium confidence
+        NameWebSearchStrategy(),  # A9 (round 2) — medium/low confidence
+        VisionFallbackStrategy(),  # always last — low confidence
     ]
 
 

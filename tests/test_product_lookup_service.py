@@ -140,7 +140,8 @@ def default_no_label_ocr(monkeypatch):
 @pytest.fixture(autouse=True)
 def default_no_web_search(monkeypatch):
     """Default the A9 web_search to a no-identification miss so existing pipeline
-    tests make no real Responses-API calls; NameWebSearchStrategy tests override this."""
+    tests make no real Responses-API calls; NameWebSearchStrategy tests override this.
+    """
     import app.services.openai_service as ois
 
     monkeypatch.setattr(
@@ -984,7 +985,9 @@ def test_label_ocr_per_100g_scales_to_portion(db_session, monkeypatch):
     assert result.confidence_tier == "medium"
     # 520 * 1.5 = 780; round(..., 1)
     assert result.nutrition["calories"] == pytest.approx(780.0, abs=0.2)
-    assert result.nutrition["protein"] == pytest.approx(8.2, abs=0.2)  # 5.5*1.5=8.25→8.2
+    assert result.nutrition["protein"] == pytest.approx(
+        8.2, abs=0.2
+    )  # 5.5*1.5=8.25→8.2
     assert result.nutrition["fats"] == pytest.approx(46.5, abs=0.2)
     assert result.nutrition["carbs"] == pytest.approx(79.5, abs=0.2)
     assert result.nutrition["portion"] == "150г"
@@ -1163,6 +1166,75 @@ def test_label_ocr_extract_raises_returns_none(db_session, monkeypatch):
     assert result is None
 
 
+def test_label_ocr_non_numeric_macro_returns_none(db_session, monkeypatch):
+    """A JSON-valid but non-numeric macro (units / 'n/a') must fall through to
+    vision, not raise out of the pipeline (regression: unguarded float())."""
+    label = json.dumps(
+        {
+            "basis": "per_100g",
+            "serving_grams": None,
+            "package_grams": None,
+            "calories": "120 kcal",  # unit-suffixed — not a bare number
+            "protein": 5.5,
+            "fats": 31.0,
+            "carbs": 53.0,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_non_numeric_serving_grams_returns_none(db_session, monkeypatch):
+    """A non-numeric serving_grams ('30г') must fall through, not raise
+    (regression: unguarded float() on the basis)."""
+    label = json.dumps(
+        {
+            "basis": "per_serving",
+            "serving_grams": "30г",  # unit-suffixed — not numeric
+            "package_grams": None,
+            "calories": 520.0,
+            "protein": 5.5,
+            "fats": 31.0,
+            "carbs": 53.0,
+        }
+    )
+    _patch_label_ocr(monkeypatch, return_value=label)
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_label_ocr_model_unavailable_reraises(db_session, monkeypatch):
+    """A deprecated/missing model must propagate to the self-heal handler, not be
+    masked as a routine label-OCR miss (extract_nutrition_label uses _create())."""
+    from app.services.openai_service import ModelUnavailableError
+
+    _patch_label_ocr(
+        monkeypatch,
+        side_effect=ModelUnavailableError("gpt-x", RuntimeError("model_not_found")),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_LABEL_SINGLE_FOOD,
+        portion_grams=150.0,
+    )
+    with pytest.raises(ModelUnavailableError):
+        asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
+
+
 def test_label_ocr_signals_payload(db_session, monkeypatch):
     """Signals dict has the required ADR §5 keys + label-specific extras."""
     _patch_label_ocr(monkeypatch, return_value=_LABEL_PER_100G)
@@ -1292,13 +1364,15 @@ def test_scale_label_nutrition_no_portion_uses_basis():
 
 def test_parse_web_response_clean_json():
     """Clean JSON with identification and all macros → dict with all fields."""
-    raw = json.dumps({
-        "identification": "Pringles Original",
-        "calories_per_100g": 524.0,
-        "protein_per_100g": 6.0,
-        "fats_per_100g": 30.0,
-        "carbs_per_100g": 55.0,
-    })
+    raw = json.dumps(
+        {
+            "identification": "Pringles Original",
+            "calories_per_100g": 524.0,
+            "protein_per_100g": 6.0,
+            "fats_per_100g": 30.0,
+            "carbs_per_100g": 55.0,
+        }
+    )
     result = _parse_web_nutrition_response(raw)
     assert result["identification"] == "Pringles Original"
     assert result["off_query"] == "Pringles Original"
@@ -1313,7 +1387,7 @@ def test_parse_web_response_clean_json():
 def test_parse_web_response_embedded_in_prose():
     """JSON embedded in prose (model adds preamble) → still parsed."""
     raw = (
-        'Based on web search results:\n'
+        "Based on web search results:\n"
         '{"identification": "Lay\'s Classic", "calories_per_100g": 536, '
         '"protein_per_100g": 7, "fats_per_100g": 31, "carbs_per_100g": 55}'
     )
@@ -1338,13 +1412,15 @@ def test_parse_web_response_markdown_block():
 
 def test_parse_web_response_null_macros_still_parsed():
     """Null macro values are allowed — prose path uses them gracefully."""
-    raw = json.dumps({
-        "identification": "Generic Chips",
-        "calories_per_100g": None,
-        "protein_per_100g": None,
-        "fats_per_100g": None,
-        "carbs_per_100g": None,
-    })
+    raw = json.dumps(
+        {
+            "identification": "Generic Chips",
+            "calories_per_100g": None,
+            "protein_per_100g": None,
+            "fats_per_100g": None,
+            "carbs_per_100g": None,
+        }
+    )
     result = _parse_web_nutrition_response(raw)
     assert result["identification"] == "Generic Chips"
     assert result["calories_per_100g"] is None
@@ -1352,13 +1428,15 @@ def test_parse_web_response_null_macros_still_parsed():
 
 def test_parse_web_response_null_identification_raises():
     """null identification → ValueError (no product found)."""
-    raw = json.dumps({
-        "identification": None,
-        "calories_per_100g": 500.0,
-        "protein_per_100g": 5.0,
-        "fats_per_100g": 25.0,
-        "carbs_per_100g": 60.0,
-    })
+    raw = json.dumps(
+        {
+            "identification": None,
+            "calories_per_100g": 500.0,
+            "protein_per_100g": 5.0,
+            "fats_per_100g": 25.0,
+            "carbs_per_100g": 60.0,
+        }
+    )
     with pytest.raises(ValueError, match="no product identification"):
         _parse_web_nutrition_response(raw)
 
@@ -1397,13 +1475,15 @@ def _patch_web_search(monkeypatch, return_value=None, side_effect=None):
     )
 
 
-_WEB_HIT_RESPONSE = json.dumps({
-    "identification": "Pringles Original",
-    "calories_per_100g": 520.0,
-    "protein_per_100g": 5.5,
-    "fats_per_100g": 31.0,
-    "carbs_per_100g": 53.0,
-})
+_WEB_HIT_RESPONSE = json.dumps(
+    {
+        "identification": "Pringles Original",
+        "calories_per_100g": 520.0,
+        "protein_per_100g": 5.5,
+        "fats_per_100g": 31.0,
+        "carbs_per_100g": 53.0,
+    }
+)
 
 
 def test_name_web_vision_none_returns_none(db_session):
@@ -1557,17 +1637,21 @@ def test_name_web_null_identification_returns_none(db_session, monkeypatch):
     assert result is None
 
 
-def test_name_web_off_requery_miss_no_prose_numbers_returns_none(db_session, monkeypatch):
+def test_name_web_off_requery_miss_no_prose_numbers_returns_none(
+    db_session, monkeypatch
+):
     """OFF miss + prose macros all null → nothing usable → None."""
     _patch_web_search(
         monkeypatch,
-        return_value=json.dumps({
-            "identification": "Unknown Product",
-            "calories_per_100g": None,
-            "protein_per_100g": None,
-            "fats_per_100g": None,
-            "carbs_per_100g": None,
-        }),
+        return_value=json.dumps(
+            {
+                "identification": "Unknown Product",
+                "calories_per_100g": None,
+                "protein_per_100g": None,
+                "fats_per_100g": None,
+                "carbs_per_100g": None,
+            }
+        ),
     )
     monkeypatch.setattr(
         "app.services.product_lookup_service.OpenFoodFactsService.search_by_name",
@@ -1636,10 +1720,19 @@ def test_name_web_signals_medium_path(db_session, monkeypatch):
     s = result.signals
     # ADR §5 required keys
     required_keys = {
-        "barcode_raw", "barcode_detected", "product_name", "brand",
-        "off_code", "off_from_cache", "off_latency_ms", "portion_grams",
-        "confidence_tier", "strategy_tried", "strategy_chosen",
-        "vision_foods", "vision_portion_raw",
+        "barcode_raw",
+        "barcode_detected",
+        "product_name",
+        "brand",
+        "off_code",
+        "off_from_cache",
+        "off_latency_ms",
+        "portion_grams",
+        "confidence_tier",
+        "strategy_tried",
+        "strategy_chosen",
+        "vision_foods",
+        "vision_portion_raw",
     }
     assert required_keys.issubset(s.keys())
     assert s["barcode_raw"] is None  # not a barcode result
@@ -1706,6 +1799,9 @@ def test_name_web_pipeline_wins_after_label_ocr_miss(monkeypatch):
     assert result.source == "name_web"
     assert result.confidence_tier == "low"
     assert result.signals["strategy_tried"] == [
-        "barcode_off", "name_off", "label_ocr", "name_web"
+        "barcode_off",
+        "name_off",
+        "label_ocr",
+        "name_web",
     ]
     assert result.signals["strategy_chosen"] == "name_web"
