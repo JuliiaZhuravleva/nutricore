@@ -1,9 +1,11 @@
-# Handoff — main (2026-07-07)
+# Handoff — main (2026-07-08)
 
 ## State
-On **`main`**, clean tree, **`main == origin/main`** (pushed at `41abeaa`). **255 tests green**
-(`./scripts/test.sh` — the cache-venv wrapper; `poetry run`/bare `python -m pytest` are broken, TD-001).
-Down to a single branch (`main`); no worktrees.
+On **`main`**, clean tree, pushed. **255 tests green** (`./scripts/test.sh` — the cache-venv
+wrapper; `poetry run`/bare `python -m pytest` are broken, TD-001). Single branch, no worktrees.
+**Release protocol now locked** (`docs/RELEASE.md`): release work is handed off as a **pushed
+feature branch** — not merged to main from this side; openclaw-setup's `nutricore-release` owns
+merge→main + deploy on the mini. Docs/no-runtime-change still merge to main directly.
 
 ## What shipped this session
 - **photo-product-lookup round-1 — merged** (`41abeaa`): packaged-food КБЖУ via a **vision-read
@@ -23,13 +25,15 @@ Down to a single branch (`main`); no worktrees.
   orchestrator scratch (`*.raw/`, sidecars, `docs/.draft/`).
 
 ## Next up
-1. **Deploy on the mini:** `alembic upgrade head` — adds `product_caches` + the two `meals.resolution_*`
-   columns (also still: `EXPORT_API_TOKEN` in prod `.env` if the my-health export should be live).
-2. **Doc revamp** — deferred until execution launched (now done). Brief + agreed scope in
-   [`docs/_doc-revamp.md`](docs/_doc-revamp.md): single source of truth, split human-vs-AI docs,
-   actualize, add a navigation index. Start when ready.
-3. **Round 2 of product-lookup** — A8 (OFF name search), A10 (label OCR), A9 (web_search — needs a
-   Responses-API-migration ADR first). See `_tech-debt.md` **TD-011**.
+1. **Deploy round-1 on the mini** — openclaw's side now (already in main, no new required-env):
+   signal them to run `claw-deploy release nutricore` (migrate-before-start applies `f5a6b7c8d9e0`).
+   Prereq: the release verb installed once on the mini (`sudo jay`, commands in `docs/RELEASE.md`).
+2. **Round 2 of product-lookup** (ACTIVE) — A8 (OFF name search), A10 (label OCR), A9 (web_search —
+   needs a Responses-API-migration ADR first). See `_tech-debt.md` **TD-011**. Runtime work → goes
+   out as a **feature branch** per the release protocol.
+3. **Doc revamp** (ACTIVE) — brief + agreed scope in [`docs/_doc-revamp.md`](docs/_doc-revamp.md):
+   single source of truth, split human-vs-AI docs, actualize, add a navigation index. Docs-only →
+   merges to main directly.
 4. Open debt: **TD-001** (poetry venv, Med); **TD-007/008** (self-heal coverage + `telegram.py`
    decomposition); **TD-010** (TD-009 follow-ups); **TD-011** (product-lookup accuracy residuals);
    **TD-012** (pre-existing flake8/dead-helper in the new specialist test files).
