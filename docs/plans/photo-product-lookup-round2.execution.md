@@ -1,0 +1,218 @@
+---
+schema_version: 3
+plan_id: photo-product-lookup-round2
+source_artifact:
+  path: docs/photo-product-lookup-round2.md
+  sha256: af2448c4bc762dfd84471833b34fc6ac54fc751acefed9f12944c46217406781
+  type: feature-prd
+created_at: '2026-07-08T14:16:30Z'
+approved_at: null
+approved_by: null
+specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
+execution:
+  status: draft
+  started_at: null
+  completed_at: null
+  current_batch: null
+  task_list_id: photo-product-lookup-round2
+items:
+- id: A12
+  title: 'Responses-API migration ADR (enables A9): decide split-client vs full migration; document analyze_and_log adapter + web_search failure-mode enumeration'
+  specialist: architect
+  priority: P1
+  status: pending
+  depends_on: []
+  estimated_effort: 1h
+  confidence: 0.85
+  consult_session_id: db7bb8e8-b021-4f63-acb6-30bd84273d24
+  specialist_session_id: null
+  retry_count: 0
+  last_update:
+    ts: null
+    executor: null
+    note: null
+  result: null
+- id: A10
+  title: 'LabelOCRStrategy (source_id=label_ocr, medium): new OpenAIService.extract_nutrition_label vision method returning numbers+basis; per-100g/per-serving/per-package scaling branch; basis-ambiguous -> None (fall through to vision); distinct badge; unit tests. Never cached.'
+  specialist: backend-dev
+  priority: P1
+  status: pending
+  depends_on: []
+  estimated_effort: 3h
+  confidence: 0.75
+  consult_session_id: 1068bf91-343d-4d1d-865e-a21f60bdcd0b
+  specialist_session_id: null
+  retry_count: 0
+  last_update:
+    ts: null
+    executor: null
+    note: null
+  result: null
+- id: A9
+  title: 'NameWebSearchStrategy (source_id=name_web, medium/low): OpenAIService.web_search_nutrition via Responses API; identify product then prefer re-query OFF for structured numbers (pure web prose = lowest confidence); dynamic confidence_tier; cautious distinct badge; non-blocking failure modes -> None; unit tests. Never cached.'
+  specialist: backend-dev
+  priority: P1
+  status: pending
+  depends_on:
+  - A12
+  estimated_effort: 5h
+  confidence: 0.65
+  consult_session_id: 1068bf91-343d-4d1d-865e-a21f60bdcd0b
+  specialist_session_id: null
+  retry_count: 0
+  last_update:
+    ts: null
+    executor: null
+    note: null
+  result: null
+- id: A13
+  title: 'Pipeline regression gate: _build_pipeline() final-order assertion (barcode_off->name_off->label_ocr->name_web->vision); extend autouse mocks to cover extract_nutrition_label + Responses-API web_search so existing photo tests make no real calls; full suite green via ./scripts/test.sh'
+  specialist: qa
+  priority: P2
+  status: pending
+  depends_on:
+  - A10
+  - A9
+  estimated_effort: 0.5h
+  confidence: 0.8
+  consult_session_id: 94b255bf-78a9-4afe-85d4-723c9f7490bf
+  specialist_session_id: null
+  retry_count: 0
+  last_update:
+    ts: null
+    executor: null
+    note: null
+  result: null
+budget:
+  max_usd_per_item: 6.0
+  max_usd_per_plan: 20.0
+  consumed_usd: 0.0
+review_gate:
+  why: []
+  approve_action: /execute-plan /Users/julia/my-projects/nutricore.photo-product-lookup-round2-wt/docs/plans/photo-product-lookup-round2.execution.md --resume
+  reject_action: /plan-fixes docs/photo-product-lookup-round2.md --revise /Users/julia/my-projects/nutricore.photo-product-lookup-round2-wt/docs/plans/photo-product-lookup-round2.execution.md
+safe_to_replay_from: null
+clarifying_questions:
+- "A8 PRECONDITION (gates the whole plan): A8's NameOFFStrategy + the shared _scale_off_nutrition helper are NOT on this worktree — verified: product_lookup_service.py L274 has NameOFFStrategy() commented out ('A8 (round 2, deferred)') and _scale_off_nutrition is absent — despite the doc stating A8 shipped (it lives on branch feat/product-lookup-a8-name-off). Will the round-2 execute branch fork-from/merge that A8 branch BEFORE A10/A9 are dispatched? A10 reuses _scale_off_nutrition and both A10 and A9 assume name_off is already in the pipeline. All three specialists (architect, backend-dev, qa) flagged this independently."
+- "STRATEGY ORDER (doc Q1): confirm final pipeline order barcode_off -> name_off -> label_ocr -> name_web -> vision. All three specialists concur (on-pack OCR is ground truth, so label_ocr precedes web inference; web is highest-latency/lowest-reliability so it sits last-but-one). Adopted as default and as the A13 order-test target."
+- "A9 WEB NUMBERS (doc Q2): may web_search supply the KBJU numbers directly (at lowest confidence + most cautious badge), or only IDENTIFY the product so we re-query OFF for the structured numbers? Default adopted: identify -> re-query OFF where possible; a pure web number gets the lowest medium/low confidence. The A12 ADR settles this; confirm the default."
+- "LABEL OCR BASIS (doc Q3): when the nutrition table is legible but the serving basis is ambiguous (e.g. 'per serving' with no gram weight), fall through to vision (specialist-recommended: never surface confidently-wrong numbers) OR best-effort per-serving scaling with an 'uncertain' flag + lowered confidence? Default adopted: basis unparseable -> return None -> fall through to vision."
+- "BADGE = telegram.py TOUCH (specialist-surfaced; contradicts the doc): the doc says 'no telegram.py change beyond the badge string', but _source_badge today dispatches on confidence_tier only and returns one generic medium badge for all non-barcode medium sources. Distinct badges for label_ocr (the doc's example: label-tag emoji + 'с этикетки (проверь)') and name_web (globe emoji + 'нашли в сети (сверь)') require new per-source cases in telegram.py (a one-liner each, folded into A10/A9). Confirm distinct badges are wanted, or both intentionally share the generic medium badge. NOTE: doc Q4 (migration blast-radius) is not a separate question — the architect recommends the split-client approach; it is decided in the A12 ADR."
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Plan — photo-product-lookup-round2
+
+## Source
+
+[`docs/photo-product-lookup-round2.md`](docs/photo-product-lookup-round2.md) (sha256 `af2448c4bc76...`).
+
+## Synthesis
+
+Round-2 plans **only** the two deferred packaged-food strategies (**A10** label-OCR, **A9**
+web-search) plus the **enabling ADR** they need. All work is purely additive on the existing
+pluggable resolution pipeline (ADR-0001): each strategy is a new `ResolutionStrategy` class +
+one line in `_build_pipeline()`, mirroring A8. IDs preserve the doc's A-series; the new
+migration ADR is minted **A12** (A11 was the round-1 pipeline ADR).
+
+Three specialists were consulted live (architect, backend-dev, qa — session ids recorded per
+item). Irrelevant roles skipped: **frontend-dev / accessibility** (no web UI — Telegram bot),
+**designer** (badge copy is already specified verbatim in the doc).
+
+**Strongest cross-cutting signal — the A8 gap (all three specialists, independently, verified
+by grep):** the doc asserts A8 shipped, but `NameOFFStrategy` is commented out in
+`product_lookup_service.py` (L274) and `_scale_off_nutrition` is absent on this worktree. A8
+is on the un-merged `feat/product-lookup-a8-name-off` branch. A10 reuses `_scale_off_nutrition`
+and both new strategies assume `name_off` in the pipeline order — so the execute branch must
+carry A8 first. This is the top clarifying question and effectively gates dispatch.
+
+## Dependency graph
+
+```
+A12 (ADR, architect) ──▶ A9 (web-search, backend-dev)
+A10 (label-OCR, backend-dev) ─┐
+A9 ──────────────────────────┴▶ A13 (pipeline regression gate, qa)
+
+External precondition (not an item — a branch/merge decision for Julia):
+  feat/product-lookup-a8-name-off  ──▶  A10, A9   (see clarifying Q1)
+```
+
+A12 and A10 have no interdependency and can run in parallel. A9 is strictly after A12 (needs
+the blast-radius + `analyze_and_log` adapter + failure-mode decisions in writing). A13 is the
+final gate after both strategies land.
+
+## Items
+
+### A12 — Responses-API migration ADR *(architect, P1, ~1h, conf 0.85)*
+
+The enabling decision that **blocks A9**. Output: `docs/decisions/ADR-000X-responses-api-migration.md`.
+- **Blast radius:** architect **recommends the split-client** approach — keep every existing
+  `OpenAIService` call (`analyze_food_entry`, `analyze_food_image`, `extract_barcode_from_image`,
+  `extract_nutrition_label`) on `chat.completions`; add **only** `web_search_nutrition()` on the
+  Responses API. Rationale: full migration's blast radius includes the TD-005 self-heal path,
+  `OPENAI_MAX_RETRIES`, and 250+ green tests — risk asymmetry strongly favors the split.
+- **Must document:** (a) the `analyze_and_log` adapter — have `web_search_nutrition` return a
+  plain string (same shape as existing text methods) so `analyze_and_log(kind="web_search",
+  parse=...)` works unchanged; (b) explicit **enumeration** of `web_search` failure modes
+  (rate-limit / no-result / malformed citation / timeout) each degrading to `None` — not a
+  blanket `except Exception` that swallows real bugs; (c) whether **dynamic `confidence_tier`**
+  (set at resolve time) is permitted for strategies with branching outcomes (A9 needs it); (d)
+  the A9 search-signal choice (use `vision_result["foods"]` as the query — architect's
+  recommended default — vs a dedicated brand-extraction Phase-1 call, deferred).
+
+### A10 — LabelOCRStrategy *(backend-dev, P1, ~3h, conf 0.75)*
+
+`source_id = "label_ocr"`, medium tier. **No dependency on A12** (pure `chat.completions`).
+- New `OpenAIService.extract_nutrition_label` vision method returning the table numbers **with
+  their basis** (per-100g / per-serving / per-package). Reuses the existing base64
+  `image_data_url` signal.
+- **Scaling branch:** per-100g → existing `_scale_off_nutrition`; per-serving/per-package →
+  scale by servings the vision portion implies. **Basis-ambiguous → return `None`** (fall
+  through to vision) — see clarifying Q4; document as intentional policy so no future dev adds
+  a silent "just use 100g" fallback.
+- **Guards:** `≤2 foods` single-item gate (mirror A8; reuse A8's helper if present); if
+  `vision_result is None` (Phase-1 vision failed) short-circuit to `None` immediately.
+- Distinct badge (doc example: label-tag emoji), **never cached**. Badge is a small
+  `telegram.py` touch — see clarifying Q5. Runs after `name_off`, before `name_web`/`vision`.
+- Tests mirror the A8 pattern: hit per-100g/per-serving/per-package, ambiguous→None, multi-item
+  gate→None, illegible→None, raise→None (non-blocking).
+
+### A9 — NameWebSearchStrategy *(backend-dev, P1, ~5h, conf 0.65, depends_on A12)*
+
+`source_id = "name_web"`, medium/low tier. **Blocked until A12 lands** — the mock target and
+adapter shape depend on the ADR's blast-radius decision.
+- New `OpenAIService.web_search_nutrition` via the Responses API `web_search` tool.
+- **Prefer structured numbers:** identify the product, then re-query OFF for the КБЖУ where
+  possible; a pure web-prose number gets the **lowest** confidence + most cautious badge (see
+  clarifying Q3). Two internal outcome paths ⇒ **dynamic `confidence_tier`** (medium if
+  re-queried OFF, low if prose-only).
+- **Non-blocking:** every `web_search` failure mode → `None`. Cost/latency higher than other
+  paths — sits last-but-one (before `vision`). Distinct cautious badge (doc example: globe
+  emoji), **never cached**.
+- Tests: hit (OFF re-query) / hit (prose, low conf) / no-result→None / rate-limit→None; mock
+  the Responses-API client via the extended autouse guard (A13).
+
+### A13 — Pipeline regression gate *(qa, P2, ~0.5h, conf 0.8, depends_on A10, A9)*
+
+- `_build_pipeline()` **final-order assertion**: `[s.source_id for s in _build_pipeline()] ==
+  [barcode_off, name_off, label_ocr, name_web, vision]` (no such direct test exists today).
+- **Extend the autouse mocks** so pre-existing photo tests never make real calls to the new
+  `extract_nutrition_label` (A10) or the Responses-API `web_search` (A9).
+- Full suite green via **`./scripts/test.sh`** (cache-venv python — TD-001, **not** `poetry run`).
+- Note: per-strategy order/unit tests belong to A10/A9; A13 is the consolidated cross-cutting gate.
+
+## Out of scope (per source — not planned)
+
+Shipped barcode/name-search/pipeline/caching/badge plumbing; third-party reverse-image search;
+additional product DBs (USDA/regional); inbound persistence/retention (TD-009/TD-010).
