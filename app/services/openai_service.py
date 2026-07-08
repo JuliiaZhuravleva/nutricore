@@ -266,6 +266,119 @@ class OpenAIService:
             )
             return None
 
+    async def extract_nutrition_label(self, image_url: str) -> str:
+        """Extract КБЖУ from the nutrition facts table on a product label.
+
+        Used by LabelOCRStrategy (A10): reads on-pack calorie/protein/fat/carb
+        values with their declared serving basis so the pipeline can scale them
+        to the vision-estimated portion.  Never cached.
+
+        Returns a JSON string:
+        {
+            "basis": "per_100g" | "per_serving" | "per_package" | null,
+            "serving_grams": float | null,   # gram weight of one serving
+            "package_grams": float | null,   # gram weight of whole package
+            "calories": float | null,
+            "protein":  float | null,
+            "fats":     float | null,
+            "carbs":    float | null
+        }
+
+        ``basis`` is null when the label is absent, illegible, or the serving
+        basis cannot be determined; the strategy treats this as a fall-through.
+        """
+        system_prompt = (
+            "You are a nutrition label reader. Find the nutrition facts table on "
+            "the product packaging in the image and extract the macronutrient values.\n\n"
+            "Return ONLY this JSON:\n"
+            "{\n"
+            '  "basis": "per_100g" | "per_serving" | "per_package" | null,\n'
+            '  "serving_grams": float or null,\n'
+            '  "package_grams": float or null,\n'
+            '  "calories": float or null,\n'
+            '  "protein":  float or null,\n'
+            '  "fats":     float or null,\n'
+            '  "carbs":    float or null\n'
+            "}\n\n"
+            "Rules:\n"
+            '- "basis" is the column/row heading: "per_100g" for per 100g, '
+            '"per_serving" for per serving/portion, "per_package" for per '
+            "package/container.\n"
+            "- If the table has BOTH per_100g and per_serving columns, use "
+            '"per_100g" (standard baseline, more reliable for scaling).\n'
+            '- "serving_grams" is the gram weight of one serving '
+            '(e.g. 30 from "1 serving (30g)"). Set to null if not given in grams.\n'
+            '- "package_grams" is the total gram weight of the package. '
+            "Set to null if not shown.\n"
+            "- If the nutrition table is absent, illegible, or the basis cannot "
+            'be determined, set "basis" to null (other fields may also be null).\n'
+            "- Extract numbers as floats. Use the energy value in kcal for "
+            '"calories".\n'
+            "- Do NOT guess — if a value is unclear, set it to null."
+        )
+
+        response = await self._create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Extract the nutrition label values from this "
+                                "product image."
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ],
+            # Nutrition label JSON is small — 7 fields with floats.
+            max_tokens=256,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+
+    async def web_search_nutrition(self, query_foods: list) -> str:
+        """Call the Responses API web_search tool to retrieve product nutrition text.
+
+        Returns the raw text content from the model's response (plain string), so
+        analyze_and_log(kind="web_search", parse=...) can consume it unchanged.
+
+        Uses the split-client approach (ADR-0002): only this method goes through
+        the Responses API.  All existing methods remain on chat.completions.
+
+        Does NOT catch exceptions — all network / API / parse errors propagate to
+        the caller (NameWebSearchStrategy.resolve → try/except → return None).
+        Does NOT trigger the TD-005 self-heal mechanism (that path is chat.completions
+        only).
+
+        Parameters
+        ----------
+        query_foods:
+            Vision-extracted food name(s) used as the search query.
+        """
+        query = ", ".join(query_foods)
+        response = await self.client.responses.create(
+            model=self.model,
+            tools=[{"type": "web_search_preview"}],
+            input=(
+                f"Find the exact КБЖУ (calories, protein, fat, carbohydrates per 100g) "
+                f"for: {query}\n\n"
+                "Output ONLY a JSON object in this exact format (no prose, no markdown):\n"
+                '{"identification": "product name and brand", '
+                '"calories_per_100g": number_or_null, '
+                '"protein_per_100g": number_or_null, '
+                '"fats_per_100g": number_or_null, '
+                '"carbs_per_100g": number_or_null}\n'
+                'If you cannot identify the specific product, set "identification" to null.'
+            ),
+        )
+        # Return the text content as a plain string — shape matches existing text methods
+        # so analyze_and_log(kind="web_search", parse=...) works unchanged.
+        return response.output_text
+
     async def generate_health_insights(self, user_data: Dict) -> str:
         """Generate health insights based on user's nutrition and activity data."""
         system_prompt = """You are a nutrition and health expert assistant. Analyze user's nutrition and activity data
