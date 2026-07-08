@@ -15,16 +15,7 @@ _None open._
 ## Medium
 _Slows development but doesn't block._
 
-- [ ] **TD-001**: Poetry venv recreation loop — `poetry run` keeps recreating an empty
-  in-project/cache venv without the project deps (its base interpreter appears dangling),
-  so `poetry run pytest`/`black` intermittently fail with `ModuleNotFoundError`. Workaround:
-  `poetry install` then invoke the cache-venv python directly
-  (`~/Library/Caches/pypoetry/virtualenvs/nutricore-SKSdxrGe-py3.12/bin/python -m pytest`).
-  Proper fix: recreate the venv against a stable Python (`poetry env remove --all && poetry install`),
-  and pin the interpreter so nvm/pyenv changes don't dangle it.
-  - **Priority:** Medium
-  - **Source:** /wrap session 2026-07-02 (env broke mid-wrap; code was green)
-  - **Created:** 2026-07-02
+_None open._
 
 ## Low
 _Track for later._
@@ -114,6 +105,18 @@ _Track for later._
 
 ## Resolved
 _Keep 90 days then remove._
+
+- [x] **TD-001**: Poetry venv recreation loop — `poetry run` used to spawn an empty venv without the
+  project deps (`ModuleNotFoundError`) because the venv's **base interpreter dangled** on nvm/pyenv
+  drift. Root cause is gone now that pyenv global is a stable `3.12.1`, and the durable fix is a
+  **local pin**: added `.python-version` (`3.12.1`) so the project always resolves to pyenv 3.12.1
+  regardless of a future global switch — the base can no longer dangle. Verified: `poetry env info`
+  → `Valid: True`, `poetry run pytest` works again, the venv hash is unchanged
+  (`nutricore-SKSdxrGe-py3.12`, so `scripts/test.sh`'s hardcoded path still resolves). Left
+  `scripts/test.sh` on the cache-venv python defensively (it's allowlisted for specialist runs and
+  independent of `poetry run` health) — both paths now work.
+  - **Priority:** Medium · **Source:** /wrap 2026-07-02 (env broke mid-wrap) · **Resolved:** 2026-07-08
+    (bug non-reproducing after pyenv stabilized; pinned to prevent recurrence)
 
 - [x] **TD-015**: Meal-confirm step no longer silently loses the analyzed draft, and now ships
   buttons. **(1)** The "Всё верно? (Да/Нет)" prompt (`_run_meal_analysis`) is sent with a
