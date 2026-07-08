@@ -1,8 +1,10 @@
 # Nutricore
 
-Nutricore is an advanced Telegram bot for tracking nutrition and health metrics, using AI-powered food analysis and comprehensive health monitoring capabilities.
+Nutricore is a **personal** Telegram bot for tracking nutrition — capture meals with minimal friction (text or photo → calories + macros via OpenAI) and chat about food. It is a single-user tool (public here as a portfolio piece), **not** a multi-user product.
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
+**Ecosystem boundary:** nutricore is the *capture + chat surface* of a hub-and-spoke setup — a separate project, `my-health`, owns all medical data and reasoning. Food questions use nutricore's own OpenAI; health/medical questions relay to the hub via `/consult`. No medical logic or medical data lives in the bot.
+
+![Python](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green)
 ![Docker](https://img.shields.io/badge/Docker-Latest-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Latest-blue)
@@ -10,12 +12,15 @@ Nutricore is an advanced Telegram bot for tracking nutrition and health metrics,
 
 ## Features
 
-- **Food intake tracking** via text descriptions and photos
-- **AI-powered nutrition analysis** using OpenAI's models
-- **Body metrics tracking** with Mi Smart Scale integration
-- **Activity monitoring** with Samsung Health integration
-- **Comprehensive analytics** and reporting
-- **Personalized diet recommendations** and health insights
+**Shipped & working:**
+
+- **Meal logging** — text or photo → foods + calories/macros, confirm to save. The photo path is hardened (base64 to OpenAI, atomic draft, retries) and self-heals against OpenAI model deprecation (the owner picks a new model in chat; the choice persists).
+- **Packaged-food lookup** — a barcode or product name read from the photo → the product's *actual* КБЖУ from [Open Food Facts](https://world.openfoodfacts.org/), falling back to the vision estimate, with a transparent source/confidence badge.
+- **Access control** — open / whitelist / closed modes with a silent gate.
+- **Secured REST API** (`X-API-Token`, fail-closed) + Telegram webhook secret.
+- **`/consult` relay** to the my-health hub — medical questions never touch the bot's own AI.
+
+**Planned** (see [ROADMAP.md](ROADMAP.md)): goals & remaining-budget replies, statistics, weight tracking, reminders/digests, AI coaching. The domain models/CRUD/REST exist; the "intelligence" layer is staged, not built yet.
 
 ## Project Structure
 
@@ -38,7 +43,7 @@ nutricore/
 
 ## Prerequisites
 
-- Python 3.9 or higher
+- Python 3.12 or higher
 - Docker and Docker Compose
 - PostgreSQL
 - Redis
@@ -91,8 +96,9 @@ Edit the `.env` file with your specific settings (see `.env.example`):
 
 2. Install dependencies
    ```bash
-   pip install -e .
+   poetry install
    ```
+   (See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.)
 
 3. Run the FastAPI application
    ```bash
@@ -129,6 +135,13 @@ For production environments, additional configuration is recommended:
 - Set up proper SSL certificates
 - Configure Nginx for reverse proxy 
 - Set `DEBUG=false` in your environment
+
+## Documentation
+
+- **[docs/README.md](docs/README.md)** — documentation index (start here)
+- **[ROADMAP.md](ROADMAP.md)** — direction, current status, and what's deliberately *not* built
+- **[docs/product-philosophy.md](docs/product-philosophy.md)** — the principles behind product decisions
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[SECURITY.md](SECURITY.md)**
 
 ## License
 

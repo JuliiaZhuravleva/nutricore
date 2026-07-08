@@ -25,15 +25,17 @@ merge→main + deploy on the mini. Docs/no-runtime-change still merge to main di
   orchestrator scratch (`*.raw/`, sidecars, `docs/.draft/`).
 
 ## Next up
-1. **Deploy round-1 on the mini** — openclaw's side now (already in main, no new required-env):
+1. **Deploy round-1 + A8 on the mini** — openclaw's side. Round-1 is in main (no new required-env):
    signal them to run `claw-deploy release nutricore` (migrate-before-start applies `f5a6b7c8d9e0`).
-   Prereq: the release verb installed once on the mini (`sudo jay`, commands in `docs/RELEASE.md`).
-2. **Round 2 of product-lookup** (ACTIVE) — A8 (OFF name search), A10 (label OCR), A9 (web_search —
-   needs a Responses-API-migration ADR first). See `_tech-debt.md` **TD-011**. Runtime work → goes
-   out as a **feature branch** per the release protocol.
-3. **Doc revamp** (ACTIVE) — brief + agreed scope in [`docs/_doc-revamp.md`](docs/_doc-revamp.md):
-   single source of truth, split human-vs-AI docs, actualize, add a navigation index. Docs-only →
-   merges to main directly.
+   **A8** is on branch `feat/product-lookup-a8-name-off` (pushed) → `nutricore-release feat/product-lookup-a8-name-off`
+   (no migration, no env). Prereq: the release verb installed once on the mini (commands in `docs/RELEASE.md`).
+2. **Round 2 of product-lookup** — **A8 (OFF name search) DONE** (branch pushed, 273 green). Remaining:
+   A10 (label OCR), A9 (web_search — needs a Responses-API-migration ADR first). See `_tech-debt.md` **TD-011**.
+   Runtime work → **feature branch** per the release protocol.
+3. **Doc revamp — DONE** (this session): README honest personal-tool framing + real feature list +
+   Python 3.12; `docs/README.md` navigation index; stages/README is the canonical status source
+   (Stage 0 ✅); consult-relay re-statused SHIPPED + trimmed to contract; `Business_description.md`
+   → `docs/archive/origin-brief.md`; RELEASE.md host redacted; `docs/_doc-revamp.md` removed.
 4. Open debt: **TD-001** (poetry venv, Med); **TD-007/008** (self-heal coverage + `telegram.py`
    decomposition); **TD-010** (TD-009 follow-ups); **TD-011** (product-lookup accuracy residuals);
    **TD-012** (pre-existing flake8/dead-helper in the new specialist test files).

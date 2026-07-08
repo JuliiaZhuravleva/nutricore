@@ -1,3 +1,11 @@
+> **Archived — original 2024 concept brief (Russian).** The founding sketch of the idea,
+> kept for provenance. It is **superseded** by [ROADMAP.md](../../ROADMAP.md) and
+> [product-philosophy.md](../product-philosophy.md); its assumptions here (e.g. "two
+> accounts", Mi Scale / Samsung Health integrations) predate the settled **personal
+> single-user** framing and are not the current plan. Read it as history, not spec.
+
+---
+
 Я хочу сделать телеграм бота для отслеживания калорий, интегрированного с API OpenAI, чтобы от меня требовалось меньше действий и при этом получался максимально детальный отчет. Бот должен также учитывать бжу баланс, различные витамины и минералы, клетчатку и всё что только можно. При этом через бота можно было бы получить детальный отчет о прогрессе. Также он должен записывать мой вес и показатели тела как только я замеряю их все с помощью Mi умных весов. А также показатели активности из Samsung Health. Возможно через интеграцию с Google Fit или другими агрегаторами. 
 
 # Сценарии использования примерно такие:

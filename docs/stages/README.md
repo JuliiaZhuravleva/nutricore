@@ -3,16 +3,20 @@
 This directory holds the staged plan for unfreezing the Nutricore Telegram bot and
 turning it from an AI meal-logger into a real **personal** nutrition tracker.
 
+> **This table is the source of truth for build order + stage status.** ROADMAP.md
+> carries a compact mirror; if they ever disagree, this file wins.
+
 ## Background
 
-The bot was frozen for a long time. Today the only working flow is AI meal-logging
-(text/photo → calories/macros via OpenAI) behind a subscription gate. The main menu
-advertises **📊 Статистика**, **⚖️ Мой вес**, and **⚙️ Настройки**, but Статистика is a
-"🚧 in development" stub and the other two buttons have no handlers at all — the menu
-currently *lies* to the user. The domain is fully scaffolded (models / schemas / CRUD /
-REST for meals, body metrics, activity, analysis reports), but every "intelligence"
-layer — statistics, aggregation, goals, scheduled tasks, `app/services/analysis.py` —
-is an empty file.
+The bot was frozen for a long time; Stage 0 (below) unfroze it. Shipped and working
+today: AI meal-logging (text/photo → calories/macros via OpenAI, with a packaged-food
+Open Food Facts lookup), access control, the secured REST API, and the `/consult` relay
+— see [ROADMAP.md](../../ROADMAP.md) for the full list. Still **scaffolded but not built**:
+the "intelligence" layer — statistics, aggregation, goals, scheduled analysis
+(`app/services/analysis.py`) — plus the **⚖️ Мой вес** / **⚙️ Настройки** menu buttons,
+which have no handlers yet. The domain is fully scaffolded (models / schemas / CRUD / REST
+for meals, body metrics, activity, analysis reports); the logic on top is the staged plan
+below.
 
 Separately, the owner runs a sibling project **my-health**, a local hub that holds all
 medical data behind a hard trust boundary. The ecosystem invariant is:
@@ -41,7 +45,7 @@ and no medical logic or medical data storage lives in the bot.
 
 | Stage | Doc | Scope | Status |
 |-------|-----|-------|--------|
-| 0 | (this round) | Unfreeze hygiene: commit consult relay, fix drift | 🟡 in progress |
+| 0 | — | Unfreeze hygiene: consult relay, drift fixes, access control, secured API | ✅ done |
 | 00 | [00-user-scenarios.md](00-user-scenarios.md) | Personas + journeys | ✅ agreed |
 | 1 | [01-foundations.md](01-foundations.md) | Goals, remaining-budget, statistics | ⛔ not started |
 | 2 | [02-weight-and-settings.md](02-weight-and-settings.md) | Weight tracking + settings | ⛔ not started |

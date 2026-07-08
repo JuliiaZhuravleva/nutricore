@@ -2,7 +2,8 @@
 
 High-level direction. The **detailed, source-of-truth plan lives in
 [`docs/stages/`](docs/stages/README.md)** (staged, one branch at a time); this file is the
-bird's-eye view and the list of things deliberately *not* being built.
+bird's-eye view and the list of things deliberately *not* being built. Full documentation
+index: [`docs/README.md`](docs/README.md).
 
 ## What Nutricore is
 

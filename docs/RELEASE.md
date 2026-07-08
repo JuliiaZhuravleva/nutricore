@@ -35,8 +35,8 @@ So release work is **not** merged to main from this side — it is handed off as
 **Deploy lane vs direct merge** — the lane is triggered by *"does this run differently on
 the mini?"*:
 - Runtime / schema / deps / config change → feature branch → `nutricore-release`.
-- Docs-only / pure refactor with no runtime effect (e.g. `docs/_doc-revamp.md`) → deploy
-  not needed, merge to `main` directly.
+- Docs-only / pure refactor with no runtime effect (e.g. a `docs/` or `README.md` edit) →
+  deploy not needed, merge to `main` directly.
 
 ### ⚠ New required env is the one hard coordination point
 
@@ -76,10 +76,11 @@ migration. Round-1 added no new required env, so this is safe as-is.
 
 ## One-time setup (Julia, `sudo jay`)
 
-The release verb must be installed on the mini once (from openclaw-setup):
+The release verb must be installed on the mini once (from openclaw-setup). Replace
+`<mini-host>` with the deploy host (the admin `jay@` account over the tailnet):
 
 ```bash
-cd /Users/julia/my-projects/openclaw-setup
-scp bin/claw-deploy examples/claw-deploy/nutricore.release.conf jay@100.113.229.27:/tmp/
-ssh -t jay@100.113.229.27 'sudo install -m0755 -o root -g wheel /tmp/claw-deploy /usr/local/bin/claw-deploy && sudo install -d -m0755 -o root -g wheel /usr/local/etc/claw-deploy/release.d && sudo install -m0644 -o root -g wheel /tmp/nutricore.release.conf /usr/local/etc/claw-deploy/release.d/nutricore.conf'
+cd <openclaw-setup-repo>
+scp bin/claw-deploy examples/claw-deploy/nutricore.release.conf jay@<mini-host>:/tmp/
+ssh -t jay@<mini-host> 'sudo install -m0755 -o root -g wheel /tmp/claw-deploy /usr/local/bin/claw-deploy && sudo install -d -m0755 -o root -g wheel /usr/local/etc/claw-deploy/release.d && sudo install -m0644 -o root -g wheel /tmp/nutricore.release.conf /usr/local/etc/claw-deploy/release.d/nutricore.conf'
 ```

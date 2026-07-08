@@ -796,9 +796,11 @@ When implementing new features, consider:
 - [Celery Docs](https://docs.celeryq.dev/)
 
 ### Project Documentation
+- `docs/README.md` - Documentation index (start here)
 - `README.md` - Project overview and setup
 - `ROADMAP.md` - Development roadmap
-- `Business_description.md` - Business context
+- `docs/product-philosophy.md` - Product principles / decision tie-breaker
+- `docs/archive/origin-brief.md` - Original 2024 concept (historical, superseded)
 - `.env.example` - Environment variable reference
 
 ## Questions and Support

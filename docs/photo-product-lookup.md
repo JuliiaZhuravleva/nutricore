@@ -1,7 +1,12 @@
 # Product lookup for packaged food (optional accuracy upgrade)
 
-> **Status: DRAFT spec (2026-07-06).** Optional enhancement to the photo meal-logging
-> flow. Not scheduled into the staged plan yet — see ROADMAP "Enhancements".
+> **Status: round-1 SHIPPED (2026-07), round-2 in progress.** Enhancement to the photo
+> meal-logging flow, outside the staged plan — see ROADMAP "Enhancements". Design:
+> [ADR-0001](decisions/ADR-0001-pluggable-nutrition-resolution-pipeline.md).
+> **Live:** barcode → Open Food Facts on a pluggable resolution pipeline (round-1) + OFF
+> name-search (A8, round-2). **Deferred:** label OCR (A10), web-search (A9) — see
+> `_tech-debt.md` TD-011. The sections below describe the full multi-strategy vision; the
+> barcode and name-search paths are the parts currently shipped.
 
 ## Problem
 

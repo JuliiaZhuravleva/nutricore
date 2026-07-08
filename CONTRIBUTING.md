@@ -32,6 +32,10 @@ poetry run pytest
 poetry run black --check . && poetry run isort --check-only . && poetry run flake8
 ```
 
+> **Maintainer note:** on the primary dev machine `poetry run` intermittently rebuilds an
+> empty venv (see `_tech-debt.md` TD-001); the wrapper `./scripts/test.sh` runs the suite
+> against the populated cache venv. Fresh clones can use `poetry run pytest` normally.
+
 - Tests run on **SQLite in-memory** (see `tests/conftest.py`), with FastAPI `TestClient` +
   dependency overrides for API tests (see `tests/test_export_meals.py`).
 - Run `pre-commit run --all-files` to match the secret-scan CI locally.
