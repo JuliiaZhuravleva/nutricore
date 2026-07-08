@@ -10,9 +10,9 @@ approved_at: '2026-07-08T18:13:59Z'
 approved_by: julia
 specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
 execution:
-  status: approved
-  started_at: null
-  completed_at: null
+  status: done
+  started_at: '2026-07-08T18:26:09Z'
+  completed_at: '2026-07-08T19:01:57Z'
   current_batch: null
   task_list_id: photo-product-lookup-round2
 items:
@@ -20,73 +20,85 @@ items:
   title: 'Responses-API migration ADR (enables A9): decide split-client vs full migration; document analyze_and_log adapter + web_search failure-mode enumeration'
   specialist: architect
   priority: P1
-  status: pending
+  status: done
   depends_on: []
   estimated_effort: 1h
-  confidence: 0.85
+  confidence: 0.92
   consult_session_id: db7bb8e8-b021-4f63-acb6-30bd84273d24
-  specialist_session_id: null
+  specialist_session_id: 4fc083b4-532e-4ebe-93f3-0bb00aa076e1
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-08T18:30:23Z'
+    executor: architect
+    note: 'Split-client approach confirmed: web_search_nutrition() on Responses API, all existing calls unchanged. Documented: analyze_and_log adapter compatibility (plain-string return, kind=web_search); 7-entry failure-mode table with explicit exception classes (no blanket swallow); dynamic confidence_tier scoped to ResolutionResult (class attr is a hint only); search-signal choice (vision_result[foods], brand-extraction deferred with trigger condition); final pipeline order barcode_off->name_off->label_ocr->name_web->vision. TD-005 self-heal and ModelUnavailableError explicitly excluded from Responses API path. All A9 depends_on items resolved.'
+  result:
+    kind: file
+    ref: docs/decisions/ADR-0002-responses-api-migration.md
+    verification: 'ADR covers all 4 A12 requirements: (a) analyze_and_log adapter shape section 2, (b) failure-mode enumeration section 4, (c) dynamic confidence_tier section 6, (d) search-signal choice section 7. A9 dependency checklist complete.'
 - id: A10
   title: 'LabelOCRStrategy (source_id=label_ocr, medium): new OpenAIService.extract_nutrition_label vision method returning numbers+basis; per-100g/per-serving/per-package scaling branch; basis-ambiguous -> None (fall through to vision); distinct badge; unit tests. Never cached.'
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on: []
   estimated_effort: 3h
-  confidence: 0.75
+  confidence: 0.97
   consult_session_id: 1068bf91-343d-4d1d-865e-a21f60bdcd0b
-  specialist_session_id: null
+  specialist_session_id: d340ee45-e1bc-46e2-ae6f-7b0af9c2fa87
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-08T18:42:20Z'
+    executor: backend-dev
+    note: 'LabelOCRStrategy implemented: extract_nutrition_label (vision, chat.completions, max_tokens=256), per-100g/per-serving/per-package scaling branches, basis-ambiguous->None policy documented, 2-food gate mirrors A8, distinct badge 🏷 с этикетки (проверь), never cached. analyze_and_log records label_ocr rows. ImageSignals carries telegram_id/input_ref for logging attribution. _build_pipeline now barcode_off->name_off->label_ocr->vision (A9 slot reserved). +21 new unit tests; 3 existing pipeline order assertions updated; autouse mocks prevent real API calls in both test files. 293 green (up from 276). QA note for A13: assert final 5-strategy order once A9 lands; extend autouse mocks to cover Responses-API web_search.'
+  result:
+    kind: commit
+    ref: c18f96d
+    verification: 293 tests green via ./scripts/test.sh; secret-scan pre-commit hook passed
 - id: A9
   title: 'NameWebSearchStrategy (source_id=name_web, medium/low): OpenAIService.web_search_nutrition via Responses API; identify product then prefer re-query OFF for structured numbers (pure web prose = lowest confidence); dynamic confidence_tier; cautious distinct badge; non-blocking failure modes -> None; unit tests. Never cached.'
   specialist: backend-dev
   priority: P1
-  status: pending
+  status: done
   depends_on:
   - A12
   estimated_effort: 5h
-  confidence: 0.65
+  confidence: 0.97
   consult_session_id: 1068bf91-343d-4d1d-865e-a21f60bdcd0b
-  specialist_session_id: null
+  specialist_session_id: 2af3f502-6d9f-4022-8a84-a59bcf21f97e
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-08T18:56:57Z'
+    executor: backend-dev
+    note: 'A9 complete. Implemented: OpenAIService.web_search_nutrition (Responses API, split-client per ADR-0002); _parse_web_nutrition_response parse callback with JSON extraction from prose/markdown; NameWebSearchStrategy with dual outcome paths (medium=OFF re-query, low=web prose); _build_pipeline() now final 5-strategy order barcode_off->name_off->label_ocr->name_web->vision. telegram._source_badge has name_web medium/low cases. +24 unit tests (317 total); autouse guards in both test files prevent real API calls. QA note for A13: assert final 5-strategy pipeline order and extend autouse mocks to cover web_search_nutrition in any remaining photo tests.'
+  result:
+    kind: commit
+    ref: 1cf0447
+    verification: 317 tests green via ./scripts/test.sh; pre-commit secret-scan passed
 - id: A13
   title: 'Pipeline regression gate: _build_pipeline() final-order assertion (barcode_off->name_off->label_ocr->name_web->vision); extend autouse mocks to cover extract_nutrition_label + Responses-API web_search so existing photo tests make no real calls; full suite green via ./scripts/test.sh'
   specialist: qa
   priority: P2
-  status: pending
+  status: done
   depends_on:
   - A10
   - A9
   estimated_effort: 0.5h
-  confidence: 0.8
+  confidence: 1.0
   consult_session_id: 94b255bf-78a9-4afe-85d4-723c9f7490bf
-  specialist_session_id: null
+  specialist_session_id: af592a8d-670d-4df4-8fe0-bf48df6e4b0a
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
-  result: null
+    ts: '2026-07-08T19:01:01Z'
+    executor: qa
+    note: 'All A13 deliverables confirmed present: (1) test_build_pipeline_order() in test_product_lookup_service.py asserts [barcode_off, name_off, label_ocr, name_web, vision]; (2) default_no_label_ocr + default_no_web_search autouse mocks in test_product_lookup_service.py; (3) label_ocr_mock + web_search_mock autouse mocks in test_meal_handler.py. Gap found and closed: test_barcode_integration.py was missing guards for extract_nutrition_label and NameWebSearchStrategy.resolve — added _default_no_label_ocr and _default_no_web_search autouse fixtures. 317/317 green via ./scripts/test.sh.'
+  result:
+    kind: file
+    ref: tests/test_barcode_integration.py
+    verification: 317 tests green via ./scripts/test.sh; pipeline order assertion passes; all photo-path tests now have explicit guards for A10 label_ocr and A9 web_search strategies
 budget:
   max_usd_per_item: 6.0
   max_usd_per_plan: 20.0
-  consumed_usd: 0.0
+  consumed_usd: 7.6626
 review_gate:
   why: []
   approve_action: /execute-plan /Users/julia/my-projects/nutricore.photo-product-lookup-round2-wt/docs/plans/photo-product-lookup-round2.execution.md --resume
@@ -106,6 +118,20 @@ human_feedback:
   status: addressed
   addressed_at: '2026-07-08T18:13:52Z'
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
