@@ -635,6 +635,47 @@ def test_search_by_name_sends_user_agent_and_search_terms(db_session):
     assert "fields" in kwargs["params"]
 
 
+def test_search_by_name_non_object_body_returns_none(db_session):
+    """A non-object JSON body (e.g. a bare array from a proxy) degrades to a
+    miss, not an AttributeError — the shared _off_get_json shape guard."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json = MagicMock(return_value=[1, 2, 3])  # not a dict
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("query"))
+
+    assert result is None
+
+
+def test_search_by_name_skips_non_dict_candidate(db_session):
+    """A non-dict element in the products list is skipped, not fatal — a valid
+    later candidate still wins."""
+    good = _search_product(product_name="Real product")
+    resp = _make_response(200, _make_search_json([123, good]))
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).search_by_name("query"))
+
+    assert result is not None
+    assert result.product_name == "Real product"
+
+
+def test_lookup_non_object_body_returns_none(db_session):
+    """The barcode path shares the same shape guard: a non-object body → None."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json = MagicMock(return_value=[1, 2, 3])
+    patch_ctx, _ = _patch_client(resp)
+
+    with patch_ctx:
+        result = asyncio.run(_svc(db_session).lookup(_EAN))
+
+    assert result is None
+
+
 @pytest.mark.parametrize(
     "bad",
     [

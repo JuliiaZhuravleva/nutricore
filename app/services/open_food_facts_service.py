@@ -233,11 +233,21 @@ class OpenFoodFactsService:
         query→product mapping is fuzzy and must not be persisted as an
         authoritative barcode result. It is a live call each time (fine for a
         low-volume personal tool).
+
+        No barcode-style character guard is applied: unlike :meth:`lookup` (which
+        interpolates the barcode into the URL *path*), ``query`` is sent via
+        httpx's ``params=`` dict and percent-encoded, so it can't inject into the
+        request path — the empty-check + length cap below are sufficient.
         """
         query = (query or "").strip()
         if not query:
             return None
         if len(query) > _MAX_QUERY_LEN:
+            logger.warning(
+                "OFF search query truncated from %d to %d chars",
+                len(query),
+                _MAX_QUERY_LEN,
+            )
             query = query[:_MAX_QUERY_LEN]
 
         products = await self._search_from_off(query)
@@ -248,108 +258,44 @@ class OpenFoodFactsService:
         # relevance). A hit with an empty nutriments block is skipped, same as
         # the barcode path treats it as a miss.
         for product in products:
+            if not isinstance(product, dict):
+                continue
             off_code = str(product.get("code") or "")
             result = self._normalise(off_code, product)
             if result is not None and result.has_macros:
                 return result
+
+        # Found candidates but none carried usable nutrition — log it (mirrors the
+        # barcode path's "no usable nutriments" INFO) so this is distinguishable in
+        # the logs from a zero-result search or a network failure.
+        logger.info(
+            "OFF search for %r: %d candidate(s) but none had usable macros — miss",
+            query,
+            len(products),
+        )
         return None
 
     # ------------------------------------------------------------------
     # Private — HTTP
     # ------------------------------------------------------------------
 
-    async def _fetch_from_off(self, barcode: str) -> Optional[Dict[str, Any]]:
-        """Call the OFF API and return the raw ``product`` dict, or ``None``."""
-        url = OFF_BASE_URL + OFF_PRODUCT_PATH.format(barcode=barcode)
-        headers = {"User-Agent": OFF_USER_AGENT}
-        timeout = httpx.Timeout(
-            connect=_TIMEOUT_CONNECT,
-            read=_TIMEOUT_READ,
-            write=5.0,
-            pool=5.0,
-        )
+    async def _off_get_json(
+        self,
+        url: str,
+        params: Dict[str, Any],
+        *,
+        context: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Shared OFF GET: timeout, error-to-None, status/size/JSON guards.
 
-        started = time.perf_counter()
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(
-                    url, headers=headers, params={"fields": _OFF_FIELDS}
-                )
-        except httpx.TimeoutException as exc:
-            logger.warning("OFF API timeout for barcode %s: %s", barcode, exc)
-            return None
-        except httpx.RequestError as exc:
-            logger.warning("OFF API request error for barcode %s: %s", barcode, exc)
-            return None
-
-        latency_ms = int((time.perf_counter() - started) * 1000)
-
-        if response.status_code != 200:
-            logger.warning(
-                "OFF API returned HTTP %s for barcode %s (%.0f ms)",
-                response.status_code,
-                barcode,
-                latency_ms,
-            )
-            return None
-
-        if len(response.content) > _MAX_RESPONSE_BYTES:
-            logger.warning(
-                "OFF API response for barcode %s is %d bytes (> %d cap) — ignoring",
-                barcode,
-                len(response.content),
-                _MAX_RESPONSE_BYTES,
-            )
-            return None
-
-        try:
-            data: Dict[str, Any] = response.json()
-        except Exception as exc:
-            logger.warning("OFF API returned non-JSON for barcode %s: %s", barcode, exc)
-            return None
-
-        # OFF status field: 1 = found, 0 = not found.
-        status = data.get("status")
-        if status != 1:
-            logger.debug(
-                "OFF: product not found for barcode %s "
-                "(status=%s, verbose=%r, %.0f ms)",
-                barcode,
-                status,
-                data.get("status_verbose", ""),
-                latency_ms,
-            )
-            return None
-
-        product = data.get("product")
-        if not product:
-            logger.warning(
-                "OFF returned status=1 but no 'product' field for barcode %s",
-                barcode,
-            )
-            return None
-
-        logger.debug(
-            "OFF: found product for barcode %s in %.0f ms", barcode, latency_ms
-        )
-        return product
-
-    async def _search_from_off(self, query: str) -> list:
-        """Call the OFF full-text search endpoint; return the products list.
-
-        Returns an empty list on any network / HTTP / parse error or an
-        oversized body, so :meth:`search_by_name` degrades to a miss.
+        Every OFF HTTP call (barcode lookup and name search) goes through here so
+        the transport-level safeguards — descriptive User-Agent, timeouts, non-200
+        rejection, the ``_MAX_RESPONSE_BYTES`` cap, JSON-parse and non-object
+        handling — can't drift apart between the two paths. Returns the parsed
+        JSON object, or ``None`` on any network / HTTP / parse error or a
+        non-object / oversized body. ``context`` labels the call in log lines.
         """
-        url = OFF_BASE_URL + OFF_SEARCH_PATH
         headers = {"User-Agent": OFF_USER_AGENT}
-        params = {
-            "search_terms": query,
-            "search_simple": 1,
-            "action": "process",
-            "json": 1,
-            "page_size": _SEARCH_PAGE_SIZE,
-            "fields": _OFF_FIELDS,
-        }
         timeout = httpx.Timeout(
             connect=_TIMEOUT_CONNECT,
             read=_TIMEOUT_READ,
@@ -362,49 +308,118 @@ class OpenFoodFactsService:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(url, headers=headers, params=params)
         except httpx.TimeoutException as exc:
-            logger.warning("OFF search timeout for %r: %s", query, exc)
-            return []
+            logger.warning("OFF %s timeout: %s", context, exc)
+            return None
         except httpx.RequestError as exc:
-            logger.warning("OFF search request error for %r: %s", query, exc)
-            return []
+            logger.warning("OFF %s request error: %s", context, exc)
+            return None
 
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         if response.status_code != 200:
             logger.warning(
-                "OFF search returned HTTP %s for %r (%.0f ms)",
+                "OFF %s returned HTTP %s (%.0f ms)",
+                context,
                 response.status_code,
-                query,
                 latency_ms,
             )
-            return []
+            return None
 
         if len(response.content) > _MAX_RESPONSE_BYTES:
             logger.warning(
-                "OFF search response for %r is %d bytes (> %d cap) — ignoring",
-                query,
+                "OFF %s response is %d bytes (> %d cap) — ignoring",
+                context,
                 len(response.content),
                 _MAX_RESPONSE_BYTES,
             )
-            return []
+            return None
 
         try:
-            data: Dict[str, Any] = response.json()
+            data = response.json()
         except Exception as exc:
-            logger.warning("OFF search returned non-JSON for %r: %s", query, exc)
+            logger.warning("OFF %s returned non-JSON: %s", context, exc)
+            return None
+
+        # Defensive: OFF should always return a JSON object; a bare array / scalar
+        # (e.g. an intermediary/proxy body) would break the callers' data.get(...),
+        # which the swallow-to-None contract must cover, not raise past.
+        if not isinstance(data, dict):
+            logger.warning(
+                "OFF %s returned a non-object JSON body (%s) — ignoring",
+                context,
+                type(data).__name__,
+            )
+            return None
+
+        logger.debug("OFF %s ok (%.0f ms)", context, latency_ms)
+        return data
+
+    async def _fetch_from_off(self, barcode: str) -> Optional[Dict[str, Any]]:
+        """Call the OFF product API and return the raw ``product`` dict, or ``None``."""
+        url = OFF_BASE_URL + OFF_PRODUCT_PATH.format(barcode=barcode)
+        data = await self._off_get_json(
+            url, {"fields": _OFF_FIELDS}, context=f"lookup {barcode}"
+        )
+        if data is None:
+            return None
+
+        # OFF status field: 1 = found, 0 = not found.
+        status = data.get("status")
+        if status != 1:
+            logger.debug(
+                "OFF: product not found for barcode %s (status=%s, verbose=%r)",
+                barcode,
+                status,
+                data.get("status_verbose", ""),
+            )
+            return None
+
+        product = data.get("product")
+        if not product:
+            logger.warning(
+                "OFF returned status=1 but no 'product' field for barcode %s",
+                barcode,
+            )
+            return None
+
+        return product
+
+    async def _search_from_off(self, query: str) -> list:
+        """Call the OFF full-text search endpoint; return the products list.
+
+        Returns an empty list on any network / HTTP / parse error or an
+        oversized body, so :meth:`search_by_name` degrades to a miss.
+        """
+        url = OFF_BASE_URL + OFF_SEARCH_PATH
+        params = {
+            "search_terms": query,
+            "search_simple": 1,
+            "action": "process",
+            "json": 1,
+            "page_size": _SEARCH_PAGE_SIZE,
+            "fields": _OFF_FIELDS,
+        }
+        data = await self._off_get_json(url, params, context=f"search {query!r}")
+        if data is None:
             return []
 
         products = data.get("products")
         if not isinstance(products, list):
-            logger.debug("OFF search: no products for %r (%.0f ms)", query, latency_ms)
+            # A genuine zero-result search returns products=[] (a list), so this
+            # branch fires only on a structurally anomalous body — e.g. the search
+            # endpoint changed its schema or returned an error payload with a 200.
+            # Log at WARNING (not debug): otherwise a systemic OFF-search contract
+            # break would silently, permanently degrade name_off to the vision
+            # fallback with zero operational visibility.
+            logger.warning(
+                "OFF search for %r returned an unexpected shape (products=%s) — "
+                "treating as no results",
+                query,
+                type(products).__name__,
+            )
             return []
 
-        logger.debug(
-            "OFF search: %d candidates for %r in %.0f ms",
-            len(products),
-            query,
-            latency_ms,
-        )
+        logger.debug("OFF search: %d candidates for %r", len(products), query)
         return products
 
     # ------------------------------------------------------------------
