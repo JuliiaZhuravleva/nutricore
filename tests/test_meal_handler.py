@@ -51,9 +51,11 @@ class _FakeMessage:
         self.caption = caption
         self.from_user = SimpleNamespace(id=42, username="owner")
         self.replies = []
+        self.reply_markups = []
 
     async def reply_text(self, text, *args, **kwargs):
         self.replies.append(text)
+        self.reply_markups.append(kwargs.get("reply_markup"))
 
 
 def _make_update(*, photo=None, text=None, caption=None):
@@ -346,6 +348,104 @@ def test_confirm_meal_declined_returns_to_time():
     assert "ещё раз" in message.replies[-1]
     # Draft is discarded on reject — the retry starts fresh (no stale carryover).
     assert context.user_data["current_meal"] == {}
+
+
+# --- confirm_meal: TD-015 (buttons + intent classification) ----------------
+
+
+def test_confirm_intent_classifies():
+    # Buttons and their tolerant spellings all resolve to affirm/reject; the
+    # lowercase/punctuated variants are exactly what used to fall into reject.
+    for t in ("Да", "да", "да.", " ДА ", "ага", "верно", "ок", "👍"):
+        assert tg._confirm_intent(t) == "affirm", t
+    for t in ("Нет", "нет", "нет!", "Отмена", "отмена", "❌"):
+        assert tg._confirm_intent(t) == "reject", t
+    for t in ("это была индейка", "порция побольше", "не курица", "", None):
+        assert tg._confirm_intent(t) == "correction", t
+
+
+def test_confirm_prompt_carries_da_net_buttons(entry_mock):
+    # The confirm prompt must ship explicit Да/Нет buttons (TD-015), so the owner
+    # never has to guess the exact word.
+    update, message = _make_text_update("chicken breast 200g")
+    context = SimpleNamespace(user_data={})
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    assert message.reply_markups[-1] is tg.confirm_keyboard
+    assert tg.confirm_keyboard.keyboard[0][0].text == "Да"
+    assert tg.confirm_keyboard.keyboard[0][1].text == "Нет"
+
+
+def test_confirm_meal_lowercase_da_saves(patched_db):
+    # A lowercase "да" used to fall into the reject branch and wipe the draft;
+    # now it saves like the button.
+    update, message = _make_text_update("да")
+    context = SimpleNamespace(
+        user_data={
+            "current_meal": {
+                "nutrition": _NUTRITION,
+                "description": "banana, oatmeal",
+                "photos": ["PHOTO_FILE_ID"],
+            },
+            "meal_time": datetime(2026, 7, 8, 12, 0, tzinfo=UTC),
+        }
+    )
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert "сохранен" in message.replies[-1]
+    with sessionmaker(bind=patched_db)() as db:
+        assert db.query(Meal).count() == 1
+
+
+def test_confirm_meal_cancel_discards_draft():
+    # "Отмена" is an explicit reject alongside "Нет".
+    update, message = _make_text_update("Отмена")
+    context = SimpleNamespace(user_data={"current_meal": {"nutrition": _NUTRITION}})
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    assert state == tg.ADDING_MEAL_TIME
+    assert context.user_data["current_meal"] == {}
+
+
+def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
+    # THE TD-015 bug: a typed correction in reply to the confirm prompt used to
+    # silently discard the analyzed draft and restart. It must now re-analyze the
+    # correction and stay in the confirm step — never a silent loss.
+    entry_mock.return_value = json.dumps({**_NUTRITION, "foods": ["turkey"]})
+    meal_time = datetime(2026, 7, 8, 19, 0, tzinfo=UTC)
+    update, message = _make_text_update("это была индейка, не курица")
+    context = SimpleNamespace(
+        user_data={
+            "current_meal": {
+                "nutrition": _NUTRITION,
+                "description": "chicken",
+                "photos": ["OLD_PHOTO"],
+                "resolution_source": "barcode_off",
+            },
+            "meal_time": meal_time,
+        }
+    )
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    # Re-analyzed the correction, stayed in the confirm step.
+    assert state == tg.CONFIRMING_MEAL
+    (sent_text,) = entry_mock.call_args.args
+    assert sent_text == "это была индейка, не курица"
+
+    meal = context.user_data["current_meal"]
+    assert meal["nutrition"]["foods"] == ["turkey"]  # fresh analysis replaced it
+    assert meal["description"] == "это была индейка, не курица"
+    # Stale photo/resolution from the prior (photo) attempt were dropped...
+    assert "photos" not in meal
+    assert "resolution_source" not in meal
+    # ...but meal_time (draft context) is preserved.
+    assert context.user_data["meal_time"] == meal_time
+    assert message.reply_markups[-1] is tg.confirm_keyboard
 
 
 # --- shared helpers --------------------------------------------------------
