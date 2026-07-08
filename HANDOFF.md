@@ -1,55 +1,43 @@
 # Handoff — main (2026-07-08)
 
 ## State
-On **`main`**, clean tree, pushed. **255 tests green** (`./scripts/test.sh` — the cache-venv
-wrapper; `poetry run`/bare `python -m pytest` are broken, TD-001). Single branch, no worktrees.
-**Release protocol now locked** (`docs/RELEASE.md`): release work is handed off as a **pushed
-feature branch** — not merged to main from this side; openclaw-setup's `nutricore-release` owns
-merge→main + deploy on the mini. Docs/no-runtime-change still merge to main directly.
+On **`main`** (`7fb51e1`), clean tree, **5 docs-only commits ahead of `origin/main` (NOT pushed)**:
+input-processing diagram, `.gitignore` (macOS), TD-013/014, TD-015, research doc + TD-016.
+**276 tests green** on main (`./scripts/test.sh` — cache-venv wrapper; `poetry run` broken, TD-001).
+A sibling worktree holds the round-2 branch (below).
+
+**Release protocol** (`docs/RELEASE.md`): runtime work ships as a **pushed feature branch** handed to
+openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly (not pushed here yet).
 
 ## What shipped this session
-- **photo-product-lookup round-1 — merged** (`41abeaa`): packaged-food КБЖУ via a **vision-read
-  barcode → Open Food Facts** lookup on a **pluggable resolution pipeline** (`ADR-0001`), with the
-  vision estimate as fallback. New `product_caches` table + `meals.resolution_source/_signals`
-  (migration `f5a6b7c8d9e0`), `open_food_facts_service.py`, `product_lookup_service.py`,
-  `openai_service.extract_barcode_from_image`, and a `get_openai_service()` factory. Auto-triggers on a
-  detected barcode; reply shows a transparent source/confidence badge + the gram basis (correctable at
-  confirm). Built by the **plan-fixes multi-agent flow** (items A1–A7 + A11), then hardened via
-  **/review-deep** (C1/H1/H2 + mediums — all fixed) and **/review-security** (OWASP → ACCEPTABLE RISK,
-  defense-in-depth folded in).
-- **Product philosophy** captured in [`docs/product-philosophy.md`](docs/product-philosophy.md)
-  (best-guess + seamless, but transparent + correctable; tie-breaker = long-term insight; medical logic
-  is the my-health boundary line).
-- **Orchestration infra:** `scripts/test.sh` (TD-001 test wrapper), `.claude/conventions/sessions.md`
-  (raises the plan per-item budget + tells specialists the working test command), `.gitignore` for
-  orchestrator scratch (`*.raw/`, sidecars, `docs/.draft/`).
+- **photo-product-lookup round-2 — DONE + reviewed, on a pushed branch** (`plan/photo-product-lookup-round2`,
+  worktree `../nutricore.photo-product-lookup-round2-wt`, tip `2b10a73`, pushed). Built via the multi-agent
+  **plan-fixes → execute-plan** flow: **A12** ADR-0002 (Responses-API split-client), **A10** `LabelOCRStrategy`
+  (on-pack label OCR, `label_ocr`), **A9** `NameWebSearchStrategy` (Responses-API `web_search`, `name_web`,
+  dynamic medium/low), **A13** pipeline-order + autouse-mock gate. Pipeline order now
+  `barcode_off → name_off → label_ocr → name_web → vision`; distinct badges 🏷/🌐. Then a **4-agent
+  /review-deep** → 1 CRITICAL (LabelOCR bare `float()` on model output → hard-fail; 3× corroborated) + 2
+  findings, all fixed (+3 regression tests). **320 green.** Code-only: **no migration, no new env.**
+- **Input-processing diagram** (`docs/diagrams/input-processing-flow.{html,md}`) — 4-phase × 3-tier maturity
+  matrix (Сейчас → Следующее → North-star); HTML for humans, MD mirror for LLMs. Ratified by Julia.
+- **Debt tracked:** TD-013 (confidence gate), TD-014 (personal-DB/RAG), TD-015 (confirm Да/Нет buttons —
+  Julia hit live), TD-016 (Responses-API `web_search_preview` → GA).
 
 ## Next up
-1. **Deploy round-1 + A8 on the mini** — openclaw's side. Prereq: the release verb installed once on
-   the mini (commands in `docs/RELEASE.md`). Then:
-   - Round-1 (in main, no new env) → `claw-deploy release nutricore` (migrate-before-start applies `f5a6b7c8d9e0`).
-   - **A8** (branch `feat/product-lookup-a8-name-off`, pushed, no migration/env) → `nutricore-release feat/product-lookup-a8-name-off`.
-   `/wrap` now auto-emits the English handoff message for the openclaw-setup agent (`.claude/wrap.md`, Phase 4b).
-2. **Round 2 of product-lookup** — **A8 (OFF name search) DONE + reviewed** (branch pushed, **276 green**,
-   passed a 4-agent `/review-deep` → observability/robustness-parity fixes applied). Remaining:
-   A10 (label OCR), A9 (web_search — needs a Responses-API-migration ADR first). See `_tech-debt.md` **TD-011**.
-   Runtime work → **feature branch** per the release protocol.
-3. **DONE this session:** release protocol locked (`docs/RELEASE.md` + CLAUDE.md); doc revamp
-   (README honest framing + real features + Python 3.12, `docs/README.md` index, stages/README canonical
-   status, consult-relay SHIPPED, `Business_description.md`→`docs/archive/origin-brief.md`, host redacted);
-   `.claude/wrap.md` release-handoff step.
-4. Open debt: **TD-001** (poetry venv, Med); **TD-007/008** (self-heal coverage + `telegram.py`
-   decomposition); **TD-010** (TD-009 follow-ups); **TD-011** (product-lookup accuracy residuals);
-   **TD-012** (pre-existing flake8/dead-helper in the new specialist test files).
+1. **Push `main`** (5 docs commits) when ready — docs go to main directly per the protocol (not pushed yet).
+2. **Deploy round-2** — openclaw's side. Relay the ready handoff (see below / this session's tail):
+   `bin/nutricore-release plan/photo-product-lookup-round2` — no migration, no env, no manual step, 320 green.
+   (A8 already released → `4e8f458`. Round-1 migration `f5a6b7c8d9e0` is on main.)
+3. **Round-2 residual / future:** TD-016 (GA web_search), then the bigger «Следующее» tracks — TD-013
+   (confidence gate + quick buttons) and TD-014 (personal-DB/RAG). TD-015 is the immediate confirm papercut.
 
 ## Gotchas / learnings
-- **Tests:** `./scripts/test.sh` (wraps the cache-venv python) — NOT `poetry run` / bare `python -m pytest` (TD-001).
-- **Plan-fixes orchestration:** per-item `claude -p` budget comes from `.claude/conventions/sessions.md`
-  `## Orchestrator config` (NOT the envelope's `budget` block). Specialists read that same file for
-  conventions — if they can't run tests, they burn budget on denied commands and stall.
-- `--revise` mode has a wrapper quirk: it resolves plans_dir under the **main** repo, not the worktree,
-  and exits 70 even though the in-place revision succeeded — verify the envelope before assuming failure.
-- Specialists sometimes **don't commit** doc/test deliverables (evaluator PASSes them off disk) — check
-  `git status` in the worktree after a run and commit strays.
-- `get_openai_service()` in `openai_service.py` is the shared singleton — use it, don't import
-  `telegram_service` from a service module (that was the circular import H2 fixed).
+- **Tests:** `./scripts/test.sh` (cache-venv python) — NOT `poetry run` (TD-001).
+- **execute-plan specialists sometimes don't commit** doc/test deliverables (evaluator PASSes them off-disk).
+  After a run: `git status` in the worktree and commit strays (this session: A12 ADR + A13 mocks were uncommitted).
+- **SessionStart HANDOFF-hook cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the plan-fixes/execute
+  **scope gate** → false-positive `GATE FAIL … exit 71`. Clean the cruft (`git checkout HANDOFF.md; rm HANDOFF-*.md`)
+  and the run is fine — the envelope/deliverables are real.
+- **plan-fixes wrapper** needs source path + flags as **separate** args; quoting them into one string → exit 66.
+- **envelope approve** only blocks on pending `human_feedback`, not `clarifying_questions`.
+- `get_openai_service()` is the shared singleton — services use it, never import the handler layer (H2 lesson).
