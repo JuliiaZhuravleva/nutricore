@@ -17,7 +17,7 @@ execution:
   task_list_id: personal-food-db
 items:
 - id: B0
-  title: 'ADR-0003 vector-store decision: pgvector-vs-Qdrant, embeddings model/dims, personal_foods schema (incl alias-embedding strategy + mandatory user_id ANN filter), SavedFoodRAGStrategy contract (threshold->tier, text/image paths), and a Deploy-delta section (former B7: pgvector image swap + CREATE EXTENSION release note)'
+  title: 'ADR-0003 vector-store decision: pgvector-vs-Qdrant, embeddings model/dims, personal_foods schema (incl alias-embedding strategy + mandatory user_id ANN filter), SavedFoodRAGStrategy contract (threshold->tier, text/image paths), and a Deploy-delta section (former B7: pgvector image swap + CREATE EXTENSION release note). OWNER DECISIONS 2026-07-09: (1) pgvector confirmed. (2) similarity threshold is a CONFIG PARAMETER (name it, e.g. SAVED_FOOD_SIM_THRESHOLD, with a sensible default), tuned experimentally, NOT a hardcoded constant; B2/B3 read it from config. (3) aliases embedded separately (each alias its own vector pointing to the same personal_food_id). (4) ALSO design an exact-barcode reuse short-circuit: personal_foods carries a barcode key, so a barcoded item already saved is served from the personal base (no OFF call) ahead of barcode_off; a not-yet-saved barcode still goes to barcode_off/OFF and is saved on confirm; fuzzy embedding RAG remains the text / no-barcode path. (5) a saved match is medium tier and ALWAYS shown as a draft at the confirm step (no silent auto-save).'
   specialist: architect
   priority: P1
   status: pending
@@ -33,7 +33,7 @@ items:
     note: null
   result: null
 - id: B1
-  title: 'personal_foods domain + pgvector enablement: extension-enable migration, PersonalFood model/schema/CRUD (+ alias handling per ADR), VECTOR(N) embedding column + ANN index, created_at NOT NULL server_default (TD-006 lesson). High-effort/atomic migration; expose CRUDPersonalFood.find_similar(db, embedding, threshold, user_id) as the mockable ANN seam'
+  title: 'personal_foods domain + pgvector enablement: extension-enable migration, PersonalFood model/schema/CRUD (+ alias handling per ADR), VECTOR(N) embedding column + ANN index, created_at NOT NULL server_default (TD-006 lesson). High-effort/atomic migration; expose CRUDPersonalFood.find_similar(db, embedding, threshold, user_id) as the mockable ANN seam. OWNER 2026-07-09: also add a nullable barcode column + index on personal_foods (for the exact-barcode reuse short-circuit designed in B0), plus a by-barcode lookup on CRUDPersonalFood.'
   specialist: backend-dev
   priority: P1
   status: pending
@@ -67,7 +67,7 @@ items:
     note: null
   result: null
 - id: B3
-  title: 'SavedFoodRAGStrategy (source_id=saved_rag): embed query -> user-scoped ANN over personal_foods -> ResolutionResult; threshold->confidence_tier per ADR; text-query + image (vision foods) paths; non-blocking (miss/below-threshold->None); record matched personal_food_id+distance in signals; register in _build_pipeline() right after barcode_off; add saved_rag case to telegram _source_badge (former F-2, badge e.g. star/vashey-bazy)'
+  title: 'SavedFoodRAGStrategy (source_id=saved_rag): embed query -> user-scoped ANN over personal_foods -> ResolutionResult; threshold->confidence_tier per ADR (threshold read from config, not hardcoded); text-query + image (vision foods) paths; non-blocking (miss/below-threshold->None); record matched personal_food_id+distance in signals; register in _build_pipeline() right after barcode_off; add saved_rag case to telegram _source_badge (former F-2, badge e.g. star / iz-vashey-bazy). OWNER 2026-07-09: when signals.barcode is present, do an EXACT-barcode lookup in personal_foods BEFORE the fuzzy embedding path (repeat barcoded item served from the base, no OFF); the fuzzy path is for text / no-barcode. The saved_rag result is always shown as a draft at the existing confirm step, never auto-written.'
   specialist: backend-dev
   priority: P1
   status: pending
@@ -86,7 +86,7 @@ items:
     note: null
   result: null
 - id: B4
-  title: 'Learning-loop write-back (incl former F-3 confirm-handler glue): on confirm and TD-015 correction path, upsert confirmed food+alias into personal_foods with provenance (meal_id/resolution_source), embed canonical name at write time; idempotent dedup key = lowercased canonical name within user_id; no duplicate rows. Decide sync vs Celery fire-and-forget for the embed call (latency Q)'
+  title: 'Learning-loop write-back (incl former F-3 confirm-handler glue): on confirm and TD-015 correction path, upsert confirmed food+alias into personal_foods with provenance (meal_id/resolution_source), embed canonical name at write time; idempotent dedup key = lowercased canonical name within user_id; no duplicate rows. OWNER 2026-07-09: do the embed+upsert as a Celery FIRE-AND-FORGET background task so the confirm reply is instant; the task must be retry-safe (idempotent on the dedup key). Also persist the barcode on the row when the confirmed item had one (feeds the B0/B1 exact-barcode reuse).'
   specialist: backend-dev
   priority: P1
   status: pending
@@ -104,7 +104,7 @@ items:
     note: null
   result: null
 - id: B6
-  title: 'Tests: SavedFoodRAGStrategy hit/miss/threshold by mocking CRUDPersonalFood.find_similar (SQLite has no pgvector operators - branch logic only); update _build_pipeline order assertion to include saved_rag; learning-loop persistence + idempotency; embed_text mocked. Real ANN/threshold query stays a manual deploy-gate verification. ./scripts/test.sh green'
+  title: 'Tests: SavedFoodRAGStrategy hit/miss/threshold by mocking CRUDPersonalFood.find_similar (SQLite has no pgvector operators - branch logic only); also cover the exact-barcode-before-fuzzy branch; update _build_pipeline order assertion to include saved_rag; learning-loop persistence + idempotency; embed_text mocked. Real ANN/threshold query stays a manual deploy-gate verification. OWNER 2026-07-09: the write-back is a Celery task (B4) - test the task function directly (eager) for persistence + idempotency; no real vector tests for now (owner-confirmed). ./scripts/test.sh green'
   specialist: qa
   priority: P2
   status: pending
@@ -125,7 +125,7 @@ items:
   title: 'Quick-pick from saved/recent (Telegram UX): recency/frequency buttons -> change quantity -> skip analysis pipeline (direct DB query, not RAG). DEFERRABLE - B1-B4 deliver the accuracy/cost win alone. Needs UX decision: ReplyKeyboard (consistent, low-risk) vs InlineKeyboard+CallbackQueryHandler (new pattern, +risk). Recommend confirming scope before dispatch (see clarifying Qs)'
   specialist: frontend-dev
   priority: P2
-  status: pending
+  status: blocked
   depends_on:
   - B1
   - B4
@@ -135,9 +135,9 @@ items:
   specialist_session_id: null
   retry_count: 0
   last_update:
-    ts: null
-    executor: null
-    note: null
+    ts: '2026-07-09T07:51:17Z'
+    executor: julia
+    note: DEFERRED to a follow-up plan per owner decision 2026-07-09 (quick-pick UX; all specialists recommended deferring). Parked as blocked so it is never dispatched by /execute-plan; B1-B4 deliver the reuse win alone. Re-plan as its own small plan later (ReplyKeyboard-vs-Inline decision belongs there).
   result: null
 budget:
   max_usd_per_item: 6.0
@@ -174,7 +174,33 @@ clarifying_questions:
 
 
 
+
+
+
+
+
+
 # Plan — personal-food-db
+
+## Owner decisions (2026-07-09) — folded into the item contracts above
+
+1. **Vector store:** pgvector (not Qdrant) — swap the DB image to `pgvector/pgvector:pg15` + `CREATE EXTENSION vector`.
+2. **Pipeline order:** `barcode_off → saved_rag → name_off → …` confirmed. **Refinement:** `personal_foods`
+   also carries a **barcode key** — a barcoded item already in the personal base is served from the base
+   (no OFF call) *before* `barcode_off`; a not-yet-saved barcode still goes to OFF and is saved on confirm.
+   Fuzzy embedding RAG stays the text / no-barcode path. (B0 designs it; B1 adds the barcode column; B3 does
+   the exact-barcode check before the fuzzy path.)
+3. **Saved-match confidence:** `medium` + **always shown as a draft at the confirm step** — no silent auto-save
+   (full auto-accept waits for TD-013).
+4. **Similarity threshold:** a **config parameter** (e.g. `SAVED_FOOD_SIM_THRESHOLD` + a sensible default),
+   tuned experimentally — not a hardcoded constant.
+5. **Write-back (B4):** **Celery** fire-and-forget background task so the confirm reply is instant; the task
+   must be retry-safe (idempotent on the dedup key).
+6. **Vector tests:** none for now — mock `find_similar`, test branch logic only; the real ANN/threshold check
+   is a manual post-deploy verification.
+7. **Aliases:** each alias is its own embedding vector pointing to the same `personal_food_id`.
+8. **B5 quick-pick:** **deferred** to a follow-up plan (parked as `blocked` — not dispatched); B1–B4 deliver
+   the reuse win alone.
 
 ## Source
 
