@@ -33,6 +33,7 @@ from app.services.openai_service import (
 )
 from app.services.product_lookup_service import (
     ResolutionResult,
+    _parse_portion_grams,
     parse_nutrition,
     resolve_meal_nutrition,
 )
@@ -245,6 +246,100 @@ def _image_data_url(image_bytes) -> str:
     """base64 data URL for OpenAI vision — never Telegram's token-bearing file URL
     (api.telegram.org/file/bot<TOKEN>/…), and no dependency on OpenAI fetching it."""
     return "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
+
+
+def _schedule_personal_food_save(
+    *,
+    user_id: int,
+    meal_id: int,
+    nutrition: dict,
+    resolution_signals: dict | None,
+    resolution_source: str | None,
+) -> None:
+    """Enqueue the embed+upsert Celery task for the confirmed food (B4 / ADR-0003).
+
+    Fire-and-forget: the Celery task writes to personal_foods in the background so
+    the confirm reply is not delayed.  All failures are logged and swallowed — the
+    personal DB is an optimisation layer and must never block the confirm reply.
+
+    Canonical-name priority (ADR-0003 §B4 contract):
+      1. saved_food_name — already in personal DB (saved_rag path)
+      2. product_name   — OFF-matched product name (barcode_off / name_off path)
+      3. first food     — vision / text analysis result
+    """
+    try:
+        signals = resolution_signals or {}
+
+        # Canonical name extraction
+        canonical_name = (
+            signals.get("saved_food_name")
+            or signals.get("product_name")
+            or (nutrition.get("foods") or [None])[0]
+        )
+        if not canonical_name or not str(canonical_name).strip():
+            logger.warning(
+                "_schedule_personal_food_save: no canonical_name found"
+                " (user_id=%d meal_id=%d) — skipping",
+                user_id,
+                meal_id,
+            )
+            return
+        canonical_name = str(canonical_name).strip()
+
+        # Barcode — only present in barcode_off signals (ADR-0003 §B4)
+        barcode = signals.get("barcode_raw") or None  # empty str → None
+
+        # Per-100g macro computation:
+        #   Image paths: portion_grams pre-computed in resolution_signals.
+        #   Text paths:  attempt to parse grams from nutrition["portion"] string.
+        #   No portion available (factor=1.0): values are already per-100g
+        #   (strategies that can't scale return "100г" as the portion string).
+        portion_grams = signals.get("portion_grams") or _parse_portion_grams(nutrition)
+        factor = (
+            (100.0 / portion_grams) if (portion_grams and portion_grams > 0) else 1.0
+        )
+
+        def _to_per100g(v: object) -> float | None:
+            try:
+                return round(float(v) * factor, 2) if v is not None else None  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+
+        per_100g_calories = _to_per100g(nutrition.get("calories"))
+        per_100g_proteins = _to_per100g(nutrition.get("protein"))
+        per_100g_fats = _to_per100g(nutrition.get("fats"))
+        per_100g_carbs = _to_per100g(nutrition.get("carbs"))
+
+        # Lazy import: avoids a circular-import risk at module load time and lets
+        # tests mock .delay without needing a live Celery broker.
+        from celery_app.tasks.personal_food import embed_and_save_personal_food
+
+        embed_and_save_personal_food.delay(
+            user_id=user_id,
+            canonical_name=canonical_name,
+            meal_id=meal_id,
+            resolution_source=resolution_source,
+            barcode=barcode,
+            per_100g_calories=per_100g_calories,
+            per_100g_proteins=per_100g_proteins,
+            per_100g_fats=per_100g_fats,
+            per_100g_carbs=per_100g_carbs,
+        )
+        logger.debug(
+            "_schedule_personal_food_save: enqueued for user_id=%d"
+            " meal_id=%d canonical=%r",
+            user_id,
+            meal_id,
+            canonical_name,
+        )
+    except Exception:
+        logger.warning(
+            "_schedule_personal_food_save: failed to enqueue task"
+            " (user_id=%d meal_id=%d) — ignored",
+            user_id,
+            meal_id,
+            exc_info=True,
+        )
 
 
 def _source_badge(result: ResolutionResult | None) -> str:
@@ -694,7 +789,19 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                     db.refresh(user)
 
                 # Save meal
-                crud_meal.create(db, meal_in, user.id)
+                meal = crud_meal.create(db, meal_in, user.id)
+                _saved_user_id = user.id
+                _saved_meal_id = meal.id
+
+            # B4 learning loop: fire-and-forget embed+upsert (outside the
+            # DB context so SessionLocal is released before Celery dispatch).
+            _schedule_personal_food_save(
+                user_id=_saved_user_id,
+                meal_id=_saved_meal_id,
+                nutrition=nutrition,
+                resolution_signals=current_meal.get("resolution_signals"),
+                resolution_source=current_meal.get("resolution_source"),
+            )
 
             await update.message.reply_text(
                 "Прием пищи сохранен! 👍",
