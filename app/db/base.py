@@ -9,3 +9,4 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Import all models here that SQLAlchemy should know about
 from app.models import user, subscription  # noqa
+from app.models import personal_food  # noqa — B1: personal food DB (ADR-0003)
