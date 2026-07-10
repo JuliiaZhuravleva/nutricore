@@ -6,11 +6,11 @@ source_artifact:
   sha256: 94734442c7f49ca93b37a9c71e0a6ebc01c2ccb27efdf3a445457c71e21ac26d
   type: feature-prd
 created_at: '2026-07-08T23:23:06Z'
-approved_at: null
-approved_by: null
+approved_at: '2026-07-10T13:54:29Z'
+approved_by: julia
 specialist_roster_source: ~/.claude/agents/specialist-*.md + <project>/.claude/agents/specialist-*.md
 execution:
-  status: draft
+  status: approved
   started_at: null
   completed_at: null
   current_batch: null
@@ -158,6 +158,7 @@ clarifying_questions:
 - 'SQLite/pgvector test gap (qa flagged CRITICAL): the unit suite runs on SQLite, which has no pgvector <=> / <-> operators, so the acceptance line "similarity query returns the match above threshold and None below" CANNOT be a deterministic unit test. RESOLUTION ADOPTED: B3 exposes a mockable CRUDPersonalFood.find_similar(...); B6 mocks it and tests only strategy branch logic; the real ANN/threshold check becomes a manual post-deploy verification (already in the doc acceptance list). This slightly weakens that one automated criterion — confirm acceptable.'
 - 'Alias-embedding strategy (architect; schema-locked, gates B1): embed only the canonical name (simpler, lower recall) vs embed each alias as its own vector pointing to the same personal_food_id (more recall, cheap). DEFAULT ADOPTED: embed aliases separately; canonical is the display name; the ANN result carries personal_food_id so dedup is trivial. B0/ADR must ratify before B1 locks VECTOR(N). Confirm the lean.'
 ---
+
 
 
 
