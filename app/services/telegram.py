@@ -255,6 +255,8 @@ def _source_badge(result: ResolutionResult | None) -> str:
     """
     if result is None:
         return ""
+    if result.source == "saved_rag":
+        return "⭐ из вашей базы"
     if result.source == "barcode_off":
         return "📦 по штрих-коду (точно)"
     if result.source == "label_ocr":

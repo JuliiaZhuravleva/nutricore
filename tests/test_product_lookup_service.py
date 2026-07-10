@@ -35,8 +35,10 @@ from app.services.product_lookup_service import (
     NameOFFStrategy,
     NameWebSearchStrategy,
     ResolutionResult,
+    SavedFoodRAGStrategy,
     VisionFallbackStrategy,
     _build_pipeline,
+    _build_rag_query_text,
     _parse_portion_grams,
     _parse_web_nutrition_response,
     _scale_label_nutrition,
@@ -623,7 +625,7 @@ def test_pipeline_barcode_wins(monkeypatch):
     assert result.source == "barcode_off"
     assert result.confidence_tier == "high"
     assert result.signals["strategy_chosen"] == "barcode_off"
-    assert result.signals["strategy_tried"] == ["barcode_off"]
+    assert result.signals["strategy_tried"] == ["saved_rag", "barcode_off"]
 
 
 def test_pipeline_falls_back_to_vision_when_off_not_found(monkeypatch):
@@ -652,6 +654,7 @@ def test_pipeline_falls_back_to_vision_when_off_not_found(monkeypatch):
     assert result.confidence_tier == "low"
     # All strategies were tried in order before vision won.
     assert result.signals["strategy_tried"] == [
+        "saved_rag",
         "barcode_off",
         "name_off",
         "label_ocr",
@@ -712,9 +715,20 @@ def test_pipeline_propagates_model_unavailable_error(monkeypatch):
 
 
 def test_build_pipeline_order():
-    """Pipeline order: barcode_off → name_off → label_ocr → name_web → vision."""
+    """Pipeline order: saved_rag → barcode_off → name_off → label_ocr → name_web → vision.
+
+    ADR-0003 §4a: SavedFoodRAGStrategy runs first so a repeat barcoded item is
+    served from the personal DB without an OFF call.
+    """
     order = [s.source_id for s in _build_pipeline()]
-    assert order == ["barcode_off", "name_off", "label_ocr", "name_web", "vision"]
+    assert order == [
+        "saved_rag",
+        "barcode_off",
+        "name_off",
+        "label_ocr",
+        "name_web",
+        "vision",
+    ]
 
 
 def test_pipeline_name_off_wins_when_no_barcode(monkeypatch):
@@ -736,7 +750,7 @@ def test_pipeline_name_off_wins_when_no_barcode(monkeypatch):
 
     assert result.source == "name_off"
     assert result.confidence_tier == "medium"
-    assert result.signals["strategy_tried"] == ["barcode_off", "name_off"]
+    assert result.signals["strategy_tried"] == ["saved_rag", "barcode_off", "name_off"]
     assert result.signals["strategy_chosen"] == "name_off"
 
 
@@ -763,6 +777,7 @@ def test_pipeline_name_off_skipped_multi_food_falls_to_vision(monkeypatch):
 
     assert result.source == "vision"
     assert result.signals["strategy_tried"] == [
+        "saved_rag",
         "barcode_off",
         "name_off",
         "label_ocr",
@@ -1318,7 +1333,12 @@ def test_label_ocr_pipeline_wins_when_name_off_misses(monkeypatch):
 
     assert result.source == "label_ocr"
     assert result.confidence_tier == "medium"
-    assert result.signals["strategy_tried"] == ["barcode_off", "name_off", "label_ocr"]
+    assert result.signals["strategy_tried"] == [
+        "saved_rag",
+        "barcode_off",
+        "name_off",
+        "label_ocr",
+    ]
     assert result.signals["strategy_chosen"] == "label_ocr"
 
 
@@ -1799,9 +1819,420 @@ def test_name_web_pipeline_wins_after_label_ocr_miss(monkeypatch):
     assert result.source == "name_web"
     assert result.confidence_tier == "low"
     assert result.signals["strategy_tried"] == [
+        "saved_rag",
         "barcode_off",
         "name_off",
         "label_ocr",
         "name_web",
     ]
     assert result.signals["strategy_chosen"] == "name_web"
+
+
+# ---------------------------------------------------------------------------
+# SavedFoodRAGStrategy (B3 / ADR-0003)
+# ---------------------------------------------------------------------------
+
+# Minimal PersonalFood-like object (avoids hitting real pgvector / SQLite)
+def _make_pf(**kwargs):
+    """Return a SimpleNamespace with PersonalFood-shaped fields."""
+    defaults = {
+        "id": 1,
+        "user_id": 1,
+        "canonical_name": "Греческий йогурт",
+        "brand": None,
+        "per_100g_calories": 60.0,
+        "per_100g_proteins": 10.0,
+        "per_100g_fats": 0.5,
+        "per_100g_carbs": 4.0,
+        "barcode": None,
+    }
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
+_MOCK_USER = SimpleNamespace(id=1, telegram_id=12345)
+
+
+def test_saved_rag_no_telegram_id(db_session):
+    """No telegram_id → skip strategy (return None)."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=None,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_saved_rag_user_not_found(db_session):
+    """User not in DB → return None without exception."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=99999,
+    )
+    # No user with telegram_id=99999 in the SQLite in-memory DB → returns None.
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_saved_rag_phase_a_barcode_hit(db_session, monkeypatch):
+    """Phase A: barcode already in personal DB → result without embedding call."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf(barcode="4607195501226")
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=pf))
+    embed_mock = AsyncMock()
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", embed_mock)
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode="4607195501226",
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "saved_rag"
+    assert result.confidence_tier == "medium"
+    assert result.signals["saved_match_source"] == "saved_rag_barcode"
+    assert result.signals["saved_match_distance"] == 0.0
+    assert result.signals["saved_food_id"] == pf.id
+    assert result.signals["saved_food_name"] == "Греческий йогурт"
+    # Embedding should NOT be called for the barcode short-circuit path.
+    embed_mock.assert_not_called()
+
+
+def test_saved_rag_phase_a_barcode_miss_falls_to_phase_b(db_session, monkeypatch):
+    """Phase A: barcode NOT in personal DB → falls through to Phase B ANN."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf()
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.08)))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode="1234567890123",
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "saved_rag"
+    assert result.signals["saved_match_source"] == "saved_rag"
+    assert result.signals["saved_match_distance"] == 0.08
+
+
+def test_saved_rag_phase_b_ann_hit(db_session, monkeypatch):
+    """Phase B: ANN match within threshold → ResolutionResult returned."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf()
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.10)))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.source == "saved_rag"
+    assert result.confidence_tier == "medium"
+    assert result.description == "Греческий йогурт"
+    assert result.signals["saved_food_id"] == 1
+    assert result.signals["saved_match_distance"] == 0.10
+    assert result.signals["saved_match_source"] == "saved_rag"
+    # query_text = joined vision foods from _NUTRITION
+    assert result.signals["query_text"] == "Pringles Original"
+
+
+def test_saved_rag_phase_b_ann_miss(db_session, monkeypatch):
+    """Phase B: no ANN match above threshold → None."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=None))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_saved_rag_no_vision_foods_skips_embedding(db_session, monkeypatch):
+    """Phase B: no vision foods → query text empty → None; embed_text NOT called."""
+    import app.crud.crud_user as cu
+
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    embed_mock = AsyncMock()
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", embed_mock)
+
+    empty_vision = {
+        "foods": [],
+        "calories": 0,
+        "protein": 0,
+        "fats": 0,
+        "carbs": 0,
+        "portion": "100г",
+    }
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=empty_vision,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is None
+    embed_mock.assert_not_called()
+
+
+def test_saved_rag_non_blocking_on_exception(db_session, monkeypatch):
+    """Exception inside resolve → None (non-blocking contract, ADR-0003 §4f)."""
+    import app.crud.crud_user as cu
+
+    monkeypatch.setattr(
+        cu.crud_user,
+        "get_by_telegram_id",
+        MagicMock(side_effect=RuntimeError("DB down")),
+    )
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is None
+
+
+def test_saved_rag_nutrition_scaling_with_portion(db_session, monkeypatch):
+    """Macros are scaled by portion_grams/100 (same pattern as _scale_off_nutrition)."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf(
+        per_100g_calories=60.0,
+        per_100g_proteins=10.0,
+        per_100g_fats=0.5,
+        per_100g_carbs=4.0,
+    )
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=200.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.nutrition["calories"] == 120.0   # 60 * 2.0
+    assert result.nutrition["protein"] == 20.0     # 10 * 2.0
+    assert result.nutrition["fats"] == 1.0         # 0.5 * 2.0
+    assert result.nutrition["carbs"] == 8.0        # 4.0 * 2.0
+    assert result.nutrition["portion"] == "200г"
+
+
+def test_saved_rag_nutrition_no_portion_returns_per_100g(db_session, monkeypatch):
+    """No portion estimate → per-100g values returned unchanged."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf(per_100g_calories=60.0, per_100g_proteins=10.0)
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None
+    assert result.nutrition["calories"] == 60.0
+    assert result.nutrition["protein"] == 10.0
+    assert result.nutrition["portion"] == "100г"
+
+
+def test_saved_rag_signals_payload(db_session, monkeypatch):
+    """ResolutionResult.signals contains all ADR-0003 §4e required keys."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf(brand="Danone")
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.07)))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+    assert result is not None
+
+    s = result.signals
+    # ADR-0003 §4e provenance keys
+    assert s["saved_food_id"] == 1
+    assert s["saved_food_name"] == "Греческий йогурт"
+    assert s["saved_match_distance"] == 0.07
+    assert s["saved_match_source"] == "saved_rag"
+    assert s["query_text"] == "Pringles Original"
+    # Standard pipeline keys (mirrors other strategies)
+    assert s["barcode_raw"] is None
+    assert s["barcode_detected"] is False
+    assert s["brand"] == "Danone"
+    assert s["confidence_tier"] == "medium"
+    assert s["strategy_chosen"] == "saved_rag"
+
+
+# ---------------------------------------------------------------------------
+# _build_rag_query_text
+# ---------------------------------------------------------------------------
+
+
+def test_build_rag_query_text_joins_vision_foods():
+    """Vision foods are joined into the query text."""
+    vision = {**_NUTRITION, "foods": ["Греческий йогурт", "FAGE"]}
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=vision,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    assert _build_rag_query_text(signals) == "Греческий йогурт, FAGE"
+
+
+def test_build_rag_query_text_empty_foods_returns_none():
+    """Empty vision foods list → None."""
+    vision = {**_NUTRITION, "foods": []}
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=vision,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    assert _build_rag_query_text(signals) is None
+
+
+def test_build_rag_query_text_no_vision_result_returns_none():
+    """No vision result at all → None."""
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=None,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    assert _build_rag_query_text(signals) is None
+
+
+def test_build_rag_query_text_filters_blank_strings():
+    """Blank/whitespace food entries are filtered out."""
+    vision = {**_NUTRITION, "foods": ["  ", "йогурт", ""]}
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=vision,
+        portion_grams=None,
+        telegram_id=12345,
+    )
+    assert _build_rag_query_text(signals) == "йогурт"
+
+
+# ---------------------------------------------------------------------------
+# _source_badge — saved_rag case (telegram.py)
+# ---------------------------------------------------------------------------
+
+
+def test_source_badge_saved_rag():
+    """saved_rag result gets the personal-DB star badge (ADR-0003 §4b)."""
+    from app.services.telegram import _source_badge
+
+    result = ResolutionResult(
+        source="saved_rag",
+        confidence_tier="medium",
+        nutrition=_NUTRITION,
+        description="Греческий йогурт",
+        portion_grams=150.0,
+    )
+    badge = _source_badge(result)
+    assert "⭐" in badge
+    assert "базы" in badge
+
+
+def test_source_badge_saved_rag_distinct_from_off_badge():
+    """saved_rag badge is different from the generic medium-confidence OFF badge."""
+    from app.services.telegram import _source_badge
+
+    saved_result = ResolutionResult(
+        source="saved_rag",
+        confidence_tier="medium",
+        nutrition=_NUTRITION,
+        description="йогурт",
+        portion_grams=None,
+    )
+    off_result = ResolutionResult(
+        source="name_off",
+        confidence_tier="medium",
+        nutrition=_NUTRITION,
+        description="йогурт",
+        portion_grams=None,
+    )
+    assert _source_badge(saved_result) != _source_badge(off_result)
