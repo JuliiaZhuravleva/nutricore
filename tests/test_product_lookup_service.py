@@ -2236,3 +2236,82 @@ def test_source_badge_saved_rag_distinct_from_off_badge():
         portion_grams=None,
     )
     assert _source_badge(saved_result) != _source_badge(off_result)
+
+
+# ---------------------------------------------------------------------------
+# B6: SavedFoodRAGStrategy — threshold config-driven (ADR-0003 §4)
+# ---------------------------------------------------------------------------
+
+
+def test_saved_rag_threshold_from_config(db_session, monkeypatch):
+    """find_similar is called with threshold=settings.SAVED_FOOD_SIM_THRESHOLD.
+
+    ADR-0003 §4 / owner decision 2026-07-09: similarity threshold is a CONFIG
+    PARAMETER (SAVED_FOOD_SIM_THRESHOLD), NOT a hardcoded constant.  This test
+    asserts the strategy reads it from settings rather than using a literal.
+    """
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+    from app.core.config import settings
+
+    find_similar_mock = MagicMock(return_value=None)  # miss is fine — checking args
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", find_similar_mock)
+    import app.services.openai_service as ois
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    find_similar_mock.assert_called_once()
+    call_kwargs = find_similar_mock.call_args.kwargs
+    # Threshold must come from config, not a hardcoded literal
+    assert call_kwargs["threshold"] == settings.SAVED_FOOD_SIM_THRESHOLD
+    # user_id must be user-scoped to _MOCK_USER
+    assert call_kwargs["user_id"] == _MOCK_USER.id
+
+
+def test_saved_rag_embed_text_called_with_query_text(db_session, monkeypatch):
+    """embed_text receives the joined vision food names as the query string."""
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=None)
+    )
+    import app.services.openai_service as ois
+
+    embed_mock = AsyncMock(return_value=[0.1] * 1536)
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", embed_mock)
+
+    vision = {**_NUTRITION, "foods": ["Греческий йогурт", "FAGE"]}
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=vision,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+    asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    embed_mock.assert_awaited_once_with("Греческий йогурт, FAGE")

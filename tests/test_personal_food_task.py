@@ -561,3 +561,140 @@ def test_task_returns_personal_food_id(task_db):
     result = _run_task(task_db, user_id=user_id, canonical_name="Овсянка")
     assert isinstance(result, int)
     assert result > 0
+
+
+# ---------------------------------------------------------------------------
+# B6: pipeline-level confirm → personal_food DB write round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_confirm_to_db_roundtrip(task_db):
+    """End-to-end: _schedule_personal_food_save dispatches → task runs → row in DB.
+
+    B4 QA note: "add pipeline-level integration test for confirm->personal_food
+    DB write round-trip."  This combines the dispatch (telegram.py) and the
+    task execution (Celery) in a single test so we confirm the kwargs wiring
+    between the two layers is correct.
+    """
+    from app.services.telegram import _schedule_personal_food_save
+    from celery_app.tasks.personal_food import embed_and_save_personal_food
+    from app.models.personal_food import PersonalFood
+    from sqlalchemy import select
+
+    Session = task_db
+    with Session() as db:
+        user = _make_user(db, telegram_id=77_001)
+        user_id = user.id
+
+    # Step 1: call _schedule_personal_food_save and capture kwargs that would
+    # be forwarded to the Celery task via .delay().
+    captured_kwargs: dict = {}
+
+    def _capture_delay(**kwargs):
+        captured_kwargs.update(kwargs)
+
+    embed_mock = _make_embed_mock([0.3, 0.4, 0.5])
+    mock_svc = MagicMock()
+    mock_svc.embed_text = embed_mock
+
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        side_effect=_capture_delay,
+    ):
+        _schedule_personal_food_save(
+            user_id=user_id,
+            meal_id=None,
+            nutrition={
+                "foods": ["Куриная грудка"],
+                "calories": 165.0,
+                "protein": 31.0,
+                "fats": 3.6,
+                "carbs": 0.0,
+                "portion": "100г",
+            },
+            resolution_signals={"portion_grams": 100.0, "barcode_raw": "4600000999001"},
+            resolution_source="barcode_off",
+        )
+
+    assert captured_kwargs.get("canonical_name"), "dispatch must have been called"
+    assert captured_kwargs["user_id"] == user_id
+    assert captured_kwargs["barcode"] == "4600000999001"
+
+    # Step 2: actually execute the task with the captured kwargs (eager mode).
+    with (
+        patch("celery_app.tasks.personal_food.SessionLocal", task_db),
+        patch("celery_app.tasks.personal_food.get_openai_service", return_value=mock_svc),
+    ):
+        result = embed_and_save_personal_food.apply(kwargs=captured_kwargs)
+        food_id = result.get(propagate=True)
+
+    # Step 3: verify the DB row is there with the correct data.
+    with Session() as db:
+        row = db.execute(
+            select(PersonalFood).where(PersonalFood.id == food_id)
+        ).scalar_one()
+
+    assert row.canonical_name == "Куриная грудка"
+    assert row.barcode == "4600000999001"
+    assert float(row.per_100g_calories) == pytest.approx(165.0)
+    assert row.times_used == 1
+    # Embedding was created
+    embeddings = crud_personal_food.get_embeddings_for_food(
+        db, personal_food_id=food_id
+    )
+    assert len(embeddings) == 1
+    assert embeddings[0].text_embedded == "Куриная грудка"
+
+
+def test_multiple_confirms_idempotent_roundtrip(task_db):
+    """Multiple confirms of the same food: times_used grows; embedding stays unique.
+
+    B4 QA note: "idempotency over multiple confirms."  Simulates a user
+    photographing and confirming the same food three times — the Celery task
+    must be idempotent on (user_id, lower(canonical_name)).
+    """
+    from app.models.personal_food import PersonalFood
+    from sqlalchemy import select
+
+    Session = task_db
+    with Session() as db:
+        user = _make_user(db, telegram_id=77_002)
+        user_id = user.id
+
+    embed_mock = _make_embed_mock()
+
+    # Run the task three times (simulating three separate confirms).
+    food_id: Optional[int] = None
+    for _ in range(3):
+        fid = _run_task(
+            task_db,
+            user_id=user_id,
+            canonical_name="Творог 5%",
+            per_100g_calories=121.0,
+            per_100g_proteins=17.0,
+            per_100g_fats=5.0,
+            per_100g_carbs=2.8,
+            embed_mock=embed_mock,
+        )
+        if food_id is None:
+            food_id = fid
+        # All runs must return the same food row id (idempotent dedup key)
+        assert fid == food_id
+
+    with Session() as db:
+        row = db.execute(
+            select(PersonalFood).where(PersonalFood.id == food_id)
+        ).scalar_one()
+
+    # times_used reflects every confirm
+    assert row.times_used == 3
+
+    # Embedding must NOT be duplicated — only created once
+    with Session() as db:
+        embeddings = crud_personal_food.get_embeddings_for_food(
+            db, personal_food_id=food_id
+        )
+    assert len(embeddings) == 1
+
+    # embed_text must have been called only once (on the first run)
+    assert embed_mock.await_count == 1
