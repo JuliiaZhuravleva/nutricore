@@ -5,6 +5,7 @@ from .app_setting import AppSetting
 from .body_metric import BodyMetric
 from .inbound_message import InboundMessage
 from .meal import Meal
+from .personal_food import PersonalFood, PersonalFoodEmbedding
 from .product_cache import ProductCache
 from .subscription import Subscription
 from .user import User
@@ -19,5 +20,7 @@ __all__ = [
     "AiCallLog",
     "AppSetting",
     "InboundMessage",
+    "PersonalFood",
+    "PersonalFoodEmbedding",
     "ProductCache",
 ]

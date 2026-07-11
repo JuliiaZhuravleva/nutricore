@@ -7,7 +7,7 @@ app = Celery(
     "worker",
     broker=f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0",
     backend=f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/0",
-    include=["celery_app.tasks.periodic"],
+    include=["celery_app.tasks.periodic", "celery_app.tasks.personal_food"],
 )
 
 app.conf.update(

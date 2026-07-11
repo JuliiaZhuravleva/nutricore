@@ -36,7 +36,7 @@ services:
       - bot-network
 
   db:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     restart: unless-stopped
     # HOST bind mount (Mac path, mounted into the Colima VM) — survives colima delete.
     # The claw-deploy install creates /Users/claw/data/<project>/ owned by claw.

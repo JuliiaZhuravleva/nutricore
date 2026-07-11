@@ -216,3 +216,189 @@ def test_list_suitable_models_falls_back_on_error():
     models = asyncio.run(service.list_suitable_models())
 
     assert models == ["gpt-4o-mini", "gpt-4o"]
+
+
+# --- embed_text (B2 / ADR-0003 §2) ----------------------------------------
+
+
+def _fake_embedding_response(embeddings: list[list[float]]):
+    """SimpleNamespace that mimics openai.types.CreateEmbeddingResponse."""
+    return SimpleNamespace(
+        data=[
+            SimpleNamespace(embedding=emb, index=i)
+            for i, emb in enumerate(embeddings)
+        ]
+    )
+
+
+def _service_with_mock_embeddings(embeddings: list[list[float]]):
+    """Real service with client.embeddings.create mocked."""
+    service = OpenAIService()
+    service.client.embeddings.create = AsyncMock(
+        return_value=_fake_embedding_response(embeddings)
+    )
+    return service
+
+
+_FAKE_VECTOR = [0.1, 0.2, 0.3]
+
+
+def test_embed_text_uses_configured_model_and_dims(monkeypatch):
+    """embed_text passes OPENAI_EMBEDDING_MODEL and OPENAI_EMBEDDING_DIMS."""
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call", lambda **_: None
+    )
+    service = _service_with_mock_embeddings([_FAKE_VECTOR])
+
+    asyncio.run(service.embed_text("Greek yogurt"))
+
+    call_kwargs = service.client.embeddings.create.call_args.kwargs
+    assert call_kwargs["model"] == settings.OPENAI_EMBEDDING_MODEL
+    assert call_kwargs["dimensions"] == settings.OPENAI_EMBEDDING_DIMS
+    assert call_kwargs["input"] == "Greek yogurt"
+
+
+def test_embed_text_returns_embedding_vector(monkeypatch):
+    """embed_text returns the list[float] from response.data[0].embedding."""
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call", lambda **_: None
+    )
+    vector = [0.42, 0.11, 0.99]
+    service = _service_with_mock_embeddings([vector])
+
+    result = asyncio.run(service.embed_text("avocado"))
+
+    assert result == vector
+
+
+def test_embed_text_records_ok_audit_log(monkeypatch):
+    """embed_text records kind='embedding' status='ok' on success."""
+    logged = {}
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call",
+        lambda **kw: logged.update(kw),
+    )
+    service = _service_with_mock_embeddings([[0.0, 0.5]])
+
+    asyncio.run(service.embed_text("apple"))
+
+    assert logged["kind"] == "embedding"
+    assert logged["status"] == "ok"
+    assert logged["model"] == settings.OPENAI_EMBEDDING_MODEL
+    assert logged["input_ref"] == "apple"
+    assert logged["parsed_result"] == {"dims": 2}
+
+
+def test_embed_text_truncates_long_input_ref(monkeypatch):
+    """Long text is truncated to 200 chars in the audit log input_ref."""
+    logged = {}
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call",
+        lambda **kw: logged.update(kw),
+    )
+    service = _service_with_mock_embeddings([[0.1]])
+    long_text = "а" * 300
+
+    asyncio.run(service.embed_text(long_text))
+
+    assert len(logged["input_ref"]) == 200
+
+
+def test_embed_text_records_error_log_and_reraises(monkeypatch):
+    """On API failure embed_text records status='error' and re-raises."""
+    logged = {}
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call",
+        lambda **kw: logged.update(kw),
+    )
+    service = OpenAIService()
+    service.client.embeddings.create = AsyncMock(
+        side_effect=Exception("rate limit hit")
+    )
+
+    with pytest.raises(Exception, match="rate limit hit"):
+        asyncio.run(service.embed_text("chicken"))
+
+    assert logged["kind"] == "embedding"
+    assert logged["status"] == "error"
+    assert "rate limit hit" in logged["error"]
+
+
+# --- embed_texts (batch, B2 / ADR-0003 §2) ---------------------------------
+
+
+def test_embed_texts_empty_returns_empty_no_api_call(monkeypatch):
+    """embed_texts([]) returns [] without calling the API."""
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call", lambda **_: None
+    )
+    service = OpenAIService()
+    service.client.embeddings.create = AsyncMock()
+
+    result = asyncio.run(service.embed_texts([]))
+
+    assert result == []
+    service.client.embeddings.create.assert_not_called()
+
+
+def test_embed_texts_batch_call_returns_in_order(monkeypatch):
+    """embed_texts sends list input and returns embeddings in input order."""
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call", lambda **_: None
+    )
+    vec_a = [1.0, 0.0]
+    vec_b = [0.0, 1.0]
+    # Simulate API returning items in reverse index order to test sorting.
+    service = OpenAIService()
+    service.client.embeddings.create = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(embedding=vec_b, index=1),
+                SimpleNamespace(embedding=vec_a, index=0),
+            ]
+        )
+    )
+
+    result = asyncio.run(service.embed_texts(["first", "second"]))
+
+    assert result == [vec_a, vec_b]
+    call_kwargs = service.client.embeddings.create.call_args.kwargs
+    assert call_kwargs["input"] == ["first", "second"]
+    assert call_kwargs["model"] == settings.OPENAI_EMBEDDING_MODEL
+    assert call_kwargs["dimensions"] == settings.OPENAI_EMBEDDING_DIMS
+
+
+def test_embed_texts_records_ok_audit_log(monkeypatch):
+    """embed_texts records kind='embedding' status='ok' with count+dims."""
+    logged = {}
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call",
+        lambda **kw: logged.update(kw),
+    )
+    service = _service_with_mock_embeddings([[0.1, 0.2], [0.3, 0.4]])
+
+    asyncio.run(service.embed_texts(["apple", "яблоко"]))
+
+    assert logged["kind"] == "embedding"
+    assert logged["status"] == "ok"
+    assert logged["parsed_result"] == {"count": 2, "dims": 2}
+
+
+def test_embed_texts_records_error_log_and_reraises(monkeypatch):
+    """On batch failure embed_texts records status='error' and re-raises."""
+    logged = {}
+    monkeypatch.setattr(
+        "app.services.openai_service.record_ai_call",
+        lambda **kw: logged.update(kw),
+    )
+    service = OpenAIService()
+    service.client.embeddings.create = AsyncMock(
+        side_effect=Exception("quota exceeded")
+    )
+
+    with pytest.raises(Exception, match="quota exceeded"):
+        asyncio.run(service.embed_texts(["apple", "banana"]))
+
+    assert logged["kind"] == "embedding"
+    assert logged["status"] == "error"
+    assert "quota exceeded" in logged["error"]

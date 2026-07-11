@@ -121,6 +121,18 @@ class Settings(BaseSettings):
     # exponential backoff; 0 disables retrying.
     OPENAI_MAX_RETRIES: int = 2
 
+    # Personal Food DB embeddings (ADR-0003 §2 / B2)
+    # OPENAI_EMBEDDING_MODEL / OPENAI_EMBEDDING_DIMS must be changed together.
+    # OPENAI_EMBEDDING_DIMS is MIGRATION-LOCKED at 1536 — do NOT change after the
+    # first deploy of the personal-food-db feature without a full re-embed + ALTER.
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_EMBEDDING_DIMS: int = 1536
+    # Cosine distance threshold for SavedFoodRAGStrategy (ADR-0003 §5 / B3).
+    # ≤ threshold → hit (suggest the saved food); > threshold → miss (continue pipeline).
+    # Default 0.15 ≈ cosine similarity ≥ 0.85 for normalized OpenAI embeddings.
+    # Tune experimentally in .env after a few weeks of use.
+    SAVED_FOOD_SIM_THRESHOLD: float = 0.15
+
     # Application Settings
     DEBUG: bool = False
     ENVIRONMENT: str = "development"

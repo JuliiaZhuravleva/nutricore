@@ -1,11 +1,13 @@
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 import openai
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.services.ai_call_log_service import record_ai_call
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +405,104 @@ class OpenAIService:
             max_tokens=self.max_tokens,
         )
         return response.choices[0].message.content
+
+    # -----------------------------------------------------------------------
+    # Embeddings (ADR-0003 §2 / B2)
+    # -----------------------------------------------------------------------
+
+    async def embed_text(self, text: str) -> list[float]:
+        """Embed ``text`` using the configured OpenAI embedding model.
+
+        Uses the Embeddings API — NOT ``chat.completions`` (ADR-0002 split-client
+        pattern).  Reads ``settings.OPENAI_EMBEDDING_MODEL`` /
+        ``settings.OPENAI_EMBEDDING_DIMS`` so both are tunable via ``.env``
+        without code changes (ADR-0003 §2).
+
+        Records an ``ai_call_logs`` row with ``kind="embedding"`` for audit trail.
+
+        Exceptions (network / auth / rate-limit) propagate to the caller; B3 and
+        B4 each wrap calls in their own ``try/except`` (ADR-0003 §4f).
+        """
+        started = time.perf_counter()
+        try:
+            response = await self.client.embeddings.create(
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                input=text,
+                dimensions=settings.OPENAI_EMBEDDING_DIMS,
+            )
+            embedding: list[float] = response.data[0].embedding
+            record_ai_call(
+                kind="embedding",
+                input_ref=(text[:200] if text else None),
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                telegram_id=None,
+                status="ok",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                parsed_result={"dims": len(embedding)},
+            )
+            return embedding
+        except Exception as exc:
+            record_ai_call(
+                kind="embedding",
+                input_ref=(text[:200] if text else None),
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                telegram_id=None,
+                status="error",
+                error=str(exc),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+            raise
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Batch-embed multiple strings in a single Embeddings API call.
+
+        Used by B4 (learning-loop write-back) to embed a canonical name and its
+        aliases in one round-trip.  Input order is preserved (sorted by the
+        ``index`` field returned by the API).
+
+        Records a single ``ai_call_logs`` row with ``kind="embedding"``.
+        Returns ``[]`` immediately if ``texts`` is empty (no API call).
+        Exceptions propagate to the caller.
+        """
+        if not texts:
+            return []
+        started = time.perf_counter()
+        input_ref = ", ".join(texts)[:200]
+        try:
+            response = await self.client.embeddings.create(
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                input=texts,
+                dimensions=settings.OPENAI_EMBEDDING_DIMS,
+            )
+            # Sort by .index to guarantee input order (the API may reorder batches).
+            embeddings: list[list[float]] = [
+                item.embedding
+                for item in sorted(response.data, key=lambda x: x.index)
+            ]
+            record_ai_call(
+                kind="embedding",
+                input_ref=input_ref,
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                telegram_id=None,
+                status="ok",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                parsed_result={
+                    "count": len(embeddings),
+                    "dims": len(embeddings[0]) if embeddings else 0,
+                },
+            )
+            return embeddings
+        except Exception as exc:
+            record_ai_call(
+                kind="embedding",
+                input_ref=input_ref,
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                telegram_id=None,
+                status="error",
+                error=str(exc),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
+            raise
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,11 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.crud.crud_personal_food import crud_personal_food
+from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
+from app.models.personal_food import PersonalFood
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.open_food_facts_service import OFFLookupResult, OpenFoodFactsService
 from app.services.openai_service import get_openai_service
@@ -940,16 +944,236 @@ class VisionFallbackStrategy(ResolutionStrategy):
 
 
 # ---------------------------------------------------------------------------
+# SavedFoodRAGStrategy helpers (B3 / ADR-0003)
+# ---------------------------------------------------------------------------
+
+
+def _build_rag_query_text(signals: "ImageSignals") -> Optional[str]:
+    """Build the query text for SavedFoodRAGStrategy's embedding call.
+
+    Image path: join vision-read food names (already available in signals).
+    Returns None if no usable food names are available (no vision result or
+    empty food list) — the strategy then returns None and falls through.
+    """
+    vision = signals.vision_result or {}
+    foods = [
+        f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()
+    ]
+    if foods:
+        return ", ".join(foods)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# B3 strategy: SavedFoodRAGStrategy
+# ---------------------------------------------------------------------------
+
+
+class SavedFoodRAGStrategy(ResolutionStrategy):
+    """Personal food DB lookup via embedding ANN (B3 / ADR-0003 §4).
+
+    Two-phase resolve (ADR-0003 §4c):
+
+    Phase A — exact-barcode short-circuit:
+      If ``signals.barcode`` is already in ``personal_foods`` for this user,
+      serve it directly — no OFF call needed.  Cost: one indexed SQL lookup.
+
+    Phase B — fuzzy ANN over ``personal_food_embeddings``:
+      Embed the vision food names and find the nearest neighbour within the
+      config-driven cosine-distance threshold (``SAVED_FOOD_SIM_THRESHOLD``).
+
+    Always returns ``medium`` confidence (ADR-0003 §4b); the result is always
+    shown as a draft at the confirm step — never silently auto-saved.
+    Non-blocking: all failures → None (ADR-0003 §4f).
+    """
+
+    source_id = "saved_rag"
+    confidence_tier = "medium"
+
+    async def resolve(
+        self,
+        signals: ImageSignals,
+        db: Session,
+    ) -> Optional[ResolutionResult]:
+        try:
+            return await self._resolve(signals, db)
+        except Exception:
+            logger.warning(
+                "SavedFoodRAGStrategy failed; falling through",
+                exc_info=True,
+            )
+            return None
+
+    async def _resolve(
+        self,
+        signals: ImageSignals,
+        db: Session,
+    ) -> Optional[ResolutionResult]:
+        # Resolve telegram_id → internal DB user_id (mandatory for user-scoped ANN).
+        if signals.telegram_id is None:
+            return None
+        user = crud_user.get_by_telegram_id(db, telegram_id=signals.telegram_id)
+        if user is None:
+            return None
+        user_id: int = user.id
+
+        # Phase A — exact-barcode short-circuit (ADR-0003 §4c)
+        if signals.barcode:
+            pf = crud_personal_food.get_by_barcode(
+                db, barcode=signals.barcode, user_id=user_id
+            )
+            if pf is not None:
+                logger.debug(
+                    "SavedFoodRAGStrategy: barcode %r matched personal_food_id=%d",
+                    signals.barcode,
+                    pf.id,
+                )
+                return self._build_result(
+                    pf=pf,
+                    signals_input=signals,
+                    distance=0.0,
+                    match_source="saved_rag_barcode",
+                    query_text=signals.barcode,
+                )
+            # Barcode present but not yet saved → return None so BarcodeOFFStrategy
+            # resolves it by its barcode. Do NOT fall through to fuzzy ANN: a scanned
+            # barcode must not be fuzzy-matched to a DIFFERENT saved food (owner
+            # decision #2 — the fuzzy path is for text / no-barcode input) (F2).
+            return None
+
+        # Phase B — fuzzy ANN (text/vision foods path)
+        query_text = _build_rag_query_text(signals)
+        if not query_text:
+            return None
+
+        svc = get_openai_service()
+        embedding = await svc.embed_text(query_text)
+
+        ann_result = crud_personal_food.find_similar(
+            db,
+            embedding=embedding,
+            threshold=settings.SAVED_FOOD_SIM_THRESHOLD,
+            user_id=user_id,
+        )
+        if ann_result is None:
+            logger.debug(
+                "SavedFoodRAGStrategy: no ANN match above threshold for %r", query_text
+            )
+            return None
+
+        pf, distance = ann_result
+        logger.debug(
+            "SavedFoodRAGStrategy: ANN matched personal_food_id=%d "
+            "(distance=%.4f) for %r",
+            pf.id,
+            distance,
+            query_text,
+        )
+        return self._build_result(
+            pf=pf,
+            signals_input=signals,
+            distance=distance,
+            match_source="saved_rag",
+            query_text=query_text,
+        )
+
+    @staticmethod
+    def _build_result(
+        *,
+        pf: PersonalFood,
+        signals_input: ImageSignals,
+        distance: float,
+        match_source: str,
+        query_text: str,
+    ) -> ResolutionResult:
+        """Build a ResolutionResult from a matched PersonalFood row.
+
+        Scales per-100g macros to the vision-estimated portion (same
+        pattern as ``_scale_off_nutrition``). Confidence is always ``medium``
+        (ADR-0003 §4b).
+        """
+        portion_grams = signals_input.portion_grams
+        vision = signals_input.vision_result or {}
+
+        # per_100g_* columns are Numeric(8,2) → Postgres returns Decimal. Coerce to
+        # float BEFORE arithmetic: `Decimal * float` raises TypeError, which the
+        # strategy's broad `except → None` would swallow, silently killing every
+        # scaled saved-match on the production (Postgres) path (F1). SQLite tests
+        # returned floats and hid this.
+        cal = float(pf.per_100g_calories or 0)
+        prot = float(pf.per_100g_proteins or 0)
+        fats = float(pf.per_100g_fats or 0)
+        carbs = float(pf.per_100g_carbs or 0)
+
+        if portion_grams is not None and portion_grams > 0:
+            factor = portion_grams / 100.0
+            nutrition: Dict[str, Any] = {
+                "calories": round(cal * factor, 1),
+                "protein": round(prot * factor, 1),
+                "fats": round(fats * factor, 1),
+                "carbs": round(carbs * factor, 1),
+                "portion": f"{portion_grams:.0f}г",
+                "foods": [pf.canonical_name],
+            }
+        else:
+            nutrition = {
+                "calories": cal,
+                "protein": prot,
+                "fats": fats,
+                "carbs": carbs,
+                "portion": "100г",
+                "foods": [pf.canonical_name],
+            }
+
+        signals_dict: Dict[str, Any] = {
+            # ADR-0003 §4e — saved-match provenance keys
+            "saved_food_id": pf.id,
+            "saved_food_name": pf.canonical_name,
+            "saved_match_distance": distance,
+            "saved_match_source": match_source,
+            "query_text": query_text,
+            # Standard pipeline fields (mirrors other strategies)
+            "barcode_raw": None,  # don't show EAN in reply for personal-DB results
+            "barcode_detected": signals_input.barcode is not None,
+            "product_name": pf.canonical_name,
+            "brand": pf.brand,
+            "off_code": None,
+            "off_from_cache": False,
+            "off_latency_ms": None,
+            "portion_grams": portion_grams,
+            "confidence_tier": "medium",
+            "strategy_tried": ["saved_rag"],  # runner updates this
+            "strategy_chosen": "saved_rag",
+            "vision_foods": vision.get("foods", []),
+            "vision_portion_raw": vision.get("portion"),
+        }
+
+        return ResolutionResult(
+            source="saved_rag",
+            confidence_tier="medium",
+            nutrition=nutrition,
+            description=pf.canonical_name,
+            portion_grams=portion_grams,
+            signals=signals_dict,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pipeline runner
 # ---------------------------------------------------------------------------
 
 
 def _build_pipeline() -> List[ResolutionStrategy]:
-    """Ordered strategy list: barcode_off → name_off → label_ocr → name_web → vision.
+    """Ordered strategy list: saved_rag → barcode_off → name_off → … → vision.
 
-    Final order ratified in human_feedback 2026-07-08 and documented in ADR-0002.
+    Final order ratified in ADR-0003 §4a (2026-07-10): SavedFoodRAGStrategy
+    runs first so a barcoded item already in personal_foods is served without
+    an OFF call (exact-barcode short-circuit, owner decision 2026-07-09).
+    A barcoded item NOT yet in personal_foods passes through to BarcodeOFFStrategy
+    unchanged.
     """
     return [
+        SavedFoodRAGStrategy(),  # B3 — personal DB (barcode short-circuit + fuzzy ANN)
         BarcodeOFFStrategy(),  # A4 (round 1) — high confidence
         NameOFFStrategy(),  # A8 (round 2) — medium confidence
         LabelOCRStrategy(),  # A10 (round 2) — medium confidence
