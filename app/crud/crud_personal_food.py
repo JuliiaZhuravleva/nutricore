@@ -20,10 +20,15 @@ import logging
 from typing import List, Optional
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.personal_food import PersonalFood, PersonalFoodEmbedding
-from app.schemas.personal_food import PersonalFoodCreate, PersonalFoodUpdate
+
+# NOTE: upsert() deliberately takes explicit kwargs rather than a PersonalFoodCreate/
+# PersonalFoodUpdate DTO — idempotent upsert semantics (insert-or-increment) don't map
+# cleanly onto the project's Create/Update schema split, and the Celery write-back task
+# already passes discrete fields. The Pydantic schemas exist for the REST/response layer.
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +83,15 @@ class CRUDPersonalFood:
         now = datetime.datetime.now(UTC)
 
         if existing is not None:
-            # Update usage + optionally refresh mutable fields
-            existing.times_used = (existing.times_used or 0) + 1
-            existing.last_used_at = now
+            # Count only a genuinely new confirmation. The Celery write-back task
+            # (B4) can re-run with the SAME meal_id on retry (e.g. after an embedding
+            # failure); gating times_used on a changed meal_id keeps it retry-safe (F7)
+            # so the counter isn't inflated for a single confirmed meal. meal_id=None
+            # (no provenance) falls back to counting each call.
+            is_new_confirmation = meal_id is None or existing.meal_id != meal_id
+            if is_new_confirmation:
+                existing.times_used = (existing.times_used or 0) + 1
+                existing.last_used_at = now
             existing.updated_at = now
             if meal_id is not None:
                 existing.meal_id = meal_id
@@ -132,8 +143,11 @@ class CRUDPersonalFood:
     ) -> PersonalFoodEmbedding:
         """Insert one embedding row for a personal food (canonical name or alias).
 
-        Callers (B4 write-back task) are responsible for checking whether an
-        identical text_embedded already exists before calling this.
+        Callers (B4 write-back task) do a best-effort app-level dedup check first,
+        but the (personal_food_id, text_embedded) unique constraint is the
+        authoritative backstop against duplicate vectors under concurrent confirms
+        or a task retry racing a slow first attempt (F5): on a duplicate we roll
+        back and return the row that won.
         """
         db_obj = PersonalFoodEmbedding(
             personal_food_id=personal_food_id,
@@ -141,7 +155,19 @@ class CRUDPersonalFood:
             embedding=embedding,
         )
         db.add(db_obj)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = db.execute(
+                select(PersonalFoodEmbedding).where(
+                    PersonalFoodEmbedding.personal_food_id == personal_food_id,
+                    PersonalFoodEmbedding.text_embedded == text_embedded,
+                )
+            ).scalars().first()
+            if existing is not None:
+                return existing
+            raise
         db.refresh(db_obj)
         return db_obj
 
@@ -163,12 +189,21 @@ class CRUDPersonalFood:
 
         Uses the partial index: personal_foods_user_barcode_idx
         (WHERE barcode IS NOT NULL) in Postgres.
+
+        (user_id, barcode) is NOT unique — the dedup key is the canonical name, so
+        the same barcode can legitimately land on two rows (same product confirmed
+        under two different vision-read names). Return the most-used row rather than
+        raising MultipleResultsFound (F6).
         """
-        stmt = select(PersonalFood).where(
-            PersonalFood.user_id == user_id,
-            PersonalFood.barcode == barcode,
+        stmt = (
+            select(PersonalFood)
+            .where(
+                PersonalFood.user_id == user_id,
+                PersonalFood.barcode == barcode,
+            )
+            .order_by(PersonalFood.times_used.desc(), PersonalFood.id.desc())
         )
-        return db.execute(stmt).scalar_one_or_none()
+        return db.execute(stmt).scalars().first()
 
     def get_embeddings_for_food(
         self,
@@ -229,8 +264,15 @@ class CRUDPersonalFood:
                 stmt, {"embedding": emb_str, "user_id": user_id}
             ).first()
         except Exception:
-            logger.warning(
-                "find_similar: ANN query failed (pgvector not enabled?)",
+            # Non-blocking by contract (return None), but this is a SYSTEMIC failure
+            # (pgvector missing, embedding-dimension mismatch, dropped connection,
+            # a SQL bug) — NOT a routine no-match (that path has row=None, below).
+            # Log at ERROR so it's distinguishable from a legitimate miss and doesn't
+            # silently zero out the personal-DB hit rate (F4).
+            logger.error(
+                "find_similar: ANN query FAILED for user_id=%s — degrading to "
+                "no-match; check pgvector availability and embedding dimensions",
+                user_id,
                 exc_info=True,
             )
             return None

@@ -29,6 +29,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -168,6 +169,17 @@ class PersonalFoodEmbedding(Base, BaseClass):
     """
 
     __tablename__ = "personal_food_embeddings"
+
+    # Authoritative dedup backstop for the B4 write-back (F5): one embedding row per
+    # (food, text). The Celery task also checks app-side, but this closes the
+    # concurrent/retry TOCTOU window. Portable (SQLite tests + Postgres).
+    __table_args__ = (
+        UniqueConstraint(
+            "personal_food_id",
+            "text_embedded",
+            name="personal_food_embeddings_food_text_uq",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     personal_food_id = Column(

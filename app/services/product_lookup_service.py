@@ -1035,7 +1035,11 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
                     match_source="saved_rag_barcode",
                     query_text=signals.barcode,
                 )
-            # Barcode not yet in the personal DB → fall through to Phase B / next strategy
+            # Barcode present but not yet saved → return None so BarcodeOFFStrategy
+            # resolves it by its barcode. Do NOT fall through to fuzzy ANN: a scanned
+            # barcode must not be fuzzy-matched to a DIFFERENT saved food (owner
+            # decision #2 — the fuzzy path is for text / no-barcode input) (F2).
+            return None
 
         # Phase B — fuzzy ANN (text/vision foods path)
         query_text = _build_rag_query_text(signals)
@@ -1091,22 +1095,32 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         portion_grams = signals_input.portion_grams
         vision = signals_input.vision_result or {}
 
+        # per_100g_* columns are Numeric(8,2) → Postgres returns Decimal. Coerce to
+        # float BEFORE arithmetic: `Decimal * float` raises TypeError, which the
+        # strategy's broad `except → None` would swallow, silently killing every
+        # scaled saved-match on the production (Postgres) path (F1). SQLite tests
+        # returned floats and hid this.
+        cal = float(pf.per_100g_calories or 0)
+        prot = float(pf.per_100g_proteins or 0)
+        fats = float(pf.per_100g_fats or 0)
+        carbs = float(pf.per_100g_carbs or 0)
+
         if portion_grams is not None and portion_grams > 0:
             factor = portion_grams / 100.0
             nutrition: Dict[str, Any] = {
-                "calories": round((pf.per_100g_calories or 0) * factor, 1),
-                "protein": round((pf.per_100g_proteins or 0) * factor, 1),
-                "fats": round((pf.per_100g_fats or 0) * factor, 1),
-                "carbs": round((pf.per_100g_carbs or 0) * factor, 1),
+                "calories": round(cal * factor, 1),
+                "protein": round(prot * factor, 1),
+                "fats": round(fats * factor, 1),
+                "carbs": round(carbs * factor, 1),
                 "portion": f"{portion_grams:.0f}г",
                 "foods": [pf.canonical_name],
             }
         else:
             nutrition = {
-                "calories": pf.per_100g_calories or 0,
-                "protein": pf.per_100g_proteins or 0,
-                "fats": pf.per_100g_fats or 0,
-                "carbs": pf.per_100g_carbs or 0,
+                "calories": cal,
+                "protein": prot,
+                "fats": fats,
+                "carbs": carbs,
                 "portion": "100г",
                 "foods": [pf.canonical_name],
             }

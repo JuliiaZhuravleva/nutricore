@@ -341,6 +341,7 @@ def _run_task(
     embed_m = embed_mock or _make_embed_mock()
     mock_svc = MagicMock()
     mock_svc.embed_text = embed_m
+    mock_svc.client.close = AsyncMock()  # task closes the fresh client (F3)
 
     with (
         patch(
@@ -348,7 +349,7 @@ def _run_task(
             task_db,
         ),
         patch(
-            "celery_app.tasks.personal_food.get_openai_service",
+            "celery_app.tasks.personal_food.OpenAIService",
             return_value=mock_svc,
         ),
     ):
@@ -596,6 +597,7 @@ def test_confirm_to_db_roundtrip(task_db):
     embed_mock = _make_embed_mock([0.3, 0.4, 0.5])
     mock_svc = MagicMock()
     mock_svc.embed_text = embed_mock
+    mock_svc.client.close = AsyncMock()  # task closes the fresh client (F3)
 
     with patch(
         "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
@@ -623,7 +625,7 @@ def test_confirm_to_db_roundtrip(task_db):
     # Step 2: actually execute the task with the captured kwargs (eager mode).
     with (
         patch("celery_app.tasks.personal_food.SessionLocal", task_db),
-        patch("celery_app.tasks.personal_food.get_openai_service", return_value=mock_svc),
+        patch("celery_app.tasks.personal_food.OpenAIService", return_value=mock_svc),
     ):
         result = embed_and_save_personal_food.apply(kwargs=captured_kwargs)
         food_id = result.get(propagate=True)

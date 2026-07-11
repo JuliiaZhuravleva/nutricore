@@ -141,6 +141,13 @@ def upgrade() -> None:
             name="fk_personal_food_embeddings_food_id",
         ),
         sa.PrimaryKeyConstraint("id"),
+        # Authoritative dedup backstop against duplicate vectors under concurrent
+        # confirms / task retry (F5). The B4 task also checks app-side.
+        sa.UniqueConstraint(
+            "personal_food_id",
+            "text_embedded",
+            name="personal_food_embeddings_food_text_uq",
+        ),
     )
     op.create_index(
         "ix_personal_food_embeddings_id", "personal_food_embeddings", ["id"]

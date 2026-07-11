@@ -348,3 +348,98 @@ def test_find_similar_signature():
     assert "embedding" in params
     assert "threshold" in params
     assert "user_id" in params
+
+
+# ---------------------------------------------------------------------------
+# F7 — times_used is retry-safe (gated on meal_id)
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_same_meal_id_does_not_double_count(db_session):
+    """A Celery retry re-upserts with the SAME meal_id — times_used must not inflate (F7)."""
+    user = _make_user(db_session, telegram_id=10_701)
+    first = _upsert_basic(db_session, user.id, name="Овсянка", meal_id=555)
+    assert first.times_used == 1
+
+    again = _upsert_basic(db_session, user.id, name="Овсянка", meal_id=555)
+    assert again.id == first.id
+    assert again.times_used == 1  # not double-counted
+
+
+def test_upsert_new_meal_id_increments(db_session):
+    """A genuinely new meal (different meal_id) of the same food increments times_used (F7)."""
+    user = _make_user(db_session, telegram_id=10_702)
+    _upsert_basic(db_session, user.id, name="Овсянка", meal_id=1)
+    second = _upsert_basic(db_session, user.id, name="Овсянка", meal_id=2)
+    assert second.times_used == 2
+
+
+# ---------------------------------------------------------------------------
+# F6 — get_by_barcode tolerates duplicate barcodes (most-used wins)
+# ---------------------------------------------------------------------------
+
+
+def test_get_by_barcode_duplicate_returns_most_used(db_session):
+    """Same barcode on two rows (different names) must not raise; return most-used (F6)."""
+    user = _make_user(db_session, telegram_id=10_601)
+    less_used = _upsert_basic(
+        db_session, user.id, name="Кола", barcode="4600000000017", meal_id=1
+    )
+    # Confirm the second food twice (distinct meals) so it's the most-used.
+    _upsert_basic(db_session, user.id, name="Coca-Cola", barcode="4600000000017", meal_id=2)
+    most_used = _upsert_basic(
+        db_session, user.id, name="Coca-Cola", barcode="4600000000017", meal_id=3
+    )
+    assert most_used.times_used == 2
+    assert less_used.times_used == 1
+
+    hit = crud_personal_food.get_by_barcode(
+        db_session, barcode="4600000000017", user_id=user.id
+    )
+    assert hit is not None
+    assert hit.id == most_used.id  # returns the most-used row, no MultipleResultsFound
+
+
+# ---------------------------------------------------------------------------
+# F5 — embedding dedup backstopped by unique constraint
+# ---------------------------------------------------------------------------
+
+
+def test_add_embedding_duplicate_is_deduped():
+    """A duplicate (food, text) embedding is deduped by the unique constraint (F5).
+
+    Uses a standalone real session, not the db_session fixture: that fixture binds
+    the session to an outer transaction that can't survive add_embedding's in-code
+    rollback on the duplicate path.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.base import Base
+
+    engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        user = _make_user(db, telegram_id=10_501)
+        food = _upsert_basic(db, user.id, name="Банан")
+        vec = [0.1] * 1536
+
+        first = crud_personal_food.add_embedding(
+            db, personal_food_id=food.id, text_embedded="Банан", embedding=vec
+        )
+        # Second insert of the same (food, text) — deduped by the unique constraint.
+        second = crud_personal_food.add_embedding(
+            db, personal_food_id=food.id, text_embedded="Банан", embedding=vec
+        )
+        assert second.id == first.id
+
+        rows = crud_personal_food.get_embeddings_for_food(
+            db, personal_food_id=food.id
+        )
+        assert len(rows) == 1
+    finally:
+        db.close()
+        engine.dispose()

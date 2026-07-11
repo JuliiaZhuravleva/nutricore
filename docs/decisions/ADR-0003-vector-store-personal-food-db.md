@@ -285,9 +285,13 @@ return _build_result(pf, source="saved_rag", distance=distance)
 ```
 
 **Query text construction:**
-- Text input: use the raw user message.
 - Image input: use `", ".join(signals.vision_result["foods"])` (reusing vision output already
   available in signals; no extra API call).
+- Text input: **future scope, not implemented in B3.** Text (`kind="text"`) inputs currently
+  bypass `resolve_meal_nutrition()` entirely and go straight to `analyze_food_entry`
+  (ADR-0001), so `SavedFoodRAGStrategy` only runs for image inputs and `ImageSignals` carries
+  no raw-text field. Wiring text inputs through the pipeline (so the personal DB is consulted
+  for text logs too) is a follow-up; until then this branch is intentionally unreachable.
 
 #### §4d — `CRUDPersonalFood.find_similar` seam
 
@@ -472,7 +476,10 @@ B1 and B2 may run in parallel once this ADR is accepted. B3 is the join of B0+B1
 
 - `async def embed_text(self, text: str) -> list[float]` using `self.client.embeddings.create(...)`.
 - Reads `settings.OPENAI_EMBEDDING_MODEL` and `settings.OPENAI_EMBEDDING_DIMS`.
-- Calls `analyze_and_log(kind="embedding", ...)` for audit trail.
+- Records an `ai_call_logs` row with `kind="embedding"` for audit trail. Implemented by calling
+  `record_ai_call(kind="embedding", ...)` directly (status ok/error + latency) rather than via
+  `analyze_and_log`: the embeddings call returns a `list[float]`, not the text/`parse=` shape
+  `analyze_and_log` is built around, so the direct call is the cleaner fit. Same audit outcome.
 - Optional: `async def embed_texts(self, texts: list[str]) -> list[list[float]]` (batch call for B4 alias embedding).
 - Does NOT use `_create()` (that is `chat.completions` only — ADR-0002 split-client pattern).
 - Must NOT raise on rate-limit etc. — callers (B3, B4) wrap in their own try/except.

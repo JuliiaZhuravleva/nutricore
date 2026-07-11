@@ -1912,17 +1912,23 @@ def test_saved_rag_phase_a_barcode_hit(db_session, monkeypatch):
     embed_mock.assert_not_called()
 
 
-def test_saved_rag_phase_a_barcode_miss_falls_to_phase_b(db_session, monkeypatch):
-    """Phase A: barcode NOT in personal DB → falls through to Phase B ANN."""
+def test_saved_rag_phase_a_barcode_miss_returns_none(db_session, monkeypatch):
+    """Phase A: barcode present but NOT saved → None (F2).
+
+    Must NOT fall through to the fuzzy ANN path: a scanned barcode should be
+    resolved by BarcodeOFFStrategy, never fuzzy-matched to a DIFFERENT saved food
+    (owner decision #2 — the fuzzy path is for text / no-barcode input).
+    """
     import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
 
-    pf = _make_pf()
     monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
     monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.08)))
+    find_similar = MagicMock(return_value=(_make_pf(), 0.08))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", find_similar)
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+    embed = AsyncMock(return_value=[0.1] * 1536)
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", embed)
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -1933,10 +1939,9 @@ def test_saved_rag_phase_a_barcode_miss_falls_to_phase_b(db_session, monkeypatch
     )
     result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
 
-    assert result is not None
-    assert result.source == "saved_rag"
-    assert result.signals["saved_match_source"] == "saved_rag"
-    assert result.signals["saved_match_distance"] == 0.08
+    assert result is None  # did NOT fuzzy-match a different saved food
+    find_similar.assert_not_called()  # Phase B skipped entirely when barcode present
+    embed.assert_not_awaited()
 
 
 def test_saved_rag_phase_b_ann_hit(db_session, monkeypatch):
@@ -2074,6 +2079,45 @@ def test_saved_rag_nutrition_scaling_with_portion(db_session, monkeypatch):
     assert result.nutrition["fats"] == 1.0         # 0.5 * 2.0
     assert result.nutrition["carbs"] == 8.0        # 4.0 * 2.0
     assert result.nutrition["portion"] == "200г"
+
+
+def test_saved_rag_scaling_handles_decimal_macros(db_session, monkeypatch):
+    """Regression (F1): Postgres returns per_100g_* as Decimal (Numeric columns).
+
+    ``Decimal * float`` raises TypeError, which the strategy's broad ``except → None``
+    silently swallowed — killing every scaled saved-match on the production path while
+    the (float-macro) SQLite tests stayed green. Macros must be coerced to float.
+    """
+    from decimal import Decimal
+
+    import app.crud.crud_user as cu
+    import app.crud.crud_personal_food as cpf
+
+    pf = _make_pf(
+        per_100g_calories=Decimal("97.00"),
+        per_100g_proteins=Decimal("9.00"),
+        per_100g_fats=Decimal("5.00"),
+        per_100g_carbs=Decimal("3.80"),
+    )
+    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
+    import app.services.openai_service as ois
+    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_NUTRITION,
+        portion_grams=200.0,
+        telegram_id=12345,
+    )
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is not None  # NOT swallowed by the broad except
+    assert result.nutrition["calories"] == 194.0  # 97 * 2.0, as float
+    assert result.nutrition["protein"] == 18.0    # 9 * 2.0
+    assert isinstance(result.nutrition["calories"], float)
 
 
 def test_saved_rag_nutrition_no_portion_returns_per_100g(db_session, monkeypatch):

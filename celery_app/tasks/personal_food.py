@@ -18,7 +18,7 @@ from typing import Optional
 
 from app.crud.crud_personal_food import crud_personal_food
 from app.db.session import SessionLocal
-from app.services.openai_service import get_openai_service
+from app.services.openai_service import OpenAIService
 from celery_app.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -72,10 +72,20 @@ def embed_and_save_personal_food(
             )
 
             if not already_embedded:
-                svc = get_openai_service()
-                # asyncio.run() is safe in Celery's default prefork worker
-                # (each task runs in a subprocess without an active event loop).
-                embedding: list = asyncio.run(svc.embed_text(canonical_name))
+                # Do NOT reuse the process-wide async OpenAIService singleton here:
+                # its httpx AsyncClient binds to the event loop of the FIRST task and
+                # breaks on the next asyncio.run() in a long-lived prefork worker
+                # ("Event loop is closed") — the write-back would fail for every food
+                # after the first, per worker (F3). Create a fresh service bound to
+                # THIS run's loop and close its client when done.
+                async def _embed() -> list:
+                    svc = OpenAIService()
+                    try:
+                        return await svc.embed_text(canonical_name)
+                    finally:
+                        await svc.client.close()
+
+                embedding: list = asyncio.run(_embed())
                 crud_personal_food.add_embedding(
                     db,
                     personal_food_id=personal_food_id,
@@ -100,11 +110,28 @@ def embed_and_save_personal_food(
         return personal_food_id
 
     except Exception as exc:
-        logger.warning(
-            "embed_and_save_personal_food: failed for user_id=%d canonical=%r: %s",
-            user_id,
-            canonical_name,
-            exc,
-            exc_info=True,
-        )
+        if self.request.retries >= self.max_retries:
+            # Retries exhausted — the confirmed food is PERMANENTLY not saved to the
+            # personal DB (the whole point of this fire-and-forget task). Log at ERROR
+            # with a distinct signature so this is operationally visible and greppable,
+            # not lost among the per-attempt WARNINGs (F8).
+            logger.error(
+                "embed_and_save_personal_food: PERMANENTLY FAILED after %d retries "
+                "for user_id=%d canonical=%r — food NOT saved to personal DB: %s",
+                self.request.retries,
+                user_id,
+                canonical_name,
+                exc,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "embed_and_save_personal_food: attempt %d failed for user_id=%d "
+                "canonical=%r (will retry): %s",
+                self.request.retries,
+                user_id,
+                canonical_name,
+                exc,
+                exc_info=True,
+            )
         raise self.retry(exc=exc)
