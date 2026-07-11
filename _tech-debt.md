@@ -88,15 +88,15 @@ _Track for later._
   the confidence phase is unchanged). Pairs with the `_source_badge`/`_resolution_detail_lines` →
   `ResolutionResult.to_reply_lines()` move noted in TD-008.
   - **Priority:** Low · **Source:** input-processing-flow diagram + round-2 scope analysis 2026-07-08 · **Created:** 2026-07-08
-- [ ] **TD-014**: Personal-food DB + RAG reuse. Every meal entry makes a fresh OpenAI call; previously
-  confirmed foods are never reused. The ratified target («Следующее» tier) adds (1) a **quick-pick from
-  saved/recent meals** → change quantity, skipping analysis entirely, and (2) **text → structured JSON →
-  retrieval (RAG)** over a personal + product base so a described, already-known product is suggested.
-  Research basis: personal DB as the first stop for repeated meals, text+image embeddings in `pgvector`,
-  and user edits persisted back as confirmed aliases (learning loop). Needs a personal-food store
-  (aliases, last-used, embeddings). **Not** part of round-2. Likely the largest friction/cost win of the
-  "Next" tier for a single-owner bot that logs the same foods repeatedly.
-  - **Priority:** Low · **Source:** input-processing-flow diagram + round-2 scope analysis 2026-07-08 · **Created:** 2026-07-08
+- [ ] **TD-017**: Quick-pick from saved/recent meals (Telegram UX) — deferred from the personal-food-db
+  plan (item **B5**). The RAG-reuse half of TD-014 shipped (personal_foods + `SavedFoodRAGStrategy` +
+  learning loop); this is the remaining **capture-side shortcut**: recency/frequency buttons → change
+  quantity → **skip analysis entirely** (direct DB query, not RAG — needs only B1/B4). All three consulted
+  specialists recommended deferring it (blocked on the now-shipped B1–B4; `telegram.py` has no
+  InlineKeyboard/CallbackQueryHandler precedent — everything is ReplyKeyboard). Needs its own small plan:
+  decide **ReplyKeyboard** (consistent, low-risk, ~3.5h) vs **InlineKeyboard** (richer, new pattern, +risk).
+  `times_used` / `last_used_at` on `personal_foods` already feed it.
+  - **Priority:** Low · **Source:** personal-food-db plan B5 deferral 2026-07-11 · **Created:** 2026-07-11
 - [ ] **TD-016**: A9 web-search uses the **legacy** Responses-API tool type `web_search_preview`
   (`OpenAIService.web_search_nutrition`), not the GA `web_search`. Works today (no GA-only controls
   used), but modernize to `web_search` when convenient — and revisit if the preview type is
@@ -105,6 +105,18 @@ _Track for later._
 
 ## Resolved
 _Keep 90 days then remove._
+
+- [x] **TD-014** (RAG-reuse core): Personal-food DB + RAG reuse **shipped & deployed** via the
+  `plan/personal-food-db` multi-agent plan (ADR-0003). New `personal_foods` + `personal_food_embeddings`
+  (pgvector `VECTOR(1536)` + HNSW), `SavedFoodRAGStrategy` (`source_id=saved_rag`: exact-barcode
+  short-circuit + user-scoped embedding ANN) plugged in after `barcode_off`, `OpenAIService.embed_text`,
+  and a Celery fire-and-forget **learning loop** that upserts each confirmed food (+ alias embeddings) with
+  dedup. Deploy: Postgres image → `pgvector/pgvector:pg15`; **no new required env**. A `/review-deep` pass
+  fixed **F1–F11** — incl. a critical `Decimal×float` bug (feature was dead on Postgres, hidden by the
+  SQLite test gap), barcode-vs-fuzzy ordering, and a Celery event-loop bug — plus dedup/observability
+  hardening; 403 tests green. **Quick-pick UX (B5) deferred → TD-017.** Merged to main via
+  `nutricore-release` (`9505093`, `e6ccb92`).
+  - **Priority:** Low · **Source:** input-processing-flow «Следующее» tier · **Resolved:** 2026-07-11
 
 - [x] **TD-001**: Poetry venv recreation loop — `poetry run` used to spawn an empty venv without the
   project deps (`ModuleNotFoundError`) because the venv's **base interpreter dangled** on nvm/pyenv

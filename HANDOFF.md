@@ -1,44 +1,49 @@
-# Handoff — main (2026-07-09)
+# Handoff — main (2026-07-11)
 
 ## State
-On **`main`**, in sync with **`origin/main`** (`36d9118`), clean tree, no stray branches or worktrees.
-**325 tests green** (`./scripts/test.sh` — cache-venv; `poetry run` also works now, TD-001 fixed).
-Nothing awaiting release. Git is tidy: `main` is the only branch (local + remote).
+On **`main`**, synced with **`origin/main`**. **403 tests green** (`./scripts/test.sh`).
+**TD-014 (personal-food DB + RAG reuse) shipped & deployed.** One worktree remains:
+`../nutricore.personal-food-db-wt` on `plan/personal-food-db` — now fully represented on main,
+so it's safe to `git worktree remove` + delete the branch (local + remote) when convenient.
 
-**Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed feature
-branch handed to openclaw-setup's `nutricore-release`; docs/no-runtime-change merge to main directly.
+**Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed
+feature branch → openclaw-setup's `nutricore-release`; docs / no-runtime-change merge to main directly.
+**Git transport:** corporate **ESET blocks SSH port 22** — git goes over **443** (`~/.ssh/config`
+routes `github.com` → `ssh.github.com:443`, host key trusted). Push/pull work normally now.
 
-## Shipped & deployed (recent)
-- **TD-015** (`46b1357`) — meal-confirm step: **Да/Нет** buttons (`confirm_keyboard`) + a free-text
-  reply is treated as a **correction** (re-analyzed as text, stays in `CONFIRMING_MEAL`, `meal_time`
-  preserved, stale photo/`resolution_source` dropped) instead of silently discarding the draft.
-  `_confirm_intent` classifies affirm/reject/correction (case-insensitive). Photo+text *merge* still
-  out of scope (Gap ① → TD-013). Merged+deployed via `nutricore-release` (`36d9118`).
-- **TD-001** (`2ffada7`) — `.python-version` (3.12.1) pins the interpreter so the poetry venv base
-  can't dangle; `poetry run` works again. `./scripts/test.sh` stays canonical/allowlisted.
-- Earlier: round-2 product-lookup (label-OCR 🏷 + web-search 🌐) merged+deployed (`d6f0c64`).
+## Shipped this session — TD-014 via the `plan/personal-food-db` plan (ADR-0003)
+- New `personal_foods` + `personal_food_embeddings` (pgvector `VECTOR(1536)` + HNSW),
+  `SavedFoodRAGStrategy` (`saved_rag`: exact-barcode short-circuit + user-scoped embedding ANN,
+  registered after `barcode_off`), `OpenAIService.embed_text`, and a **Celery fire-and-forget learning
+  loop** (upserts each confirmed food + alias embeddings, dedup). Deploy: Postgres image →
+  `pgvector/pgvector:pg15`; **no new required env**. Merged via `nutricore-release` (`9505093`, `e6ccb92`).
+- **`/review-deep` (F1–F11) before release** caught a **critical `Decimal×float` bug** (feature was dead
+  on Postgres, hidden by the SQLite test gap) + barcode-vs-fuzzy ordering + a Celery event-loop bug; all
+  fixed, +5 regression tests, 403 green.
+- **Lock-drift gate:** `./scripts/test.sh` now runs `poetry check --lock` before pytest — a dep added to
+  `pyproject.toml` without re-lock passes the prebuilt-venv suite but breaks the clean Docker build (this
+  session's pgvector drift, fixed in `444de52`).
 
-## Next up — work through the rest of `_tech-debt.md` (all **Low** now)
-Medium/High/Critical: **none**. Open (Low):
-- **TD-013** — confidence gate: three separate scores (identity/portion/nutrition) + minimal
-  clarification via quick-select buttons. Big «Следующее» track (from `docs/diagrams/input-processing-flow.md`).
-- **TD-014** — personal-food DB + RAG reuse (quick-pick saved meals, text→JSON→retrieval). Big track;
-  likely the largest friction/cost win for a repeat-logging single owner.
-- **TD-007 / TD-008** — self-heal coverage on the unmounted `ai.py`; extract self-heal + reply
-  formatting out of the ballooning `telegram.py` (`model_selection.py`, `ResolutionResult.to_reply_lines()`).
-- **TD-010** — inbound bytes archival / `/forget` / reprocess→meal.
-- **TD-011** — product-lookup accuracy residuals (misread barcode past check-digit; portion semantics).
-- **TD-012** — flake8 cleanup in product-lookup test files (quick win).
-- **TD-016** — Responses-API `web_search_preview` → GA `web_search`.
-
-TD-013 / TD-014 are large → start each with `/plan-fixes`. TD-012 is a quick isort/flake8 pass.
+## Next up — remaining `_tech-debt.md` (all Low)
+- **TD-013** — confidence gate (three scores identity/portion/nutrition + quick-select clarification).
+  Big «Следующее» track; now has the personal-DB match as its strongest *identity* signal (it was
+  deliberately sequenced **after** TD-014). Start via `/plan-fixes`.
+- **TD-017** — quick-pick from saved/recent (the deferred **B5** of the personal-food-db plan). Own small
+  plan: ReplyKeyboard vs InlineKeyboard. `times_used` / `last_used_at` on `personal_foods` already feed it.
+- **TD-007/008**, **TD-010**, **TD-011**, **TD-012** (quick flake8), **TD-016** (web_search GA).
 
 ## Gotchas / learnings
-- **Tests:** `./scripts/test.sh` (cache-venv) is canonical/allowlisted. `poetry run` now works too
-  (TD-001 pin), but test.sh stays the source of truth.
-- **SessionStart HANDOFF-hook cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the
-  plan-fixes/execute **scope gate** → false-positive `GATE FAIL … exit 71`. Clean with
-  `git checkout HANDOFF.md; rm HANDOFF-*.md`.
-- **execute-plan specialists sometimes don't commit** doc/test deliverables — `git status` in the
-  worktree after a run and commit strays.
-- `get_openai_service()` is the shared singleton — services use it, never import the handler layer.
+- **Git over 443** (ESET blocks 22) — works via the ssh config route; on a fresh host,
+  `ssh-keyscan -p443 ssh.github.com` (verify fingerprints vs GitHub's published) → `known_hosts`.
+- **Lock drift is invisible to the local gate by design** (prebuilt venv) — now guarded by
+  `poetry check --lock`; always regenerate `poetry.lock` when adding a dep. [[poetry-lock-drift-gate-blindspot]]
+- **SQLite masks Decimal bugs:** `Numeric` → `float` on SQLite but `Decimal` on Postgres, so
+  `Decimal*float` TypeErrors pass local tests (that was F1). Also the `db_session` fixture can't survive
+  an in-code `rollback()` — use a standalone real session. [[sqlalchemy-sqlite-test-gotchas]]
+- **SessionStart HANDOFF cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the plan-fixes/execute
+  scope gate → false-positive `GATE FAIL … exit 71`. Clean with `git checkout HANDOFF.md; rm HANDOFF-*.md`
+  (hit it on every plan-fixes/execute run this session).
+- **execute-plan specialists sometimes don't commit** deliverables (the architect left ADR-0003
+  uncommitted) — `git status` the worktree after a run.
+- **envelope.py / poetry need a yaml-capable `python3`** — a refreshed shell may resolve `python3` to a
+  non-pyenv interpreter without PyYAML; use `~/.pyenv/versions/3.12.1/bin/python`.
