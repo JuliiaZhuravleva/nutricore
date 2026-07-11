@@ -22,4 +22,20 @@ if [[ ! -x "$VENV_PY" ]]; then
   exit 1
 fi
 
+# Guard against pyproject.toml <-> poetry.lock drift. This suite runs in the
+# prebuilt cache-venv, so a dependency added to pyproject.toml without a
+# regenerated lock passes here but breaks the clean Docker build (installs
+# strictly from poetry.lock). Fast + offline. Non-fatal if poetry is unavailable
+# (e.g. a stripped headless PATH) so it never blocks a legitimate test run.
+if command -v poetry >/dev/null 2>&1; then
+  if ! lock_check_out="$(poetry check --lock 2>&1)"; then
+    echo "error: pyproject.toml <-> poetry.lock drift detected." >&2
+    echo "       run 'poetry lock' and commit poetry.lock (the Docker build fails on this)." >&2
+    echo "$lock_check_out" >&2
+    exit 1
+  fi
+else
+  echo "warn: poetry not on PATH — skipping poetry.lock drift check." >&2
+fi
+
 exec "$VENV_PY" -m pytest "$@"
