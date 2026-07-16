@@ -1,49 +1,52 @@
-# Handoff — main (2026-07-11)
+# Handoff — main (2026-07-12)
 
 ## State
-On **`main`**, synced with **`origin/main`**. **403 tests green** (`./scripts/test.sh`).
-**TD-014 (personal-food DB + RAG reuse) shipped & deployed.** One worktree remains:
-`../nutricore.personal-food-db-wt` on `plan/personal-food-db` — now fully represented on main,
-so it's safe to `git worktree remove` + delete the branch (local + remote) when convenient.
+On **`main`** (`8f19bb8`), synced with `origin/main`. **405 tests green** (`./scripts/test.sh`).
+Worktree cleaned up (the old `plan/personal-food-db` worktree + branch are gone, local + remote).
 
-**Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed
-feature branch → openclaw-setup's `nutricore-release`; docs / no-runtime-change merge to main directly.
-**Git transport:** corporate **ESET blocks SSH port 22** — git goes over **443** (`~/.ssh/config`
-routes `github.com` → `ssh.github.com:443`, host key trusted). Push/pull work normally now.
+One **feature branch pushed, awaiting release** (see below). Otherwise tree clean.
 
-## Shipped this session — TD-014 via the `plan/personal-food-db` plan (ADR-0003)
-- New `personal_foods` + `personal_food_embeddings` (pgvector `VECTOR(1536)` + HNSW),
-  `SavedFoodRAGStrategy` (`saved_rag`: exact-barcode short-circuit + user-scoped embedding ANN,
-  registered after `barcode_off`), `OpenAIService.embed_text`, and a **Celery fire-and-forget learning
-  loop** (upserts each confirmed food + alias embeddings, dedup). Deploy: Postgres image →
-  `pgvector/pgvector:pg15`; **no new required env**. Merged via `nutricore-release` (`9505093`, `e6ccb92`).
-- **`/review-deep` (F1–F11) before release** caught a **critical `Decimal×float` bug** (feature was dead
-  on Postgres, hidden by the SQLite test gap) + barcode-vs-fuzzy ordering + a Celery event-loop bug; all
-  fixed, +5 regression tests, 403 green.
-- **Lock-drift gate:** `./scripts/test.sh` now runs `poetry check --lock` before pytest — a dep added to
-  `pyproject.toml` without re-lock passes the prebuilt-venv suite but breaks the clean Docker build (this
-  session's pgvector drift, fixed in `444de52`).
+**Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed feature
+branch → openclaw-setup's `nutricore-release`; docs / no-runtime-change merge to main directly.
+**Git transport:** ESET blocks SSH 22 — git goes over **443** (`~/.ssh/config` routes `github.com` →
+`ssh.github.com:443`, host key trusted).
+
+## Shipped this session — Low-backlog debt sweep
+- **TD-012** (flake8) — **landed on `main`** directly (`8f19bb8`, no-runtime cleanup): dropped unused
+  imports + a dead no-op helper (undefined `_patched_extract_signals`, F821) in the product-lookup test
+  files, and the long-standing `telegram.py` F841 `except ValueError as ve`.
+- **TD-011** — reviewed, **won't-do** (kept open as an accepted residual): both parts (barcode
+  check-digit collision downgrade, portion semantics) were *deliberately* not implemented — a
+  name-vs-vision token-overlap check false-positives on correct matches (OFF English/brand vs Russian
+  vision) and worsens UX. Nothing to action.
+- **TD-010** — **deferred to its own mini-plan** (owner call): the disk-bytes archival needs a new
+  bind-mount + compose volume on the mini (a manual deploy step at openclaw-setup), plus `/forget` and
+  reprocess→meal are separate features. Not a "quick" item.
+
+## Pending release — branch `fix/td-007-008-016-model-selection`
+Runtime work, pushed, **awaiting `nutricore-release`** (do NOT self-merge). **405 green.**
+- **TD-007 / TD-008** — extracted the persisted OpenAI model override out of `telegram.py` into a new
+  **`app/services/model_selection.py`** (mirrors `access_control.py`): `OPENAI_MODEL_SETTING_KEY`,
+  `get_persisted_model` / `persist_model` / `apply_persisted_model`. `OpenAIService.__init__` now
+  best-effort loads the override so *every* instance (incl. the unmounted `ai.py` per-request path)
+  honours the owner's in-chat model switch. Conftest autouse keeps unit construction hermetic; +2 tests.
+- **TD-016** — `web_search_nutrition` moved to the GA Responses-API tool `{"type": "web_search"}`
+  (from legacy `web_search_preview`); behaviour preserved, GA shape verified against OpenAI docs.
+- **Release note:** NO new required env var, NO migration, NO schema/deploy delta (uses the existing
+  `app_settings` table). Plain code-only release — no manual `sudo` step on the mini side.
 
 ## Next up — remaining `_tech-debt.md` (all Low)
-- **TD-013** — confidence gate (three scores identity/portion/nutrition + quick-select clarification).
-  Big «Следующее» track; now has the personal-DB match as its strongest *identity* signal (it was
-  deliberately sequenced **after** TD-014). Start via `/plan-fixes`.
-- **TD-017** — quick-pick from saved/recent (the deferred **B5** of the personal-food-db plan). Own small
-  plan: ReplyKeyboard vs InlineKeyboard. `times_used` / `last_used_at` on `personal_foods` already feed it.
-- **TD-007/008**, **TD-010**, **TD-011**, **TD-012** (quick flake8), **TD-016** (web_search GA).
+- **TD-017** — quick-pick from saved/recent (deferred B5). Own small plan: ReplyKeyboard vs Inline.
+- **TD-013** — confidence gate (identity/portion/nutrition + quick-select). Big track, via `/plan-fixes`;
+  now has the personal-DB match as its strongest identity signal.
+- **TD-010** — disk-bytes archival + `/forget` + reprocess→meal (own plan, deploy coordination).
 
 ## Gotchas / learnings
-- **Git over 443** (ESET blocks 22) — works via the ssh config route; on a fresh host,
-  `ssh-keyscan -p443 ssh.github.com` (verify fingerprints vs GitHub's published) → `known_hosts`.
-- **Lock drift is invisible to the local gate by design** (prebuilt venv) — now guarded by
-  `poetry check --lock`; always regenerate `poetry.lock` when adding a dep. [[poetry-lock-drift-gate-blindspot]]
-- **SQLite masks Decimal bugs:** `Numeric` → `float` on SQLite but `Decimal` on Postgres, so
-  `Decimal*float` TypeErrors pass local tests (that was F1). Also the `db_session` fixture can't survive
-  an in-code `rollback()` — use a standalone real session. [[sqlalchemy-sqlite-test-gotchas]]
-- **SessionStart HANDOFF cruft** (`HANDOFF.md` deleted + a timestamped copy) trips the plan-fixes/execute
-  scope gate → false-positive `GATE FAIL … exit 71`. Clean with `git checkout HANDOFF.md; rm HANDOFF-*.md`
-  (hit it on every plan-fixes/execute run this session).
-- **execute-plan specialists sometimes don't commit** deliverables (the architect left ADR-0003
-  uncommitted) — `git status` the worktree after a run.
-- **envelope.py / poetry need a yaml-capable `python3`** — a refreshed shell may resolve `python3` to a
-  non-pyenv interpreter without PyYAML; use `~/.pyenv/versions/3.12.1/bin/python`.
+- **isort has no committed profile** but the repo is formatted **black-style** (`isort --profile black`);
+  plain `isort` reformats into a black-incompatible style, and `main` is "dirty" under the default
+  profile too. Use `isort --profile black` + `black` on **touched files only**. [[black-scope-touched-files]]
+- **TD-007 side effect:** `OpenAIService()` now reads the DB on construction. Kept hermetic in tests via
+  a conftest autouse that nulls `openai_service.get_persisted_model`; self-heal tests drive the
+  `model_selection` module directly (patch `ms.SessionLocal`), so they're unaffected.
+- Git over **443** (ESET blocks 22); the gate `./scripts/test.sh` is lock-drift-guarded
+  (`poetry check --lock`) but does NOT run flake8/black — formatting is manual/scoped.
