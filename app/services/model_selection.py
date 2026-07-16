@@ -35,7 +35,11 @@ def get_persisted_model() -> str | None:
         with SessionLocal() as db:
             return crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY)
     except Exception as e:  # pragma: no cover - defensive best-effort
-        logger.warning("Could not load persisted OpenAI model override: %s", e)
+        # exc_info so a code bug (e.g. a crud signature change) is distinguishable
+        # from a genuine DB-unavailable in the logs.
+        logger.warning(
+            "Could not load persisted OpenAI model override: %s", e, exc_info=True
+        )
         return None
 
 
@@ -49,7 +53,7 @@ def persist_model(model: str) -> None:
         with SessionLocal() as db:
             crud_app_setting.set(db, OPENAI_MODEL_SETTING_KEY, model)
     except Exception as e:
-        logger.warning("Could not persist model choice %s: %s", model, e)
+        logger.warning("Could not persist model choice %s: %s", model, e, exc_info=True)
 
 
 def apply_persisted_model(service) -> None:
