@@ -9,7 +9,7 @@ All tests mock chat.completions.create — no network.
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx
 import openai

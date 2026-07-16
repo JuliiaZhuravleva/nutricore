@@ -68,15 +68,6 @@ _Track for later._
   portion estimate; for a packaged item vision may estimate the whole package, not the eaten serving,
   inflating КБЖУ. Mitigated by the shown gram basis + correct-at-confirm.
   - **Priority:** Low · **Source:** /review-deep 2026-07-07 (photo-product-lookup) · **Created:** 2026-07-07
-- [ ] **TD-012**: pre-existing flake8 debt in the photo-product-lookup specialist-authored test files
-  (not introduced by the review fixes): unused imports (`test_extract_barcode.py` `patch`,
-  `test_open_food_facts_service.py` `SimpleNamespace`, `test_product_lookup_service.py`
-  `dataclass`/`SimpleNamespace`/`Optional`/`_build_pipeline`), an unused `result1`, and a **dead no-op
-  helper** in `test_product_lookup_service.py` (~L400): a `with patch.object(pls, "_extract_signals",
-  wraps=lambda ...: _patched_extract_signals(...)): pass` — empty body, and `_patched_extract_signals`
-  is undefined (F821); it never runs, so 249 tests still pass, but it's dead cruft. Also the
-  long-standing `telegram.py` F841 `'ve'`. Clean up in an isort/flake8 pass over the new modules.
-  - **Priority:** Low · **Source:** /review-deep 2026-07-07 (flake8 on touched files) · **Created:** 2026-07-07
 - [ ] **TD-013**: Confidence gate — three separate scores + minimal clarification. Resolution today
   yields a single per-strategy tier (high/med/low) shown as one badge, and the only check is human
   Да/Нет — no inline portion/gram correction (reject-and-resend is the only path). The ratified target
@@ -106,6 +97,17 @@ _Track for later._
 ## Resolved
 _Keep 90 days then remove._
 
+- [x] **TD-012**: pre-existing flake8 debt in the photo-product-lookup test files cleaned up in a
+  flake8 pass (F401/F811/F821/F841): dropped unused imports (`patch` in `test_extract_barcode.py`;
+  `SimpleNamespace` in `test_open_food_facts_service.py`; `dataclass`/`Optional`/`patch` in
+  `test_product_lookup_service.py`), the unused `result1`/`web_mock` locals, and — the real cruft — a
+  **dead no-op helper** in `test_product_lookup_service.py`: a `with patch.object(pls, "_extract_signals",
+  wraps=lambda ...: _patched_extract_signals(...)): pass` whose body was empty and whose
+  `_patched_extract_signals` was undefined (F821, never executed). Simplified `_patch` to just return the
+  fake service. Also the long-standing `telegram.py` F841 `'ve'` (`except ValueError as ve` → `except
+  ValueError`). No runtime behaviour change → landed on `main` directly (docs/no-runtime per RELEASE.md).
+  403 tests green; flake8 F-checks clean on all four files.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-07 (flake8 on touched files) · **Resolved:** 2026-07-12
 - [x] **TD-014** (RAG-reuse core): Personal-food DB + RAG reuse **shipped & deployed** via the
   `plan/personal-food-db` multi-agent plan (ADR-0003). New `personal_foods` + `personal_food_embeddings`
   (pgvector `VECTOR(1536)` + HNSW), `SavedFoodRAGStrategy` (`source_id=saved_rag`: exact-barcode

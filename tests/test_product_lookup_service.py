@@ -16,10 +16,8 @@ Coverage:
 
 import asyncio
 import json
-from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -572,20 +570,7 @@ def mock_telegram_service(monkeypatch):
     """Replace telegram_service.openai_service accessed via lazy import."""
 
     def _patch(barcode_return, vision_return):
-        fake_svc = _make_fake_openai_service(barcode_return, vision_return)
-        # product_lookup_service uses a lazy import to avoid circular deps.
-        import app.services.product_lookup_service as pls
-
-        with patch.object(
-            pls,
-            "_extract_signals",
-            wraps=lambda *a, **kw: _patched_extract_signals(
-                fake_svc, barcode_return, vision_return, *a, **kw
-            ),
-        ):
-            pass
-
-        return fake_svc
+        return _make_fake_openai_service(barcode_return, vision_return)
 
     return _patch
 
@@ -1520,7 +1505,6 @@ def test_name_web_vision_none_returns_none(db_session):
 
 def test_name_web_no_vision_foods_returns_none(db_session, monkeypatch):
     """Empty vision foods list → None without web call."""
-    web_mock = AsyncMock(return_value=_WEB_HIT_RESPONSE)
     _patch_web_search(monkeypatch, return_value=_WEB_HIT_RESPONSE)
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",

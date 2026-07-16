@@ -911,7 +911,7 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             await update.message.reply_text("❌ Ошибка при выдаче подписки")
 
-    except ValueError as ve:
+    except ValueError:
         logger.error(f"Invalid command format: {update.message.text}", exc_info=True)
         await update.message.reply_text(
             "❌ Неверный формат команды. Используйте: /grant_sub user_id months"

@@ -24,7 +24,6 @@ Coverage
 """
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -200,7 +199,7 @@ def test_second_lookup_is_cache_hit(db_session):
     patch_ctx, mock_inner = _patch_client(resp)
 
     with patch_ctx:
-        result1 = asyncio.run(_svc(db_session).lookup(_EAN))
+        asyncio.run(_svc(db_session).lookup(_EAN))
         # Replace the mock with one that should NOT be called
         mock_inner.get.reset_mock()
         result2 = asyncio.run(_svc(db_session).lookup(_EAN))
