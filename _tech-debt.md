@@ -20,32 +20,6 @@ _None open._
 ## Low
 _Track for later._
 
-- [ ] **TD-007**: Model self-heal (TD-005) only covers the bot path. `OpenAIService.__init__`
-  always uses `settings.OPENAI_MODEL`; the persisted override is loaded once in
-  `create_bot_application` and mutates the single bot-side `OpenAIService`. `app/api/v1/ai.py`
-  builds a fresh `OpenAIService()` per request via `Depends()` and has no `ModelUnavailableError`
-  handling, so if it were mounted it would ignore the owner's model choice and 500 on a deprecated
-  model. Currently latent: the `ai` router is **not mounted** in `main.py` (dead endpoints).
-  Clean fix (also addresses TD-008): load the persisted override inside `OpenAIService`
-  construction (a best-effort factory/`__init__` read) so every instance is consistent, and move
-  `_persist_model`/`_load_persisted_model` onto the service that owns `self.model`.
-  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
-- [ ] **TD-008**: `telegram.py` keeps absorbing responsibilities. The TD-005 self-heal added
-  `_offer_model_choice`/`process_model_choice`/`_persist_model`/`_load_persisted_model` and a third
-  direct CRUD import (`crud_app_setting`) to a module that already owns the meal conversation,
-  subscription gating, the admin grant command, and the consult relay. This is the pattern the
-  earlier `access_control.py` / `ai_call_log_service.py` extractions set out to avoid. Extract the
-  self-heal orchestration into `app/services/model_selection.py`, mirroring `access_control.py`.
-  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Created:** 2026-07-06
-  - **Note 2026-07-07:** re-flagged by the photo-product-lookup specialist consult ("already-ballooning
-    `telegram.py`"). That plan's A4 will extract a `product_lookup_service.py` (same pattern) — a second
-    data point that `telegram.py` needs decomposition, not just per-feature carve-outs. Consider a
-    broader pass (meal-conversation orchestration vs. service modules) once product-lookup lands.
-  - **Note 2026-07-07 (post-review):** the /review-deep fix pass added a `get_openai_service()` factory
-    in `openai_service.py` (H2) that removed the `product_lookup_service → telegram` circular import —
-    one dependency untangled. Still open: the pipeline reply formatting (`_source_badge` /
-    `_resolution_detail_lines`) lives in `telegram.py`; moving it onto `ResolutionResult`
-    (e.g. `.to_reply_lines()`) would keep the handler thinner as A8/A9/A10 add strategies.
 - [ ] **TD-010**: TD-009 follow-ups intentionally deferred (the "at minimum file_id" pass shipped).
   (1) **Disk-bytes archival** — `inbound_messages` keeps only the Telegram `file_id`; a photo is
   lost if Telegram ever drops the file. For Telegram-independent replay, also persist the base64'd
@@ -88,14 +62,28 @@ _Track for later._
   decide **ReplyKeyboard** (consistent, low-risk, ~3.5h) vs **InlineKeyboard** (richer, new pattern, +risk).
   `times_used` / `last_used_at` on `personal_foods` already feed it.
   - **Priority:** Low · **Source:** personal-food-db plan B5 deferral 2026-07-11 · **Created:** 2026-07-11
-- [ ] **TD-016**: A9 web-search uses the **legacy** Responses-API tool type `web_search_preview`
-  (`OpenAIService.web_search_nutrition`), not the GA `web_search`. Works today (no GA-only controls
-  used), but modernize to `web_search` when convenient — and revisit if the preview type is
-  deprecated. Surfaced by the round-2 /review-deep as a "future modernization note only" (not a bug).
-  - **Priority:** Low · **Source:** /review-deep 2026-07-08 (round-2) · **Created:** 2026-07-08
-
 ## Resolved
 _Keep 90 days then remove._
+
+- [x] **TD-007 / TD-008**: Model self-heal (TD-005) extracted out of `telegram.py` and made consistent
+  across every `OpenAIService` instance. New **`app/services/model_selection.py`** (mirrors
+  `access_control.py`) now owns the persisted model override: `OPENAI_MODEL_SETTING_KEY`,
+  `get_persisted_model()`, `persist_model()`, `apply_persisted_model(service)`. **TD-008:** `telegram.py`
+  lost `_persist_model`/`_load_persisted_model` and its `crud_app_setting` import — `process_model_choice`
+  calls `persist_model`, startup calls `apply_persisted_model(...)`. **TD-007:** `OpenAIService.__init__`
+  now best-effort loads the override (`get_persisted_model() or settings.OPENAI_MODEL`), so a fresh
+  per-request service (e.g. the still-unmounted `ai.py` `Depends()` path) honours the owner's in-chat
+  model switch instead of silently using the default. No import cycle (the KEY moved into
+  `model_selection`, which imports only crud + SessionLocal). Tests: conftest autouse keeps unit
+  construction hermetic (no real DB read); +2 construction tests; self-heal tests re-pointed to the new
+  module. 405 green.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-06 · **Resolved:** 2026-07-12
+- [x] **TD-016**: A9 web-search modernized from the legacy Responses-API tool type `web_search_preview`
+  to the GA `web_search` in `OpenAIService.web_search_nutrition`. Bare `{"type": "web_search"}` — behaviour
+  preserved (`external_web_access` defaults to true = live access; none of the GA-only controls
+  filters/external_web_access/token-budget are used). Verified GA shape against OpenAI docs. No test
+  asserted the tool-type string, so a drop-in swap.
+  - **Priority:** Low · **Source:** /review-deep 2026-07-08 (round-2) · **Resolved:** 2026-07-12
 
 - [x] **TD-012**: pre-existing flake8 debt in the photo-product-lookup test files cleaned up in a
   flake8 pass (F401/F811/F821/F841): dropped unused imports (`patch` in `test_extract_barcode.py`;

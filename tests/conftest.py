@@ -57,3 +57,19 @@ def db_session(test_engine):
         session.close()
         trans.rollback()
         connection.close()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_openai_model_override(monkeypatch):
+    """TD-007: ``OpenAIService()`` now reads a persisted model override from the DB
+    on construction. Default every test to "no override" so pure-unit tests that
+    build a service stay hermetic (never touch a real Postgres via the unpatched
+    ``SessionLocal``). Tests that exercise the override patch this back or drive the
+    ``model_selection`` module directly (self-heal tests are unaffected — they call
+    ``model_selection.get_persisted_model`` / ``apply_persisted_model``, not this).
+    """
+    monkeypatch.setattr(
+        "app.services.openai_service.get_persisted_model",
+        lambda: None,
+        raising=False,
+    )
