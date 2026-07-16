@@ -23,8 +23,10 @@ branch → openclaw-setup's `nutricore-release`; docs / no-runtime-change merge 
   bind-mount + compose volume on the mini (a manual deploy step at openclaw-setup), plus `/forget` and
   reprocess→meal are separate features. Not a "quick" item.
 
-## Pending release — branch `fix/td-007-008-016-model-selection`
+## Pending release — branch `fix/td-007-008-016-model-selection` (tip `8b84afa`)
 Runtime work, pushed, **awaiting `nutricore-release`** (do NOT self-merge). **405 green.**
+`/review-deep` ran clean (only fix applied: `exc_info=True` on model_selection's best-effort
+excepts, `8b84afa`) — all other agent findings were wrong-tree artifacts or accepted TD-007 tradeoffs.
 - **TD-007 / TD-008** — extracted the persisted OpenAI model override out of `telegram.py` into a new
   **`app/services/model_selection.py`** (mirrors `access_control.py`): `OPENAI_MODEL_SETTING_KEY`,
   `get_persisted_model` / `persist_model` / `apply_persisted_model`. `OpenAIService.__init__` now
