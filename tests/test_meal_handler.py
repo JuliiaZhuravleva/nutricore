@@ -27,8 +27,9 @@ from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
 from app.services import ai_call_log_service as ai_log
 from app.services import inbound_message_service as im_service
+from app.services import model_selection as ms
 from app.services import telegram as tg
-from app.services.openai_service import OPENAI_MODEL_SETTING_KEY
+from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -123,6 +124,7 @@ def patched_db(monkeypatch):
     monkeypatch.setattr(ai_log, "SessionLocal", Session)  # ai_call_logs hook
     monkeypatch.setattr(im_service, "SessionLocal", Session)  # inbound_messages hook
     monkeypatch.setattr(pls_module, "SessionLocal", Session)  # pipeline session
+    monkeypatch.setattr(ms, "SessionLocal", Session)  # model override persist/load
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
@@ -521,7 +523,9 @@ def test_source_badge_barcode_off():
 
 def test_source_badge_label_ocr():
     badge = tg._source_badge(
-        _make_resolution_result(source="label_ocr", confidence_tier="medium", signals={})
+        _make_resolution_result(
+            source="label_ocr", confidence_tier="medium", signals={}
+        )
     )
     assert "этикетки" in badge
     assert "проверь" in badge
@@ -965,7 +969,7 @@ def test_load_persisted_model_applies_on_startup(patched_db):
     with tg.SessionLocal() as db:
         crud_app_setting.set(db, OPENAI_MODEL_SETTING_KEY, "gpt-persisted")
 
-    tg._load_persisted_model()
+    tg.apply_persisted_model(svc)
 
     assert svc.model == "gpt-persisted"
 

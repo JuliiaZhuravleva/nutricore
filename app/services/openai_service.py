@@ -8,11 +8,9 @@ from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.services.ai_call_log_service import record_ai_call
+from app.services.model_selection import get_persisted_model
 
 logger = logging.getLogger(__name__)
-
-# Persisted-setting key for the runtime model override (see TD-005 self-heal).
-OPENAI_MODEL_SETTING_KEY = "openai_model"
 
 # /v1/models does not tag capabilities, so "suitable for our JSON + vision usage"
 # is a maintained heuristic: chat models in these families, minus the non-chat
@@ -89,7 +87,11 @@ class OpenAIService:
             api_key=settings.OPENAI_API_KEY,
             max_retries=settings.OPENAI_MAX_RETRIES,
         )
-        self.model = settings.OPENAI_MODEL
+        # Honour a persisted runtime model override (TD-005 self-heal, TD-007):
+        # every instance — the bot singleton, the pipeline, or a per-request API
+        # service — picks up the owner's in-chat model switch, not just the
+        # configured default. Best-effort: falls back to settings.OPENAI_MODEL.
+        self.model = get_persisted_model() or settings.OPENAI_MODEL
         self.temperature = settings.OPENAI_TEMPERATURE
         self.max_tokens = settings.OPENAI_MAX_TOKENS
 
@@ -364,7 +366,10 @@ class OpenAIService:
         query = ", ".join(query_foods)
         response = await self.client.responses.create(
             model=self.model,
-            tools=[{"type": "web_search_preview"}],
+            # GA web_search tool (TD-016). Bare form keeps the previous behaviour:
+            # external_web_access defaults to true (live access), and we use none
+            # of the GA-only controls (filters / external_web_access / token budget).
+            tools=[{"type": "web_search"}],
             input=(
                 f"Find the exact КБЖУ (calories, protein, fat, carbohydrates per 100g) "
                 f"for: {query}\n\n"
@@ -476,8 +481,7 @@ class OpenAIService:
             )
             # Sort by .index to guarantee input order (the API may reorder batches).
             embeddings: list[list[float]] = [
-                item.embedding
-                for item in sorted(response.data, key=lambda x: x.index)
+                item.embedding for item in sorted(response.data, key=lambda x: x.index)
             ]
             record_ai_call(
                 kind="embedding",

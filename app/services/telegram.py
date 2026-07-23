@@ -16,7 +16,6 @@ from telegram.ext import (
 )
 
 from app.core.config import settings
-from app.crud.crud_app_setting import crud_app_setting
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
@@ -26,11 +25,8 @@ from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.openai_service import (
-    OPENAI_MODEL_SETTING_KEY,
-    ModelUnavailableError,
-    get_openai_service,
-)
+from app.services.model_selection import apply_persisted_model, persist_model
+from app.services.openai_service import ModelUnavailableError, get_openai_service
 from app.services.product_lookup_service import (
     ResolutionResult,
     _parse_portion_grams,
@@ -650,29 +646,6 @@ async def _offer_model_choice(
     return CHOOSING_MODEL
 
 
-def _persist_model(model: str) -> None:
-    """Best-effort save of the chosen model. A failure just means it won't
-    survive a restart — the live service is already switched, so the flow works."""
-    try:
-        with SessionLocal() as db:
-            crud_app_setting.set(db, OPENAI_MODEL_SETTING_KEY, model)
-    except Exception as e:
-        logger.warning("Could not persist model choice %s: %s", model, e)
-
-
-def _load_persisted_model() -> None:
-    """Apply a previously-persisted model override at startup. Best-effort: the
-    table may not exist yet before the first migration, so never fail startup."""
-    try:
-        with SessionLocal() as db:
-            model = crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY)
-        if model:
-            telegram_service.openai_service.set_model(model)
-            logger.info("Loaded persisted OpenAI model override: %s", model)
-    except Exception as e:
-        logger.warning("Could not load persisted model override: %s", e)
-
-
 @subscription_required
 async def process_model_choice(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -689,7 +662,7 @@ async def process_model_choice(
         return CHOOSING_MODEL
 
     telegram_service.openai_service.set_model(text)
-    _persist_model(text)
+    persist_model(text)
     await update.message.reply_text(f"✅ Модель обновлена: {text}. Повторяю анализ…")
 
     pending = context.user_data.get("pending_analysis")
@@ -1071,8 +1044,10 @@ def create_bot_application() -> Application:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    # Restore a model the owner picked after a past deprecation (TD-005).
-    _load_persisted_model()
+    # Restore a model the owner picked after a past deprecation (TD-005). The
+    # singleton also loads it at construction (TD-007); this re-asserts it in case
+    # that construction happened before the DB was ready.
+    apply_persisted_model(telegram_service.openai_service)
 
     application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
 
