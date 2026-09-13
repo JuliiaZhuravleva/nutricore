@@ -200,6 +200,9 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # new meal never inherits stale nutrition/photos/time.
     context.user_data["current_meal"] = {}
     context.user_data.pop("meal_time", None)
+    # Also drop the label: it outlived an abandoned entry and would have been
+    # attached to the NEXT meal (which may well be a different one).
+    context.user_data.pop("meal_type", None)
     await update.message.reply_text(
         "Когда был прием пищи?",
         reply_markup=time_keyboard,
@@ -219,14 +222,14 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return CHOOSING_ACTION
 
-    # Store the meal time in context
-    if text == "Сейчас":
-        context.user_data["meal_time"] = datetime.now(UTC)
-    else:
-        # Here we'll need to add logic to parse different meal times
-        context.user_data["meal_time"] = datetime.now(
-            UTC
-        )  # For now, default to current time
+    # Store the meal time in context.
+    #
+    # Both branches record meal_time as NOW on purpose. "Завтрак" is a label, not
+    # a clock reading: deriving 08:00 from it would invent a timestamp the user
+    # never gave, and they may well be logging it at 16:00. What they DID tell us
+    # is the label, and that is what gets stored (meals.meal_type).
+    context.user_data["meal_time"] = datetime.now(UTC)
+    if text != "Сейчас":
         context.user_data["meal_type"] = text
 
     await update.message.reply_text(
@@ -290,6 +293,13 @@ def _schedule_personal_food_save(
         # Barcode — only present in barcode_off signals (ADR-0003 §B4)
         barcode = signals.get("barcode_raw") or None  # empty str → None
 
+        # Brand — every OFF-backed strategy already resolves it into signals, and
+        # personal_foods has had a brand column, a schema field and CRUD support
+        # from the start; only this hop was missing, so the column was NULL for
+        # every row ever written. It is what separates a store brand from a name
+        # brand with the same generic product name.
+        brand = signals.get("brand") or None
+
         # Per-100g macro computation:
         #   Image paths: portion_grams pre-computed in resolution_signals.
         #   Text paths:  attempt to parse grams from nutrition["portion"] string.
@@ -352,6 +362,7 @@ def _schedule_personal_food_save(
             meal_id=meal_id,
             resolution_source=resolution_source,
             barcode=barcode,
+            brand=brand,
             per_100g_calories=per_100g_calories,
             per_100g_proteins=per_100g_proteins,
             per_100g_fats=per_100g_fats,
@@ -823,6 +834,9 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             meal_in = MealCreate(
                 description=current_meal.get("description"),
                 meal_time=context.user_data.get("meal_time", datetime.now(UTC)),
+                # The answer to "Когда был прием пищи?" — collected since the
+                # first version, stored since 2026-09-13.
+                meal_type=context.user_data.get("meal_type"),
                 calories=nutrition.get("calories"),
                 proteins=nutrition.get("protein"),
                 fats=nutrition.get("fats"),

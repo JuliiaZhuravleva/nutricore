@@ -354,6 +354,7 @@ def _run_task(
     meal_id: Optional[int] = None,
     resolution_source: Optional[str] = None,
     barcode: Optional[str] = None,
+    brand: Optional[str] = None,
     per_100g_calories: Optional[float] = None,
     per_100g_proteins: Optional[float] = None,
     per_100g_fats: Optional[float] = None,
@@ -391,6 +392,7 @@ def _run_task(
                 "meal_id": meal_id,
                 "resolution_source": resolution_source,
                 "barcode": barcode,
+                "brand": brand,
                 "per_100g_calories": per_100g_calories,
                 "per_100g_proteins": per_100g_proteins,
                 "per_100g_fats": per_100g_fats,
@@ -754,3 +756,66 @@ def test_schedule_skips_a_food_with_no_usable_calories(caplog):
 
     delay_mock.assert_not_called()
     assert any("no usable calories" in r.getMessage() for r in caplog.records)
+
+
+# --- brand: the column existed, the plumbing stopped one hop short ----------
+
+
+def test_schedule_forwards_the_brand_from_signals():
+    """Every OFF-backed strategy resolves a brand into resolution_signals.
+
+    personal_foods.brand, PersonalFoodCreate.brand and crud upsert(brand=...) all
+    existed from the start — only this hop was missing, so the column was NULL for
+    every row ever written and the RAG could not tell a store brand from a name
+    brand with the same generic product name.
+    """
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ):
+        signals = dict(_BASE_SIGNALS, brand="FAGE")
+        _call_schedule(resolution_signals=signals)
+
+    assert delay_mock.call_args.kwargs.get("brand") == "FAGE", (
+        "the brand was resolved and then dropped before the write-back "
+        f"(kwargs seen: {sorted(delay_mock.call_args.kwargs)})"
+    )
+
+
+def test_schedule_passes_none_when_there_is_no_brand():
+    """Expected answer 'no finding': a strategy without a brand invents none."""
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ):
+        signals = dict(_BASE_SIGNALS, brand=None)
+        _call_schedule(resolution_signals=signals)
+
+    assert delay_mock.call_args.kwargs.get("brand") is None
+
+
+def test_task_persists_the_brand_on_the_row(task_db):
+    """The artefact, not the argument: the column must actually hold it."""
+    Session = task_db
+    with Session() as db:
+        user_id = _make_user(db, telegram_id=88_010).id
+
+    personal_food_id = _run_task(
+        task_db,
+        user_id=user_id,
+        canonical_name="Греческий йогурт",
+        brand="FAGE",
+        per_100g_calories=97.0,
+    )
+
+    from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
+
+    with Session() as db:
+        row = db.execute(
+            select(PersonalFood).where(PersonalFood.id == personal_food_id)
+        ).scalar_one()
+    assert row.brand == "FAGE"

@@ -1391,3 +1391,78 @@ def test_reply_warns_when_a_winning_strategy_recorded_a_failure():
     assert any(
         "не сработала" in line for line in lines
     ), "the OFF re-query leg was fully broken and the reply said nothing"
+
+
+# --- the meal-of-day label: asked since day one, stored since 2026-09-13 ----
+
+
+def test_meal_type_label_reaches_the_saved_meal(patched_db):
+    """The bot asks "Когда был прием пищи?" and offers Завтрак/Обед/Ужин.
+
+    The answer used to live only in context.user_data and was dropped when the
+    conversation ended — no column, no schema field, no read site anywhere.
+    """
+    context = SimpleNamespace(user_data={})
+    update, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(update, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert len(meals) == 1
+    assert (
+        meals[0].meal_type == "Завтрак"
+    ), "the user answered the bot's own question and the answer was discarded"
+
+
+def test_now_stores_no_label_rather_than_inventing_one(patched_db):
+    """Expected answer 'no finding': "Сейчас" is not a meal of the day."""
+    context = SimpleNamespace(user_data={})
+    update, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(update, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "перекус",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type is None
+
+
+def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
+    """State leak: add_meal popped meal_time but not meal_type.
+
+    Abandon a breakfast entry, start a new one, pick "Сейчас" — the stale
+    "Завтрак" would have been attached to the second meal.
+    """
+    context = SimpleNamespace(user_data={})
+    first, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(first, context))  # …then abandoned
+
+    restart, _ = _make_text_update("Добавить прием пищи")
+    asyncio.run(tg.add_meal(restart, context))
+    second, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(second, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "ужин",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert (
+        meals[0].meal_type is None
+    ), "an abandoned entry's label leaked into the next meal"

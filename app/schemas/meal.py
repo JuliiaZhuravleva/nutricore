@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict
 class MealBase(BaseModel):
     description: Optional[str] = None
     meal_time: datetime
+    # "Завтрак" | "Обед" | "Ужин", or None when the user picked "Сейчас".
+    meal_type: Optional[str] = None
     calories: Optional[float] = None
     proteins: Optional[float] = None
     fats: Optional[float] = None

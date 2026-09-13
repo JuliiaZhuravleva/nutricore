@@ -40,6 +40,10 @@ class CRUDMeal:
             user_id=user_id,
             description=obj_in.description,
             meal_time=obj_in.meal_time,
+            # NOTE: this constructor lists every column by hand, so a field added
+            # to MealCreate is silently dropped until it is added here too — that
+            # is how meal_type reached the schema and still never hit the DB.
+            meal_type=obj_in.meal_type,
             calories=obj_in.calories,
             proteins=obj_in.proteins,
             fats=obj_in.fats,
