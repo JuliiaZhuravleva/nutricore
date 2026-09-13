@@ -14,8 +14,8 @@ Nutricore is a **personal** Telegram bot for tracking nutrition — capture meal
 
 **Shipped & working:**
 
-- **Meal logging** — text or photo → foods + calories/macros, confirm to save. The photo path is hardened (base64 to OpenAI, atomic draft, retries) and self-heals against OpenAI model deprecation (the owner picks a new model in chat; the choice persists).
-- **Packaged-food lookup** — a barcode or product name read from the photo → the product's *actual* КБЖУ from [Open Food Facts](https://world.openfoodfacts.org/), falling back to the vision estimate, with a transparent source/confidence badge.
+- **Meal logging** — text or photo → foods + calories/macros, confirm to save. A photo's caption is part of the input: a brand, a sauce the camera cannot see, or "I only ate a third of this" changes the recorded numbers. The photo path is hardened (base64 to OpenAI, atomic draft, retries) and self-heals against OpenAI model deprecation (the owner picks a new model in chat; the choice persists).
+- **Packaged-food lookup** — a barcode or product name read from the photo → the product's *actual* КБЖУ from [Open Food Facts](https://world.openfoodfacts.org/), then a label-OCR and a web-search fallback, and finally the vision estimate — each with a transparent source/confidence badge. A macro the source does not carry shows as "—", never as a confident 0.
 - **Access control** — open / whitelist / closed modes with a silent gate.
 - **Secured REST API** (`X-API-Token`, fail-closed) + Telegram webhook secret.
 - **`/consult` relay** to the my-health hub — medical questions never touch the bot's own AI.
