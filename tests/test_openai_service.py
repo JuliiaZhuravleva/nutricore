@@ -415,3 +415,163 @@ def test_construction_falls_back_to_configured_model(monkeypatch):
     monkeypatch.setattr("app.services.openai_service.get_persisted_model", lambda: None)
     service = OpenAIService()
     assert service.model == settings.OPENAI_MODEL
+
+
+# --- caption → vision prompt (Gap ①, fixed 2026-09-13) ---------------------
+#
+# A photo's caption was persisted to inbound_messages and then dropped: the
+# vision call received the image alone. A real meal ("Я доела остатки (1/3
+# порции примерно) этого батата с Classic Fasting Ranch Sauce") was therefore
+# booked as a default 100g of plain sweet potato — the sauce absent, the share
+# ignored. Persisting a caption is not the same as sending it to the model.
+
+_CAPTION = (
+    "Я доела остатки (1/3 порции примерно) этого батата с Classic Fasting Ranch Sauce"
+)
+
+
+def _user_text_parts(service):
+    parts = _create_kwargs(service)["messages"][1]["content"]
+    return " ".join(p["text"] for p in parts if p.get("type") == "text")
+
+
+def _user_image_parts(service):
+    parts = _create_kwargs(service)["messages"][1]["content"]
+    return [p for p in parts if p.get("type") == "image_url"]
+
+
+def test_analyze_food_image_puts_the_caption_in_the_user_turn():
+    service = _service_with_mock_client()
+
+    asyncio.run(
+        service.analyze_food_image("https://example.test/food.jpg", caption=_CAPTION)
+    )
+
+    texts = _user_text_parts(service)
+    assert "1/3" in texts, f"the stated share never reached the model: {texts!r}"
+    assert (
+        "Ranch" in texts
+    ), f"the caption-only product never reached the model: {texts!r}"
+    # A caption must not displace the photo.
+    assert _user_image_parts(
+        service
+    ), "the image part was lost when a caption was added"
+
+
+def test_analyze_food_image_fences_the_caption_as_user_data():
+    """The caption is untrusted input; it must arrive labelled, not as an instruction."""
+    service = _service_with_mock_client()
+
+    asyncio.run(
+        service.analyze_food_image("https://example.test/food.jpg", caption=_CAPTION)
+    )
+
+    parts = _create_kwargs(service)["messages"][1]["content"]
+    caption_parts = [
+        p for p in parts if p.get("type") == "text" and _CAPTION in p["text"]
+    ]
+    assert caption_parts, "caption not found in its own text part"
+    assert "not an instruction" in caption_parts[0]["text"], (
+        "the caption is pasted in unlabelled — a note saying '0 calories' would "
+        "read as an instruction to the model"
+    )
+    # It must NOT be blended into the system prompt.
+    assert _CAPTION not in _create_kwargs(service)["messages"][0]["content"]
+
+
+def test_analyze_food_image_without_caption_sends_no_placeholder():
+    """Expected answer 'no finding': a captionless photo gains no empty note block."""
+    service = _service_with_mock_client()
+
+    asyncio.run(service.analyze_food_image("https://example.test/food.jpg"))
+
+    texts = _user_text_parts(service)
+    assert "None" not in texts
+    assert "note" not in texts.lower()
+    assert _user_image_parts(service)
+
+
+def test_analyze_food_image_asks_for_machine_readable_portion_grams():
+    """The portion must come back as a number, not only as prose.
+
+    "100 grams" / "1/3 порции" both have to survive as arithmetic: portion_grams
+    is multiplied into every OFF-backed macro and inverse-scaled into the
+    personal food DB.
+    """
+    service = _service_with_mock_client()
+
+    asyncio.run(service.analyze_food_image("https://example.test/food.jpg"))
+
+    system_prompt = _create_kwargs(service)["messages"][0]["content"]
+    assert "portion_grams" in system_prompt
+
+
+# --- web_search_nutrition against the REAL installed SDK surface -----------
+
+
+def test_web_search_nutrition_calls_the_installed_responses_api():
+    """Patches on the real client object, so a missing SDK surface refuses.
+
+    The pipeline tests patch OpenAIService.web_search_nutrition wholesale, so its
+    body never runs there and a missing client.responses namespace stayed
+    invisible until production. Here the patch target IS the control: on
+    openai < 1.66.0 the attribute access below raises AttributeError.
+    """
+    service = OpenAIService()
+    assert hasattr(service.client, "responses"), (
+        "installed openai SDK has no Responses API (needs >= 1.66.0) — "
+        "web_search_nutrition raises AttributeError on every call"
+    )
+    create = AsyncMock(
+        return_value=SimpleNamespace(output_text='{"identification": null}')
+    )
+    service.client.responses.create = create
+
+    out = asyncio.run(service.web_search_nutrition(["батат", "ranch sauce"]))
+
+    kwargs = create.call_args.kwargs
+    assert kwargs["tools"] == [{"type": "web_search"}]
+    assert "батат" in kwargs["input"] and "ranch sauce" in kwargs["input"]
+    assert out == '{"identification": null}'
+
+
+def test_web_search_nutrition_sets_a_timeout():
+    """It runs inside the user's photo flow; the SDK default read timeout is 600s."""
+    service = OpenAIService()
+    service.client.responses.create = AsyncMock(
+        return_value=SimpleNamespace(output_text="{}")
+    )
+
+    asyncio.run(service.web_search_nutrition(["x"]))
+
+    kwargs = service.client.responses.create.call_args.kwargs
+    assert kwargs.get("timeout") == settings.OPENAI_WEB_SEARCH_TIMEOUT
+    assert (
+        kwargs["timeout"] and kwargs["timeout"] <= 120
+    ), "a web search inside the photo handler must not be able to hang the reply"
+
+
+def test_web_search_nutrition_honours_the_pinned_search_model(monkeypatch):
+    """A runtime model switch can land on a model with no web_search support."""
+    service = OpenAIService()
+    service.client.responses.create = AsyncMock(
+        return_value=SimpleNamespace(output_text="{}")
+    )
+    monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", "gpt-4o-search")
+
+    asyncio.run(service.web_search_nutrition(["x"]))
+
+    assert service.client.responses.create.call_args.kwargs["model"] == "gpt-4o-search"
+
+
+def test_web_search_nutrition_defaults_to_the_active_model(monkeypatch):
+    """Expected answer 'no finding': unset pin → the currently selected model."""
+    service = OpenAIService()
+    service.client.responses.create = AsyncMock(
+        return_value=SimpleNamespace(output_text="{}")
+    )
+    monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", None)
+
+    asyncio.run(service.web_search_nutrition(["x"]))
+
+    assert service.client.responses.create.call_args.kwargs["model"] == service.model

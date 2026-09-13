@@ -159,12 +159,16 @@ class CRUDPersonalFood:
             db.commit()
         except IntegrityError:
             db.rollback()
-            existing = db.execute(
-                select(PersonalFoodEmbedding).where(
-                    PersonalFoodEmbedding.personal_food_id == personal_food_id,
-                    PersonalFoodEmbedding.text_embedded == text_embedded,
+            existing = (
+                db.execute(
+                    select(PersonalFoodEmbedding).where(
+                        PersonalFoodEmbedding.personal_food_id == personal_food_id,
+                        PersonalFoodEmbedding.text_embedded == text_embedded,
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if existing is not None:
                 return existing
             raise
@@ -236,22 +240,32 @@ class CRUDPersonalFood:
         2=opposite); the default from config is 0.15 (≈ cosine similarity 0.85).
 
         *** THIS IS THE MOCKABLE B6 SEAM (ADR-0003 §4d) ***
-        SQLite has no pgvector <=> operator.  Unit tests MUST patch this method:
+        SQLite has no pgvector <=> operator.  Unit tests that need a *result*
+        MUST patch this method:
             with patch.object(crud_personal_food, "find_similar", return_value=...):
                 ...
-        The real ANN / threshold correctness check is a manual post-deploy
-        verification (see ADR-0003 §4d / B6 test plan).
+        The *statement* is not exempt: tests/test_crud_personal_food.py asserts the
+        compiled Postgres SQL and its bind parameters, and any change to the query
+        below must keep that control green.  Only the ANN semantics (real <=>
+        distances, the 0.15 threshold) remain a post-deploy verification.
 
-        Implementation uses raw SQL with the pgvector <=> operator.  The
-        embedding list is serialised to pgvector's "[x1,x2,...]" string format
-        and cast to vector(1536) inside the query so psycopg2 passes it cleanly.
+        Implementation uses raw SQL with the pgvector <=> operator.  The embedding
+        list is serialised to pgvector's "[x1,x2,...]" string format, bound as a
+        parameter, and cast with CAST(:embedding AS vector).
+
+        *** NEVER write ":param::type" in text() ***
+        SQLAlchemy's bind-parameter regex mis-parses it: ":embedding::vector" is
+        read as a phantom bind named "embeddin" and the placeholder is emitted
+        LITERALLY, so psycopg2 raises 'syntax error at or near ":"' at runtime and
+        the except below turns it into a permanent silent no-match (shipped that
+        way until 2026-09-13).  Use CAST(:param AS type).
         """
         emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
         stmt = text(
             """
             SELECT
                 pfe.personal_food_id,
-                (pfe.embedding <=> :embedding::vector) AS cosine_distance
+                (pfe.embedding <=> CAST(:embedding AS vector)) AS cosine_distance
             FROM personal_food_embeddings pfe
             JOIN personal_foods pf ON pf.id = pfe.personal_food_id
             WHERE pf.user_id = :user_id
@@ -260,21 +274,29 @@ class CRUDPersonalFood:
             """
         )
         try:
-            row = db.execute(
-                stmt, {"embedding": emb_str, "user_id": user_id}
-            ).first()
-        except Exception:
+            row = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).first()
+        except Exception as exc:
             # Non-blocking by contract (return None), but this is a SYSTEMIC failure
             # (pgvector missing, embedding-dimension mismatch, dropped connection,
             # a SQL bug) — NOT a routine no-match (that path has row=None, below).
             # Log at ERROR so it's distinguishable from a legitimate miss and doesn't
-            # silently zero out the personal-DB hit rate (F4).
+            # silently zero out the personal-DB hit rate (F4).  The exception CLASS is
+            # in the message because a SQL-compilation bug and a dropped connection
+            # read identically otherwise — that ambiguity hid the ":embedding::vector"
+            # defect in the mini's logs.
             logger.error(
-                "find_similar: ANN query FAILED for user_id=%s — degrading to "
+                "find_similar: ANN query FAILED for user_id=%s (%s) — degrading to "
                 "no-match; check pgvector availability and embedding dimensions",
                 user_id,
+                exc.__class__.__name__,
                 exc_info=True,
             )
+            # A failed statement leaves the session in an aborted transaction; without
+            # this rollback every later query on the same Session fails too.
+            try:
+                db.rollback()
+            except Exception:  # pragma: no cover - defensive: stub/detached sessions
+                pass
             return None
 
         if row is None:

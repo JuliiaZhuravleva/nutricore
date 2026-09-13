@@ -40,6 +40,7 @@ from app.services.product_lookup_service import (
     _parse_portion_grams,
     _parse_web_nutrition_response,
     _scale_label_nutrition,
+    _scale_off_nutrition,
     parse_nutrition,
     resolve_meal_nutrition,
 )
@@ -557,11 +558,23 @@ def test_vision_fallback_signals_barcode_detected_but_not_chosen(db_session):
 
 
 def _make_fake_openai_service(barcode_return, vision_return):
-    """Build a minimal fake OpenAIService with async stubs."""
-    svc = MagicMock()
+    """Signature-bound fake OpenAIService.
+
+    create_autospec (not a bare MagicMock) so a call with a kwarg the real
+    service does not accept raises TypeError here instead of passing silently —
+    a plain mock accepts anything, which is how a caption argument could be
+    added to the pipeline and dropped at the service without a single test
+    noticing.
+    """
+    from unittest.mock import create_autospec
+
+    from app.services.openai_service import OpenAIService
+
+    svc = create_autospec(OpenAIService, instance=True)
+    # create_autospec does not synthesise attributes assigned in __init__.
     svc.model = "gpt-4o-mini"
-    svc.extract_barcode_from_image = AsyncMock(return_value=barcode_return)
-    svc.analyze_food_image = AsyncMock(return_value=json.dumps(vision_return))
+    svc.extract_barcode_from_image.return_value = barcode_return
+    svc.analyze_food_image.return_value = json.dumps(vision_return)
     return svc
 
 
@@ -594,7 +607,7 @@ def test_pipeline_barcode_wins(monkeypatch):
     """When barcode found and OFF has the product, result is barcode_off."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals("4607195501226", _NUTRITION, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -617,7 +630,7 @@ def test_pipeline_falls_back_to_vision_when_off_not_found(monkeypatch):
     """Barcode found but OFF has no record → vision fallback."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals("9999999999999", _NUTRITION, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -652,7 +665,7 @@ def test_pipeline_falls_back_when_no_barcode(monkeypatch):
     """No barcode in image → skip BarcodeOFFStrategy → vision fallback."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, _NUTRITION, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -670,7 +683,7 @@ def test_pipeline_raises_runtime_error_when_vision_also_fails(monkeypatch):
     """Both barcode (None) and vision (None) → RuntimeError."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, None, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -688,7 +701,7 @@ def test_pipeline_propagates_model_unavailable_error(monkeypatch):
 
     err = ModelUnavailableError("gpt-old", Exception("deprecated"))
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         raise err
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -720,7 +733,7 @@ def test_pipeline_name_off_wins_when_no_barcode(monkeypatch):
     """No barcode, single vision food, OFF name-search hits → name_off wins."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, _SINGLE_FOOD, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -746,7 +759,7 @@ def test_pipeline_name_off_skipped_multi_food_falls_to_vision(monkeypatch):
 
     plate = {**_NUTRITION, "foods": ["rice", "chicken", "broccoli"]}
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, plate, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -781,7 +794,7 @@ def test_barcode_off_result_signals_include_all_adr_keys(monkeypatch):
     """All keys from ADR §5 resolution_signals contract are present."""
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals("4607195501226", _NUTRITION, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -815,7 +828,7 @@ def test_barcode_off_result_signals_include_all_adr_keys(monkeypatch):
 def test_vision_fallback_signals_include_all_adr_keys(monkeypatch):
     import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, _NUTRITION, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -1297,10 +1310,10 @@ def test_label_ocr_records_unresolved_barcode(db_session, monkeypatch):
 
 def test_label_ocr_pipeline_wins_when_name_off_misses(monkeypatch):
     """No barcode, name-search miss, label OCR hits per_100g → label_ocr wins."""
-    import app.services.product_lookup_service as pls
     import app.services.openai_service as ois
+    import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, _LABEL_SINGLE_FOOD, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -1778,10 +1791,10 @@ def test_name_web_pipeline_wins_after_label_ocr_miss(monkeypatch):
     (autouse default_no_name_search keeps it at None).  NameWebSearchStrategy
     falls through to the prose path and returns low-confidence numbers.
     """
-    import app.services.product_lookup_service as pls
     import app.services.openai_service as ois
+    import app.services.product_lookup_service as pls
 
-    async def fake_extract(image_data_url, *, telegram_id, input_ref):
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
         return await _build_signals(None, _SINGLE_FOOD, image_data_url)
 
     monkeypatch.setattr(pls, "_extract_signals", fake_extract)
@@ -1815,6 +1828,7 @@ def test_name_web_pipeline_wins_after_label_ocr_miss(monkeypatch):
 # ---------------------------------------------------------------------------
 # SavedFoodRAGStrategy (B3 / ADR-0003)
 # ---------------------------------------------------------------------------
+
 
 # Minimal PersonalFood-like object (avoids hitting real pgvector / SQLite)
 def _make_pf(**kwargs):
@@ -1866,14 +1880,19 @@ def test_saved_rag_user_not_found(db_session):
 
 def test_saved_rag_phase_a_barcode_hit(db_session, monkeypatch):
     """Phase A: barcode already in personal DB → result without embedding call."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf(barcode="4607195501226")
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=pf))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=pf)
+    )
     embed_mock = AsyncMock()
     import app.services.openai_service as ois
+
     monkeypatch.setattr(ois.OpenAIService, "embed_text", embed_mock)
 
     signals = ImageSignals(
@@ -1903,14 +1922,19 @@ def test_saved_rag_phase_a_barcode_miss_returns_none(db_session, monkeypatch):
     resolved by BarcodeOFFStrategy, never fuzzy-matched to a DIFFERENT saved food
     (owner decision #2 — the fuzzy path is for text / no-barcode input).
     """
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
     find_similar = MagicMock(return_value=(_make_pf(), 0.08))
     monkeypatch.setattr(cpf.crud_personal_food, "find_similar", find_similar)
     import app.services.openai_service as ois
+
     embed = AsyncMock(return_value=[0.1] * 1536)
     monkeypatch.setattr(ois.OpenAIService, "embed_text", embed)
 
@@ -1930,15 +1954,24 @@ def test_saved_rag_phase_a_barcode_miss_returns_none(db_session, monkeypatch):
 
 def test_saved_rag_phase_b_ann_hit(db_session, monkeypatch):
     """Phase B: ANN match within threshold → ResolutionResult returned."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf()
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.10)))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.10))
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -1962,14 +1995,23 @@ def test_saved_rag_phase_b_ann_hit(db_session, monkeypatch):
 
 def test_saved_rag_phase_b_ann_miss(db_session, monkeypatch):
     """Phase B: no ANN match above threshold → None."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=None)
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -1986,9 +2028,12 @@ def test_saved_rag_no_vision_foods_skips_embedding(db_session, monkeypatch):
     """Phase B: no vision foods → query text empty → None; embed_text NOT called."""
     import app.crud.crud_user as cu
 
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
     embed_mock = AsyncMock()
     import app.services.openai_service as ois
+
     monkeypatch.setattr(ois.OpenAIService, "embed_text", embed_mock)
 
     empty_vision = {
@@ -2033,8 +2078,8 @@ def test_saved_rag_non_blocking_on_exception(db_session, monkeypatch):
 
 def test_saved_rag_nutrition_scaling_with_portion(db_session, monkeypatch):
     """Macros are scaled by portion_grams/100 (same pattern as _scale_off_nutrition)."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf(
         per_100g_calories=60.0,
@@ -2042,11 +2087,20 @@ def test_saved_rag_nutrition_scaling_with_portion(db_session, monkeypatch):
         per_100g_fats=0.5,
         per_100g_carbs=4.0,
     )
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05))
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -2058,10 +2112,10 @@ def test_saved_rag_nutrition_scaling_with_portion(db_session, monkeypatch):
     result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
 
     assert result is not None
-    assert result.nutrition["calories"] == 120.0   # 60 * 2.0
-    assert result.nutrition["protein"] == 20.0     # 10 * 2.0
-    assert result.nutrition["fats"] == 1.0         # 0.5 * 2.0
-    assert result.nutrition["carbs"] == 8.0        # 4.0 * 2.0
+    assert result.nutrition["calories"] == 120.0  # 60 * 2.0
+    assert result.nutrition["protein"] == 20.0  # 10 * 2.0
+    assert result.nutrition["fats"] == 1.0  # 0.5 * 2.0
+    assert result.nutrition["carbs"] == 8.0  # 4.0 * 2.0
     assert result.nutrition["portion"] == "200г"
 
 
@@ -2074,8 +2128,8 @@ def test_saved_rag_scaling_handles_decimal_macros(db_session, monkeypatch):
     """
     from decimal import Decimal
 
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf(
         per_100g_calories=Decimal("97.00"),
@@ -2083,11 +2137,20 @@ def test_saved_rag_scaling_handles_decimal_macros(db_session, monkeypatch):
         per_100g_fats=Decimal("5.00"),
         per_100g_carbs=Decimal("3.80"),
     )
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05))
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -2100,21 +2163,30 @@ def test_saved_rag_scaling_handles_decimal_macros(db_session, monkeypatch):
 
     assert result is not None  # NOT swallowed by the broad except
     assert result.nutrition["calories"] == 194.0  # 97 * 2.0, as float
-    assert result.nutrition["protein"] == 18.0    # 9 * 2.0
+    assert result.nutrition["protein"] == 18.0  # 9 * 2.0
     assert isinstance(result.nutrition["calories"], float)
 
 
 def test_saved_rag_nutrition_no_portion_returns_per_100g(db_session, monkeypatch):
     """No portion estimate → per-100g values returned unchanged."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf(per_100g_calories=60.0, per_100g_proteins=10.0)
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05)))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.05))
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -2133,15 +2205,24 @@ def test_saved_rag_nutrition_no_portion_returns_per_100g(db_session, monkeypatch
 
 def test_saved_rag_signals_payload(db_session, monkeypatch):
     """ResolutionResult.signals contains all ADR-0003 §4e required keys."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     pf = _make_pf(brand="Danone")
-    monkeypatch.setattr(cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER))
-    monkeypatch.setattr(cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.07)))
-    monkeypatch.setattr(cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "find_similar", MagicMock(return_value=(pf, 0.07))
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food, "get_by_barcode", MagicMock(return_value=None)
+    )
     import app.services.openai_service as ois
-    monkeypatch.setattr(ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536))
+
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
 
     signals = ImageSignals(
         image_data_url="data:image/jpeg;base64,abc",
@@ -2278,8 +2359,8 @@ def test_saved_rag_threshold_from_config(db_session, monkeypatch):
     PARAMETER (SAVED_FOOD_SIM_THRESHOLD), NOT a hardcoded constant.  This test
     asserts the strategy reads it from settings rather than using a literal.
     """
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
     from app.core.config import settings
 
     find_similar_mock = MagicMock(return_value=None)  # miss is fine — checking args
@@ -2315,8 +2396,8 @@ def test_saved_rag_threshold_from_config(db_session, monkeypatch):
 
 def test_saved_rag_embed_text_called_with_query_text(db_session, monkeypatch):
     """embed_text receives the joined vision food names as the query string."""
-    import app.crud.crud_user as cu
     import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
 
     monkeypatch.setattr(
         cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
@@ -2343,3 +2424,202 @@ def test_saved_rag_embed_text_called_with_query_text(db_session, monkeypatch):
     asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
 
     embed_mock.assert_awaited_once_with("Греческий йогурт, FAGE")
+
+
+# ---------------------------------------------------------------------------
+# Caption → vision (Gap ①) and the portion contract that rides on it
+# ---------------------------------------------------------------------------
+
+
+def test_extract_signals_forwards_the_caption_to_vision(monkeypatch):
+    """The call site, not the function: _extract_signals must PASS the caption."""
+    import app.services.product_lookup_service as pls
+
+    svc = _make_fake_openai_service(None, _NUTRITION)
+    monkeypatch.setattr(pls, "get_openai_service", lambda: svc)
+
+    signals = asyncio.run(
+        pls._extract_signals(
+            "data:image/jpeg;base64,abc",
+            telegram_id=1,
+            input_ref="FID",
+            caption="1/3 порции батата с ranch",
+        )
+    )
+
+    assert (
+        svc.analyze_food_image.call_args.kwargs.get("caption")
+        == "1/3 порции батата с ranch"
+    ), "the caption never reached the vision call"
+    # The barcode reader gets the image alone — user prose is noise for digits.
+    assert "caption" not in svc.extract_barcode_from_image.call_args.kwargs
+    # And it is recorded for transparency / misprediction analysis.
+    assert signals.caption == "1/3 порции батата с ranch"
+    assert signals.portion_source == "vision+note"
+
+
+def test_extract_signals_without_caption_marks_portion_source_vision(monkeypatch):
+    """Expected answer 'no finding': no caption → no claim that one was used."""
+    import app.services.product_lookup_service as pls
+
+    svc = _make_fake_openai_service(None, _NUTRITION)
+    monkeypatch.setattr(pls, "get_openai_service", lambda: svc)
+
+    signals = asyncio.run(
+        pls._extract_signals(
+            "data:image/jpeg;base64,abc", telegram_id=1, input_ref="FID"
+        )
+    )
+
+    assert svc.analyze_food_image.call_args.kwargs.get("caption") is None
+    assert signals.caption is None
+    assert signals.portion_source == "vision"
+
+
+@pytest.mark.parametrize(
+    "vision_result, expected",
+    [
+        # The numeric field wins over the prose.
+        ({"portion": "1/3 порции", "portion_grams": 60.0}, 60.0),
+        ({"portion": "100 grams", "portion_grams": 100}, 100.0),
+        ({"portion": "1 tube (150g)", "portion_grams": "75,5"}, 75.5),
+        # Junk in the numeric field falls back to the prose, it does not crash.
+        ({"portion": "200г", "portion_grams": "n/a"}, 200.0),
+        ({"portion": "200г", "portion_grams": None}, 200.0),
+        ({"portion": "200г", "portion_grams": 0}, 200.0),
+        # A share WITHOUT a usable number must refuse, not grab the nearest
+        # weight: "1/3 от 300 г" is 100 g eaten, and returning 300 would book a
+        # 3x overcount under a confident gram basis.
+        ({"portion": "1/3 от 300 г"}, None),
+        ({"portion": "1 порция (300 г), съедено 1/3"}, None),
+        ({"portion": "половина тарелки (400 г)"}, None),
+        ({"portion": "half of a 200g pack"}, None),
+        # …but a plain count plus a weight is not a share and still parses.
+        ({"portion": "1 порция (75 г)"}, 75.0),
+        ({"portion": "1 serving (300g)"}, 300.0),
+    ],
+)
+def test_parse_portion_grams_prefers_numbers_and_refuses_shares(
+    vision_result, expected
+):
+    assert _parse_portion_grams(vision_result) == expected
+
+
+# ---------------------------------------------------------------------------
+# strategy_attempts — a strategy that BROKE vs one that found nothing
+# ---------------------------------------------------------------------------
+
+
+def test_signals_record_strategy_error_separately_from_a_miss(monkeypatch):
+    """The distinction that would have surfaced both 2026-09-13 defects on day one.
+
+    strategy_tried listed name_web for weeks while every single call died with
+    AttributeError. A flat "tried" list cannot tell "searched, found nothing"
+    from "never worked at all".
+    """
+    import app.services.product_lookup_service as pls
+
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
+        signals = await _build_signals(None, _NUTRITION, image_data_url)
+        # Simulate what NameWebSearchStrategy does when its SDK surface is gone.
+        # (label_ocr stands in for a strategy that merely found nothing.)
+        signals.note_failure("name_web", AttributeError("no attribute 'responses'"))
+        return signals
+
+    monkeypatch.setattr(pls, "_extract_signals", fake_extract)
+
+    result = asyncio.run(pls.resolve_meal_nutrition("data:image/jpeg;base64,abc"))
+
+    attempts = {a["strategy"]: a for a in result.signals["strategy_attempts"]}
+    assert attempts["name_web"]["outcome"] == "error"
+    assert "AttributeError" in attempts["name_web"]["error"]
+    # A strategy that simply found nothing is a miss, not an error.
+    assert attempts["name_off"]["outcome"] == "miss"
+    # And the winner is recorded as a hit.
+    assert attempts[result.source]["outcome"] == "hit"
+    # The legacy key is preserved for rows written before this existed.
+    assert result.signals["strategy_tried"][-1] == result.source
+
+
+# ---------------------------------------------------------------------------
+# A macro Open Food Facts does not carry is UNKNOWN, not zero
+# ---------------------------------------------------------------------------
+
+
+def _off_result_missing_protein():
+    return OFFLookupResult(
+        barcode="4607195501226",
+        off_code="4607195501226",
+        product_name="Соус Ranch",
+        brand="Classic",
+        calories_per_100g=300.0,
+        proteins_per_100g=None,
+        fats_per_100g=30.0,
+        carbohydrates_per_100g=5.0,
+        from_cache=False,
+        raw_data={},
+    )
+
+
+def test_scale_off_nutrition_keeps_unknown_macros_unknown():
+    scaled = _scale_off_nutrition(
+        _off_result_missing_protein(), 200.0, fallback_food="x"
+    )
+    assert scaled["protein"] is None, (
+        "a macro OFF does not have was reported as 0 — a confident claim that "
+        "the food contains no protein"
+    )
+    assert scaled["calories"] == 600.0  # scaling still applies to what IS known
+    assert scaled["fats"] == 60.0
+
+
+def test_scale_off_nutrition_unscaled_branch_keeps_unknown_macros_unknown():
+    scaled = _scale_off_nutrition(
+        _off_result_missing_protein(), None, fallback_food="x"
+    )
+    assert scaled["protein"] is None
+    assert scaled["calories"] == 300.0
+    assert scaled["portion"] == "100г"
+
+
+def test_barcode_hit_with_missing_macros_is_not_badged_certain(monkeypatch):
+    """An incomplete OFF record is the right product but not a complete answer."""
+    import app.services.product_lookup_service as pls
+
+    class _FakeOFF:
+        def __init__(self, db):
+            pass
+
+        async def lookup(self, barcode):
+            return _off_result_missing_protein()
+
+    monkeypatch.setattr(pls, "OpenFoodFactsService", _FakeOFF)
+    signals = asyncio.run(_build_signals("4607195501226", _NUTRITION, "data:x"))
+
+    result = asyncio.run(pls.BarcodeOFFStrategy().resolve(signals, db=None))
+
+    assert result is not None
+    assert (
+        result.confidence_tier == "medium"
+    ), "a product with holes in its macros was badged '📦 по штрих-коду (точно)'"
+    assert result.signals["off_missing_macros"] == ["белки"]
+
+
+def test_barcode_hit_with_complete_macros_stays_certain(monkeypatch):
+    """Expected answer 'no finding': a complete OFF record keeps high confidence."""
+    import app.services.product_lookup_service as pls
+
+    class _FakeOFF:
+        def __init__(self, db):
+            pass
+
+        async def lookup(self, barcode):
+            return _OFF_RESULT
+
+    monkeypatch.setattr(pls, "OpenFoodFactsService", _FakeOFF)
+    signals = asyncio.run(_build_signals("4607195501226", _NUTRITION, "data:x"))
+
+    result = asyncio.run(pls.BarcodeOFFStrategy().resolve(signals, db=None))
+
+    assert result.confidence_tier == "high"
+    assert result.signals["off_missing_macros"] == []

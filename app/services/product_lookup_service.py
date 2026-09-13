@@ -80,10 +80,28 @@ class ImageSignals:
     image_data_url: str  # base64 data URL (never exposed to 3rd parties)
     barcode: Optional[str]  # A3 result — digits-only string or None
     vision_result: Optional[dict]  # parsed nutrition dict from analyze_food_image
-    portion_grams: Optional[float]  # extracted from vision_result["portion"]
+    portion_grams: Optional[float]  # from vision_result["portion_grams"]/["portion"]
     # Logging context for strategies that make their own OpenAI calls (A10+).
     telegram_id: Optional[int] = None
     input_ref: Optional[str] = None
+    # The user's own note about the photo (Telegram caption / inbound content).
+    # Phase 1 feeds it to the vision call; strategies see it here for transparency
+    # and misprediction analysis. Strategies stay pure over these signals
+    # (ADR-0001 §3) — they must not re-call the vision model with it.
+    caption: Optional[str] = None
+    # "vision" | "vision+note" — what the portion estimate was made from. Not a
+    # claim that the model obeyed the note, only that the note was in the prompt.
+    portion_source: Optional[str] = None
+    # Per-run scratchpad. A strategy that SWALLOWS an exception records it here so
+    # the runner can mark that attempt "error" instead of an indistinguishable
+    # "miss". Without this, a strategy that is 100% broken (openai SDK without the
+    # Responses API, 2026-09-13) and one that simply found nothing leave identical
+    # traces — which is exactly why that defect survived in production.
+    failures: Dict[str, str] = field(default_factory=dict)
+
+    def note_failure(self, source_id: str, exc: BaseException) -> None:
+        """Record a swallowed strategy failure (see ``failures``)."""
+        self.failures[source_id] = f"{exc.__class__.__name__}: {exc}"[:200]
 
 
 @dataclass
@@ -149,24 +167,59 @@ def _scale_off_nutrition(
     ``fallback_food`` names the item when OFF has no ``product_name``.
     """
     foods = [off_result.product_name] if off_result.product_name else [fallback_food]
-    if portion_grams is not None and portion_grams > 0:
-        factor = portion_grams / 100.0
-        return {
-            "calories": round((off_result.calories_per_100g or 0) * factor, 1),
-            "protein": round((off_result.proteins_per_100g or 0) * factor, 1),
-            "fats": round((off_result.fats_per_100g or 0) * factor, 1),
-            "carbs": round((off_result.carbohydrates_per_100g or 0) * factor, 1),
-            "portion": f"{portion_grams:.0f}г",
-            "foods": foods,
-        }
+    factor = (
+        portion_grams / 100.0
+        if (portion_grams is not None and portion_grams > 0)
+        else None
+    )
+
+    def _scaled(value: Optional[float]) -> Optional[float]:
+        """Scale a macro, preserving None.
+
+        A macro OFF does not carry is UNKNOWN, not zero. Coercing it to 0 stated
+        "this food has no protein" under the "📦 по штрих-коду (точно)" badge —
+        a confident wrong number. None renders as "—" in the reply and leaves the
+        column NULL instead.
+        """
+        if value is None:
+            return None
+        return round(value * factor, 1) if factor is not None else value
+
     return {
-        "calories": off_result.calories_per_100g or 0,
-        "protein": off_result.proteins_per_100g or 0,
-        "fats": off_result.fats_per_100g or 0,
-        "carbs": off_result.carbohydrates_per_100g or 0,
-        "portion": "100г",
+        "calories": _scaled(off_result.calories_per_100g),
+        "protein": _scaled(off_result.proteins_per_100g),
+        "fats": _scaled(off_result.fats_per_100g),
+        "carbs": _scaled(off_result.carbohydrates_per_100g),
+        "portion": f"{portion_grams:.0f}г" if factor is not None else "100г",
         "foods": foods,
     }
+
+
+def _is_clean_miss(exc: BaseException) -> bool:
+    """True when an exception is the designed "found nothing" channel, not a fault.
+
+    The ``parse=`` callbacks (``_parse_web_nutrition_response``,
+    ``_parse_label_json``) raise ValueError for an empty response, a missing
+    product identification, or an unreadable label — all ordinary outcomes that
+    the strategy is meant to fall through on. Recording those as failures would
+    make the pipeline look broken on perfectly normal meals and, worse, would
+    train the reader to ignore the one signal that says a strategy is dead.
+    """
+    return isinstance(exc, ValueError)
+
+
+def _missing_off_macros(off_result: OFFLookupResult) -> List[str]:
+    """Macro names (user-facing, Russian) that OFF did not supply at all."""
+    return [
+        name
+        for name, value in (
+            ("калории", off_result.calories_per_100g),
+            ("белки", off_result.proteins_per_100g),
+            ("жиры", off_result.fats_per_100g),
+            ("углеводы", off_result.carbohydrates_per_100g),
+        )
+        if value is None
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +333,7 @@ class BarcodeOFFStrategy(ResolutionStrategy):
                 exc,
                 exc_info=True,
             )
+            signals.note_failure(self.source_id, exc)
             off_result = None
         latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -292,6 +346,11 @@ class BarcodeOFFStrategy(ResolutionStrategy):
             off_result, portion_grams, fallback_food=signals.barcode
         )
 
+        # A barcode match with missing macros is still the right PRODUCT, but it is
+        # no longer a complete answer — don't badge it "точно".
+        missing = _missing_off_macros(off_result)
+        tier = "medium" if missing else self.confidence_tier
+
         signals_dict: Dict[str, Any] = {
             "barcode_raw": signals.barcode,
             "barcode_detected": True,
@@ -301,7 +360,8 @@ class BarcodeOFFStrategy(ResolutionStrategy):
             "off_from_cache": off_result.from_cache,
             "off_latency_ms": latency_ms,
             "portion_grams": portion_grams,
-            "confidence_tier": self.confidence_tier,
+            "off_missing_macros": missing,
+            "confidence_tier": tier,
             "strategy_tried": [self.source_id],  # runner updates this
             "strategy_chosen": self.source_id,
             "vision_foods": (signals.vision_result or {}).get("foods", []),
@@ -310,7 +370,7 @@ class BarcodeOFFStrategy(ResolutionStrategy):
 
         return ResolutionResult(
             source=self.source_id,
-            confidence_tier=self.confidence_tier,
+            confidence_tier=tier,
             nutrition=nutrition,
             description=off_result.product_name or signals.barcode,
             portion_grams=portion_grams,
@@ -370,6 +430,7 @@ class NameOFFStrategy(ResolutionStrategy):
             logger.warning(
                 "NameOFFStrategy: search raised for %r: %s", query, exc, exc_info=True
             )
+            signals.note_failure(self.source_id, exc)
             off_result = None
         latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -391,6 +452,7 @@ class NameOFFStrategy(ResolutionStrategy):
             "off_from_cache": False,  # name search is never cached
             "off_latency_ms": latency_ms,
             "portion_grams": portion_grams,
+            "off_missing_macros": _missing_off_macros(off_result),
             "confidence_tier": self.confidence_tier,
             "strategy_tried": [self.source_id],  # runner updates this
             "strategy_chosen": self.source_id,
@@ -482,6 +544,8 @@ class LabelOCRStrategy(ResolutionStrategy):
                 exc,
                 exc_info=True,
             )
+            if not _is_clean_miss(exc):
+                signals.note_failure(self.source_id, exc)
             return None
         latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -776,11 +840,14 @@ class NameWebSearchStrategy(ResolutionStrategy):
             # analyze_and_log re-raises after logging; swallow here so the
             # pipeline continues to the next strategy (non-blocking contract).
             logger.warning(
-                "NameWebSearchStrategy: web_search_nutrition failed for %r: %s",
+                "NameWebSearchStrategy: web_search_nutrition failed for %r (%s): %s",
                 name_query,
+                exc.__class__.__name__,
                 exc,
                 exc_info=True,
             )
+            if not _is_clean_miss(exc):
+                signals.note_failure(self.source_id, exc)
             return None
 
         off_query = parsed.get("off_query")
@@ -799,6 +866,7 @@ class NameWebSearchStrategy(ResolutionStrategy):
                     exc,
                     exc_info=True,
                 )
+                signals.note_failure(self.source_id, exc)
                 off_result = None
 
             if off_result is not None:
@@ -814,6 +882,7 @@ class NameWebSearchStrategy(ResolutionStrategy):
                     "off_from_cache": False,  # name search is never cached
                     "off_latency_ms": None,
                     "portion_grams": portion_grams,
+                    "off_missing_macros": _missing_off_macros(off_result),
                     "confidence_tier": "medium",
                     "strategy_tried": [self.source_id],  # runner updates this
                     "strategy_chosen": self.source_id,
@@ -956,9 +1025,7 @@ def _build_rag_query_text(signals: "ImageSignals") -> Optional[str]:
     empty food list) — the strategy then returns None and falls through.
     """
     vision = signals.vision_result or {}
-    foods = [
-        f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()
-    ]
+    foods = [f for f in (vision.get("foods") or []) if isinstance(f, str) and f.strip()]
     if foods:
         return ", ".join(foods)
     return None
@@ -967,6 +1034,16 @@ def _build_rag_query_text(signals: "ImageSignals") -> Optional[str]:
 # ---------------------------------------------------------------------------
 # B3 strategy: SavedFoodRAGStrategy
 # ---------------------------------------------------------------------------
+
+
+def _has_usable_macros(pf: PersonalFood) -> bool:
+    """True when a saved row carries at least calories.
+
+    ``_build_result`` coerces NULL macros to 0, so a row saved without a per-100g
+    basis would be served as a confident "0 ккал" under the "⭐ из вашей базы"
+    badge. Refusing the match lets the rest of the pipeline answer instead.
+    """
+    return pf.per_100g_calories is not None
 
 
 class SavedFoodRAGStrategy(ResolutionStrategy):
@@ -997,11 +1074,12 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
     ) -> Optional[ResolutionResult]:
         try:
             return await self._resolve(signals, db)
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "SavedFoodRAGStrategy failed; falling through",
                 exc_info=True,
             )
+            signals.note_failure(self.source_id, exc)
             return None
 
     async def _resolve(
@@ -1022,6 +1100,13 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             pf = crud_personal_food.get_by_barcode(
                 db, barcode=signals.barcode, user_id=user_id
             )
+            if pf is not None and not _has_usable_macros(pf):
+                logger.warning(
+                    "SavedFoodRAGStrategy: personal_food_id=%d matched by barcode but "
+                    "has no per-100g macros — letting BarcodeOFFStrategy resolve it",
+                    pf.id,
+                )
+                pf = None
             if pf is not None:
                 logger.debug(
                     "SavedFoodRAGStrategy: barcode %r matched personal_food_id=%d",
@@ -1062,6 +1147,13 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             return None
 
         pf, distance = ann_result
+        if not _has_usable_macros(pf):
+            logger.warning(
+                "SavedFoodRAGStrategy: personal_food_id=%d matched but has no "
+                "per-100g macros — falling through rather than serving zeros",
+                pf.id,
+            )
+            return None
         logger.debug(
             "SavedFoodRAGStrategy: ANN matched personal_food_id=%d "
             "(distance=%.4f) for %r",
@@ -1187,6 +1279,7 @@ async def resolve_meal_nutrition(
     *,
     telegram_id: Optional[int] = None,
     input_ref: Optional[str] = None,
+    caption: Optional[str] = None,
 ) -> ResolutionResult:
     """Entry point for A4.  Returns the best-confidence result available.
 
@@ -1205,21 +1298,54 @@ async def resolve_meal_nutrition(
         For ai_call_logs attribution.
     input_ref:
         Telegram file_id (or similar) for ai_call_logs ``input_ref`` column.
+    caption:
+        The user's own note about the photo (Telegram caption / replayed
+        ``inbound_messages.content``).  Reaches the vision call, which is where it
+        can correct the food list and the eaten portion.
     """
     with SessionLocal() as db:
         signals = await _extract_signals(
             image_data_url,
             telegram_id=telegram_id,
             input_ref=input_ref,
+            caption=caption,
         )
         pipeline = _build_pipeline()
         tried: List[str] = []
+        # Per-strategy outcome, so a strategy that BROKE is distinguishable from
+        # one that simply found nothing. ``strategy_tried`` is kept unchanged for
+        # rows and readers that predate this.
+        attempts: List[dict] = []
         for strategy in pipeline:
             result = await strategy.resolve(signals, db)
             tried.append(strategy.source_id)
+            error = signals.failures.get(strategy.source_id)
+            attempt = {
+                "strategy": strategy.source_id,
+                "outcome": (
+                    "hit" if result is not None else ("error" if error else "miss")
+                ),
+            }
+            if error:
+                attempt["error"] = error
+            attempts.append(attempt)
             if result is not None:
                 # Annotate with the full tried list (runner has the full picture).
                 result.signals["strategy_tried"] = tried
+                result.signals["strategy_attempts"] = attempts
+                # Recorded once here rather than in each strategy's signals dict:
+                # one site cannot drift out of sync with a seventh strategy.
+                result.signals["caption"] = signals.caption
+                result.signals["portion_source"] = signals.portion_source
+                # The pipeline had no INFO line at all, so at the deployed
+                # LOG_LEVEL=INFO a meal left no trace of which paths were even
+                # attempted. One line per meal, not one per strategy.
+                logger.info(
+                    "pipeline: chosen=%s tier=%s attempts=%s",
+                    result.source,
+                    result.confidence_tier,
+                    ",".join(f"{a['strategy']}:{a['outcome']}" for a in attempts),
+                )
                 return result
 
     # Unreachable — VisionFallbackStrategy always returns a result unless vision
@@ -1241,6 +1367,7 @@ async def _extract_signals(
     *,
     telegram_id: Optional[int],
     input_ref: Optional[str],
+    caption: Optional[str] = None,
 ) -> ImageSignals:
     """Run barcode extraction and vision analysis concurrently.
 
@@ -1264,7 +1391,11 @@ async def _extract_signals(
         parse=lambda raw: {"barcode": raw},
     )
     vision_coro = analyze_and_log(
-        svc.analyze_food_image(image_data_url),
+        # The caption goes to the VISION call only: it is what turns "a plate of
+        # fries" into "1/3 of a plate of fries with ranch sauce". The barcode
+        # reader gets the image alone — a different job, and user prose would only
+        # add noise to digit reading.
+        svc.analyze_food_image(image_data_url, caption=caption),
         kind="image",
         input_ref=input_ref,
         telegram_id=telegram_id,
@@ -1299,6 +1430,8 @@ async def _extract_signals(
         portion_grams=_parse_portion_grams(vision_parsed),
         telegram_id=telegram_id,
         input_ref=input_ref,
+        caption=caption,
+        portion_source="vision+note" if caption else "vision",
     )
 
 
@@ -1307,8 +1440,26 @@ async def _extract_signals(
 # ---------------------------------------------------------------------------
 
 
+# A share of a portion, stated in words or digits. Deliberately TIGHT: it must not
+# match a plain count + weight ("1 порция (75 г)", "1 serving (300g)"), which the
+# parser below still reads as grams.
+_SHARE_MARKER = re.compile(
+    r"\d\s*/\s*\d"  # 1/3, 1 / 2
+    r"|[½⅓⅔¼¾⅕⅖⅗⅘]"  # vulgar fractions
+    r"|трет[ьи]"  # треть, трети
+    r"|половин"  # половина, половину
+    r"|полпорц"  # полпорции
+    r"|\bhalf\b|\bthirds?\b|\bquarters?\b",
+    re.IGNORECASE,
+)
+
+
 def _parse_portion_grams(vision_result: Optional[dict]) -> Optional[float]:
-    """Extract a gram value from the vision result's portion string.
+    """Grams of the portion ACTUALLY EATEN, or None when it cannot be known.
+
+    Prefers the model's machine-readable ``portion_grams`` field (the vision
+    prompt asks for it explicitly) and falls back to parsing the human-readable
+    ``portion`` string.
 
     Examples that should match:
       "1 serving (300g)"  → 300.0
@@ -1317,13 +1468,44 @@ def _parse_portion_grams(vision_result: Optional[dict]) -> Optional[float]:
       "1,5 кг"            → 1500.0
       "150 g"             → 150.0
       "2 cups (480 ml)"   → None  (ml, not grams)
+      "1/3 от 300 г"      → None  (a share, not a weight — see the guard below)
+
+    Returning None is the honest answer, not a failure: every OFF-backed strategy
+    then keeps its per-100g numbers and the reply warns the user, whereas a wrong
+    gram basis is multiplied into the macros AND inverse-scaled into the personal
+    food DB, where it outlives the meal.
     """
     if not vision_result:
         return None
+
+    # 1. The numeric field wins. It is the only channel that can express a
+    #    caption-driven share ("я съела 1/3") as something arithmetic-safe.
+    raw_grams = vision_result.get("portion_grams")
+    if raw_grams is not None and not isinstance(raw_grams, bool):
+        try:
+            value = float(str(raw_grams).replace(",", "."))
+        except (TypeError, ValueError):
+            logger.warning("vision portion_grams is not a number: %r", raw_grams)
+        else:
+            if value > 0:
+                return value
+            logger.warning("vision portion_grams is not positive: %r", raw_grams)
+
     portion = vision_result.get("portion") or ""
     if not portion:
         return None
     portion_str = str(portion)
+
+    # 2. Ambiguity guard. "1/3 от 300 г" and "1 порция (300 г), съедено 1/3" both
+    #    make the regexes below return 300 — the WHOLE portion, a 3x overcount
+    #    booked under a confident gram basis. Refuse rather than guess.
+    if _SHARE_MARKER.search(portion_str):
+        logger.info(
+            "portion %r states a share without a usable portion_grams — "
+            "falling back to per-100g",
+            portion_str,
+        )
+        return None
 
     # Kilograms FIRST, so 'кг'/'kg' isn't consumed by the grams pattern below.
     kg = re.search(

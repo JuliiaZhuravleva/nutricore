@@ -101,6 +101,15 @@ confirm_keyboard = ReplyKeyboardMarkup(
 _CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅"}
 _CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
 
+# The portion string every strategy emits when it could NOT scale to a portion and
+# its numbers are therefore per-100g (see _scale_off_nutrition). Used as the only
+# safe signal that whole-portion macros may be stored as per-100g.
+_PER_100G_PORTION = "100г"
+
+# Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
+# numbers came from a shallower path than they should have.
+_DEGRADED_LINE = "⚠️ часть путей поиска не сработала — числа могут быть грубее обычного"
+
 
 def _confirm_intent(text: str | None) -> str:
     """Classify a reply to "Всё верно? (Да/Нет)" as affirm | reject | correction."""
@@ -288,12 +297,32 @@ def _schedule_personal_food_save(
         # Per-100g macro computation:
         #   Image paths: portion_grams pre-computed in resolution_signals.
         #   Text paths:  attempt to parse grams from nutrition["portion"] string.
-        #   No portion available (factor=1.0): values are already per-100g
-        #   (strategies that can't scale return "100г" as the portion string).
-        portion_grams = signals.get("portion_grams") or _parse_portion_grams(nutrition)
-        factor = (
-            (100.0 / portion_grams) if (portion_grams and portion_grams > 0) else 1.0
-        )
+        #   Neither available: the numbers are absolute for an UNKNOWN weight, so
+        #   no per-100g basis exists — see the guard below.
+        portion_grams = signals.get("portion_grams")
+        if portion_grams is None:
+            portion_grams = _parse_portion_grams(nutrition)
+
+        if portion_grams and portion_grams > 0:
+            factor = 100.0 / portion_grams
+        elif str(nutrition.get("portion") or "").strip() == _PER_100G_PORTION:
+            # The strategy already handed us per-100g numbers — its own sentinel.
+            factor = 1.0
+        else:
+            # The old code used factor=1.0 here, which stored the macros of a WHOLE
+            # portion in the per_100g_* columns. Those rows are then served back by
+            # SavedFoodRAGStrategy at medium confidence under "⭐ из вашей базы" —
+            # a wrong number that outlives the meal that created it. Learn nothing
+            # rather than learn a lie.
+            logger.warning(
+                "_schedule_personal_food_save: no per-100g basis for %r "
+                "(user_id=%d meal_id=%d portion=%r) — not saving to the personal DB",
+                canonical_name,
+                user_id,
+                meal_id,
+                nutrition.get("portion"),
+            )
+            return
 
         def _to_per100g(v: object) -> float | None:
             try:
@@ -380,9 +409,21 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     or wrong portion estimate before confirming the meal
     (ADR-0001 §6 + §7, north-star transparency principle).
     """
-    if result is None or result.source == "vision":
+    if result is None:
         return []
     signals = result.signals or {}
+    # A strategy that BROKE (not one that merely found nothing) means the numbers
+    # below came from a shallower path than the user would otherwise have got.
+    # This is the only user-visible trace of a swallowed failure, so it fires even
+    # for a vision-only result — that is precisely the case where a broken
+    # strategy is what pushed us down to vision.
+    degraded = [
+        a
+        for a in (signals.get("strategy_attempts") or [])
+        if a.get("outcome") == "error"
+    ]
+    if result.source == "vision":
+        return [_DEGRADED_LINE] if degraded else []
     lines: list = []
     barcode_raw = signals.get("barcode_raw")
     if barcode_raw:
@@ -392,10 +433,15 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
         lines.append(f"Продукт: {product_name}")
     # Explicit gram-basis transparency (ADR-0001 §7 / CQ2 / A6):
     if result.portion_grams is not None and result.portion_grams > 0:
-        # Scaled: show the vision-estimated gram basis so the user can verify
-        # it is correct and correct it at the confirm step if needed.
+        # Scaled: show the gram basis so the user can verify it and correct it at
+        # the confirm step if needed. Name the note when one was in the prompt.
+        basis = (
+            "оценка по фото и твоему описанию"
+            if signals.get("portion_source") == "vision+note"
+            else "оценка по фото"
+        )
         lines.append(
-            f"Пересчитано на {result.portion_grams:.0f}г (оценка по фото)"
+            f"Пересчитано на {result.portion_grams:.0f}г ({basis})"
             " — скорректируй при подтверждении"
         )
     else:
@@ -403,7 +449,21 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
         lines.append(
             "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
         )
+    missing = signals.get("off_missing_macros") or []
+    if missing:
+        lines.append(f"⚠️ в базе нет: {', '.join(missing)} — впиши при подтверждении")
+    if degraded:
+        lines.append(_DEGRADED_LINE)
     return lines
+
+
+def _fmt_macro(value) -> str:
+    """Render a macro for the reply; an UNKNOWN macro is "—", never 0.
+
+    Open Food Facts routinely carries a product with some macros absent. Printing
+    a hard 0 for those made the reply state a fact the database never had.
+    """
+    return "—" if value is None else str(value)
 
 
 def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
@@ -422,10 +482,10 @@ def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = 
         parts.append(f"Источник: {badge}")
     parts.extend(detail_lines)
     parts.append(f"Продукты: {', '.join(data['foods'])}")
-    parts.append(f"Калории: {data['calories']} ккал")
-    parts.append(f"Белки: {data['protein']}г")
-    parts.append(f"Жиры: {data['fats']}г")
-    parts.append(f"Углеводы: {data['carbs']}г")
+    parts.append(f"Калории: {_fmt_macro(data['calories'])} ккал")
+    parts.append(f"Белки: {_fmt_macro(data['protein'])}г")
+    parts.append(f"Жиры: {_fmt_macro(data['fats'])}г")
+    parts.append(f"Углеводы: {_fmt_macro(data['carbs'])}г")
     parts.append(f"Порция: {data['portion']}")
     parts.append("")
     parts.append("Всё верно? (Да/Нет)")
@@ -467,6 +527,7 @@ async def _run_meal_analysis(
     input_ref: str,
     payload: str,
     inbound_id: int | None = None,
+    caption: str | None = None,
 ) -> int:
     """Analyze one meal input (image data URL or text), reply, and stage the draft.
 
@@ -485,6 +546,7 @@ async def _run_meal_analysis(
                 payload,
                 telegram_id=update.effective_user.id,
                 input_ref=input_ref,
+                caption=caption,
             )
             nutrition_info = resolution_result.nutrition
         else:
@@ -507,6 +569,7 @@ async def _run_meal_analysis(
             input_ref=input_ref,
             payload=payload,
             inbound_id=inbound_id,
+            caption=caption,
         )
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
@@ -612,6 +675,10 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         input_ref=input_ref,
         payload=payload,
         inbound_id=inbound_id,
+        # `content` IS update.message.caption for photos. It was persisted to
+        # inbound_messages and then dropped here — the user's own words about
+        # brand and portion never reached the model (fixed 2026-09-13).
+        caption=content if kind == "image" else None,
     )
 
 
@@ -624,6 +691,7 @@ async def _offer_model_choice(
     input_ref: str,
     payload: str,
     inbound_id: int | None = None,
+    caption: str | None = None,
 ) -> int:
     """A model went missing mid-analysis: stash the input and show a picker so the
     owner can switch models and have the analysis retried automatically."""
@@ -632,6 +700,10 @@ async def _offer_model_choice(
         "input_ref": input_ref,
         "payload": payload,
         "inbound_id": inbound_id,
+        # Stashed too: the retry re-runs the analysis from scratch, and a caption
+        # dropped here would silently degrade exactly the retry the owner runs
+        # after a model outage.
+        "caption": caption,
     }
     models = await telegram_service.openai_service.list_suitable_models()
     context.user_data["model_choices"] = models
@@ -680,6 +752,7 @@ async def process_model_choice(
         input_ref=pending["input_ref"],
         payload=pending["payload"],
         inbound_id=pending.get("inbound_id"),
+        caption=pending.get("caption"),
     )
 
 
@@ -986,6 +1059,10 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     payload,
                     telegram_id=row.telegram_id,
                     input_ref=input_ref,
+                    # The stored caption. /reprocess OVERWRITES ai_analysis, so
+                    # replaying without it would actively downgrade a record the
+                    # live flow got right.
+                    caption=row.content,
                 )
                 parsed = resolution_result.nutrition
             else:

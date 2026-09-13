@@ -22,7 +22,7 @@ celery = "^5.4.0"
 python-telegram-bot = "^21.9"
 httpx = "^0.28.1"
 python-dotenv = "^1.0.1"
-openai = "^1.12.0"
+openai = "^2.54.0"   # >=1.66.0 required for client.responses (ADR-0002 web search); 2.x is the verified line
 pgvector = ">=0.3.0"
 
 [tool.poetry.group.dev.dependencies]

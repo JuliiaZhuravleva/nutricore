@@ -9,9 +9,12 @@ Coverage:
   - add_embedding(): create embedding row
   - get_embeddings_for_food(): returns all embeddings for a food
 
-find_similar() is NOT tested here — it uses the pgvector <=> operator which is
-Postgres-only.  B6 tests SavedFoodRAGStrategy by mocking crud_personal_food.find_similar.
-The real ANN / threshold check is a manual post-deploy verification (ADR-0003 §4d).
+find_similar()'s ANN *semantics* are not tested here — the pgvector <=> operator is
+Postgres-only, and B6 tests SavedFoodRAGStrategy by mocking crud_personal_food.find_similar.
+Its *statement* IS tested here, at compile level against the Postgres dialect: the
+query shipped broken once (see the find_similar section below), and "we cannot run
+the operator" was the reason nobody checked the SQL itself. Only the real distances
+and the 0.15 threshold remain a post-deploy verification (ADR-0003 §4d).
 
 All tests run on the in-memory SQLite DB from conftest.py (Base.metadata.create_all).
 The Vector(1536) column uses the fallback UserDefinedType which SQLite accepts as TEXT.
@@ -19,12 +22,16 @@ The Vector(1536) column uses the fallback UserDefinedType which SQLite accepts a
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_user import crud_user
 from app.schemas.user import UserCreate
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,7 +98,9 @@ def test_upsert_stores_barcode(db_session):
     """barcode is persisted when provided on create."""
     user = _make_user(db_session, telegram_id=10_003)
 
-    food = _upsert_basic(db_session, user.id, name="Молоко БЗМЖ", barcode="4607195501226")
+    food = _upsert_basic(
+        db_session, user.id, name="Молоко БЗМЖ", barcode="4607195501226"
+    )
 
     assert food.barcode == "4607195501226"
 
@@ -329,25 +338,141 @@ def test_get_embeddings_for_food_scoped_to_food(db_session):
 
 
 # ---------------------------------------------------------------------------
-# find_similar() — structural / smoke test only
+# find_similar() — the SHIPPED statement, asserted at compile level
 # ---------------------------------------------------------------------------
+#
+# These replace two structural smoke tests (``assert callable(...)`` and an
+# inspect.signature key check) that stayed green on a query psycopg2 refused to
+# run. On 2026-09-13 the ANN query was found to be dead in production: text()
+# with ":embedding::vector" parses a PHANTOM bind named "embeddin", leaves the
+# placeholder literal in the compiled SQL, and Postgres raises
+# 'syntax error at or near ":"'. find_similar's broad except turned that into a
+# permanent silent "no match", so the personal-food RAG could never hit.
+#
+# SQLite cannot run pgvector's <=> operator, so the ANN *result* still has to be
+# mocked. The *statement* does not: it is asserted here against the Postgres
+# dialect, which needs no database at all.
 
 
-def test_find_similar_method_exists():
-    """find_similar is accessible as the mockable B6 seam (ADR-0003 §4d)."""
-    assert callable(crud_personal_food.find_similar)
+class _CapturingSession:
+    """Records the statement find_similar executes; reports a clean miss."""
+
+    def __init__(self):
+        self.stmt = None
+        self.params = None
+        self.rolled_back = False
+
+    def execute(self, stmt, params=None):
+        self.stmt, self.params = stmt, params
+        return SimpleNamespace(first=lambda: None)
+
+    def rollback(self):  # pragma: no cover - only used by the failure test
+        self.rolled_back = True
 
 
-def test_find_similar_signature():
-    """find_similar accepts the expected keyword arguments."""
-    import inspect
+def test_find_similar_binds_the_embedding_parameter():
+    """The ANN query must BIND :embedding, not emit it literally."""
+    db = _CapturingSession()
 
-    sig = inspect.signature(crud_personal_food.find_similar)
-    params = set(sig.parameters)
-    assert "db" in params
-    assert "embedding" in params
-    assert "threshold" in params
-    assert "user_id" in params
+    assert (
+        crud_personal_food.find_similar(
+            db, embedding=[0.1] * 1536, threshold=0.15, user_id=7
+        )
+        is None
+    )
+
+    assert db.stmt is not None, "find_similar never executed a statement"
+    assert isinstance(db.params, dict), (
+        "params are no longer a dict — this control would pass vacuously; "
+        "update it for the new call shape"
+    )
+    # 1. No phantom bind name.
+    assert set(db.stmt._bindparams) == {"embedding", "user_id"}, (
+        f"phantom bind params {sorted(db.stmt._bindparams)} — "
+        "':embedding::vector' parses as ':embeddin' plus literal 'g::vector'"
+    )
+    # 2. The SQL that actually ships to psycopg2.
+    sql = str(db.stmt.compile(dialect=postgresql.dialect()))
+    assert "%(embedding)s" in sql, f"embedding not bound; compiled SQL: {sql}"
+    assert ":embedding" not in sql, (
+        f"literal colon placeholder left in compiled SQL — Postgres will raise "
+        f'syntax error at or near ":". SQL: {sql}'
+    )
+    # 3. The value handed over is pgvector's textual form.
+    assert db.params["embedding"].startswith("[")
+    assert db.params["user_id"] == 7
+
+
+def test_find_similar_logs_error_and_rolls_back_on_sql_failure():
+    """A systemic ANN failure must be an ERROR and must not poison the session."""
+
+    class _BoomSession:
+        def __init__(self):
+            self.rolled_back = False
+
+        def execute(self, *a, **k):
+            raise RuntimeError('syntax error at or near ":"')
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = _BoomSession()
+    with caplog_at_error() as records:
+        assert (
+            crud_personal_food.find_similar(
+                db, embedding=[0.1], threshold=0.15, user_id=7
+            )
+            is None
+        )
+
+    assert any("ANN query FAILED" in r.getMessage() for r in records), (
+        "a systemic ANN failure degraded to a no-match with no ERROR log — "
+        "indistinguishable from an empty personal food DB"
+    )
+    assert any("RuntimeError" in r.getMessage() for r in records), (
+        "the exception class is not in the message; a SQL bug and a dropped "
+        "connection read identically in the logs"
+    )
+    assert db.rolled_back, (
+        "the aborted transaction was not rolled back — every later query on "
+        "this Session would fail too"
+    )
+
+
+def test_find_similar_clean_miss_logs_no_error():
+    """Expected answer 'no finding': an empty result set is not an error."""
+    with caplog_at_error() as records:
+        assert (
+            crud_personal_food.find_similar(
+                _CapturingSession(), embedding=[0.1], threshold=0.15, user_id=7
+            )
+            is None
+        )
+    assert not records, (
+        "a legitimate no-match logged an ERROR — the signal that distinguishes "
+        "a broken ANN from an empty DB would be worthless"
+    )
+
+
+@contextmanager
+def caplog_at_error():
+    """Collect ERROR records from the crud logger (no pytest fixture needed)."""
+    logger = logging.getLogger("app.crud.crud_personal_food")
+    records: list = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collector(level=logging.ERROR)
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +511,9 @@ def test_get_by_barcode_duplicate_returns_most_used(db_session):
         db_session, user.id, name="Кола", barcode="4600000000017", meal_id=1
     )
     # Confirm the second food twice (distinct meals) so it's the most-used.
-    _upsert_basic(db_session, user.id, name="Coca-Cola", barcode="4600000000017", meal_id=2)
+    _upsert_basic(
+        db_session, user.id, name="Coca-Cola", barcode="4600000000017", meal_id=2
+    )
     most_used = _upsert_basic(
         db_session, user.id, name="Coca-Cola", barcode="4600000000017", meal_id=3
     )
@@ -436,9 +563,7 @@ def test_add_embedding_duplicate_is_deduped():
         )
         assert second.id == first.id
 
-        rows = crud_personal_food.get_embeddings_for_food(
-            db, personal_food_id=food.id
-        )
+        rows = crud_personal_food.get_embeddings_for_food(db, personal_food_id=food.id)
         assert len(rows) == 1
     finally:
         db.close()

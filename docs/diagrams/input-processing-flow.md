@@ -17,7 +17,8 @@ Read it two ways: **rows** = maturity, **columns** = the four phases of one flow
 *What actually runs in the bot today.*
 
 - **Capture** — Photo **or** text: one message, either/or (time is picked first, then input).
-  - ⚠️ **Gap ①** — a photo's caption is stored in `inbound_messages` but is **not** sent to the model.
+  - ✅ **Gap ① (first half, closed 2026-09-13)** — a photo's caption now reaches the vision call (fenced as untrusted user data) on the live flow, the after-model-switch retry, and `/reprocess`; it can correct the food list and the eaten portion via `portion_grams`.
+  - ⚠️ **Gap ① (second half, open — TD-013)** — a typed *correction* at the confirm step is still re-analysed as text only, dropping the photo.
 - **Resolve** — Ordered pipeline, first-non-None wins: `barcode_off → name_off → vision`.
   Phase 1 extracts barcode + vision concurrently; phase 2 walks the pipeline.
   - ⚠️ **Gap ②** — a fresh OpenAI call every time; past meals are never reused.

@@ -12,7 +12,7 @@ import base64
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -30,6 +30,7 @@ from app.services import inbound_message_service as im_service
 from app.services import model_selection as ms
 from app.services import telegram as tg
 from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
+from app.services.openai_service import ModelUnavailableError
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -1140,3 +1141,162 @@ def test_reprocess_stops_when_model_still_unavailable(patched_db, monkeypatch):
     with sessionmaker(bind=patched_db)() as db:
         # Left queued (still failed) — not silently dropped.
         assert db.query(InboundMessage).first().status == "failed"
+
+
+# --- the caption must survive every path that re-runs the analysis ----------
+#
+# It is persisted to inbound_messages on receipt, so "the caption is saved" was
+# true while the model never saw it. These assert the CALL, end to end through
+# the real pipeline: the only mock is the vision method itself.
+
+_REAL_CAPTION = (
+    "Я доела остатки (1/3 порции примерно) этого батата с Classic Fasting Ranch Sauce"
+)
+
+
+def test_photo_caption_reaches_the_vision_call(patched_db, image_mock):
+    update, _ = _make_update(
+        photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")], caption=_REAL_CAPTION
+    )
+
+    asyncio.run(tg.process_meal_input(update, _make_photo_context()))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION, (
+        "the caption was persisted to inbound_messages but never sent to the "
+        f"model (kwargs seen: {sorted(image_mock.call_args.kwargs)})"
+    )
+
+
+def test_photo_without_caption_passes_none(patched_db, image_mock):
+    """Expected answer 'no finding': no caption → nothing invented."""
+    update, _ = _make_photo_update()
+
+    asyncio.run(tg.process_meal_input(update, _make_photo_context()))
+
+    assert image_mock.call_args.kwargs.get("caption") is None
+
+
+def test_model_switch_retry_keeps_the_caption(patched_db, image_mock):
+    """The retry re-runs the analysis from a stash; a caption dropped there is
+    lost on exactly the retry the owner runs after a model outage."""
+    update, _ = _make_update(
+        photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")], caption=_REAL_CAPTION
+    )
+    context = _make_photo_context()
+
+    # First pass: the configured model is gone → the picker is offered.
+    image_mock.side_effect = ModelUnavailableError("gpt-4o-mini", RuntimeError("gone"))
+    asyncio.run(tg.process_meal_input(update, context))
+    assert context.user_data["pending_analysis"]["caption"] == _REAL_CAPTION
+
+    # Second pass: the owner picks a model and the analysis is replayed.
+    image_mock.side_effect = None
+    image_mock.return_value = json.dumps(_NUTRITION)
+    context.user_data["model_choices"] = ["gpt-4o"]
+    update2, _ = _make_text_update("gpt-4o")
+    with patch.object(tg.telegram_service.openai_service, "set_model"), patch(
+        "app.services.telegram.persist_model"
+    ):
+        asyncio.run(tg.process_model_choice(update2, context))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION
+
+
+def test_reprocess_replays_the_stored_caption(patched_db, image_mock):
+    """/reprocess OVERWRITES ai_analysis — replaying without the caption would
+    actively downgrade a record the live flow got right."""
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(
+            InboundMessage(
+                telegram_id=42,
+                kind="image",
+                content=_REAL_CAPTION,
+                photo_file_id="PHOTO_FILE_ID",
+                status="failed",
+                error="old model",
+            )
+        )
+        db.commit()
+
+    update, _ = _make_text_update("/reprocess")
+    file = SimpleNamespace(
+        download_as_bytearray=AsyncMock(return_value=bytearray(_IMAGE_BYTES))
+    )
+    context = SimpleNamespace(
+        user_data={}, bot=SimpleNamespace(get_file=AsyncMock(return_value=file))
+    )
+
+    asyncio.run(tg.reprocess(update, context))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION
+
+
+# --- a swallowed strategy failure must be visible to the user --------------
+
+
+def test_reply_warns_when_a_strategy_errored():
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=100.0,
+        signals={
+            "strategy_attempts": [
+                {"strategy": "name_web", "outcome": "error", "error": "AttributeError"},
+                {"strategy": "vision", "outcome": "hit"},
+            ]
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any("не сработала" in line for line in lines), (
+        "a strategy that was 100% broken left the reply looking completely "
+        "normal — the user had no way to know the numbers came from a "
+        "shallower path"
+    )
+
+
+def test_reply_stays_quiet_when_every_strategy_merely_missed():
+    """Expected answer 'no finding': misses are normal, they are not a warning."""
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=100.0,
+        signals={
+            "strategy_attempts": [
+                {"strategy": "name_web", "outcome": "miss"},
+                {"strategy": "vision", "outcome": "hit"},
+            ]
+        },
+    )
+
+    assert tg._resolution_detail_lines(result) == []
+
+
+def test_reply_renders_an_unknown_macro_as_a_dash():
+    """OFF routinely lacks a macro; printing 0 stated a fact it never had."""
+    nutrition = dict(_NUTRITION, protein=None)
+
+    reply = tg._nutrition_reply(nutrition, "Заголовок:")
+
+    assert "Белки: —г" in reply
+    assert "Белки: 0г" not in reply
+
+
+def test_reply_names_the_note_in_the_gram_basis_line():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=60.0,
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Батат",
+            "portion_source": "vision+note",
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any("твоему описанию" in line for line in lines), (
+        "the portion came from the user's own words but the reply still called "
+        "it a photo estimate"
+    )

@@ -120,6 +120,15 @@ class Settings(BaseSettings):
     # Retries for transient OpenAI errors (429 / 5xx / network). The SDK applies
     # exponential backoff; 0 disables retrying.
     OPENAI_MAX_RETRIES: int = 2
+    # Web search (ADR-0002 / Responses API). Both have defaults, so neither needs
+    # an entry in the mini's env map (docs/RELEASE.md).
+    # The web_search call runs INSIDE the user's photo flow; the SDK default read
+    # timeout is 600s, which would hang the reply. Ceiling it.
+    OPENAI_WEB_SEARCH_TIMEOUT: float = 30.0
+    # The owner can switch OPENAI_MODEL at runtime (TD-005) to a model that does
+    # not support the web_search tool; pin the search model separately when that
+    # happens. None → use the currently selected model.
+    OPENAI_WEB_SEARCH_MODEL: Optional[str] = None
 
     # Personal Food DB embeddings (ADR-0003 §2 / B2)
     # OPENAI_EMBEDDING_MODEL / OPENAI_EMBEDDING_DIMS must be changed together.
