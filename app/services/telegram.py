@@ -88,6 +88,28 @@ time_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# The only values meals.meal_type may hold. The keyboard above is the contract,
+# but a Telegram user can type anything instead of pressing a button, and this
+# text is persisted and exported — so an unrecognised answer stores no label
+# rather than becoming one. Keep this in step with the keyboard.
+_MEAL_TYPE_LABELS = ("Завтрак", "Обед", "Ужин")
+
+
+def _meal_type_label(text: str | None) -> str | None:
+    """Canonical meal-of-day label for an answer, or None if it is not one.
+
+    "Сейчас" is not a meal of the day — it means "just now" — so it maps to None,
+    which is what clears a previous answer.
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    for label in _MEAL_TYPE_LABELS:
+        if cleaned.casefold() == label.casefold():
+            return label
+    return None
+
+
 # Confirm-step keyboard (TD-015): explicit Да / Нет so the owner never has to
 # guess the exact word, and a free-text reply is handled as a correction rather
 # than a silent reject-and-restart.
@@ -228,9 +250,18 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # a clock reading: deriving 08:00 from it would invent a timestamp the user
     # never gave, and they may well be logging it at 16:00. What they DID tell us
     # is the label, and that is what gets stored (meals.meal_type).
+    #
+    # This handler is AUTHORITATIVE for both keys: it overwrites meal_type on
+    # every answer, including clearing it for "Сейчас". Clearing it only in
+    # add_meal covered one of the two ways back to this step — the bot's own
+    # retry ("Нет" → "Когда был прием пищи?") re-enters here directly, so a
+    # declined label survived and was written to the next meal.
     context.user_data["meal_time"] = datetime.now(UTC)
-    if text != "Сейчас":
-        context.user_data["meal_type"] = text
+    label = _meal_type_label(text)
+    if label is None:
+        context.user_data.pop("meal_type", None)
+    else:
+        context.user_data["meal_type"] = label
 
     await update.message.reply_text(
         "Отлично! Теперь опиши, что ты ел(а), или отправь фото.\n\n"

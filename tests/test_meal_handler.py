@@ -1422,8 +1422,13 @@ def test_meal_type_label_reaches_the_saved_meal(patched_db):
 
 
 def test_now_stores_no_label_rather_than_inventing_one(patched_db):
-    """Expected answer 'no finding': "Сейчас" is not a meal of the day."""
-    context = SimpleNamespace(user_data={})
+    """Expected answer 'no finding': "Сейчас" is not a meal of the day.
+
+    Seeded with a stale label on purpose: starting from an empty user_data, this
+    assertion held whether or not the "Сейчас" branch CLEARS a previous answer,
+    so it could not see the leak the review found on the reject path.
+    """
+    context = SimpleNamespace(user_data={"meal_type": "Ужин"})
     update, _ = _make_text_update("Сейчас")
     asyncio.run(tg.process_meal_time(update, context))
 
@@ -1466,3 +1471,79 @@ def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
     assert (
         meals[0].meal_type is None
     ), "an abandoned entry's label leaked into the next meal"
+
+
+def test_declining_a_draft_drops_the_label_on_the_retry(patched_db):
+    """The bot's OWN retry path, which does not go through add_meal.
+
+    "Нет" resets the draft and re-asks "Когда был прием пищи?" directly, so the
+    first fix (clearing the label in add_meal) never ran here: answering "Сейчас"
+    on the retry still saved the declined "Завтрак".
+    """
+    context = SimpleNamespace(user_data={})
+    first, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(first, context))
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+
+    reject, _ = _make_text_update("Нет")
+    state = asyncio.run(tg.confirm_meal(reject, context))
+    assert state == tg.ADDING_MEAL_TIME
+
+    retry, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(retry, context))
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "ужин",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert len(meals) == 1
+    assert (
+        meals[0].meal_type is None
+    ), "the label the user declined was written to the meal they kept"
+
+
+def test_free_text_at_the_time_step_is_not_stored_as_a_label(patched_db):
+    """meals.meal_type is exported; it must hold a label, not whatever was typed.
+
+    The buttons are the contract, but a Telegram user can type anything instead
+    of pressing one.
+    """
+    context = SimpleNamespace(user_data={})
+    typed, _ = _make_text_update("да я не помню, где-то днём")
+    asyncio.run(tg.process_meal_time(typed, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "обед",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type is None
+
+
+def test_a_typed_label_is_normalised_rather_than_refused(patched_db):
+    """…but the rule must not wrongly refuse: a typed "завтрак" IS the label."""
+    context = SimpleNamespace(user_data={})
+    typed, _ = _make_text_update("завтрак ")
+    asyncio.run(tg.process_meal_time(typed, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type == "Завтрак"

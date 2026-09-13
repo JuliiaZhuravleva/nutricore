@@ -30,6 +30,9 @@ class MealCreate(MealBase):
 class MealUpdate(BaseModel):
     description: Optional[str] = None
     meal_time: Optional[datetime] = None
+    # Without this, PUT /api/v1/meals/{id} accepted a corrected label with 200 and
+    # changed nothing (crud_meal.update copies only the fields declared here).
+    meal_type: Optional[str] = None
     calories: Optional[float] = None
     proteins: Optional[float] = None
     fats: Optional[float] = None
