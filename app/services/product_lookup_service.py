@@ -833,7 +833,9 @@ class NameWebSearchStrategy(ResolutionStrategy):
                 kind="web_search",
                 input_ref=", ".join(foods),
                 telegram_id=signals.telegram_id,
-                model=svc.model,
+                # The model that actually receives this request, not the active
+                # chat model — they differ whenever OPENAI_WEB_SEARCH_MODEL is set.
+                model=svc.web_search_model,
                 parse=_parse_web_nutrition_response,
             )
         except Exception as exc:
@@ -1192,18 +1194,29 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         # strategy's broad `except → None` would swallow, silently killing every
         # scaled saved-match on the production (Postgres) path (F1). SQLite tests
         # returned floats and hid this.
-        cal = float(pf.per_100g_calories or 0)
-        prot = float(pf.per_100g_proteins or 0)
-        fats = float(pf.per_100g_fats or 0)
-        carbs = float(pf.per_100g_carbs or 0)
+        # per_100g_* columns are Numeric(8,2) → Postgres returns Decimal; coerce to
+        # float BEFORE arithmetic (Decimal * float raises TypeError). A NULL stays
+        # None: "we never learned this macro" is not "this food has none of it",
+        # and the reply renders None as "—".
+        def _num(value) -> Optional[float]:
+            return None if value is None else float(value)
+
+        cal = _num(pf.per_100g_calories)
+        prot = _num(pf.per_100g_proteins)
+        fats = _num(pf.per_100g_fats)
+        carbs = _num(pf.per_100g_carbs)
 
         if portion_grams is not None and portion_grams > 0:
             factor = portion_grams / 100.0
+
+            def _scale(value: Optional[float]) -> Optional[float]:
+                return None if value is None else round(value * factor, 1)
+
             nutrition: Dict[str, Any] = {
-                "calories": round(cal * factor, 1),
-                "protein": round(prot * factor, 1),
-                "fats": round(fats * factor, 1),
-                "carbs": round(carbs * factor, 1),
+                "calories": _scale(cal),
+                "protein": _scale(prot),
+                "fats": _scale(fats),
+                "carbs": _scale(carbs),
                 "portion": f"{portion_grams:.0f}г",
                 "foods": [pf.canonical_name],
             }
@@ -1216,6 +1229,16 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
                 "portion": "100г",
                 "foods": [pf.canonical_name],
             }
+        missing = [
+            name
+            for name, value in (
+                ("калории", cal),
+                ("белки", prot),
+                ("жиры", fats),
+                ("углеводы", carbs),
+            )
+            if value is None
+        ]
 
         signals_dict: Dict[str, Any] = {
             # ADR-0003 §4e — saved-match provenance keys
@@ -1233,6 +1256,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             "off_from_cache": False,
             "off_latency_ms": None,
             "portion_grams": portion_grams,
+            "off_missing_macros": missing,
             "confidence_tier": "medium",
             "strategy_tried": ["saved_rag"],  # runner updates this
             "strategy_chosen": "saved_rag",
@@ -1440,6 +1464,11 @@ async def _extract_signals(
 # ---------------------------------------------------------------------------
 
 
+# A single eaten portion, in grams. Below 1g the model answered in kilograms or
+# dropped a decimal; above 5kg it is not one meal. Either way the number would be
+# multiplied into every macro AND inverse-scaled into the personal food DB.
+_PLAUSIBLE_PORTION_G = (1.0, 5000.0)
+
 # A share of a portion, stated in words or digits. Deliberately TIGHT: it must not
 # match a plain count + weight ("1 порция (75 г)", "1 serving (300g)"), which the
 # parser below still reads as grams.
@@ -1487,9 +1516,17 @@ def _parse_portion_grams(vision_result: Optional[dict]) -> Optional[float]:
         except (TypeError, ValueError):
             logger.warning("vision portion_grams is not a number: %r", raw_grams)
         else:
-            if value > 0:
+            if _PLAUSIBLE_PORTION_G[0] <= value <= _PLAUSIBLE_PORTION_G[1]:
                 return value
-            logger.warning("vision portion_grams is not positive: %r", raw_grams)
+            # A model that answers in kilograms ("0.15") or slips a decimal turns
+            # into a 100/0.15 = 667x inverse scale in the personal food DB. Refuse
+            # the number rather than multiply by it.
+            logger.warning(
+                "vision portion_grams %r is outside the plausible range %s — "
+                "falling back to the portion string",
+                raw_grams,
+                _PLAUSIBLE_PORTION_G,
+            )
 
     portion = vision_result.get("portion") or ""
     if not portion:

@@ -52,7 +52,16 @@ all strategies share:
 |---|---|---|
 | `barcode` | `OpenAIService.extract_barcode_from_image` (A3) | `None` if no barcode visible |
 | `vision_result` | `OpenAIService.analyze_food_image` (existing) | Nutrition + food names + portion |
-| `portion_grams` | parsed from `vision_result["portion"]` | Used by all strategies for scaling |
+| `portion_grams` | `vision_result["portion_grams"]`, else parsed from `vision_result["portion"]` | Used by all strategies for scaling |
+| `caption` | the user's own note on the photo (Telegram caption / replayed `inbound_messages.content`) | Fed to the vision call in phase 1; strategies read it only as a signal |
+| `portion_source` | `"vision"` or `"vision+note"` | Whether the note was in the prompt (not a claim the model obeyed it) |
+
+> **Portion contract (amended 2026-09-13).** The vision call is asked for an absolute
+> `portion_grams` alongside the prose `portion`, and for macros that are absolute for the
+> amount **actually eaten**. `_parse_portion_grams` prefers that number, rejects an
+> implausible one (outside 1g–5kg), and returns `None` — the honest per-100g path — for a
+> stated share it cannot turn into grams ("1/3 от 300 г" used to yield 300, a 3x overcount
+> under a confident gram basis). A macro Open Food Facts does not carry stays `None`, never 0.
 
 Running them concurrently with `asyncio.gather` keeps latency at max(barcode_call,
 vision_call) rather than sum. The barcode extraction uses `max_tokens=64` and is cheap.
@@ -73,7 +82,10 @@ class ImageSignals:
     image_data_url: str          # base64 data URL (never exposed to 3rd parties)
     barcode: Optional[str]       # A3 result — digits-only string or None
     vision_result: Optional[dict]  # parsed nutrition dict from analyze_food_image
-    portion_grams: Optional[float]  # extracted from vision_result["portion"]
+    portion_grams: Optional[float]  # from vision_result["portion_grams"]/["portion"]
+    caption: Optional[str] = None          # the user's note; phase 1 feeds it to vision
+    portion_source: Optional[str] = None   # "vision" | "vision+note"
+    failures: Dict[str, str] = field(default_factory=dict)  # swallowed strategy errors
 
 
 @dataclass

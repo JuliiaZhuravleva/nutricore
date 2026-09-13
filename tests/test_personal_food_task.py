@@ -422,6 +422,7 @@ def test_task_creates_personal_food_row(task_db):
         pf = crud_personal_food.get_by_barcode(db, barcode="nope", user_id=user_id)
         # Row should exist by ID
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -500,6 +501,7 @@ def test_task_idempotent_increments_times_used(task_db):
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -525,6 +527,7 @@ def test_task_persists_barcode(task_db):
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -570,6 +573,7 @@ def test_task_persists_resolution_source(task_db):
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -604,10 +608,11 @@ def test_confirm_to_db_roundtrip(task_db):
     task execution (Celery) in a single test so we confirm the kwargs wiring
     between the two layers is correct.
     """
+    from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
     from app.services.telegram import _schedule_personal_food_save
     from celery_app.tasks.personal_food import embed_and_save_personal_food
-    from app.models.personal_food import PersonalFood
-    from sqlalchemy import select
 
     Session = task_db
     with Session() as db:
@@ -682,8 +687,9 @@ def test_multiple_confirms_idempotent_roundtrip(task_db):
     photographing and confirming the same food three times — the Celery task
     must be idempotent on (user_id, lower(canonical_name)).
     """
-    from app.models.personal_food import PersonalFood
     from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
 
     Session = task_db
     with Session() as db:
@@ -727,3 +733,24 @@ def test_multiple_confirms_idempotent_roundtrip(task_db):
 
     # embed_text must have been called only once (on the first run)
     assert embed_mock.await_count == 1
+
+
+def test_schedule_skips_a_food_with_no_usable_calories(caplog):
+    """A row the RAG read guard can never serve must not be learned at all.
+
+    SavedFoodRAGStrategy refuses a personal_foods row without per-100g calories
+    (it would otherwise be served as a confident "0 ккал"). Saving one anyway
+    creates a permanently unusable row that still counts towards times_used.
+    """
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ), caplog.at_level(logging.WARNING, logger="app.services.telegram"):
+        signals = {"portion_grams": 200.0, "barcode_raw": None}
+        # OFF had the product but not its energy value.
+        nutrition = dict(_BASE_NUTRITION, calories=None)
+        _call_schedule(nutrition=nutrition, resolution_signals=signals)
+
+    delay_mock.assert_not_called()
+    assert any("no usable calories" in r.getMessage() for r in caplog.records)

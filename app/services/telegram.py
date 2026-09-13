@@ -101,11 +101,6 @@ confirm_keyboard = ReplyKeyboardMarkup(
 _CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅"}
 _CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
 
-# The portion string every strategy emits when it could NOT scale to a portion and
-# its numbers are therefore per-100g (see _scale_off_nutrition). Used as the only
-# safe signal that whole-portion macros may be stored as per-100g.
-_PER_100G_PORTION = "100г"
-
 # Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
 # numbers came from a shallower path than they should have.
 _DEGRADED_LINE = "⚠️ часть путей поиска не сработала — числа могут быть грубее обычного"
@@ -304,10 +299,9 @@ def _schedule_personal_food_save(
             portion_grams = _parse_portion_grams(nutrition)
 
         if portion_grams and portion_grams > 0:
+            # Covers the per-100g sentinel too: every strategy that cannot scale
+            # emits "100г", which parses back to 100.0 → factor 1.0.
             factor = 100.0 / portion_grams
-        elif str(nutrition.get("portion") or "").strip() == _PER_100G_PORTION:
-            # The strategy already handed us per-100g numbers — its own sentinel.
-            factor = 1.0
         else:
             # The old code used factor=1.0 here, which stored the macros of a WHOLE
             # portion in the per_100g_* columns. Those rows are then served back by
@@ -331,6 +325,18 @@ def _schedule_personal_food_save(
                 return None
 
         per_100g_calories = _to_per100g(nutrition.get("calories"))
+        if per_100g_calories is None:
+            # SavedFoodRAGStrategy refuses a row with no calories, so saving one
+            # would create a personal_foods row that can never be served — and
+            # that still counts as "learned" for times_used.
+            logger.warning(
+                "_schedule_personal_food_save: %r has no usable calories "
+                "(user_id=%d meal_id=%d) — not saving to the personal DB",
+                canonical_name,
+                user_id,
+                meal_id,
+            )
+            return
         per_100g_proteins = _to_per100g(nutrition.get("protein"))
         per_100g_fats = _to_per100g(nutrition.get("fats"))
         per_100g_carbs = _to_per100g(nutrition.get("carbs"))
@@ -378,6 +384,11 @@ def _source_badge(result: ResolutionResult | None) -> str:
     if result.source == "saved_rag":
         return "⭐ из вашей базы"
     if result.source == "barcode_off":
+        # The tier is downgraded when OFF is missing macros for this product. The
+        # badge has to follow, otherwise the downgrade exists only in the DB and
+        # the user still reads "точно" next to a "—" macro.
+        if result.confidence_tier != "high":
+            return "📦 по штрих-коду (неполные данные)"
         return "📦 по штрих-коду (точно)"
     if result.source == "label_ocr":
         return "🏷️ с этикетки (проверь)"
@@ -417,11 +428,15 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     # This is the only user-visible trace of a swallowed failure, so it fires even
     # for a vision-only result — that is precisely the case where a broken
     # strategy is what pushed us down to vision.
+    # Only warn when the failure could actually have cost the user accuracy. If a
+    # strategy broke but a HIGH-confidence path (a barcode match with complete
+    # data) still won, the numbers are the best the pipeline can produce and
+    # "числа могут быть грубее обычного" would contradict the badge beside it.
     degraded = [
         a
         for a in (signals.get("strategy_attempts") or [])
         if a.get("outcome") == "error"
-    ]
+    ] and result.confidence_tier != "high"
     if result.source == "vision":
         return [_DEGRADED_LINE] if degraded else []
     lines: list = []
@@ -457,13 +472,14 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     return lines
 
 
-def _fmt_macro(value) -> str:
-    """Render a macro for the reply; an UNKNOWN macro is "—", never 0.
+def _macro_line(label: str, value, unit: str) -> str:
+    """One macro line; an UNKNOWN macro is a bare "—", never 0 and never "—г".
 
     Open Food Facts routinely carries a product with some macros absent. Printing
-    a hard 0 for those made the reply state a fact the database never had.
+    a hard 0 for those made the reply state a fact the database never had; keeping
+    the unit on the dash ("Белки: —г") reads as a malformed number.
     """
-    return "—" if value is None else str(value)
+    return f"{label}: —" if value is None else f"{label}: {value}{unit}"
 
 
 def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
@@ -482,10 +498,10 @@ def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = 
         parts.append(f"Источник: {badge}")
     parts.extend(detail_lines)
     parts.append(f"Продукты: {', '.join(data['foods'])}")
-    parts.append(f"Калории: {_fmt_macro(data['calories'])} ккал")
-    parts.append(f"Белки: {_fmt_macro(data['protein'])}г")
-    parts.append(f"Жиры: {_fmt_macro(data['fats'])}г")
-    parts.append(f"Углеводы: {_fmt_macro(data['carbs'])}г")
+    parts.append(_macro_line("Калории", data["calories"], " ккал"))
+    parts.append(_macro_line("Белки", data["protein"], "г"))
+    parts.append(_macro_line("Жиры", data["fats"], "г"))
+    parts.append(_macro_line("Углеводы", data["carbs"], "г"))
     parts.append(f"Порция: {data['portion']}")
     parts.append("")
     parts.append("Всё верно? (Да/Нет)")

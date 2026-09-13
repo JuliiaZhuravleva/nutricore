@@ -87,6 +87,13 @@ class OpenAIService:
             api_key=settings.OPENAI_API_KEY,
             max_retries=settings.OPENAI_MAX_RETRIES,
         )
+        # Web search runs inside the user's photo flow, where `timeout` being PER
+        # ATTEMPT matters: with the default retries a slow search would block the
+        # reply for 3x the ceiling. The strategy is non-blocking by contract (the
+        # pipeline falls through), so it gets one honest attempt. Built once — a
+        # fresh with_options() copy per call would also be untestable, since the
+        # copy is a different object from the one a test can patch.
+        self.web_search_client = self.client.with_options(max_retries=0)
         # Honour a persisted runtime model override (TD-005 self-heal, TD-007):
         # every instance — the bot singleton, the pipeline, or a per-request API
         # service — picks up the owner's in-chat model switch, not just the
@@ -378,6 +385,17 @@ class OpenAIService:
         )
         return response.choices[0].message.content
 
+    @property
+    def web_search_model(self) -> str:
+        """The model the Responses/web_search call actually goes to.
+
+        A runtime model switch (TD-005) can land on a model with no web_search
+        support, hence the separate pin. Exposed as a property so the CALLER can
+        log the same value it sends: ai_call_logs used to record the active chat
+        model for these rows, i.e. a model that never received the request.
+        """
+        return settings.OPENAI_WEB_SEARCH_MODEL or self.model
+
     async def web_search_nutrition(self, query_foods: list) -> str:
         """Call the Responses API web_search tool to retrieve product nutrition text.
 
@@ -398,10 +416,8 @@ class OpenAIService:
             Vision-extracted food name(s) used as the search query.
         """
         query = ", ".join(query_foods)
-        response = await self.client.responses.create(
-            # A runtime model switch (TD-005) can land on a model with no
-            # web_search support; OPENAI_WEB_SEARCH_MODEL pins it when needed.
-            model=settings.OPENAI_WEB_SEARCH_MODEL or self.model,
+        response = await self.web_search_client.responses.create(
+            model=self.web_search_model,
             # This runs inside the user's photo flow — never inherit the SDK's
             # 600s default read timeout.
             timeout=settings.OPENAI_WEB_SEARCH_TIMEOUT,

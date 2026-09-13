@@ -2623,3 +2623,55 @@ def test_barcode_hit_with_complete_macros_stays_certain(monkeypatch):
 
     assert result.confidence_tier == "high"
     assert result.signals["off_missing_macros"] == []
+
+
+@pytest.mark.parametrize(
+    "vision_result, expected",
+    [
+        # Kilograms mistaken for grams, or a slipped decimal: 100/0.15 would be a
+        # 667x inverse scale into the personal food DB.
+        ({"portion": "нет данных", "portion_grams": 0.15}, None),
+        ({"portion": "нет данных", "portion_grams": 0.9}, None),
+        ({"portion": "нет данных", "portion_grams": 50000}, None),
+        # …but the plausible range is not narrow: a real meal can be 1g or 2kg.
+        ({"portion": "нет данных", "portion_grams": 1.0}, 1.0),
+        ({"portion": "нет данных", "portion_grams": 2000}, 2000.0),
+        # An implausible number falls back to the prose rather than to nothing.
+        ({"portion": "200г", "portion_grams": 0.2}, 200.0),
+    ],
+)
+def test_parse_portion_grams_rejects_implausible_values(vision_result, expected):
+    assert _parse_portion_grams(vision_result) == expected
+
+
+def test_saved_rag_serves_unknown_macros_as_unknown(monkeypatch):
+    """A saved row learned without a macro must not report it as 0.
+
+    _build_result coerced every NULL with `or 0`, so a row with calories but no
+    protein was served as "Белки: 0г" under the "⭐ из вашей базы" badge — which
+    carries no "проверь" qualifier at all.
+    """
+    import app.services.product_lookup_service as pls
+
+    pf = SimpleNamespace(
+        id=3,
+        canonical_name="Батат фри",
+        brand=None,
+        per_100g_calories=150.0,
+        per_100g_proteins=None,
+        per_100g_fats=5.0,
+        per_100g_carbs=25.0,
+    )
+    signals = asyncio.run(_build_signals(None, _NUTRITION, "data:x"))
+
+    result = pls.SavedFoodRAGStrategy._build_result(
+        pf=pf,
+        signals_input=signals,
+        distance=0.05,
+        match_source="saved_rag",
+        query_text="батат",
+    )
+
+    assert result.nutrition["protein"] is None
+    assert result.nutrition["calories"] is not None
+    assert result.signals["off_missing_macros"] == ["белки"]

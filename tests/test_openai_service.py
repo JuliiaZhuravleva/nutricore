@@ -518,14 +518,14 @@ def test_web_search_nutrition_calls_the_installed_responses_api():
     openai < 1.66.0 the attribute access below raises AttributeError.
     """
     service = OpenAIService()
-    assert hasattr(service.client, "responses"), (
+    assert hasattr(service.web_search_client, "responses"), (
         "installed openai SDK has no Responses API (needs >= 1.66.0) — "
         "web_search_nutrition raises AttributeError on every call"
     )
     create = AsyncMock(
         return_value=SimpleNamespace(output_text='{"identification": null}')
     )
-    service.client.responses.create = create
+    service.web_search_client.responses.create = create
 
     out = asyncio.run(service.web_search_nutrition(["батат", "ranch sauce"]))
 
@@ -538,13 +538,13 @@ def test_web_search_nutrition_calls_the_installed_responses_api():
 def test_web_search_nutrition_sets_a_timeout():
     """It runs inside the user's photo flow; the SDK default read timeout is 600s."""
     service = OpenAIService()
-    service.client.responses.create = AsyncMock(
+    service.web_search_client.responses.create = AsyncMock(
         return_value=SimpleNamespace(output_text="{}")
     )
 
     asyncio.run(service.web_search_nutrition(["x"]))
 
-    kwargs = service.client.responses.create.call_args.kwargs
+    kwargs = service.web_search_client.responses.create.call_args.kwargs
     assert kwargs.get("timeout") == settings.OPENAI_WEB_SEARCH_TIMEOUT
     assert (
         kwargs["timeout"] and kwargs["timeout"] <= 120
@@ -554,24 +554,30 @@ def test_web_search_nutrition_sets_a_timeout():
 def test_web_search_nutrition_honours_the_pinned_search_model(monkeypatch):
     """A runtime model switch can land on a model with no web_search support."""
     service = OpenAIService()
-    service.client.responses.create = AsyncMock(
+    service.web_search_client.responses.create = AsyncMock(
         return_value=SimpleNamespace(output_text="{}")
     )
     monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", "gpt-4o-search")
 
     asyncio.run(service.web_search_nutrition(["x"]))
 
-    assert service.client.responses.create.call_args.kwargs["model"] == "gpt-4o-search"
+    assert (
+        service.web_search_client.responses.create.call_args.kwargs["model"]
+        == "gpt-4o-search"
+    )
 
 
 def test_web_search_nutrition_defaults_to_the_active_model(monkeypatch):
     """Expected answer 'no finding': unset pin → the currently selected model."""
     service = OpenAIService()
-    service.client.responses.create = AsyncMock(
+    service.web_search_client.responses.create = AsyncMock(
         return_value=SimpleNamespace(output_text="{}")
     )
     monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", None)
 
     asyncio.run(service.web_search_nutrition(["x"]))
 
-    assert service.client.responses.create.call_args.kwargs["model"] == service.model
+    assert (
+        service.web_search_client.responses.create.call_args.kwargs["model"]
+        == service.model
+    )

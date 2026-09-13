@@ -1279,7 +1279,8 @@ def test_reply_renders_an_unknown_macro_as_a_dash():
 
     reply = tg._nutrition_reply(nutrition, "Заголовок:")
 
-    assert "Белки: —г" in reply
+    assert "Белки: —" in reply
+    assert "Белки: —г" not in reply, "the unit was kept on the dash — reads as a number"
     assert "Белки: 0г" not in reply
 
 
@@ -1299,4 +1300,64 @@ def test_reply_names_the_note_in_the_gram_basis_line():
     assert any("твоему описанию" in line for line in lines), (
         "the portion came from the user's own words but the reply still called "
         "it a photo estimate"
+    )
+
+
+# --- the confidence downgrade has to reach the BADGE, not just the DB -------
+
+
+def test_barcode_badge_drops_the_certainty_claim_when_macros_are_missing():
+    """_source_badge returns on `source` before it looks at the tier.
+
+    So downgrading a macro-less barcode hit to "medium" changed the stored tier
+    while the user still read "📦 по штрих-коду (точно)" beside a "—" macro.
+    """
+    result = _make_resolution_result(
+        source="barcode_off",
+        confidence_tier="medium",
+        signals={"barcode_raw": "1234", "off_missing_macros": ["белки"]},
+    )
+
+    badge = tg._source_badge(result)
+
+    assert "точно" not in badge, f"the downgrade never reached the user: {badge!r}"
+    assert "неполные" in badge
+
+
+def test_barcode_badge_still_says_certain_for_a_complete_record():
+    """Expected answer 'no finding': a complete OFF record keeps its badge."""
+    badge = tg._source_badge(
+        _make_resolution_result(source="barcode_off", confidence_tier="high")
+    )
+    assert "точно" in badge
+
+
+def test_no_degradation_warning_when_a_high_confidence_path_still_won():
+    """The warning must not contradict the badge printed next to it.
+
+    saved_rag can error while barcode_off still returns a complete, exact match —
+    "числа могут быть грубее обычного" would then be false.
+    """
+    result = _make_resolution_result(
+        source="barcode_off",
+        confidence_tier="high",
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Item",
+            "strategy_attempts": [
+                {
+                    "strategy": "saved_rag",
+                    "outcome": "error",
+                    "error": "OperationalError",
+                },
+                {"strategy": "barcode_off", "outcome": "hit"},
+            ],
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert not any("не сработала" in line for line in lines), (
+        "warned about degraded numbers on the most exact result the pipeline "
+        f"can produce: {lines}"
     )

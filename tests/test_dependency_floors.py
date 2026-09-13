@@ -129,3 +129,24 @@ def test_locked_runtime_packages_are_installed_in_the_gate_venv(package):
             "run `poetry install`; the suite is exercising different code than "
             "the deployed image."
         )
+
+
+def test_the_installed_sdk_types_the_exact_web_search_tool_we_send():
+    """Binds the GA floor to the real SDK surface, not just to a version number.
+
+    Without this, bumping OPENAI_WEB_SEARCH_FLOOR to match a broken lock would
+    turn the version assertions green while the tool literal the code sends
+    (`{"type": "web_search"}`) is still the one this SDK generation calls
+    `web_search_preview`.
+    """
+    import typing
+
+    from openai.types.responses.web_search_tool_param import WebSearchToolParam
+
+    annotation = repr(
+        typing.get_type_hints(WebSearchToolParam, include_extras=True)["type"]
+    )
+    assert "'web_search'" in annotation, (
+        "the installed SDK does not type the GA web_search tool — "
+        f"web_search_nutrition sends a literal this generation rejects: {annotation}"
+    )
