@@ -1361,3 +1361,33 @@ def test_no_degradation_warning_when_a_high_confidence_path_still_won():
         "warned about degraded numbers on the most exact result the pipeline "
         f"can produce: {lines}"
     )
+
+
+def test_reply_warns_when_a_winning_strategy_recorded_a_failure():
+    """A strategy can RETURN a result and still have a broken leg.
+
+    NameWebSearchStrategy falls back to web prose when its OFF re-query fails, so
+    the outcome is "hit" while the numbers came from the lowest-trust path. Keying
+    the warning on outcome == "error" alone showed a clean reply for those.
+    """
+    result = _make_resolution_result(
+        source="name_web",
+        confidence_tier="low",
+        portion_grams=150.0,
+        signals={
+            "product_name": "Ranch",
+            "strategy_attempts": [
+                {
+                    "strategy": "name_web",
+                    "outcome": "hit",
+                    "error": "ConnectError: off lookup failed",
+                }
+            ],
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any(
+        "не сработала" in line for line in lines
+    ), "the OFF re-query leg was fully broken and the reply said nothing"

@@ -29,7 +29,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from app.crud.crud_personal_food import crud_personal_food
+from app.crud.crud_personal_food import AnnQueryError, crud_personal_food
 from app.crud.crud_user import crud_user
 from app.schemas.user import UserCreate
 
@@ -403,32 +403,40 @@ def test_find_similar_binds_the_embedding_parameter():
     assert db.params["user_id"] == 7
 
 
-def test_find_similar_logs_error_and_rolls_back_on_sql_failure():
-    """A systemic ANN failure must be an ERROR and must not poison the session."""
+class _BoomSession:
+    """A session whose ANN query always fails."""
 
-    class _BoomSession:
-        def __init__(self):
-            self.rolled_back = False
+    def __init__(self, rollback_raises: bool = False):
+        self.rolled_back = False
+        self._rollback_raises = rollback_raises
 
-        def execute(self, *a, **k):
-            raise RuntimeError('syntax error at or near ":"')
+    def execute(self, *a, **k):
+        raise RuntimeError('syntax error at or near ":"')
 
-        def rollback(self):
-            self.rolled_back = True
+    def rollback(self):
+        if self._rollback_raises:
+            raise RuntimeError("connection already gone")
+        self.rolled_back = True
 
+
+def test_find_similar_raises_on_sql_failure_instead_of_reporting_a_miss():
+    """A BROKEN query must not look like an empty personal food DB.
+
+    Returning None here is what let the ':embedding::vector' defect hide: the
+    strategy above recorded 'saved_rag: miss' on every meal, identical to a user
+    who has simply saved nothing. The caller still swallows this raise into a
+    fall-through, so the pipeline stays non-blocking — but it can now RECORD it.
+    """
     db = _BoomSession()
     with caplog_at_error() as records:
-        assert (
+        with pytest.raises(AnnQueryError):
             crud_personal_food.find_similar(
                 db, embedding=[0.1], threshold=0.15, user_id=7
             )
-            is None
-        )
 
-    assert any("ANN query FAILED" in r.getMessage() for r in records), (
-        "a systemic ANN failure degraded to a no-match with no ERROR log — "
-        "indistinguishable from an empty personal food DB"
-    )
+    assert any(
+        "ANN query FAILED" in r.getMessage() for r in records
+    ), "a systemic ANN failure was raised with no ERROR log"
     assert any("RuntimeError" in r.getMessage() for r in records), (
         "the exception class is not in the message; a SQL bug and a dropped "
         "connection read identically in the logs"
@@ -437,6 +445,26 @@ def test_find_similar_logs_error_and_rolls_back_on_sql_failure():
         "the aborted transaction was not rolled back — every later query on "
         "this Session would fail too"
     )
+
+
+def test_find_similar_logs_when_the_rollback_itself_fails(caplog):
+    """The recovery failing is exactly what makes the NEXT errors unexplainable.
+
+    Every later strategy in the same pipeline run then fails with an unrelated
+    looking 'transaction is aborted', and nothing points back here.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.crud.crud_personal_food"):
+        with pytest.raises(AnnQueryError):
+            crud_personal_food.find_similar(
+                _BoomSession(rollback_raises=True),
+                embedding=[0.1],
+                threshold=0.15,
+                user_id=7,
+            )
+
+    assert any(
+        "rollback" in r.getMessage() for r in caplog.records
+    ), "the rollback failure was swallowed by a bare except/pass"
 
 
 def test_find_similar_clean_miss_logs_no_error():

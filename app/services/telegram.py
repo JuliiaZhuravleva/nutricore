@@ -30,6 +30,7 @@ from app.services.openai_service import ModelUnavailableError, get_openai_servic
 from app.services.product_lookup_service import (
     ResolutionResult,
     _parse_portion_grams,
+    has_usable_macros,
     parse_nutrition,
     resolve_meal_nutrition,
 )
@@ -325,7 +326,7 @@ def _schedule_personal_food_save(
                 return None
 
         per_100g_calories = _to_per100g(nutrition.get("calories"))
-        if per_100g_calories is None:
+        if not has_usable_macros(per_100g_calories):
             # SavedFoodRAGStrategy refuses a row with no calories, so saving one
             # would create a personal_foods row that can never be served — and
             # that still counts as "learned" for times_used.
@@ -432,11 +433,12 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     # strategy broke but a HIGH-confidence path (a barcode match with complete
     # data) still won, the numbers are the best the pipeline can produce and
     # "числа могут быть грубее обычного" would contradict the badge beside it.
-    degraded = [
-        a
-        for a in (signals.get("strategy_attempts") or [])
-        if a.get("outcome") == "error"
-    ] and result.confidence_tier != "high"
+    # Keyed on a RECORDED error, not on outcome == "error": a strategy can return
+    # a result AND have recorded a failure (NameWebSearchStrategy falls back to
+    # web prose when its OFF re-query breaks). Reading only the outcome would show
+    # a clean reply for numbers that came from the lowest-trust leg.
+    has_error = any(a.get("error") for a in (signals.get("strategy_attempts") or []))
+    degraded = has_error and result.confidence_tier != "high"
     if result.source == "vision":
         return [_DEGRADED_LINE] if degraded else []
     lines: list = []

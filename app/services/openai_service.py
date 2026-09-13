@@ -150,8 +150,15 @@ class OpenAIService:
             "fats": float,     # in grams
             "carbs": float,    # in grams
             "portion": string, # e.g. "1 serving (250g)"
+            "portion_grams": float|null,  # the SAME portion in absolute grams,
+                                          # null if you cannot estimate it
             "foods": list[str] # list of identified food items
-        }"""
+        }
+
+        All macro numbers are ABSOLUTE for the amount actually eaten — never per 100g,
+        and "portion_grams" must describe that same eaten amount. If the entry states a
+        share ("съел четверть пиццы, она была 400 г"), apply the share: the grams are
+        what was EATEN (100), not the whole dish (400)."""
 
         user_prompt = (
             f"Analyze this food entry and extract nutritional information: {text}"

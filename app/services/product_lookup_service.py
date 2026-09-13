@@ -173,53 +173,103 @@ def _scale_off_nutrition(
         else None
     )
 
-    def _scaled(value: Optional[float]) -> Optional[float]:
-        """Scale a macro, preserving None.
-
-        A macro OFF does not carry is UNKNOWN, not zero. Coercing it to 0 stated
-        "this food has no protein" under the "📦 по штрих-коду (точно)" badge —
-        a confident wrong number. None renders as "—" in the reply and leaves the
-        column NULL instead.
-        """
-        if value is None:
-            return None
-        return round(value * factor, 1) if factor is not None else value
-
+    # A macro OFF does not carry is UNKNOWN, not zero. Coercing it to 0 stated
+    # "this food has no protein" under the "📦 по штрих-коду (точно)" badge — a
+    # confident wrong number. None renders as "—" and leaves the column NULL.
     return {
-        "calories": _scaled(off_result.calories_per_100g),
-        "protein": _scaled(off_result.proteins_per_100g),
-        "fats": _scaled(off_result.fats_per_100g),
-        "carbs": _scaled(off_result.carbohydrates_per_100g),
+        "calories": _scale_preserving_none(off_result.calories_per_100g, factor),
+        "protein": _scale_preserving_none(off_result.proteins_per_100g, factor),
+        "fats": _scale_preserving_none(off_result.fats_per_100g, factor),
+        "carbs": _scale_preserving_none(off_result.carbohydrates_per_100g, factor),
         "portion": f"{portion_grams:.0f}г" if factor is not None else "100г",
         "foods": foods,
     }
 
 
+class NutritionNotFound(ValueError):
+    """The lookup ran fine and simply found nothing.
+
+    A distinct type, NOT a bare ValueError: ``json.JSONDecodeError`` is itself a
+    ValueError subclass, so classifying every ValueError as a clean miss would
+    file model-contract drift — prose instead of JSON, a renamed field, a refusal
+    — as "found nothing" on 100% of calls. That is the same shape as the
+    AttributeError that kept a dead strategy looking healthy for weeks; it must
+    read as an ERROR.
+
+    Subclasses ValueError so existing ``except ValueError`` / ``pytest.raises``
+    callers are unaffected.
+    """
+
+
 def _is_clean_miss(exc: BaseException) -> bool:
     """True when an exception is the designed "found nothing" channel, not a fault.
 
-    The ``parse=`` callbacks (``_parse_web_nutrition_response``,
-    ``_parse_label_json``) raise ValueError for an empty response, a missing
-    product identification, or an unreadable label — all ordinary outcomes that
-    the strategy is meant to fall through on. Recording those as failures would
-    make the pipeline look broken on perfectly normal meals and, worse, would
-    train the reader to ignore the one signal that says a strategy is dead.
+    Only ``NutritionNotFound`` qualifies. Everything else — including a plain
+    ValueError from a structurally unparseable response — is recorded as a
+    strategy failure, because it means the call did not work as designed.
     """
-    return isinstance(exc, ValueError)
+    return isinstance(exc, NutritionNotFound)
 
 
-def _missing_off_macros(off_result: OFFLookupResult) -> List[str]:
-    """Macro names (user-facing, Russian) that OFF did not supply at all."""
+def _missing_macros(
+    *,
+    calories: Optional[float],
+    protein: Optional[float],
+    fats: Optional[float],
+    carbs: Optional[float],
+) -> List[str]:
+    """Macro names (user-facing, Russian) that are UNKNOWN, in reply order.
+
+    One list, one order: the OFF-backed strategies and the personal-food path both
+    render it into the same "⚠️ в базе нет: …" line, and two copies would drift.
+    """
     return [
         name
         for name, value in (
-            ("калории", off_result.calories_per_100g),
-            ("белки", off_result.proteins_per_100g),
-            ("жиры", off_result.fats_per_100g),
-            ("углеводы", off_result.carbohydrates_per_100g),
+            ("калории", calories),
+            ("белки", protein),
+            ("жиры", fats),
+            ("углеводы", carbs),
         )
         if value is None
     ]
+
+
+def _missing_off_macros(off_result: OFFLookupResult) -> List[str]:
+    """Macro names OFF did not supply at all."""
+    return _missing_macros(
+        calories=off_result.calories_per_100g,
+        protein=off_result.proteins_per_100g,
+        fats=off_result.fats_per_100g,
+        carbs=off_result.carbohydrates_per_100g,
+    )
+
+
+def _scale_preserving_none(
+    value: Optional[float], factor: Optional[float]
+) -> Optional[float]:
+    """Scale one macro, keeping an UNKNOWN unknown.
+
+    Shared by every scaling site (OFF-backed strategies and the personal-food
+    path) so the "a missing macro is not a zero" rule cannot be fixed in one place
+    and quietly reintroduced in another — that divergence IS the bug class.
+    ``factor=None`` means "no gram basis": the per-100g numbers pass through.
+    """
+    if value is None:
+        return None
+    return round(value * factor, 1) if factor is not None else value
+
+
+def has_usable_macros(calories: Optional[float]) -> bool:
+    """Whether a personal-food row is worth storing and worth serving.
+
+    ONE predicate for both sides of the learning loop: the write-back in
+    ``telegram._schedule_personal_food_save`` and the read in
+    ``SavedFoodRAGStrategy``. Enforced separately they could drift into saving
+    rows that can never be served (or refusing rows that are fine), and neither
+    failure is visible outside production.
+    """
+    return calories is not None
 
 
 # ---------------------------------------------------------------------------
@@ -738,13 +788,15 @@ def _parse_web_nutrition_response(raw: str) -> dict:
     the strategy tries OFF first and falls to web numbers on a miss.
     """
     if not raw or not raw.strip():
-        raise ValueError("web_search: empty response")
+        raise NutritionNotFound("web_search: empty response")
 
     data = _extract_json_from_text(raw)
 
     identification = data.get("identification")
     if not identification or not str(identification).strip():
-        raise ValueError("web_search: response contains no product identification")
+        raise NutritionNotFound(
+            "web_search: response contains no product identification"
+        )
     identification = str(identification).strip()
 
     calories = _safe_float(data.get("calories_per_100g"))
@@ -1039,13 +1091,12 @@ def _build_rag_query_text(signals: "ImageSignals") -> Optional[str]:
 
 
 def _has_usable_macros(pf: PersonalFood) -> bool:
-    """True when a saved row carries at least calories.
+    """True when a saved row is worth serving (see ``has_usable_macros``).
 
-    ``_build_result`` coerces NULL macros to 0, so a row saved without a per-100g
-    basis would be served as a confident "0 ккал" under the "⭐ из вашей базы"
-    badge. Refusing the match lets the rest of the pipeline answer instead.
+    Without calories the row would be served as a confident "0 ккал" under the
+    "⭐ из вашей базы" badge, which carries no "проверь" qualifier.
     """
-    return pf.per_100g_calories is not None
+    return has_usable_macros(pf.per_100g_calories)
 
 
 class SavedFoodRAGStrategy(ResolutionStrategy):
@@ -1206,39 +1257,17 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         fats = _num(pf.per_100g_fats)
         carbs = _num(pf.per_100g_carbs)
 
-        if portion_grams is not None and portion_grams > 0:
-            factor = portion_grams / 100.0
-
-            def _scale(value: Optional[float]) -> Optional[float]:
-                return None if value is None else round(value * factor, 1)
-
-            nutrition: Dict[str, Any] = {
-                "calories": _scale(cal),
-                "protein": _scale(prot),
-                "fats": _scale(fats),
-                "carbs": _scale(carbs),
-                "portion": f"{portion_grams:.0f}г",
-                "foods": [pf.canonical_name],
-            }
-        else:
-            nutrition = {
-                "calories": cal,
-                "protein": prot,
-                "fats": fats,
-                "carbs": carbs,
-                "portion": "100г",
-                "foods": [pf.canonical_name],
-            }
-        missing = [
-            name
-            for name, value in (
-                ("калории", cal),
-                ("белки", prot),
-                ("жиры", fats),
-                ("углеводы", carbs),
-            )
-            if value is None
-        ]
+        scalable = portion_grams is not None and portion_grams > 0
+        factor = (portion_grams / 100.0) if scalable else None
+        nutrition: Dict[str, Any] = {
+            "calories": _scale_preserving_none(cal, factor),
+            "protein": _scale_preserving_none(prot, factor),
+            "fats": _scale_preserving_none(fats, factor),
+            "carbs": _scale_preserving_none(carbs, factor),
+            "portion": f"{portion_grams:.0f}г" if scalable else "100г",
+            "foods": [pf.canonical_name],
+        }
+        missing = _missing_macros(calories=cal, protein=prot, fats=fats, carbs=carbs)
 
         signals_dict: Dict[str, Any] = {
             # ADR-0003 §4e — saved-match provenance keys
@@ -1476,9 +1505,12 @@ _SHARE_MARKER = re.compile(
     r"\d\s*/\s*\d"  # 1/3, 1 / 2
     r"|[½⅓⅔¼¾⅕⅖⅗⅘]"  # vulgar fractions
     r"|трет[ьи]"  # треть, трети
+    r"|четверт"  # четверть, четвертинка, четверти
     r"|половин"  # половина, половину
-    r"|полпорц"  # полпорции
-    r"|\bhalf\b|\bthirds?\b|\bquarters?\b",
+    # The productive пол-/полу- contraction family: полпорции, полтарелки,
+    # полстакана, пол-порции. Requires 4+ following letters so "полный",
+    # "поляна", "полка" cannot match.
+    r"|\bпол[-\s]?[а-яё]{4,}" r"|\bhalf\b|\bthirds?\b|\bquarters?\b",
     re.IGNORECASE,
 )
 

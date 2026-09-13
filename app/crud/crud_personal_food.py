@@ -32,6 +32,15 @@ from app.models.personal_food import PersonalFood, PersonalFoodEmbedding
 
 logger = logging.getLogger(__name__)
 
+
+class AnnQueryError(RuntimeError):
+    """The pgvector ANN query itself failed (not "no match").
+
+    Exists so the strategy layer can record a systemic failure instead of an
+    indistinguishable miss — see find_similar.
+    """
+
+
 UTC = datetime.timezone.utc
 
 
@@ -239,6 +248,10 @@ class CRUDPersonalFood:
         threshold, else None.  threshold is cosine distance (0=identical,
         2=opposite); the default from config is 0.15 (≈ cosine similarity 0.85).
 
+        Raises ``AnnQueryError`` when the query itself fails; returns None for a
+        genuine no-match. The caller is expected to treat the raise as a
+        fall-through (the pipeline stays non-blocking) while RECORDING it.
+
         *** THIS IS THE MOCKABLE B6 SEAM (ADR-0003 §4d) ***
         SQLite has no pgvector <=> operator.  Unit tests that need a *result*
         MUST patch this method:
@@ -276,17 +289,14 @@ class CRUDPersonalFood:
         try:
             row = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).first()
         except Exception as exc:
-            # Non-blocking by contract (return None), but this is a SYSTEMIC failure
-            # (pgvector missing, embedding-dimension mismatch, dropped connection,
-            # a SQL bug) — NOT a routine no-match (that path has row=None, below).
-            # Log at ERROR so it's distinguishable from a legitimate miss and doesn't
-            # silently zero out the personal-DB hit rate (F4).  The exception CLASS is
-            # in the message because a SQL-compilation bug and a dropped connection
-            # read identically otherwise — that ambiguity hid the ":embedding::vector"
-            # defect in the mini's logs.
+            # A SYSTEMIC failure (pgvector missing, embedding-dimension mismatch,
+            # dropped connection, a SQL bug) — NOT a routine no-match, which is the
+            # row=None path below.  Log at ERROR with the exception CLASS, because a
+            # SQL-compilation bug and a dropped connection read identically otherwise
+            # — that ambiguity hid the ":embedding::vector" defect in the mini's logs.
             logger.error(
-                "find_similar: ANN query FAILED for user_id=%s (%s) — degrading to "
-                "no-match; check pgvector availability and embedding dimensions",
+                "find_similar: ANN query FAILED for user_id=%s (%s); "
+                "check pgvector availability and embedding dimensions",
                 user_id,
                 exc.__class__.__name__,
                 exc_info=True,
@@ -296,8 +306,22 @@ class CRUDPersonalFood:
             try:
                 db.rollback()
             except Exception:  # pragma: no cover - defensive: stub/detached sessions
-                pass
-            return None
+                # Never silent: if the rollback ALSO failed, every later strategy in
+                # this pipeline run fails with an unrelated-looking "transaction is
+                # aborted" and nothing points back here.
+                logger.warning(
+                    "find_similar: rollback after the failed ANN query also failed",
+                    exc_info=True,
+                )
+            # Raise rather than return None. Returning None made a BROKEN query
+            # indistinguishable from an empty personal food DB two layers up: the
+            # caller recorded "saved_rag: miss", which is exactly how the
+            # ":embedding::vector" defect stayed invisible. The caller
+            # (SavedFoodRAGStrategy.resolve) still swallows this into a fall-through,
+            # so the pipeline stays non-blocking — but it now records an "error".
+            raise AnnQueryError(
+                f"ANN query failed for user_id={user_id}: {exc.__class__.__name__}"
+            ) from exc
 
         if row is None:
             return None

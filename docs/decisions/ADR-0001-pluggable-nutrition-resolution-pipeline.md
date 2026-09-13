@@ -132,6 +132,24 @@ Strategies are **pure over `ImageSignals`**: they read the pre-extracted signals
 (optionally) make additional DB or network calls (e.g. OFF HTTP lookup). They do not
 call `analyze_food_image` themselves — that is phase 1's job.
 
+**One exception, amended 2026-09-13: `signals.note_failure(self.source_id, exc)`.**
+A strategy that SWALLOWS an exception must record it, so the runner can mark that
+attempt `error` instead of an indistinguishable `miss`. Without this, a strategy that
+is 100% dead looks exactly like one that searched and found nothing — which is how a
+broken web-search call and a broken ANN query both survived in production for weeks.
+The channel is deliberately narrow, and the narrowness is the point:
+
+- **write-only, own key.** A strategy writes under its own `source_id` and never reads
+  `signals.failures` — not its own entry and certainly not another strategy's. Reading
+  it would reintroduce exactly the cross-strategy coupling the pipeline exists to avoid.
+- **nothing else on `ImageSignals` may be mutated.** No caching a computed value for a
+  later strategy, no rewriting `vision_result`. Those fields stay read-only.
+- **only a swallowed fault**, never an ordinary miss. A parse callback that reports
+  "nothing found" raises `NutritionNotFound`, and `_is_clean_miss` keeps it out of the
+  failure channel; a bare `ValueError` (including `json.JSONDecodeError`) means the call
+  did not work as designed and IS recorded. If every failure were recorded, the signal
+  would be noise within a week and nobody would read it.
+
 ### 4. Pipeline runner
 
 ```python

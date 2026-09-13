@@ -358,6 +358,10 @@ def test_barcode_off_strategy_off_exception_returns_none(db_session, monkeypatch
     )
     result = asyncio.run(BarcodeOFFStrategy().resolve(signals, db_session))
     assert result is None
+    # The REAL call site, not a hand-seeded one: removing note_failure()
+    # from this except block must break a test, or the error/miss
+    # distinction in resolution_signals is decorative.
+    assert "RuntimeError" in signals.failures.get("barcode_off", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +1181,10 @@ def test_label_ocr_extract_raises_returns_none(db_session, monkeypatch):
     )
     result = asyncio.run(LabelOCRStrategy().resolve(signals, db_session))
     assert result is None
+    # The REAL call site, not a hand-seeded one: removing note_failure()
+    # from this except block must break a test, or the error/miss
+    # distinction in resolution_signals is decorative.
+    assert "RuntimeError" in signals.failures.get("label_ocr", "")
 
 
 def test_label_ocr_non_numeric_macro_returns_none(db_session, monkeypatch):
@@ -1695,6 +1703,10 @@ def test_name_web_search_raises_returns_none(db_session, monkeypatch):
     )
     result = asyncio.run(NameWebSearchStrategy().resolve(signals, db_session))
     assert result is None
+    # The REAL call site, not a hand-seeded one: removing note_failure()
+    # from this except block must break a test, or the error/miss
+    # distinction in resolution_signals is decorative.
+    assert "RuntimeError" in signals.failures.get("name_web", "")
 
 
 def test_name_web_off_requery_raises_falls_to_prose(db_session, monkeypatch):
@@ -2675,3 +2687,98 @@ def test_saved_rag_serves_unknown_macros_as_unknown(monkeypatch):
     assert result.nutrition["protein"] is None
     assert result.nutrition["calories"] is not None
     assert result.signals["off_missing_macros"] == ["белки"]
+
+
+# ---------------------------------------------------------------------------
+# The error/miss distinction must cover the strategy it was built for
+# ---------------------------------------------------------------------------
+
+
+def test_saved_rag_records_a_broken_ann_query_as_an_error(db_session, monkeypatch):
+    """A failed ANN query must not be filed as 'the personal DB had no match'.
+
+    This is the defect that motivated the whole mechanism: find_similar used to
+    swallow its own SQL failure and return None, so the strategy — and therefore
+    resolution_signals, the per-meal INFO line and the user-visible warning — all
+    said 'saved_rag: miss' while the query was 100% broken.
+    """
+    import app.crud.crud_personal_food as cpf
+    import app.crud.crud_user as cu
+    import app.services.openai_service as ois
+    from app.crud.crud_personal_food import AnnQueryError
+
+    monkeypatch.setattr(
+        cu.crud_user, "get_by_telegram_id", MagicMock(return_value=_MOCK_USER)
+    )
+    monkeypatch.setattr(
+        cpf.crud_personal_food,
+        "find_similar",
+        MagicMock(side_effect=AnnQueryError("ANN query failed for user_id=1")),
+    )
+    monkeypatch.setattr(
+        ois.OpenAIService, "embed_text", AsyncMock(return_value=[0.1] * 1536)
+    )
+
+    signals = ImageSignals(
+        image_data_url="data:image/jpeg;base64,abc",
+        barcode=None,
+        vision_result=_SINGLE_FOOD,
+        portion_grams=150.0,
+        telegram_id=12345,
+    )
+
+    result = asyncio.run(SavedFoodRAGStrategy().resolve(signals, db_session))
+
+    assert result is None, "the strategy must stay non-blocking"
+    assert "AnnQueryError" in signals.failures.get(
+        "saved_rag", ""
+    ), "a broken ANN query is still indistinguishable from an empty personal DB"
+
+
+def test_clean_miss_and_real_fault_are_classified_differently(db_session, monkeypatch):
+    """json.JSONDecodeError IS a ValueError — model-contract drift must not pass
+    as 'found nothing'."""
+    import json as _json
+
+    import app.services.product_lookup_service as pls
+
+    def _run(side_effect):
+        signals = ImageSignals(
+            image_data_url="data:image/jpeg;base64,abc",
+            barcode=None,
+            vision_result=_SINGLE_FOOD,
+            portion_grams=150.0,
+        )
+        _patch_web_search(monkeypatch, side_effect=side_effect)
+        assert asyncio.run(NameWebSearchStrategy().resolve(signals, db_session)) is None
+        return signals.failures.get("name_web")
+
+    # A genuine "nothing found" stays quiet…
+    assert _run(pls.NutritionNotFound("web_search: no identification")) is None
+    # …while prose instead of JSON is a fault, not a miss.
+    assert "JSONDecodeError" in (
+        _run(_json.JSONDecodeError("Expecting value", "not json", 0)) or ""
+    )
+    assert "ValueError" in (_run(ValueError("unexpected payload shape")) or "")
+
+
+@pytest.mark.parametrize(
+    "portion, expected",
+    [
+        # The Russian share vocabulary the first version of the guard missed. Each
+        # of these carries an explicit weight for the WHOLE dish, so the old regex
+        # returned that weight and booked a 3-4x overcount — and, via the per-100g
+        # write-back, baked it into the personal food DB.
+        ("четверть пиццы (400 г)", None),
+        ("четвертинка курицы, 800 г", None),
+        ("полтарелки борща (300 г)", None),
+        ("пол-порции (200 г)", None),
+        ("полстакана риса (250 г)", None),
+        # …and the words that merely START like them must still parse.
+        ("полный стакан (250 г)", 250.0),
+        ("1 порция (75 г)", 75.0),
+        ("200г", 200.0),
+    ],
+)
+def test_parse_portion_grams_share_vocabulary(portion, expected):
+    assert _parse_portion_grams({"portion": portion}) == expected
