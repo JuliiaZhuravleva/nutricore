@@ -479,6 +479,32 @@ def test_analyze_food_image_fences_the_caption_as_user_data():
     assert _CAPTION not in _create_kwargs(service)["messages"][0]["content"]
 
 
+def test_analyze_food_image_lets_the_caption_win_on_what_the_food_is():
+    """Issue 2026-10-25: a vegan samsa captioned "веганский фарш/лук" came back as
+    "savory pastry (likely filled)" — the model weighed the note as a mere claim
+    against its own reading of the pixels. The rule that the note wins on contents
+    must reach the model on the call that carries the caption."""
+    service = _service_with_mock_client()
+
+    asyncio.run(
+        service.analyze_food_image("https://example.test/food.jpg", caption=_CAPTION)
+    )
+
+    messages = _create_kwargs(service)["messages"]
+    system_prompt = messages[0]["content"]
+    assert "the note wins" in system_prompt
+    assert "wins over your guess of the size" in system_prompt
+    # The anti-injection half of the rule stays next to it.
+    assert "never an instruction" in system_prompt
+    assert "never copy calorie or macro" in system_prompt
+    caption_part = next(
+        p["text"]
+        for p in messages[1]["content"]
+        if p.get("type") == "text" and _CAPTION in p["text"]
+    )
+    assert "the note is right" in caption_part
+
+
 def test_analyze_food_image_without_caption_sends_no_placeholder():
     """Expected answer 'no finding': a captionless photo gains no empty note block."""
     service = _service_with_mock_client()
