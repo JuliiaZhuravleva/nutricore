@@ -1,54 +1,46 @@
-# Handoff — main (2026-07-12)
+# Handoff — main (2026-07-23)
 
 ## State
-On **`main`** (`8f19bb8`), synced with `origin/main`. **405 tests green** (`./scripts/test.sh`).
-Worktree cleaned up (the old `plan/personal-food-db` worktree + branch are gone, local + remote).
+On **`main`**, based on release merge `89948d4`, synced with `origin/main` at wrap time except
+this handoff commit (see ⚠ below). **405 tests green** — ran twice as `nutricore-release` gates.
+**No pending release branches** — the local `fix/td-007-008-016-model-selection` branch is deleted
+(merged); the remote copy still exists on origin.
 
-One **feature branch pushed, awaiting release** (see below). Otherwise tree clean.
+⚠ **Unpushed:** this handoff commit is local-only (wrap ran without `--push`). When convenient:
+`git push` + delete the merged remote branch (`git push origin --delete fix/td-007-008-016-model-selection`).
 
 **Release protocol** (`docs/RELEASE.md` + `.claude/wrap.md`): runtime work ships as a pushed feature
 branch → openclaw-setup's `nutricore-release`; docs / no-runtime-change merge to main directly.
 **Git transport:** ESET blocks SSH 22 — git goes over **443** (`~/.ssh/config` routes `github.com` →
 `ssh.github.com:443`, host key trusted).
 
-## Shipped this session — Low-backlog debt sweep
-- **TD-012** (flake8) — **landed on `main`** directly (`8f19bb8`, no-runtime cleanup): dropped unused
-  imports + a dead no-op helper (undefined `_patched_extract_signals`, F821) in the product-lookup test
-  files, and the long-standing `telegram.py` F841 `except ValueError as ve`.
-- **TD-011** — reviewed, **won't-do** (kept open as an accepted residual): both parts (barcode
-  check-digit collision downgrade, portion semantics) were *deliberately* not implemented — a
-  name-vs-vision token-overlap check false-positives on correct matches (OFF English/brand vs Russian
-  vision) and worsens UX. Nothing to action.
-- **TD-010** — **deferred to its own mini-plan** (owner call): the disk-bytes archival needs a new
-  bind-mount + compose volume on the mini (a manual deploy step at openclaw-setup), plus `/forget` and
-  reprocess→meal are separate features. Not a "quick" item.
-
-## Pending release — branch `fix/td-007-008-016-model-selection` (tip `8b84afa`)
-Runtime work, pushed, **awaiting `nutricore-release`** (do NOT self-merge). **405 green.**
-`/review-deep` ran clean (only fix applied: `exc_info=True` on model_selection's best-effort
-excepts, `8b84afa`) — all other agent findings were wrong-tree artifacts or accepted TD-007 tradeoffs.
-- **TD-007 / TD-008** — extracted the persisted OpenAI model override out of `telegram.py` into a new
-  **`app/services/model_selection.py`** (mirrors `access_control.py`): `OPENAI_MODEL_SETTING_KEY`,
-  `get_persisted_model` / `persist_model` / `apply_persisted_model`. `OpenAIService.__init__` now
-  best-effort loads the override so *every* instance (incl. the unmounted `ai.py` per-request path)
-  honours the owner's in-chat model switch. Conftest autouse keeps unit construction hermetic; +2 tests.
-- **TD-016** — `web_search_nutrition` moved to the GA Responses-API tool `{"type": "web_search"}`
-  (from legacy `web_search_preview`); behaviour preserved, GA shape verified against OpenAI docs.
-- **Release note:** NO new required env var, NO migration, NO schema/deploy delta (uses the existing
-  `app_settings` table). Plain code-only release — no manual `sudo` step on the mini side.
+## Shipped this session — TD-007/008/016 RELEASED to the mini
+`fix/td-007-008-016-model-selection` (tip `8b84afa`) went out via openclaw-setup's
+`nutricore-release` → merge `89948d4`, all six steps green (405 tests, single alembic head, env
+map covers required Settings, images built, no migrations, services Up, bot polling). Code-only
+release: new `app/services/model_selection.py` (persisted model override extracted from
+`telegram.py`; every `OpenAIService` instance honours the in-chat model switch), `web_search_nutrition`
+on the GA `web_search` tool. `_tech-debt.md` already reflects TD-007/008/016 as Resolved (done on
+the branch). Local tree was also tidied: a stray `HANDOFF-20260716-233146.md` backup (byte-identical
+to the tracked HANDOFF) removed, deleted `HANDOFF.md` restored, main fast-forwarded.
 
 ## Next up — remaining `_tech-debt.md` (all Low)
 - **TD-017** — quick-pick from saved/recent (deferred B5). Own small plan: ReplyKeyboard vs Inline.
 - **TD-013** — confidence gate (identity/portion/nutrition + quick-select). Big track, via `/plan-fixes`;
   now has the personal-DB match as its strongest identity signal.
 - **TD-010** — disk-bytes archival + `/forget` + reprocess→meal (own plan, deploy coordination).
+- (TD-011 stays open as an accepted residual — reviewed 2026-07-12, nothing to action.)
 
 ## Gotchas / learnings
+- **Non-interactive shells on the MacBook lack `/opt/homebrew/bin`** → `op` not found →
+  `ssh-claw`/`nutricore-release` die with a misleading "failed to read the private key from
+  1Password". Prefix `export PATH="/opt/homebrew/bin:$PATH"`. Documented in openclaw-setup
+  `info/08-Docker-Deploy.md` (Release flow).
 - **isort has no committed profile** but the repo is formatted **black-style** (`isort --profile black`);
   plain `isort` reformats into a black-incompatible style, and `main` is "dirty" under the default
   profile too. Use `isort --profile black` + `black` on **touched files only**. [[black-scope-touched-files]]
 - **TD-007 side effect:** `OpenAIService()` now reads the DB on construction. Kept hermetic in tests via
   a conftest autouse that nulls `openai_service.get_persisted_model`; self-heal tests drive the
   `model_selection` module directly (patch `ms.SessionLocal`), so they're unaffected.
-- Git over **443** (ESET blocks 22); the gate `./scripts/test.sh` is lock-drift-guarded
-  (`poetry check --lock`) but does NOT run flake8/black — formatting is manual/scoped.
+- The gate `./scripts/test.sh` is lock-drift-guarded (`poetry check --lock`) but does NOT run
+  flake8/black — formatting is manual/scoped.

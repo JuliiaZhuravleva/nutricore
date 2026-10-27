@@ -145,7 +145,8 @@ Every failure mode below degrades to `return None` from `NameWebSearchStrategy.r
 | Request timeout | `openai.APITimeoutError` | `analyze_and_log` status="error" | `None` |
 | Auth / key error | `openai.AuthenticationError` | `analyze_and_log` status="error" | `None` |
 | Model not found / deprecated | `openai.NotFoundError` | `analyze_and_log` status="error" | `None` |
-| Empty web_search output (no `output_text`) | `AttributeError` / `ValueError` in method | `analyze_and_log` status="error" | `None` |
+| Empty web_search output | `output_text == ""` (documented SDK behaviour — **not** an `AttributeError`) | `analyze_and_log` status="error" via the parse callback | `None` |
+| **SDK without the Responses API** | `AttributeError: 'AsyncOpenAI' object has no attribute 'responses'` | strategy WARNING only — invisible in the reply | `None`, on **every** call |
 | No useful nutrition in the response text | `ValueError` raised by `_parse_web_nutrition_response` | `analyze_and_log` status="error" | `None` |
 | Malformed / missing citation structure | `ValueError` raised by `_parse_web_nutrition_response` | `analyze_and_log` status="error" | `None` |
 | OFF re-query fails (see §6) | caught internally within OFF path | logged via `signals` key | falls back to prose path (or `None`) |
@@ -293,6 +294,15 @@ A13 adds a `_build_pipeline()` order-assertion test that fails if the order drif
 - The Responses API `output_text` attribute is assumed stable; if OpenAI changes the response
   shape, `web_search_nutrition` will raise `AttributeError` → `analyze_and_log` logs the error
   → strategy returns `None`. No silent failure.
+- **Hard SDK floors (added 2026-09-13 after this shipped dead).** `client.responses` exists from
+  **openai >= 1.66.0** (verified: absent in 1.65.5); the GA tool literal this call sends,
+  `tools=[{"type": "web_search"}]`, is typed from **openai >= 1.109.1** (1.108.0 still had only
+  `web_search_preview`). This ADR was implemented while `poetry.lock` pinned **1.61.1**, so every
+  call raised `AttributeError`, `NameWebSearchStrategy` swallowed it to a WARNING, and the
+  strategy was 100% dead in production while `strategy_tried` kept listing it. The floors are now
+  asserted — against both the installed package and `poetry.lock` — in
+  `tests/test_dependency_floors.py`. The lesson generalises: "the code is written" and "the
+  dependency that makes it executable is pinned" are two different claims.
 - `web_search` calls incur higher latency (500–2000 ms typical) and per-call cost ($0.002–0.01
   estimated at current Responses API pricing). A9 sits second-to-last in the pipeline precisely
   to minimise frequency — most photos resolve at `barcode_off`, `name_off`, or `label_ocr`.

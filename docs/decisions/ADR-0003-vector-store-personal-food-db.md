@@ -190,13 +190,22 @@ correctness bug now, even with one owner — it would silently fail on a fresh m
 ```sql
 SELECT
     pfe.personal_food_id,
-    pfe.embedding <=> $1 AS cosine_distance
+    (pfe.embedding <=> CAST(:embedding AS vector)) AS cosine_distance
 FROM personal_food_embeddings pfe
 JOIN personal_foods pf ON pf.id = pfe.personal_food_id
-WHERE pf.user_id = $2
+WHERE pf.user_id = :user_id
 ORDER BY cosine_distance
 LIMIT 1;
 ```
+
+> **Named parameters, and `CAST(...)` — never `:embedding::vector`.**
+> The implementation runs through SQLAlchemy `text()`, whose bind-parameter regex
+> mis-parses the Postgres `::` cast: `:embedding::vector` is read as a phantom bind
+> named `embeddin`, the placeholder is emitted **literally**, and psycopg2 raises
+> `syntax error at or near ":"`. The strategy's broad `except` then turned that into
+> a permanent silent "no match" — the personal-food RAG could never hit, in
+> production, from first deploy until 2026-09-13. The shipped statement is asserted
+> at compile level in `tests/test_crud_personal_food.py`.
 
 This query is the body of `CRUDPersonalFood.find_similar(db, embedding, threshold, user_id)` —
 the **mockable ANN seam** B6 tests against (see §4d).

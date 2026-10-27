@@ -32,6 +32,15 @@ from app.models.personal_food import PersonalFood, PersonalFoodEmbedding
 
 logger = logging.getLogger(__name__)
 
+
+class AnnQueryError(RuntimeError):
+    """The pgvector ANN query itself failed (not "no match").
+
+    Exists so the strategy layer can record a systemic failure instead of an
+    indistinguishable miss — see find_similar.
+    """
+
+
 UTC = datetime.timezone.utc
 
 
@@ -159,12 +168,16 @@ class CRUDPersonalFood:
             db.commit()
         except IntegrityError:
             db.rollback()
-            existing = db.execute(
-                select(PersonalFoodEmbedding).where(
-                    PersonalFoodEmbedding.personal_food_id == personal_food_id,
-                    PersonalFoodEmbedding.text_embedded == text_embedded,
+            existing = (
+                db.execute(
+                    select(PersonalFoodEmbedding).where(
+                        PersonalFoodEmbedding.personal_food_id == personal_food_id,
+                        PersonalFoodEmbedding.text_embedded == text_embedded,
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if existing is not None:
                 return existing
             raise
@@ -235,23 +248,37 @@ class CRUDPersonalFood:
         threshold, else None.  threshold is cosine distance (0=identical,
         2=opposite); the default from config is 0.15 (≈ cosine similarity 0.85).
 
+        Raises ``AnnQueryError`` when the query itself fails; returns None for a
+        genuine no-match. The caller is expected to treat the raise as a
+        fall-through (the pipeline stays non-blocking) while RECORDING it.
+
         *** THIS IS THE MOCKABLE B6 SEAM (ADR-0003 §4d) ***
-        SQLite has no pgvector <=> operator.  Unit tests MUST patch this method:
+        SQLite has no pgvector <=> operator.  Unit tests that need a *result*
+        MUST patch this method:
             with patch.object(crud_personal_food, "find_similar", return_value=...):
                 ...
-        The real ANN / threshold correctness check is a manual post-deploy
-        verification (see ADR-0003 §4d / B6 test plan).
+        The *statement* is not exempt: tests/test_crud_personal_food.py asserts the
+        compiled Postgres SQL and its bind parameters, and any change to the query
+        below must keep that control green.  Only the ANN semantics (real <=>
+        distances, the 0.15 threshold) remain a post-deploy verification.
 
-        Implementation uses raw SQL with the pgvector <=> operator.  The
-        embedding list is serialised to pgvector's "[x1,x2,...]" string format
-        and cast to vector(1536) inside the query so psycopg2 passes it cleanly.
+        Implementation uses raw SQL with the pgvector <=> operator.  The embedding
+        list is serialised to pgvector's "[x1,x2,...]" string format, bound as a
+        parameter, and cast with CAST(:embedding AS vector).
+
+        *** NEVER write ":param::type" in text() ***
+        SQLAlchemy's bind-parameter regex mis-parses it: ":embedding::vector" is
+        read as a phantom bind named "embeddin" and the placeholder is emitted
+        LITERALLY, so psycopg2 raises 'syntax error at or near ":"' at runtime and
+        the except below turns it into a permanent silent no-match (shipped that
+        way until 2026-09-13).  Use CAST(:param AS type).
         """
         emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
         stmt = text(
             """
             SELECT
                 pfe.personal_food_id,
-                (pfe.embedding <=> :embedding::vector) AS cosine_distance
+                (pfe.embedding <=> CAST(:embedding AS vector)) AS cosine_distance
             FROM personal_food_embeddings pfe
             JOIN personal_foods pf ON pf.id = pfe.personal_food_id
             WHERE pf.user_id = :user_id
@@ -260,22 +287,41 @@ class CRUDPersonalFood:
             """
         )
         try:
-            row = db.execute(
-                stmt, {"embedding": emb_str, "user_id": user_id}
-            ).first()
-        except Exception:
-            # Non-blocking by contract (return None), but this is a SYSTEMIC failure
-            # (pgvector missing, embedding-dimension mismatch, dropped connection,
-            # a SQL bug) — NOT a routine no-match (that path has row=None, below).
-            # Log at ERROR so it's distinguishable from a legitimate miss and doesn't
-            # silently zero out the personal-DB hit rate (F4).
+            row = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).first()
+        except Exception as exc:
+            # A SYSTEMIC failure (pgvector missing, embedding-dimension mismatch,
+            # dropped connection, a SQL bug) — NOT a routine no-match, which is the
+            # row=None path below.  Log at ERROR with the exception CLASS, because a
+            # SQL-compilation bug and a dropped connection read identically otherwise
+            # — that ambiguity hid the ":embedding::vector" defect in the mini's logs.
             logger.error(
-                "find_similar: ANN query FAILED for user_id=%s — degrading to "
-                "no-match; check pgvector availability and embedding dimensions",
+                "find_similar: ANN query FAILED for user_id=%s (%s); "
+                "check pgvector availability and embedding dimensions",
                 user_id,
+                exc.__class__.__name__,
                 exc_info=True,
             )
-            return None
+            # A failed statement leaves the session in an aborted transaction; without
+            # this rollback every later query on the same Session fails too.
+            try:
+                db.rollback()
+            except Exception:  # pragma: no cover - defensive: stub/detached sessions
+                # Never silent: if the rollback ALSO failed, every later strategy in
+                # this pipeline run fails with an unrelated-looking "transaction is
+                # aborted" and nothing points back here.
+                logger.warning(
+                    "find_similar: rollback after the failed ANN query also failed",
+                    exc_info=True,
+                )
+            # Raise rather than return None. Returning None made a BROKEN query
+            # indistinguishable from an empty personal food DB two layers up: the
+            # caller recorded "saved_rag: miss", which is exactly how the
+            # ":embedding::vector" defect stayed invisible. The caller
+            # (SavedFoodRAGStrategy.resolve) still swallows this into a fall-through,
+            # so the pipeline stays non-blocking — but it now records an "error".
+            raise AnnQueryError(
+                f"ANN query failed for user_id={user_id}: {exc.__class__.__name__}"
+            ) from exc
 
         if row is None:
             return None

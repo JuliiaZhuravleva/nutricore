@@ -12,7 +12,7 @@ import base64
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -30,6 +30,7 @@ from app.services import inbound_message_service as im_service
 from app.services import model_selection as ms
 from app.services import telegram as tg
 from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
+from app.services.openai_service import ModelUnavailableError
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -877,8 +878,10 @@ def _restore_model():
     model must not leak that into later tests."""
     svc = tg.telegram_service.openai_service
     original = svc.model
+    original_picks = dict(svc.task_models)
     yield
     svc.model = original
+    svc.task_models = original_picks
 
 
 def test_model_deprecation_offers_picker(monkeypatch):
@@ -890,7 +893,7 @@ def test_model_deprecation_offers_picker(monkeypatch):
     )
     monkeypatch.setattr(
         tg.telegram_service.openai_service,
-        "list_suitable_models",
+        "list_candidates",
         AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"]),
     )
     update, message = _make_text_update("apple")
@@ -918,7 +921,7 @@ def test_model_choice_switches_and_retries(patched_db, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        svc, "list_suitable_models", AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
+        svc, "list_candidates", AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
     )
     context = SimpleNamespace(user_data={})
 
@@ -962,6 +965,103 @@ def test_model_choice_cancel_resets():
 
     assert state == tg.CHOOSING_ACTION
     assert context.user_data == {}
+
+
+def test_non_admin_gets_no_picker(monkeypatch):
+    """Only the owner switches models (ADR-0004); everyone else is told the owner
+    already knows."""
+    # A subscriber who is not the owner.
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+    svc = tg.telegram_service.openai_service
+    monkeypatch.setattr(
+        svc,
+        "analyze_food_entry",
+        AsyncMock(side_effect=tg.ModelUnavailableError("gpt-old", Exception("x"))),
+    )
+    candidates = AsyncMock(return_value=["openai:gpt-6-luna"])
+    monkeypatch.setattr(svc, "list_candidates", candidates)
+    update, message = _make_text_update("apple")
+    context = SimpleNamespace(user_data={})
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert "владелец" in message.replies[-1]
+    assert "model_choices" not in context.user_data
+    candidates.assert_not_called()
+
+
+def test_non_admin_cannot_apply_a_stale_pick(monkeypatch):
+    # A subscriber who is not the owner.
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+    svc = tg.telegram_service.openai_service
+    before = svc.model
+    context = SimpleNamespace(user_data={"model_choices": ["openai:gpt-6-luna"]})
+    update, _ = _make_text_update("openai:gpt-6-luna")
+
+    assert asyncio.run(tg.process_model_choice(update, context)) == tg.CHOOSING_ACTION
+    assert svc.model == before
+
+
+def _fail_then_succeed(monkeypatch, err):
+    svc = tg.telegram_service.openai_service
+    monkeypatch.setattr(
+        svc,
+        "analyze_food_entry",
+        AsyncMock(side_effect=[err, json.dumps(_NUTRITION)]),
+    )
+    monkeypatch.setattr(
+        svc, "list_candidates", AsyncMock(return_value=["openai:gpt-6-luna"])
+    )
+    context = SimpleNamespace(user_data={})
+    u1, _ = _make_text_update("apple")
+    assert asyncio.run(tg.process_meal_input(u1, context)) == tg.CHOOSING_MODEL
+    svc.list_candidates.assert_awaited_once_with("text", exclude=err.model)
+    u2, _ = _make_text_update("openai:gpt-6-luna")
+    assert asyncio.run(tg.process_model_choice(u2, context)) == tg.CONFIRMING_MEAL
+    return svc
+
+
+def test_pick_for_a_task_on_the_default_replaces_the_default(patched_db, monkeypatch):
+    """gpt-4o-mini dies for every task at once: one choice, not one per task."""
+    err = tg.ModelUnavailableError("gpt-old", Exception("x"), task="text")
+    svc = _fail_then_succeed(monkeypatch, err)
+
+    assert svc.model == "openai:gpt-6-luna"
+    assert "text" not in svc.task_models
+    with sessionmaker(bind=patched_db)() as db:
+        assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) == "openai:gpt-6-luna"
+        assert crud_app_setting.get(db, "model:text") is None
+
+
+def test_pick_for_a_task_with_its_own_model_replaces_only_that(
+    patched_db, monkeypatch
+):
+    svc = tg.telegram_service.openai_service
+    default = svc.model
+    svc.set_model("openrouter:qwen/qwen3.8-flash", task="text")
+    err = tg.ModelUnavailableError(
+        "openrouter:qwen/qwen3.8-flash", Exception("x"), task="text"
+    )
+    _fail_then_succeed(monkeypatch, err)
+
+    assert svc.model == default
+    assert svc.model_for("text") == "openai:gpt-6-luna"
+    with sessionmaker(bind=patched_db)() as db:
+        assert crud_app_setting.get(db, "model:text") == "openai:gpt-6-luna"
+        assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) is None
+
+
+def test_persisted_task_pick_applies_on_startup(patched_db):
+    svc = tg.telegram_service.openai_service
+    with tg.SessionLocal() as db:
+        crud_app_setting.set(db, "model:vision", "openai:gpt-6-luna")
+
+    tg.apply_persisted_model(svc)
+
+    assert svc.model_for("vision") == "openai:gpt-6-luna"
 
 
 def test_load_persisted_model_applies_on_startup(patched_db):
@@ -1140,3 +1240,409 @@ def test_reprocess_stops_when_model_still_unavailable(patched_db, monkeypatch):
     with sessionmaker(bind=patched_db)() as db:
         # Left queued (still failed) — not silently dropped.
         assert db.query(InboundMessage).first().status == "failed"
+
+
+# --- the caption must survive every path that re-runs the analysis ----------
+#
+# It is persisted to inbound_messages on receipt, so "the caption is saved" was
+# true while the model never saw it. These assert the CALL, end to end through
+# the real pipeline: the only mock is the vision method itself.
+
+_REAL_CAPTION = (
+    "Я доела остатки (1/3 порции примерно) этого батата с Classic Fasting Ranch Sauce"
+)
+
+
+def test_photo_caption_reaches_the_vision_call(patched_db, image_mock):
+    update, _ = _make_update(
+        photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")], caption=_REAL_CAPTION
+    )
+
+    asyncio.run(tg.process_meal_input(update, _make_photo_context()))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION, (
+        "the caption was persisted to inbound_messages but never sent to the "
+        f"model (kwargs seen: {sorted(image_mock.call_args.kwargs)})"
+    )
+
+
+def test_photo_without_caption_passes_none(patched_db, image_mock):
+    """Expected answer 'no finding': no caption → nothing invented."""
+    update, _ = _make_photo_update()
+
+    asyncio.run(tg.process_meal_input(update, _make_photo_context()))
+
+    assert image_mock.call_args.kwargs.get("caption") is None
+
+
+def test_model_switch_retry_keeps_the_caption(patched_db, image_mock):
+    """The retry re-runs the analysis from a stash; a caption dropped there is
+    lost on exactly the retry the owner runs after a model outage."""
+    update, _ = _make_update(
+        photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")], caption=_REAL_CAPTION
+    )
+    context = _make_photo_context()
+
+    # First pass: the configured model is gone → the picker is offered.
+    image_mock.side_effect = ModelUnavailableError("gpt-4o-mini", RuntimeError("gone"))
+    asyncio.run(tg.process_meal_input(update, context))
+    assert context.user_data["pending_analysis"]["caption"] == _REAL_CAPTION
+
+    # Second pass: the owner picks a model and the analysis is replayed.
+    image_mock.side_effect = None
+    image_mock.return_value = json.dumps(_NUTRITION)
+    context.user_data["model_choices"] = ["gpt-4o"]
+    update2, _ = _make_text_update("gpt-4o")
+    with patch.object(tg.telegram_service.openai_service, "set_model"), patch(
+        "app.services.telegram.persist_model"
+    ):
+        asyncio.run(tg.process_model_choice(update2, context))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION
+
+
+def test_reprocess_replays_the_stored_caption(patched_db, image_mock):
+    """/reprocess OVERWRITES ai_analysis — replaying without the caption would
+    actively downgrade a record the live flow got right."""
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(
+            InboundMessage(
+                telegram_id=42,
+                kind="image",
+                content=_REAL_CAPTION,
+                photo_file_id="PHOTO_FILE_ID",
+                status="failed",
+                error="old model",
+            )
+        )
+        db.commit()
+
+    update, _ = _make_text_update("/reprocess")
+    file = SimpleNamespace(
+        download_as_bytearray=AsyncMock(return_value=bytearray(_IMAGE_BYTES))
+    )
+    context = SimpleNamespace(
+        user_data={}, bot=SimpleNamespace(get_file=AsyncMock(return_value=file))
+    )
+
+    asyncio.run(tg.reprocess(update, context))
+
+    assert image_mock.call_args.kwargs.get("caption") == _REAL_CAPTION
+
+
+# --- a swallowed strategy failure must be visible to the user --------------
+
+
+def test_reply_warns_when_a_strategy_errored():
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=100.0,
+        signals={
+            "strategy_attempts": [
+                {"strategy": "name_web", "outcome": "error", "error": "AttributeError"},
+                {"strategy": "vision", "outcome": "hit"},
+            ]
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any("не сработала" in line for line in lines), (
+        "a strategy that was 100% broken left the reply looking completely "
+        "normal — the user had no way to know the numbers came from a "
+        "shallower path"
+    )
+
+
+def test_reply_stays_quiet_when_every_strategy_merely_missed():
+    """Expected answer 'no finding': misses are normal, they are not a warning."""
+    result = _make_resolution_result(
+        source="vision",
+        confidence_tier="low",
+        portion_grams=100.0,
+        signals={
+            "strategy_attempts": [
+                {"strategy": "name_web", "outcome": "miss"},
+                {"strategy": "vision", "outcome": "hit"},
+            ]
+        },
+    )
+
+    assert tg._resolution_detail_lines(result) == []
+
+
+def test_reply_renders_an_unknown_macro_as_a_dash():
+    """OFF routinely lacks a macro; printing 0 stated a fact it never had."""
+    nutrition = dict(_NUTRITION, protein=None)
+
+    reply = tg._nutrition_reply(nutrition, "Заголовок:")
+
+    assert "Белки: —" in reply
+    assert "Белки: —г" not in reply, "the unit was kept on the dash — reads as a number"
+    assert "Белки: 0г" not in reply
+
+
+def test_reply_names_the_note_in_the_gram_basis_line():
+    result = _make_resolution_result(
+        source="barcode_off",
+        portion_grams=60.0,
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Батат",
+            "portion_source": "vision+note",
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any("твоему описанию" in line for line in lines), (
+        "the portion came from the user's own words but the reply still called "
+        "it a photo estimate"
+    )
+
+
+# --- the confidence downgrade has to reach the BADGE, not just the DB -------
+
+
+def test_barcode_badge_drops_the_certainty_claim_when_macros_are_missing():
+    """_source_badge returns on `source` before it looks at the tier.
+
+    So downgrading a macro-less barcode hit to "medium" changed the stored tier
+    while the user still read "📦 по штрих-коду (точно)" beside a "—" macro.
+    """
+    result = _make_resolution_result(
+        source="barcode_off",
+        confidence_tier="medium",
+        signals={"barcode_raw": "1234", "off_missing_macros": ["белки"]},
+    )
+
+    badge = tg._source_badge(result)
+
+    assert "точно" not in badge, f"the downgrade never reached the user: {badge!r}"
+    assert "неполные" in badge
+
+
+def test_barcode_badge_still_says_certain_for_a_complete_record():
+    """Expected answer 'no finding': a complete OFF record keeps its badge."""
+    badge = tg._source_badge(
+        _make_resolution_result(source="barcode_off", confidence_tier="high")
+    )
+    assert "точно" in badge
+
+
+def test_no_degradation_warning_when_a_high_confidence_path_still_won():
+    """The warning must not contradict the badge printed next to it.
+
+    saved_rag can error while barcode_off still returns a complete, exact match —
+    "числа могут быть грубее обычного" would then be false.
+    """
+    result = _make_resolution_result(
+        source="barcode_off",
+        confidence_tier="high",
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Item",
+            "strategy_attempts": [
+                {
+                    "strategy": "saved_rag",
+                    "outcome": "error",
+                    "error": "OperationalError",
+                },
+                {"strategy": "barcode_off", "outcome": "hit"},
+            ],
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert not any("не сработала" in line for line in lines), (
+        "warned about degraded numbers on the most exact result the pipeline "
+        f"can produce: {lines}"
+    )
+
+
+def test_reply_warns_when_a_winning_strategy_recorded_a_failure():
+    """A strategy can RETURN a result and still have a broken leg.
+
+    NameWebSearchStrategy falls back to web prose when its OFF re-query fails, so
+    the outcome is "hit" while the numbers came from the lowest-trust path. Keying
+    the warning on outcome == "error" alone showed a clean reply for those.
+    """
+    result = _make_resolution_result(
+        source="name_web",
+        confidence_tier="low",
+        portion_grams=150.0,
+        signals={
+            "product_name": "Ranch",
+            "strategy_attempts": [
+                {
+                    "strategy": "name_web",
+                    "outcome": "hit",
+                    "error": "ConnectError: off lookup failed",
+                }
+            ],
+        },
+    )
+
+    lines = tg._resolution_detail_lines(result)
+
+    assert any(
+        "не сработала" in line for line in lines
+    ), "the OFF re-query leg was fully broken and the reply said nothing"
+
+
+# --- the meal-of-day label: asked since day one, stored since 2026-09-13 ----
+
+
+def test_meal_type_label_reaches_the_saved_meal(patched_db):
+    """The bot asks "Когда был прием пищи?" and offers Завтрак/Обед/Ужин.
+
+    The answer used to live only in context.user_data and was dropped when the
+    conversation ended — no column, no schema field, no read site anywhere.
+    """
+    context = SimpleNamespace(user_data={})
+    update, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(update, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert len(meals) == 1
+    assert (
+        meals[0].meal_type == "Завтрак"
+    ), "the user answered the bot's own question and the answer was discarded"
+
+
+def test_now_stores_no_label_rather_than_inventing_one(patched_db):
+    """Expected answer 'no finding': "Сейчас" is not a meal of the day.
+
+    Seeded with a stale label on purpose: starting from an empty user_data, this
+    assertion held whether or not the "Сейчас" branch CLEARS a previous answer,
+    so it could not see the leak the review found on the reject path.
+    """
+    context = SimpleNamespace(user_data={"meal_type": "Ужин"})
+    update, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(update, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "перекус",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type is None
+
+
+def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
+    """State leak: add_meal popped meal_time but not meal_type.
+
+    Abandon a breakfast entry, start a new one, pick "Сейчас" — the stale
+    "Завтрак" would have been attached to the second meal.
+    """
+    context = SimpleNamespace(user_data={})
+    first, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(first, context))  # …then abandoned
+
+    restart, _ = _make_text_update("Добавить прием пищи")
+    asyncio.run(tg.add_meal(restart, context))
+    second, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(second, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "ужин",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert (
+        meals[0].meal_type is None
+    ), "an abandoned entry's label leaked into the next meal"
+
+
+def test_declining_a_draft_drops_the_label_on_the_retry(patched_db):
+    """The bot's OWN retry path, which does not go through add_meal.
+
+    "Нет" resets the draft and re-asks "Когда был прием пищи?" directly, so the
+    first fix (clearing the label in add_meal) never ran here: answering "Сейчас"
+    on the retry still saved the declined "Завтрак".
+    """
+    context = SimpleNamespace(user_data={})
+    first, _ = _make_text_update("Завтрак")
+    asyncio.run(tg.process_meal_time(first, context))
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+
+    reject, _ = _make_text_update("Нет")
+    state = asyncio.run(tg.confirm_meal(reject, context))
+    assert state == tg.ADDING_MEAL_TIME
+
+    retry, _ = _make_text_update("Сейчас")
+    asyncio.run(tg.process_meal_time(retry, context))
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "ужин",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert len(meals) == 1
+    assert (
+        meals[0].meal_type is None
+    ), "the label the user declined was written to the meal they kept"
+
+
+def test_free_text_at_the_time_step_is_not_stored_as_a_label(patched_db):
+    """meals.meal_type is exported; it must hold a label, not whatever was typed.
+
+    The buttons are the contract, but a Telegram user can type anything instead
+    of pressing one.
+    """
+    context = SimpleNamespace(user_data={})
+    typed, _ = _make_text_update("да я не помню, где-то днём")
+    asyncio.run(tg.process_meal_time(typed, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "обед",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type is None
+
+
+def test_a_typed_label_is_normalised_rather_than_refused(patched_db):
+    """…but the rule must not wrongly refuse: a typed "завтрак" IS the label."""
+    context = SimpleNamespace(user_data={})
+    typed, _ = _make_text_update("завтрак ")
+    asyncio.run(tg.process_meal_time(typed, context))
+
+    context.user_data["current_meal"] = {
+        "nutrition": _NUTRITION,
+        "description": "овсянка",
+    }
+    confirm, _ = _make_text_update("Да")
+    asyncio.run(tg.confirm_meal(confirm, context))
+
+    with sessionmaker(bind=patched_db)() as db:
+        meals = db.query(Meal).all()
+    assert meals[0].meal_type == "Завтрак"

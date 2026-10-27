@@ -190,8 +190,12 @@ def test_uses_json_object_response_format():
     assert kwargs["response_format"] == {"type": "json_object"}
 
 
-def test_uses_small_max_tokens():
-    """64-token cap keeps cost low for the barcode extraction call."""
+def test_uses_small_max_tokens(monkeypatch):
+    """64-token cap keeps cost low for the barcode extraction call (gpt-4o-mini;
+    a reasoning model gets a floor instead — test_model_registry)."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
     svc = _service(json.dumps({"barcode": "4607086060537"}))
     _call(svc)
 
@@ -256,3 +260,9 @@ def test_rejects_non_ascii_digits(caplog):
         result = _call(svc)
     assert result is None
     assert "invalid barcode value" in caplog.text
+
+
+def test_reads_a_fenced_reply():
+    """Claude via OpenRouter wraps JSON in a fence even with json_object asked."""
+    svc = _service('```json\n{"barcode": "4607086060537"}\n```\nRead clearly.')
+    assert _call(svc) == "4607086060537"

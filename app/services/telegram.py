@@ -25,11 +25,17 @@ from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.model_selection import apply_persisted_model, persist_model
+from app.services.model_selection import (
+    apply_persisted_model,
+    persist_model,
+    persist_task_model,
+)
+from app.services.model_watch import render_status, run_model_watch
 from app.services.openai_service import ModelUnavailableError, get_openai_service
 from app.services.product_lookup_service import (
     ResolutionResult,
     _parse_portion_grams,
+    has_usable_macros,
     parse_nutrition,
     resolve_meal_nutrition,
 )
@@ -87,6 +93,28 @@ time_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# The only values meals.meal_type may hold. The keyboard above is the contract,
+# but a Telegram user can type anything instead of pressing a button, and this
+# text is persisted and exported — so an unrecognised answer stores no label
+# rather than becoming one. Keep this in step with the keyboard.
+_MEAL_TYPE_LABELS = ("Завтрак", "Обед", "Ужин")
+
+
+def _meal_type_label(text: str | None) -> str | None:
+    """Canonical meal-of-day label for an answer, or None if it is not one.
+
+    "Сейчас" is not a meal of the day — it means "just now" — so it maps to None,
+    which is what clears a previous answer.
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    for label in _MEAL_TYPE_LABELS:
+        if cleaned.casefold() == label.casefold():
+            return label
+    return None
+
+
 # Confirm-step keyboard (TD-015): explicit Да / Нет so the owner never has to
 # guess the exact word, and a free-text reply is handled as a correction rather
 # than a silent reject-and-restart.
@@ -100,6 +128,10 @@ confirm_keyboard = ReplyKeyboardMarkup(
 # misread as a correction (the TD-015 papercut).
 _CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅"}
 _CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
+
+# Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
+# numbers came from a shallower path than they should have.
+_DEGRADED_LINE = "⚠️ часть путей поиска не сработала — числа могут быть грубее обычного"
 
 
 def _confirm_intent(text: str | None) -> str:
@@ -195,6 +227,9 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # new meal never inherits stale nutrition/photos/time.
     context.user_data["current_meal"] = {}
     context.user_data.pop("meal_time", None)
+    # Also drop the label: it outlived an abandoned entry and would have been
+    # attached to the NEXT meal (which may well be a different one).
+    context.user_data.pop("meal_type", None)
     await update.message.reply_text(
         "Когда был прием пищи?",
         reply_markup=time_keyboard,
@@ -214,15 +249,24 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return CHOOSING_ACTION
 
-    # Store the meal time in context
-    if text == "Сейчас":
-        context.user_data["meal_time"] = datetime.now(UTC)
+    # Store the meal time in context.
+    #
+    # Both branches record meal_time as NOW on purpose. "Завтрак" is a label, not
+    # a clock reading: deriving 08:00 from it would invent a timestamp the user
+    # never gave, and they may well be logging it at 16:00. What they DID tell us
+    # is the label, and that is what gets stored (meals.meal_type).
+    #
+    # This handler is AUTHORITATIVE for both keys: it overwrites meal_type on
+    # every answer, including clearing it for "Сейчас". Clearing it only in
+    # add_meal covered one of the two ways back to this step — the bot's own
+    # retry ("Нет" → "Когда был прием пищи?") re-enters here directly, so a
+    # declined label survived and was written to the next meal.
+    context.user_data["meal_time"] = datetime.now(UTC)
+    label = _meal_type_label(text)
+    if label is None:
+        context.user_data.pop("meal_type", None)
     else:
-        # Here we'll need to add logic to parse different meal times
-        context.user_data["meal_time"] = datetime.now(
-            UTC
-        )  # For now, default to current time
-        context.user_data["meal_type"] = text
+        context.user_data["meal_type"] = label
 
     await update.message.reply_text(
         "Отлично! Теперь опиши, что ты ел(а), или отправь фото.\n\n"
@@ -285,15 +329,41 @@ def _schedule_personal_food_save(
         # Barcode — only present in barcode_off signals (ADR-0003 §B4)
         barcode = signals.get("barcode_raw") or None  # empty str → None
 
+        # Brand — every OFF-backed strategy already resolves it into signals, and
+        # personal_foods has had a brand column, a schema field and CRUD support
+        # from the start; only this hop was missing, so the column was NULL for
+        # every row ever written. It is what separates a store brand from a name
+        # brand with the same generic product name.
+        brand = signals.get("brand") or None
+
         # Per-100g macro computation:
         #   Image paths: portion_grams pre-computed in resolution_signals.
         #   Text paths:  attempt to parse grams from nutrition["portion"] string.
-        #   No portion available (factor=1.0): values are already per-100g
-        #   (strategies that can't scale return "100г" as the portion string).
-        portion_grams = signals.get("portion_grams") or _parse_portion_grams(nutrition)
-        factor = (
-            (100.0 / portion_grams) if (portion_grams and portion_grams > 0) else 1.0
-        )
+        #   Neither available: the numbers are absolute for an UNKNOWN weight, so
+        #   no per-100g basis exists — see the guard below.
+        portion_grams = signals.get("portion_grams")
+        if portion_grams is None:
+            portion_grams = _parse_portion_grams(nutrition)
+
+        if portion_grams and portion_grams > 0:
+            # Covers the per-100g sentinel too: every strategy that cannot scale
+            # emits "100г", which parses back to 100.0 → factor 1.0.
+            factor = 100.0 / portion_grams
+        else:
+            # The old code used factor=1.0 here, which stored the macros of a WHOLE
+            # portion in the per_100g_* columns. Those rows are then served back by
+            # SavedFoodRAGStrategy at medium confidence under "⭐ из вашей базы" —
+            # a wrong number that outlives the meal that created it. Learn nothing
+            # rather than learn a lie.
+            logger.warning(
+                "_schedule_personal_food_save: no per-100g basis for %r "
+                "(user_id=%d meal_id=%d portion=%r) — not saving to the personal DB",
+                canonical_name,
+                user_id,
+                meal_id,
+                nutrition.get("portion"),
+            )
+            return
 
         def _to_per100g(v: object) -> float | None:
             try:
@@ -302,6 +372,18 @@ def _schedule_personal_food_save(
                 return None
 
         per_100g_calories = _to_per100g(nutrition.get("calories"))
+        if not has_usable_macros(per_100g_calories):
+            # SavedFoodRAGStrategy refuses a row with no calories, so saving one
+            # would create a personal_foods row that can never be served — and
+            # that still counts as "learned" for times_used.
+            logger.warning(
+                "_schedule_personal_food_save: %r has no usable calories "
+                "(user_id=%d meal_id=%d) — not saving to the personal DB",
+                canonical_name,
+                user_id,
+                meal_id,
+            )
+            return
         per_100g_proteins = _to_per100g(nutrition.get("protein"))
         per_100g_fats = _to_per100g(nutrition.get("fats"))
         per_100g_carbs = _to_per100g(nutrition.get("carbs"))
@@ -316,6 +398,7 @@ def _schedule_personal_food_save(
             meal_id=meal_id,
             resolution_source=resolution_source,
             barcode=barcode,
+            brand=brand,
             per_100g_calories=per_100g_calories,
             per_100g_proteins=per_100g_proteins,
             per_100g_fats=per_100g_fats,
@@ -349,6 +432,11 @@ def _source_badge(result: ResolutionResult | None) -> str:
     if result.source == "saved_rag":
         return "⭐ из вашей базы"
     if result.source == "barcode_off":
+        # The tier is downgraded when OFF is missing macros for this product. The
+        # badge has to follow, otherwise the downgrade exists only in the DB and
+        # the user still reads "точно" next to a "—" macro.
+        if result.confidence_tier != "high":
+            return "📦 по штрих-коду (неполные данные)"
         return "📦 по штрих-коду (точно)"
     if result.source == "label_ocr":
         return "🏷️ с этикетки (проверь)"
@@ -380,9 +468,26 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     or wrong portion estimate before confirming the meal
     (ADR-0001 §6 + §7, north-star transparency principle).
     """
-    if result is None or result.source == "vision":
+    if result is None:
         return []
     signals = result.signals or {}
+    # A strategy that BROKE (not one that merely found nothing) means the numbers
+    # below came from a shallower path than the user would otherwise have got.
+    # This is the only user-visible trace of a swallowed failure, so it fires even
+    # for a vision-only result — that is precisely the case where a broken
+    # strategy is what pushed us down to vision.
+    # Only warn when the failure could actually have cost the user accuracy. If a
+    # strategy broke but a HIGH-confidence path (a barcode match with complete
+    # data) still won, the numbers are the best the pipeline can produce and
+    # "числа могут быть грубее обычного" would contradict the badge beside it.
+    # Keyed on a RECORDED error, not on outcome == "error": a strategy can return
+    # a result AND have recorded a failure (NameWebSearchStrategy falls back to
+    # web prose when its OFF re-query breaks). Reading only the outcome would show
+    # a clean reply for numbers that came from the lowest-trust leg.
+    has_error = any(a.get("error") for a in (signals.get("strategy_attempts") or []))
+    degraded = has_error and result.confidence_tier != "high"
+    if result.source == "vision":
+        return [_DEGRADED_LINE] if degraded else []
     lines: list = []
     barcode_raw = signals.get("barcode_raw")
     if barcode_raw:
@@ -392,10 +497,15 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
         lines.append(f"Продукт: {product_name}")
     # Explicit gram-basis transparency (ADR-0001 §7 / CQ2 / A6):
     if result.portion_grams is not None and result.portion_grams > 0:
-        # Scaled: show the vision-estimated gram basis so the user can verify
-        # it is correct and correct it at the confirm step if needed.
+        # Scaled: show the gram basis so the user can verify it and correct it at
+        # the confirm step if needed. Name the note when one was in the prompt.
+        basis = (
+            "оценка по фото и твоему описанию"
+            if signals.get("portion_source") == "vision+note"
+            else "оценка по фото"
+        )
         lines.append(
-            f"Пересчитано на {result.portion_grams:.0f}г (оценка по фото)"
+            f"Пересчитано на {result.portion_grams:.0f}г ({basis})"
             " — скорректируй при подтверждении"
         )
     else:
@@ -403,7 +513,22 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
         lines.append(
             "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
         )
+    missing = signals.get("off_missing_macros") or []
+    if missing:
+        lines.append(f"⚠️ в базе нет: {', '.join(missing)} — впиши при подтверждении")
+    if degraded:
+        lines.append(_DEGRADED_LINE)
     return lines
+
+
+def _macro_line(label: str, value, unit: str) -> str:
+    """One macro line; an UNKNOWN macro is a bare "—", never 0 and never "—г".
+
+    Open Food Facts routinely carries a product with some macros absent. Printing
+    a hard 0 for those made the reply state a fact the database never had; keeping
+    the unit on the dash ("Белки: —г") reads as a malformed number.
+    """
+    return f"{label}: —" if value is None else f"{label}: {value}{unit}"
 
 
 def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
@@ -422,10 +547,10 @@ def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = 
         parts.append(f"Источник: {badge}")
     parts.extend(detail_lines)
     parts.append(f"Продукты: {', '.join(data['foods'])}")
-    parts.append(f"Калории: {data['calories']} ккал")
-    parts.append(f"Белки: {data['protein']}г")
-    parts.append(f"Жиры: {data['fats']}г")
-    parts.append(f"Углеводы: {data['carbs']}г")
+    parts.append(_macro_line("Калории", data["calories"], " ккал"))
+    parts.append(_macro_line("Белки", data["protein"], "г"))
+    parts.append(_macro_line("Жиры", data["fats"], "г"))
+    parts.append(_macro_line("Углеводы", data["carbs"], "г"))
     parts.append(f"Порция: {data['portion']}")
     parts.append("")
     parts.append("Всё верно? (Да/Нет)")
@@ -454,7 +579,7 @@ async def _analyze_and_parse(
         kind=kind,
         input_ref=input_ref,
         telegram_id=telegram_id,
-        model=svc.model,
+        model=svc.model_for("vision" if kind == "image" else "text"),
         parse=_parse_nutrition,
     )
 
@@ -467,6 +592,7 @@ async def _run_meal_analysis(
     input_ref: str,
     payload: str,
     inbound_id: int | None = None,
+    caption: str | None = None,
 ) -> int:
     """Analyze one meal input (image data URL or text), reply, and stage the draft.
 
@@ -485,6 +611,7 @@ async def _run_meal_analysis(
                 payload,
                 telegram_id=update.effective_user.id,
                 input_ref=input_ref,
+                caption=caption,
             )
             nutrition_info = resolution_result.nutrition
         else:
@@ -507,6 +634,7 @@ async def _run_meal_analysis(
             input_ref=input_ref,
             payload=payload,
             inbound_id=inbound_id,
+            caption=caption,
         )
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
@@ -612,6 +740,10 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         input_ref=input_ref,
         payload=payload,
         inbound_id=inbound_id,
+        # `content` IS update.message.caption for photos. It was persisted to
+        # inbound_messages and then dropped here — the user's own words about
+        # brand and portion never reached the model (fixed 2026-09-13).
+        caption=content if kind == "image" else None,
     )
 
 
@@ -624,22 +756,48 @@ async def _offer_model_choice(
     input_ref: str,
     payload: str,
     inbound_id: int | None = None,
+    caption: str | None = None,
 ) -> int:
-    """A model went missing mid-analysis: stash the input and show a picker so the
-    owner can switch models and have the analysis retried automatically."""
+    """A model went missing mid-analysis: stash the input and show the owner a
+    picker, so they can switch models and have the analysis retried automatically.
+
+    Only an admin picks (ADR-0004): anyone else is told the owner already knows —
+    the alert went out from ``OpenAIService`` when the failure was detected.
+    """
+    user = update.effective_user
+    if user is None or user.id not in settings.admin_ids:
+        await update.message.reply_text(
+            "Распознавание сейчас недоступно — владелец бота уже получил "
+            "уведомление. Попробуй позже.",
+            reply_markup=main_keyboard,
+        )
+        return CHOOSING_ACTION
+
+    svc = telegram_service.openai_service
+    task = err.task or ("vision" if kind == "image" else "text")
     context.user_data["pending_analysis"] = {
         "kind": kind,
         "input_ref": input_ref,
         "payload": payload,
         "inbound_id": inbound_id,
+        # Stashed too: the retry re-runs the analysis from scratch, and a caption
+        # dropped here would silently degrade exactly the retry the owner runs
+        # after a model outage.
+        "caption": caption,
     }
-    models = await telegram_service.openai_service.list_suitable_models()
+    # Replace the model where it was configured: a task with its own pick gets a
+    # new pick; a task on the default replaces the default, so one dead default
+    # model takes one choice, not one per task.
+    context.user_data["model_task"] = (
+        None if err.task is None or svc.runs_on_default(task) else task
+    )
+    models = await svc.list_candidates(task, exclude=err.model)
     context.user_data["model_choices"] = models
     keyboard = ReplyKeyboardMarkup(
         [[m] for m in models] + [["Отмена"]], resize_keyboard=True
     )
     await update.message.reply_text(
-        f"⚠️ Модель «{err.model}» недоступна (устарела или удалена).\n"
+        f"⚠️ Модель «{err.model}» недоступна (устарела, удалена или нет ключа).\n"
         "Выбери другую — я запомню её и сразу повторю анализ:",
         reply_markup=keyboard,
     )
@@ -657,12 +815,23 @@ async def process_model_choice(
         await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
         return CHOOSING_ACTION
 
+    user = update.effective_user
+    if user is None or user.id not in settings.admin_ids:
+        # The picker is only ever shown to an admin; this guards a stale state.
+        context.user_data.clear()
+        await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
+        return CHOOSING_ACTION
+
     if text not in context.user_data.get("model_choices", []):
         await update.message.reply_text("Выбери модель кнопкой из списка.")
         return CHOOSING_MODEL
 
-    telegram_service.openai_service.set_model(text)
-    persist_model(text)
+    task = context.user_data.pop("model_task", None)
+    telegram_service.openai_service.set_model(text, task=task)
+    if task is None:
+        persist_model(text)
+    else:
+        persist_task_model(task, text)
     await update.message.reply_text(f"✅ Модель обновлена: {text}. Повторяю анализ…")
 
     pending = context.user_data.get("pending_analysis")
@@ -680,6 +849,7 @@ async def process_model_choice(
         input_ref=pending["input_ref"],
         payload=pending["payload"],
         inbound_id=pending.get("inbound_id"),
+        caption=pending.get("caption"),
     )
 
 
@@ -732,6 +902,9 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             meal_in = MealCreate(
                 description=current_meal.get("description"),
                 meal_time=context.user_data.get("meal_time", datetime.now(UTC)),
+                # The answer to "Когда был прием пищи?" — collected since the
+                # first version, stored since 2026-09-13.
+                meal_type=context.user_data.get("meal_type"),
                 calories=nutrition.get("calories"),
                 proteins=nutrition.get("protein"),
                 fats=nutrition.get("fats"),
@@ -947,6 +1120,24 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @admin_required
+async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Which model runs each task, and the shutdown-date check run now (ADR-0004).
+
+    Owner only. The same check as the weekly Celery job: news also goes out as
+    the usual alert and is recorded, so the Monday run won't repeat it.
+    """
+    await update.message.reply_text("⏳ Проверяю модели у OpenAI, Google и Anthropic…")
+    try:
+        report = await run_model_watch(get_openai_service())
+    except Exception as e:
+        logger.error("/models: check failed: %s", e, exc_info=True)
+        await update.message.reply_text("Не удалось проверить модели, смотри логи.")
+        return
+    today = datetime.now(UTC).date()
+    await update.message.reply_text(render_status(report, today))
+
+
+@admin_required
 async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Re-analyze pending/failed inbound messages (owner only — TD-009).
 
@@ -986,6 +1177,10 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     payload,
                     telegram_id=row.telegram_id,
                     input_ref=input_ref,
+                    # The stored caption. /reprocess OVERWRITES ai_analysis, so
+                    # replaying without it would actively downgrade a record the
+                    # live flow got right.
+                    caption=row.content,
                 )
                 parsed = resolution_result.nutrition
             else:
@@ -1104,5 +1299,8 @@ def create_bot_application() -> Application:
 
     # Replay failed/pending inbound messages after a model fix (owner only).
     application.add_handler(CommandHandler("reprocess", reprocess))
+
+    # Models per task + shutdown-date check on demand (owner only, ADR-0004).
+    application.add_handler(CommandHandler("models", models_command))
 
     return application

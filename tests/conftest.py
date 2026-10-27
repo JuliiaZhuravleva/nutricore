@@ -73,3 +73,19 @@ def _hermetic_openai_model_override(monkeypatch):
         lambda: None,
         raising=False,
     )
+    # ADR-0004: per-task picks are read the same way — and a dead model alerts the
+    # admin through the DB + Telegram. Tests that exercise either patch it back.
+    monkeypatch.setattr(
+        "app.services.openai_service.get_persisted_task_models",
+        lambda: {},
+        raising=False,
+    )
+
+    async def _no_alert(task, ref, err):
+        return False
+
+    monkeypatch.setattr(
+        "app.services.openai_service.report_model_failure",
+        _no_alert,
+        raising=False,
+    )

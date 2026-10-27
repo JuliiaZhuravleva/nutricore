@@ -23,6 +23,7 @@ embed_text is mocked as an AsyncMock — asyncio.run() executes the coroutine.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -124,7 +125,9 @@ def test_schedule_extracts_product_name_as_canonical(monkeypatch):
         "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
         delay_mock,
     ):
-        signals = dict(_BASE_SIGNALS, product_name="FAGE Total 2%", saved_food_name=None)
+        signals = dict(
+            _BASE_SIGNALS, product_name="FAGE Total 2%", saved_food_name=None
+        )
         _call_schedule(resolution_signals=signals)
 
     kwargs = delay_mock.call_args.kwargs
@@ -225,18 +228,46 @@ def test_schedule_computes_per100g_from_portion_grams(monkeypatch):
     assert kwargs["per_100g_proteins"] == pytest.approx(10.0)
 
 
-def test_schedule_factor_one_when_no_portion_grams(monkeypatch):
-    """When portion_grams is None and the portion string is unparseable, factor=1.0."""
+def test_schedule_skips_when_there_is_no_per_100g_basis(caplog):
+    """No gram basis → learn NOTHING, rather than learn a whole portion as per-100g.
+
+    Until 2026-09-13 this path used factor=1.0: the 97 kcal of "половина тарелки"
+    were stored as 97 kcal *per 100g* and then served back by SavedFoodRAGStrategy
+    under the "⭐ из вашей базы" badge, which carries no "проверь" qualifier. The
+    wrong number outlived the meal that produced it.
+    """
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ), caplog.at_level(logging.WARNING, logger="app.services.telegram"):
+        signals = {"portion_grams": None, "barcode_raw": None}
+        # "половина тарелки" carries no gram value → _parse_portion_grams returns None
+        nutrition = dict(
+            _BASE_NUTRITION, calories=97.0, protein=9.0, portion="половина тарелки"
+        )
+        _call_schedule(nutrition=nutrition, resolution_signals=signals)
+
+    delay_mock.assert_not_called()
+    assert any(
+        "no per-100g basis" in r.getMessage() for r in caplog.records
+    ), "skipped silently — the owner has no way to know the food was not learned"
+
+
+def test_schedule_still_saves_when_portion_is_the_per_100g_sentinel():
+    """Expected answer 'no finding': "100г" IS a valid per-100g basis.
+
+    The guard above must not refuse the common case — every OFF-backed strategy
+    that cannot scale emits exactly this portion string, and those numbers really
+    are per-100g.
+    """
     delay_mock = MagicMock()
     with patch(
         "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
         delay_mock,
     ):
         signals = {"portion_grams": None, "barcode_raw": None}
-        # "половина тарелки" carries no gram value → _parse_portion_grams returns None
-        nutrition = dict(
-            _BASE_NUTRITION, calories=97.0, protein=9.0, portion="половина тарелки"
-        )
+        nutrition = dict(_BASE_NUTRITION, calories=97.0, protein=9.0, portion="100г")
         _call_schedule(nutrition=nutrition, resolution_signals=signals)
 
     kwargs = delay_mock.call_args.kwargs
@@ -323,6 +354,7 @@ def _run_task(
     meal_id: Optional[int] = None,
     resolution_source: Optional[str] = None,
     barcode: Optional[str] = None,
+    brand: Optional[str] = None,
     per_100g_calories: Optional[float] = None,
     per_100g_proteins: Optional[float] = None,
     per_100g_fats: Optional[float] = None,
@@ -360,6 +392,7 @@ def _run_task(
                 "meal_id": meal_id,
                 "resolution_source": resolution_source,
                 "barcode": barcode,
+                "brand": brand,
                 "per_100g_calories": per_100g_calories,
                 "per_100g_proteins": per_100g_proteins,
                 "per_100g_fats": per_100g_fats,
@@ -391,6 +424,7 @@ def test_task_creates_personal_food_row(task_db):
         pf = crud_personal_food.get_by_barcode(db, barcode="nope", user_id=user_id)
         # Row should exist by ID
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -464,13 +498,12 @@ def test_task_idempotent_increments_times_used(task_db):
         user = _make_user(db, telegram_id=88_005)
         user_id = user.id
 
-    personal_food_id = _run_task(
-        task_db, user_id=user_id, canonical_name="Творог 5%"
-    )
+    personal_food_id = _run_task(task_db, user_id=user_id, canonical_name="Творог 5%")
     _run_task(task_db, user_id=user_id, canonical_name="Творог 5%")
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -496,6 +529,7 @@ def test_task_persists_barcode(task_db):
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -513,9 +547,7 @@ def test_task_existing_embedding_not_duplicated(task_db):
         user_id = user.id
 
     # First run creates the embedding
-    personal_food_id = _run_task(
-        task_db, user_id=user_id, canonical_name="Кефир 1%"
-    )
+    personal_food_id = _run_task(task_db, user_id=user_id, canonical_name="Кефир 1%")
     # Second run should NOT add a second embedding row
     _run_task(task_db, user_id=user_id, canonical_name="Кефир 1%")
 
@@ -543,6 +575,7 @@ def test_task_persists_resolution_source(task_db):
 
     with Session() as db:
         from sqlalchemy import select
+
         from app.models.personal_food import PersonalFood
 
         row = db.execute(
@@ -577,10 +610,11 @@ def test_confirm_to_db_roundtrip(task_db):
     task execution (Celery) in a single test so we confirm the kwargs wiring
     between the two layers is correct.
     """
+    from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
     from app.services.telegram import _schedule_personal_food_save
     from celery_app.tasks.personal_food import embed_and_save_personal_food
-    from app.models.personal_food import PersonalFood
-    from sqlalchemy import select
 
     Session = task_db
     with Session() as db:
@@ -655,8 +689,9 @@ def test_multiple_confirms_idempotent_roundtrip(task_db):
     photographing and confirming the same food three times — the Celery task
     must be idempotent on (user_id, lower(canonical_name)).
     """
-    from app.models.personal_food import PersonalFood
     from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
 
     Session = task_db
     with Session() as db:
@@ -700,3 +735,87 @@ def test_multiple_confirms_idempotent_roundtrip(task_db):
 
     # embed_text must have been called only once (on the first run)
     assert embed_mock.await_count == 1
+
+
+def test_schedule_skips_a_food_with_no_usable_calories(caplog):
+    """A row the RAG read guard can never serve must not be learned at all.
+
+    SavedFoodRAGStrategy refuses a personal_foods row without per-100g calories
+    (it would otherwise be served as a confident "0 ккал"). Saving one anyway
+    creates a permanently unusable row that still counts towards times_used.
+    """
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ), caplog.at_level(logging.WARNING, logger="app.services.telegram"):
+        signals = {"portion_grams": 200.0, "barcode_raw": None}
+        # OFF had the product but not its energy value.
+        nutrition = dict(_BASE_NUTRITION, calories=None)
+        _call_schedule(nutrition=nutrition, resolution_signals=signals)
+
+    delay_mock.assert_not_called()
+    assert any("no usable calories" in r.getMessage() for r in caplog.records)
+
+
+# --- brand: the column existed, the plumbing stopped one hop short ----------
+
+
+def test_schedule_forwards_the_brand_from_signals():
+    """Every OFF-backed strategy resolves a brand into resolution_signals.
+
+    personal_foods.brand, PersonalFoodCreate.brand and crud upsert(brand=...) all
+    existed from the start — only this hop was missing, so the column was NULL for
+    every row ever written and the RAG could not tell a store brand from a name
+    brand with the same generic product name.
+    """
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ):
+        signals = dict(_BASE_SIGNALS, brand="FAGE")
+        _call_schedule(resolution_signals=signals)
+
+    assert delay_mock.call_args.kwargs.get("brand") == "FAGE", (
+        "the brand was resolved and then dropped before the write-back "
+        f"(kwargs seen: {sorted(delay_mock.call_args.kwargs)})"
+    )
+
+
+def test_schedule_passes_none_when_there_is_no_brand():
+    """Expected answer 'no finding': a strategy without a brand invents none."""
+    delay_mock = MagicMock()
+    with patch(
+        "celery_app.tasks.personal_food.embed_and_save_personal_food.delay",
+        delay_mock,
+    ):
+        signals = dict(_BASE_SIGNALS, brand=None)
+        _call_schedule(resolution_signals=signals)
+
+    assert delay_mock.call_args.kwargs.get("brand") is None
+
+
+def test_task_persists_the_brand_on_the_row(task_db):
+    """The artefact, not the argument: the column must actually hold it."""
+    Session = task_db
+    with Session() as db:
+        user_id = _make_user(db, telegram_id=88_010).id
+
+    personal_food_id = _run_task(
+        task_db,
+        user_id=user_id,
+        canonical_name="Греческий йогурт",
+        brand="FAGE",
+        per_100g_calories=97.0,
+    )
+
+    from sqlalchemy import select
+
+    from app.models.personal_food import PersonalFood
+
+    with Session() as db:
+        row = db.execute(
+            select(PersonalFood).where(PersonalFood.id == personal_food_id)
+        ).scalar_one()
+    assert row.brand == "FAGE"

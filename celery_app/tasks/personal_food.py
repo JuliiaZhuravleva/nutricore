@@ -32,6 +32,7 @@ def embed_and_save_personal_food(
     meal_id: Optional[int] = None,
     resolution_source: Optional[str] = None,
     barcode: Optional[str] = None,
+    brand: Optional[str] = None,
     per_100g_calories: Optional[float] = None,
     per_100g_proteins: Optional[float] = None,
     per_100g_fats: Optional[float] = None,
@@ -56,6 +57,7 @@ def embed_and_save_personal_food(
                 meal_id=meal_id,
                 resolution_source=resolution_source,
                 barcode=barcode,
+                brand=brand,
                 per_100g_calories=per_100g_calories,
                 per_100g_proteins=per_100g_proteins,
                 per_100g_fats=per_100g_fats,
@@ -67,9 +69,7 @@ def embed_and_save_personal_food(
             existing = crud_personal_food.get_embeddings_for_food(
                 db, personal_food_id=personal_food_id
             )
-            already_embedded = any(
-                e.text_embedded == canonical_name for e in existing
-            )
+            already_embedded = any(e.text_embedded == canonical_name for e in existing)
 
             if not already_embedded:
                 # Do NOT reuse the process-wide async OpenAIService singleton here:

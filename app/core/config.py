@@ -114,12 +114,49 @@ class Settings(BaseSettings):
 
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_MODEL: str = "gpt-6-luna"
     OPENAI_TEMPERATURE: float = 0.7
     OPENAI_MAX_TOKENS: int = 2000
     # Retries for transient OpenAI errors (429 / 5xx / network). The SDK applies
     # exponential backoff; 0 disables retrying.
     OPENAI_MAX_RETRIES: int = 2
+    # Web search (ADR-0002 / Responses API). Both have defaults, so neither needs
+    # an entry in the mini's env map (docs/RELEASE.md).
+    # The web_search call runs INSIDE the user's photo flow; the SDK default read
+    # timeout is 600s, which would hang the reply. Ceiling it.
+    OPENAI_WEB_SEARCH_TIMEOUT: float = 30.0
+    # The owner can switch OPENAI_MODEL at runtime (TD-005) to a model that does
+    # not support the web_search tool; pin the search model separately when that
+    # happens. None → use the currently selected model.
+    OPENAI_WEB_SEARCH_MODEL: Optional[str] = None
+
+    # Models per task (ADR-0004). A ref is "<route>:<model>" — route "openai" or
+    # "openrouter"; a bare id is OpenAI. Unset → OPENAI_MODEL (or the owner's
+    # in-chat choice). All optional: none needs an entry in the mini's env map.
+    MODEL_VISION: Optional[str] = None
+    MODEL_TEXT: Optional[str] = None
+    MODEL_BARCODE: Optional[str] = None
+    MODEL_LABEL_OCR: Optional[str] = None
+    # Reasoning effort per task (none|minimal|low|medium|high|…); unset → the
+    # model's default, and the cheapest it supports for barcode / label.
+    MODEL_EFFORT_VISION: Optional[str] = None
+    MODEL_EFFORT_TEXT: Optional[str] = None
+    MODEL_EFFORT_BARCODE: Optional[str] = None
+    MODEL_EFFORT_LABEL_OCR: Optional[str] = None
+    # OpenRouter (Claude / Gemini / Qwen behind one key). No key → "openrouter:"
+    # refs fail as unavailable and are never offered.
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    # Weekly check of the models' shutdown dates; the bot messages the admins.
+    MODEL_WATCH_ENABLED: bool = True
+    MODEL_WATCH_WARN_DAYS: int = 90
+
+    def model_ref_for(self, task: str) -> Optional[str]:
+        """The configured model for ``task`` (vision/text/barcode/label_ocr)."""
+        return getattr(self, f"MODEL_{task.upper()}", None)
+
+    def model_effort_for(self, task: str) -> Optional[str]:
+        return getattr(self, f"MODEL_EFFORT_{task.upper()}", None)
 
     # Personal Food DB embeddings (ADR-0003 §2 / B2)
     # OPENAI_EMBEDDING_MODEL / OPENAI_EMBEDDING_DIMS must be changed together.

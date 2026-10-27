@@ -15,6 +15,7 @@ folder is the map — start with the row that matches what you want.
 ## Features & design records
 - [photo-product-lookup.md](photo-product-lookup.md) — packaged-food КБЖУ lookup (round-1 shipped, round-2 active)
 - [decisions/ADR-0001-pluggable-nutrition-resolution-pipeline.md](decisions/ADR-0001-pluggable-nutrition-resolution-pipeline.md) — the resolution pipeline
+- [decisions/ADR-0004-model-providers-and-lifecycle-watch.md](decisions/ADR-0004-model-providers-and-lifecycle-watch.md) — models per task (OpenAI / OpenRouter) + the weekly shutdown-date check
 - [consult-relay.md](consult-relay.md) — `/consult` → my-health hub (shipped)
 
 ## Operating the project
