@@ -1,4 +1,5 @@
 import base64
+import html
 import logging
 import warnings
 from datetime import UTC, datetime
@@ -28,7 +29,7 @@ from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
-from app.services import meal_draft
+from app.services import meal_draft, stats_screen, weight_screen
 from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
@@ -73,7 +74,8 @@ REPROCESS_BATCH_LIMIT = 20
     SUBSCRIPTION_INQUIRY,
     CHOOSING_MODEL,
     DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
-) = range(8)
+    ENTERING_WEIGHT,
+) = range(9)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -219,8 +221,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 Что я умею:\n"
             "• Анализировать приемы пищи с помощью AI\n"
             "• Отслеживать калории и нутриенты\n"
-            "• Интегрироваться с Mi Scale и Samsung Health\n"
-            "• Предоставлять детальную аналитику\n\n"
+            "• Вести вес и статистику по дням\n\n"
             "💎 Для доступа к этим функциям нужна подписка."
         )
         await update.message.reply_text(text, reply_markup=subscription_keyboard)
@@ -1209,23 +1210,22 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return CHOOSING_ACTION
 
 
-async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on a favorites inline button (``fav:…``).
+async def _screen_callback(update: Update, handle, locked: str, what: str):
+    """A tap on a screen's inline button: ``handle(db, telegram_id, data)``
+    gives the next screen, which replaces the message in place.
 
     Registered outside the ConversationHandler: the callback data carries the
     whole step, so it works in any conversation state and after a restart.
     """
     query = update.callback_query
     if not await check_subscription(update.effective_user.id):
-        await query.answer("🔒 Избранное доступно с подпиской", show_alert=True)
+        await query.answer(locked, show_alert=True)
         return
     try:
         with SessionLocal() as db:
-            screen = favorites.handle_callback(
-                db, update.effective_user.id, query.data or ""
-            )
+            screen = handle(db, update.effective_user.id, query.data or "")
     except Exception as e:
-        logger.error("Favorites callback %r failed: %s", query.data, e, exc_info=True)
+        logger.error("%s callback %r failed: %s", what, query.data, e, exc_info=True)
         await query.answer("Не получилось, попробуйте ещё раз", show_alert=True)
         return
     await query.answer(screen.toast)
@@ -1241,11 +1241,89 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             raise
 
 
+async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on a favorites inline button (``fav:…``)."""
+    await _screen_callback(
+        update,
+        favorites.handle_callback,
+        "🔒 Избранное доступно с подпиской",
+        "Favorites",
+    )
+
+
+async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A statistics tab (``st:…``)."""
+    await _screen_callback(
+        update,
+        stats_screen.handle_callback,
+        "🔒 Статистика доступна с подпиской",
+        "Stats",
+    )
+
+
+async def weight_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The weight screen's undo (``wt:…``)."""
+    await _screen_callback(
+        update,
+        weight_screen.handle_callback,
+        "🔒 Дневник веса доступен с подпиской",
+        "Weight",
+    )
+
+
+async def _reply_screen(update: Update, screen) -> None:
+    await update.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+
+
 @subscription_required
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show user statistics."""
+    """Today's meals and totals, tabs for yesterday and 7 days (📊 Статистика)."""
+    with SessionLocal() as db:
+        screen = stats_screen.open_view(db, update.effective_user.id)
+    await _reply_screen(update, screen)
+    return CHOOSING_ACTION
+
+
+@subscription_required
+async def show_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The weight history, then a typed number is the new weighing (⚖️ Мой вес)."""
+    with SessionLocal() as db:
+        screen = weight_screen.open_view(db, update.effective_user.id)
+    await _reply_screen(update, screen)
+    return ENTERING_WEIGHT
+
+
+@subscription_required
+async def process_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A typed weight is saved (with undo); after «⚖️ Мой вес» anything else
+    gets the hint. The state stays, so a second number corrects the first;
+    the menu buttons keep working in it."""
+    kg = weight_screen.parse_kg(update.message.text)
+    if kg is None:
+        await update.message.reply_text(
+            "Не похоже на вес. " + weight_screen.ASK, parse_mode=ParseMode.HTML
+        )
+        return ENTERING_WEIGHT
+    user = update.effective_user
+    with SessionLocal() as db:
+        screen = weight_screen.record(db, user.id, kg, user.username)
+    await _reply_screen(update, screen)
+    return ENTERING_WEIGHT
+
+
+@subscription_required
+async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """What the bot runs with today (⚙️ Настройки); nothing to change yet."""
     await update.message.reply_text(
-        "Эта функция пока в разработке 🚧",
+        "<b>⚙️ Настройки</b>\n\n"
+        f"🕐 Часовой пояс: {html.escape(settings.DEFAULT_TIMEZONE)} — по нему "
+        "📊 Статистика делит дни.\n"
+        "🎯 Цель по калориям: не задана.\n\n"
+        "<i>Менять их из чата пока нельзя: цели и напоминания — "
+        "следующий шаг.</i>",
+        parse_mode=ParseMode.HTML,
         reply_markup=main_keyboard,
     )
     return CHOOSING_ACTION
@@ -1263,10 +1341,9 @@ async def handle_subscription_inquiry(
             "✨ С подпиской вы получите:\n"
             "• AI-анализ питания\n"
             "• Отслеживание калорий и нутриентов\n"
-            "• Интеграцию с Mi Scale\n"
-            "• Интеграцию с Samsung Health\n"
-            "• Детальную аналитику\n"
-            "• Персональные рекомендации"
+            "• Избранные блюда в одно касание\n"
+            "• Статистику за день и неделю\n"
+            "• Дневник веса"
         )
 
     elif text == "💎 Получить подписку":
@@ -1542,20 +1619,35 @@ def create_bot_application() -> Application:
     )
 
     # Add conversation handler
+    # The main menu (main_keyboard): a tapped button comes back as its text.
+    def menu():
+        return [
+            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
+            MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
+            MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
+            MessageHandler(filters.Regex("^⚖️ Мой вес$"), show_weight),
+            MessageHandler(filters.Regex("^⚙️ Настройки$"), show_settings),
+        ]
+
     conv_handler = ConversationHandler(
         # The menu buttons are entry points too: the conversation state lives in
         # memory, so after a bot restart they would otherwise do nothing until
         # /start.
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
-            MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
+            *menu(),
+            # A bare weight ("72,5") outside any step: the weight screen's
+            # prompt still holds after a restart or an undo.
+            MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
         ],
         states={
             CHOOSING_ACTION: [
-                MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
-                MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
-                MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
+                *menu(),
+                MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
+            ],
+            ENTERING_WEIGHT: [
+                *menu(),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_weight),
             ],
             ADDING_MEAL_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_meal_time),
@@ -1597,6 +1689,16 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             favorites_callback, pattern=f"^{favorites.CALLBACK_PREFIX}"
+        )
+    )
+
+    # Statistics tabs and the weight undo (stateless, like favorites).
+    application.add_handler(
+        CallbackQueryHandler(stats_callback, pattern=f"^{stats_screen.CALLBACK_PREFIX}")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            weight_callback, pattern=f"^{weight_screen.CALLBACK_PREFIX}"
         )
     )
 
