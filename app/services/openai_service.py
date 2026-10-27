@@ -12,10 +12,12 @@ from app.services.model_registry import (
     REGISTRY,
     ROUTES,
     VISION_TASKS,
+    WEB_SEARCH_FALLBACK,
     ModelRef,
     build_chat_params,
     loads_model_json,
     parse_model_ref,
+    spec_for,
 )
 from app.services.model_selection import (
     get_persisted_model,
@@ -514,8 +516,18 @@ class OpenAIService:
         support, hence the separate pin. Exposed as a property so the CALLER can
         log the same value it sends: ai_call_logs used to record the active chat
         model for these rows, i.e. a model that never received the request.
+
+        A known model whose row says ``web_search=False`` (Gemini: $0.70 a search)
+        never gets the call, even when pinned; it goes to WEB_SEARCH_FALLBACK.
         """
-        return settings.OPENAI_WEB_SEARCH_MODEL or self.model
+        ref_str = settings.OPENAI_WEB_SEARCH_MODEL or self.model
+        spec = spec_for(ref_str)
+        if spec.known and not spec.web_search:
+            logger.warning(
+                "Web search is off for %s; using %s", ref_str, WEB_SEARCH_FALLBACK
+            )
+            return WEB_SEARCH_FALLBACK
+        return ref_str
 
     def _web_search_client_for(self, ref: ModelRef) -> AsyncOpenAI | None:
         """Like ``_client_for``, but with no retries (see web_search_client)."""

@@ -15,7 +15,8 @@ import httpx
 import openai
 import pytest
 
-from app.core.config import settings
+from app.core.config import Settings, settings
+from app.services.model_registry import REGISTRY, parse_model_ref, spec_for
 from app.services.openai_service import (
     ModelUnavailableError,
     OpenAIService,
@@ -74,7 +75,9 @@ def test_analyze_food_image_sends_nested_image_url():
     assert text_parts, "the user turn should also carry a text instruction"
 
 
-def test_analyze_food_image_requests_json_and_returns_raw_content():
+def test_analyze_food_image_requests_json_and_returns_raw_content(monkeypatch):
+    # gpt-4o-mini's parameters, pinned: the prod .env still names it.
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
     service = _service_with_mock_client()
 
     result = asyncio.run(service.analyze_food_image("https://example.test/food.jpg"))
@@ -89,7 +92,8 @@ def test_analyze_food_image_requests_json_and_returns_raw_content():
 # --- analyze_food_entry ----------------------------------------------------
 
 
-def test_analyze_food_entry_uses_configured_model_and_tuning():
+def test_analyze_food_entry_uses_configured_model_and_tuning(monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
     service = _service_with_mock_client()
 
     result = asyncio.run(service.analyze_food_entry("chicken breast 200g"))
@@ -100,6 +104,26 @@ def test_analyze_food_entry_uses_configured_model_and_tuning():
     assert kwargs["max_tokens"] == settings.OPENAI_MAX_TOKENS
     assert kwargs["response_format"] == {"type": "json_object"}
     assert result == _FAKE_CONTENT
+
+
+def test_default_model_is_a_known_reasoning_model_and_gets_its_own_params():
+    """The code default (gpt-6-luna since gpt-4o-mini's 2027-01-14 shutdown) is a
+    registry row, takes photos, and gets no temperature and no max_tokens — what a
+    fresh deploy with no OPENAI_MODEL in .env sends."""
+    default = Settings.model_fields["OPENAI_MODEL"].default
+    assert default == "gpt-6-luna"
+    assert str(parse_model_ref(default)) in REGISTRY
+    assert spec_for(default).vision
+
+    service = _service_with_mock_client()
+    service.model = default
+    asyncio.run(service.analyze_food_image("https://example.test/food.jpg"))
+
+    kwargs = _create_kwargs(service)
+    assert kwargs["model"] == default
+    assert "temperature" not in kwargs
+    assert "max_tokens" not in kwargs
+    assert kwargs["max_completion_tokens"] >= settings.OPENAI_MAX_TOKENS
 
 
 def test_analyze_food_entry_forwards_the_text():

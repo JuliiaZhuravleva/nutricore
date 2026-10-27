@@ -31,6 +31,9 @@ ROUTES = ("openai", "openrouter")
 TASKS = ("vision", "text", "barcode", "label_ocr")
 VISION_TASKS = ("vision", "barcode", "label_ocr")
 
+# Where web search goes when the configured model may not search (web_search=False).
+WEB_SEARCH_FALLBACK = "gpt-6-luna"
+
 # The cheapest efforts, cheapest first. Reading a barcode or a label needs no
 # thinking, so those tasks ask for the first one a model supports.
 _LOW_EFFORTS = ("none", "minimal", "low")
@@ -135,7 +138,9 @@ REGISTRY: dict[str, ModelSpec] = {
         token_param="max_tokens",
         efforts=("low", "medium", "high"),
         default_effort="medium",
-        web_search=True,
+        # Never searches: one OpenRouter web search on gemini-3.8-flash cost $0.70
+        # (2026-10-27, vs $0.011 on gpt-6-luna) — 92% of the eval's spend.
+        web_search=False,
         first_party=("google", "gemini-3.8-flash"),
     ),
     "openrouter:google/gemini-3.5-flash-lite": ModelSpec(
@@ -143,7 +148,7 @@ REGISTRY: dict[str, ModelSpec] = {
         token_param="max_tokens",
         efforts=("minimal", "low", "medium", "high"),
         default_effort="minimal",
-        web_search=True,
+        web_search=False,  # as gemini-3.8-flash above
         first_party=("google", "gemini-3.5-flash-lite"),
     ),
     # Reasoning is on by default and budget-controlled: no effort knob to send.

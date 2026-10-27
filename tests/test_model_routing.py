@@ -24,10 +24,15 @@ from app.services.openai_service import (
     OpenAIService,
 )
 
-_FAKE = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))])
+_FAKE = SimpleNamespace(
+    choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
+)
 
 # Bodies OpenRouter returned live (2026-10-27).
-_OR_UNKNOWN_MODEL = (400, {"error": {"message": "openai/gpt-0-nope is not a valid model ID", "code": 400}})
+_OR_UNKNOWN_MODEL = (
+    400,
+    {"error": {"message": "openai/gpt-0-nope is not a valid model ID", "code": 400}},
+)
 _OR_NO_ENDPOINTS = (
     404,
     {
@@ -257,8 +262,12 @@ def test_unrelated_bad_request_neither_maps_nor_alerts(alerts):
 # --- web search ----------------------------------------------------------------
 
 
-def test_web_search_through_openrouter_uses_its_server_tool(monkeypatch, openrouter_key):
-    monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", "openrouter:openai/gpt-6-luna")
+def test_web_search_through_openrouter_uses_its_server_tool(
+    monkeypatch, openrouter_key
+):
+    monkeypatch.setattr(
+        settings, "OPENAI_WEB_SEARCH_MODEL", "openrouter:openai/gpt-6-luna"
+    )
     service = OpenAIService()
     service.web_search_client.responses.create = AsyncMock()
     requests = []
@@ -310,11 +319,46 @@ def test_web_search_on_the_openai_route_sends_the_bare_model_id(monkeypatch):
     assert kwargs["tools"] == [{"type": "web_search"}]
 
 
+@pytest.mark.parametrize(
+    "setting", ["OPENAI_WEB_SEARCH_MODEL", "OPENAI_MODEL"], ids=["pinned", "default"]
+)
+@pytest.mark.parametrize(
+    "gemini",
+    ["openrouter:google/gemini-3.8-flash", "openrouter:google/gemini-3.5-flash-lite"],
+)
+def test_web_search_never_goes_to_gemini(monkeypatch, openrouter_key, setting, gemini):
+    # $0.70 a search on gemini-3.8-flash (2026-10-27): it goes to gpt-6-luna instead.
+    monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", None)
+    monkeypatch.setattr(settings, setting, gemini)
+    service = OpenAIService()
+    service.web_search_client.responses.create = AsyncMock(
+        return_value=SimpleNamespace(output_text="{}")
+    )
+    openrouter_requests = []
+    _openrouter_transport(service, _OR_OK, openrouter_requests)
+
+    asyncio.run(service.web_search_nutrition(["x"]))
+
+    assert service.web_search_model == "gpt-6-luna"
+    kwargs = service.web_search_client.responses.create.call_args.kwargs
+    assert kwargs["model"] == "gpt-6-luna"
+    assert openrouter_requests == []
+
+
+def test_web_search_stays_on_a_model_that_may_search(monkeypatch):
+    # No finding: Claude and an unknown id keep the search (only Gemini is barred).
+    for ref in ("openrouter:anthropic/claude-haiku-5.5", "gpt-brand-new"):
+        monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", ref)
+        assert OpenAIService().web_search_model == ref
+
+
 # --- what the admin can switch to ---------------------------------------------
 
 
 def _listing(*ids):
-    return AsyncMock(return_value=SimpleNamespace(data=[SimpleNamespace(id=i) for i in ids]))
+    return AsyncMock(
+        return_value=SimpleNamespace(data=[SimpleNamespace(id=i) for i in ids])
+    )
 
 
 def test_candidates_without_openrouter_key_are_openai_only_and_still_listed(
@@ -335,7 +379,15 @@ def test_candidates_include_other_companies_with_a_key(monkeypatch, openrouter_k
     service.client.models.list = _listing("gpt-6-luna")
     _openrouter_transport(
         service,
-        (200, {"data": [{"id": "google/gemini-3.8-flash"}, {"id": "anthropic/claude-haiku-5.5"}]}),
+        (
+            200,
+            {
+                "data": [
+                    {"id": "google/gemini-3.8-flash"},
+                    {"id": "anthropic/claude-haiku-5.5"},
+                ]
+            },
+        ),
     )
 
     got = asyncio.run(service.list_candidates("text"))
@@ -363,7 +415,9 @@ def test_photo_tasks_get_only_vision_models(monkeypatch):
         ois,
         "REGISTRY",
         {
-            "openai:text-only": ois.REGISTRY["openai:gpt-6-luna"].__class__(vision=False),
+            "openai:text-only": ois.REGISTRY["openai:gpt-6-luna"].__class__(
+                vision=False
+            ),
             "openai:sees": ois.REGISTRY["openai:gpt-6-luna"],
         },
     )
