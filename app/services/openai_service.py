@@ -1,4 +1,3 @@
-import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -15,6 +14,7 @@ from app.services.model_registry import (
     VISION_TASKS,
     ModelRef,
     build_chat_params,
+    loads_model_json,
     parse_model_ref,
 )
 from app.services.model_selection import (
@@ -397,7 +397,7 @@ class OpenAIService:
 
         raw = response.choices[0].message.content
         try:
-            data = json.loads(raw)
+            data = loads_model_json(raw)
             value = data.get("barcode")
             if not value:
                 return None
@@ -425,7 +425,7 @@ class OpenAIService:
                 )
                 return None
             return cleaned
-        except (json.JSONDecodeError, AttributeError) as exc:
+        except (ValueError, TypeError, AttributeError) as exc:
             logger.warning(
                 "extract_barcode_from_image: failed to parse response %r: %s", raw, exc
             )

@@ -33,6 +33,7 @@ from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
 from app.models.personal_food import PersonalFood
 from app.services.ai_call_log_service import analyze_and_log
+from app.services.model_registry import loads_model_json
 from app.services.open_food_facts_service import OFFLookupResult, OpenFoodFactsService
 from app.services.openai_service import get_openai_service
 
@@ -54,7 +55,7 @@ def parse_nutrition(raw: Any) -> dict:
     malformed response is recorded as an error and surfaced, not turned into a
     downstream KeyError.
     """
-    data = json.loads(raw) if isinstance(raw, str) else raw
+    data = loads_model_json(raw) if isinstance(raw, str) else raw
     if not isinstance(data, dict):
         raise ValueError(f"expected a JSON object, got {type(data).__name__}")
     foods = data.get("foods", [])
@@ -288,7 +289,7 @@ def _parse_label_json(raw: Any) -> dict:
     """
     if raw is None:
         return {}
-    data = json.loads(raw) if isinstance(raw, str) else raw
+    data = loads_model_json(raw) if isinstance(raw, str) else raw
     if data is None:  # JSON null — model couldn't read the label
         return {}
     if not isinstance(data, dict):
@@ -712,39 +713,18 @@ class LabelOCRStrategy(ResolutionStrategy):
 def _extract_json_from_text(text: str) -> dict:
     """Extract the first JSON object from a text string.
 
-    Handles: clean JSON, markdown code blocks (```json … ```), and JSON
-    embedded in prose.  Raises ``ValueError`` if no valid JSON object is found.
+    Handles: clean JSON, markdown code blocks (```json … ```), JSON embedded in
+    prose, and a list of candidates (gpt-6-luna answers ``[{…}, {…}]`` — the
+    first object wins).  Raises ``ValueError`` if no valid JSON object is found.
     """
-    stripped = text.strip()
-    # 1. Try direct parse (cleanest case).
     try:
-        data = json.loads(stripped)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
-
-    # 2. Try to extract from ```json ... ``` or ``` ... ``` markdown blocks.
-    block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
-    if block_match:
-        try:
-            data = json.loads(block_match.group(1))
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
-
-    # 3. Find first '{' and last '}' (handles JSON embedded in prose).
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and start < end:
-        try:
-            data = json.loads(stripped[start : end + 1])
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
-
+        data = loads_model_json(text)
+    except ValueError:
+        data = None
+    if isinstance(data, list):
+        data = next((item for item in data if isinstance(item, dict)), None)
+    if isinstance(data, dict):
+        return data
     raise ValueError(
         f"web_search: could not extract a JSON object from response: {text[:200]!r}"
     )

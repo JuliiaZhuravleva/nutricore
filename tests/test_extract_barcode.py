@@ -256,3 +256,9 @@ def test_rejects_non_ascii_digits(caplog):
         result = _call(svc)
     assert result is None
     assert "invalid barcode value" in caplog.text
+
+
+def test_reads_a_fenced_reply():
+    """Claude via OpenRouter wraps JSON in a fence even with json_object asked."""
+    svc = _service('```json\n{"barcode": "4607086060537"}\n```\nRead clearly.')
+    assert _call(svc) == "4607086060537"

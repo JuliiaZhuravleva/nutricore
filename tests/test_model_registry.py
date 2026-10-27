@@ -8,6 +8,7 @@ from app.services.model_registry import (
     REGISTRY,
     ModelRef,
     build_chat_params,
+    loads_model_json,
     parse_model_ref,
     spec_for,
 )
@@ -176,3 +177,35 @@ def test_gpt_4o_mini_row_names_its_snapshot_and_lifecycle_source():
     spec = spec_for("gpt-4o-mini")
     assert spec.snapshot == "gpt-4o-mini-2024-07-18"
     assert spec.first_party == ("openai", "gpt-4o-mini")
+
+
+# What Claude haiku-5.5 sent back through OpenRouter for a photo, with
+# response_format=json_object asked (2026-10-27, trimmed).
+CLAUDE_REPLY = (
+    '```json\n{\n    "foods": ["vegetarian samsa"],\n    "calories": 290.0,\n'
+    '    "protein": 9.0,\n    "fats": 14.0,\n    "carbs": 32.0,\n'
+    '    "portion": "1 samsa, about 100 g",\n    "portion_grams": 100.0\n}\n```'
+    "\n\nThe pastry looks baked; the filling is the vegan mince from the note."
+)
+
+
+def test_loads_model_json_reads_a_fenced_reply_with_prose_after_it():
+    assert loads_model_json(CLAUDE_REPLY)["portion_grams"] == 100.0
+
+
+@pytest.mark.parametrize(
+    "text, want",
+    [
+        ('{"barcode": null}', {"barcode": None}),
+        ("null", None),
+        ('[{"a": 1}, {"a": 2}]', [{"a": 1}, {"a": 2}]),
+        ('Here it is: {"a": {"b": 1}} — done.', {"a": {"b": 1}}),
+    ],
+)
+def test_loads_model_json_shapes(text, want):
+    assert loads_model_json(text) == want
+
+
+def test_loads_model_json_refuses_a_reply_with_no_json():
+    with pytest.raises(ValueError, match="no JSON in the model reply"):
+        loads_model_json("I could not see any food in this photo.")

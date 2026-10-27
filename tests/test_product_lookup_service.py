@@ -37,6 +37,7 @@ from app.services.product_lookup_service import (
     VisionFallbackStrategy,
     _build_pipeline,
     _build_rag_query_text,
+    _parse_label_json,
     _parse_portion_grams,
     _parse_web_nutrition_response,
     _scale_label_nutrition,
@@ -2782,3 +2783,33 @@ def test_clean_miss_and_real_fault_are_classified_differently(db_session, monkey
 )
 def test_parse_portion_grams_share_vocabulary(portion, expected):
     assert _parse_portion_grams({"portion": portion}) == expected
+
+
+# ---------------------------------------------------------------------------
+# A fenced model reply (Claude via OpenRouter ignores json_object) — each parser
+# that reads a model's JSON accepts it (ADR-0004)
+# ---------------------------------------------------------------------------
+
+
+def _fenced(obj) -> str:
+    return f"```json\n{json.dumps(obj)}\n```\n\nA note the model added after it."
+
+
+def test_parse_nutrition_accepts_a_fenced_reply():
+    assert parse_nutrition(_fenced(_NUTRITION))["calories"] == _NUTRITION["calories"]
+
+
+def test_parse_label_json_accepts_a_fenced_reply():
+    raw = _fenced({"basis": "per_100g", "calories": 120})
+    assert _parse_label_json(raw)["calories"] == 120.0
+
+
+def test_parse_web_response_takes_the_first_object_of_a_list():
+    """gpt-6-luna answered web search with a list of candidates (2026-10-27)."""
+    raw = json.dumps(
+        [
+            {"identification": "Natto (generic)", "calories_per_100g": 211},
+            {"identification": "Natto (brand)", "calories_per_100g": 190},
+        ]
+    )
+    assert _parse_web_nutrition_response(raw)["identification"] == "Natto (generic)"

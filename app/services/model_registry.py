@@ -16,8 +16,11 @@ the keyword arguments that model accepts. No I/O here: the service owns the
 clients, ``model_watch`` owns the lifecycle checks.
 """
 
+import json
 import logging
+import re
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -245,3 +248,29 @@ def build_chat_params(
     if extra_body:
         params["extra_body"] = extra_body
     return params
+
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def loads_model_json(text: str) -> Any:
+    """A model's JSON reply → the parsed value; a ```json fence or prose around
+    it is allowed.
+
+    ``response_format=json_object`` is a request, not a guarantee: Claude via
+    OpenRouter answers a fenced object plus a sentence after it (VERIFIED
+    2026-10-27 — every haiku-5.5 photo on the Yellowpot set failed a plain
+    ``json.loads``). Tries the whole text, then each fence, then the outermost
+    ``{…}``. Raises ``ValueError`` when none of them is JSON.
+    """
+    stripped = text.strip()
+    candidates = [stripped, *_FENCE.findall(stripped)]
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if 0 <= start < end:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f"no JSON in the model reply: {text[:200]!r}")
