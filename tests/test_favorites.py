@@ -352,9 +352,9 @@ def _confirm(text, current_meal):
     return state, message
 
 
-def test_confirm_keyboard_and_intents():
-    rows = [[b.text for b in row] for row in tg.confirm_keyboard.keyboard]
-    assert rows == [["✅ Да", "⭐ Да, и в избранное"], ["Нет"]]
+def test_typed_confirm_intents():
+    # The former reply-keyboard texts still classify when typed or tapped from
+    # an old keyboard left on screen.
     assert tg._confirm_intent("✅ Да") == "affirm"
     assert tg._confirm_intent("⭐ Да, и в избранное") == "affirm_favorite"
     assert tg._confirm_intent("Нет") == "reject"
@@ -498,8 +498,11 @@ def test_handlers_are_registered(monkeypatch):
     application = tg.create_bot_application()
     handlers = [h for group in application.handlers.values() for h in group]
 
-    (fav_handler,) = [h for h in handlers if isinstance(h, CallbackQueryHandler)]
-    assert fav_handler.callback is tg.favorites_callback
+    (fav_handler,) = [
+        h
+        for h in handlers
+        if isinstance(h, CallbackQueryHandler) and h.callback is tg.favorites_callback
+    ]
     assert fav_handler.pattern.match("fav:l:1:n")
     assert not fav_handler.pattern.match("model:x")
 

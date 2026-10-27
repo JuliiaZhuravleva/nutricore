@@ -53,8 +53,9 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Prod:** bound the publish — e.g. `apply_async(..., retry=False)` plus a short
     `broker_connection_timeout`, or send the reply first / run the enqueue in `asyncio.to_thread`.
     Which knob produces the ~20 s is not pinned yet (INFERRED: kombu connect retries).
-  - **Tests:** an autouse fixture in `tests/conftest.py` that stubs `.delay`, with one test that
-    still asserts the enqueue call (the call site must stay covered).
+  - **Tests — DONE 2026-10-28 (feat/meal-reply-ux):** autouse `celery_delay` fixture in
+    `tests/conftest.py`; `test_save_button_saves_what_is_on_screen` asserts the enqueue and its
+    per-100g kwargs. Full suite ~4 s instead of 3 min 51 s. Only the prod half stays open.
   - **Priority:** Medium · **Source:** feat/favorites-menu full gate run · **Created:** 2026-10-28
 
 ## Low

@@ -1,5 +1,6 @@
 import base64
 import logging
+import warnings
 from datetime import UTC, datetime
 from typing import Dict
 
@@ -17,6 +18,7 @@ from telegram.ext import (
     TypeHandler,
     filters,
 )
+from telegram.warnings import PTBUserWarning
 
 from app.core.config import settings
 from app.crud.crud_meal import crud_meal
@@ -26,6 +28,7 @@ from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import favorites
 from app.services import inbound_message_service as inbound_msg
+from app.services import meal_draft
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
@@ -120,16 +123,12 @@ def _meal_type_label(text: str | None) -> str | None:
     return None
 
 
-# Confirm-step keyboard (TD-015): explicit Да / Нет so the owner never has to
-# guess the exact word, and a free-text reply is handled as a correction rather
-# than a silent reject-and-restart.
-# "⭐ Да, и в избранное" saves the meal and adds it to favorites in one tap.
+# The confirm step answers with inline buttons under the draft (meal_draft.py).
+# Typed replies still work (TD-015): Да saves, Нет discards, a weight rescales,
+# anything else is a correction rather than a silent reject-and-restart. These
+# two are the texts of the former reply keyboard, still accepted when typed.
 CONFIRM_YES = "✅ Да"
 CONFIRM_YES_FAVORITE = "⭐ Да, и в избранное"
-confirm_keyboard = ReplyKeyboardMarkup(
-    [[CONFIRM_YES, CONFIRM_YES_FAVORITE], ["Нет"]],
-    resize_keyboard=True,
-)
 
 # Accepted spellings for the confirm prompt. Matched case-insensitively and with
 # trailing punctuation stripped, so a lowercase ``да`` or a stray ``Нет.`` is not
@@ -467,11 +466,9 @@ def _source_badge(result: ResolutionResult | None) -> str:
 def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     """Key intermediate values surfaced for high/medium-confidence results.
 
-    Returns the EAN read, matched product name, and the gram-basis used for
-    scaling (A6 — CQ2): when the pipeline scaled per-100g values to the
-    vision-estimated portion, shows that gram basis so the user can verify
-    and correct it at the existing confirm step.  When the portion estimate is
-    missing entirely, shows a per-100g warning instead.
+    Returns the EAN read and the matched product name. The gram basis used for
+    scaling (A6 — CQ2) and the per-100g warning live in the draft's "Порция"
+    line now (``meal_draft``), next to the buttons that correct them.
     Vision-only results carry no meaningful intermediate signals beyond the
     nutrition fields already shown in the reply.
 
@@ -506,24 +503,6 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     product_name = signals.get("product_name")
     if product_name:
         lines.append(f"Продукт: {product_name}")
-    # Explicit gram-basis transparency (ADR-0001 §7 / CQ2 / A6):
-    if result.portion_grams is not None and result.portion_grams > 0:
-        # Scaled: show the gram basis so the user can verify it and correct it at
-        # the confirm step if needed. Name the note when one was in the prompt.
-        basis = (
-            "оценка по фото и твоему описанию"
-            if signals.get("portion_source") == "vision+note"
-            else "оценка по фото"
-        )
-        lines.append(
-            f"Пересчитано на {result.portion_grams:.0f}г ({basis})"
-            " — скорректируй при подтверждении"
-        )
-    else:
-        # No vision portion estimate — per-100g fallback; warn the user.
-        lines.append(
-            "⚠️ Порция не определена — данные на 100г, скорректируй при подтверждении"
-        )
     missing = signals.get("off_missing_macros") or []
     if missing:
         lines.append(f"⚠️ в базе нет: {', '.join(missing)} — впиши при подтверждении")
@@ -532,40 +511,65 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
     return lines
 
 
-def _macro_line(label: str, value, unit: str) -> str:
-    """One macro line; an UNKNOWN macro is a bare "—", never 0 and never "—г".
+def _start_draft(
+    draft: dict, header: str, resolution_result: ResolutionResult | None
+) -> dict:
+    """Stamp the confirm view onto a fresh draft: badge, details, gram basis.
 
-    Open Food Facts routinely carries a product with some macros absent. Printing
-    a hard 0 for those made the reply state a fact the database never had; keeping
-    the unit on the dash ("Белки: —г") reads as a malformed number.
+    A photo whose portion was estimated gets the size chips around that
+    estimate (the samosa: 250 ккал at a guessed 100 г, really ~140 г). A
+    database hit that could not be scaled carries per-100g numbers, so its
+    base is 100 г and the weight button rescales it. Everything else rescales
+    from whatever grams its own portion text names, or not at all.
     """
-    return f"{label}: —" if value is None else f"{label}: {value}{unit}"
+    nutrition = draft["nutrition"]
+    if resolution_result is None:
+        return meal_draft.start(
+            draft,
+            header=header,
+            badge="",
+            detail_lines=[],
+            estimate=True,
+            base_grams=_parse_portion_grams(nutrition),
+        )
+    grams = resolution_result.portion_grams
+    estimated = grams is not None and grams > 0
+    per_100g = not estimated and resolution_result.source != "vision"
+    if estimated:
+        base = float(grams)
+    elif per_100g:
+        base = 100.0
+    else:
+        base = _parse_portion_grams(nutrition)
+    basis = None
+    if estimated:
+        signals = resolution_result.signals or {}
+        basis = (
+            "оценка по фото и твоему описанию"
+            if signals.get("portion_source") == "vision+note"
+            else "оценка по фото"
+        )
+    return meal_draft.start(
+        draft,
+        header=header,
+        badge=_source_badge(resolution_result),
+        detail_lines=_resolution_detail_lines(resolution_result),
+        estimate=resolution_result.confidence_tier != "high",
+        base_grams=base,
+        per_100g=per_100g,
+        chips=estimated,
+        basis=basis,
+    )
 
 
 def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
-    """Format the confirmation message shared by the photo and text branches.
+    """The confirm message for freshly analyzed ``data`` (no buttons pressed).
 
     ``resolution_result`` is provided for image inputs so the reply can surface
     the source/confidence badge and key intermediate values (EAN, product name,
-    gram-basis warning).  Text inputs pass ``None`` — the existing format is
-    unchanged.
+    gram basis). Text inputs pass ``None``.
     """
-    badge = _source_badge(resolution_result)
-    detail_lines = _resolution_detail_lines(resolution_result)
-
-    parts = [header]
-    if badge:
-        parts.append(f"Источник: {badge}")
-    parts.extend(detail_lines)
-    parts.append(f"Продукты: {', '.join(data['foods'])}")
-    parts.append(_macro_line("Калории", data["calories"], " ккал"))
-    parts.append(_macro_line("Белки", data["protein"], "г"))
-    parts.append(_macro_line("Жиры", data["fats"], "г"))
-    parts.append(_macro_line("Углеводы", data["carbs"], "г"))
-    parts.append(f"Порция: {data['portion']}")
-    parts.append("")
-    parts.append("Всё верно? (Да/Нет)")
-    return "\n".join(parts)
+    return meal_draft.text(_start_draft({"nutrition": data}, header, resolution_result))
 
 
 async def _analyze_and_parse(
@@ -684,10 +688,10 @@ async def _run_meal_analysis(
         draft = {"nutrition": nutrition_info, "description": payload}
         header = "Я проанализировал ваш приём пищи. Вот что получилось:"
 
+    _start_draft(draft, header, resolution_result)
     try:
-        await update.message.reply_text(
-            _nutrition_reply(nutrition_info, header, resolution_result),
-            reply_markup=confirm_keyboard,
+        sent = await update.message.reply_text(
+            meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
         )
     except Exception as e:
         # Analysis is saved; only the confirmation reply failed. Keep the draft
@@ -699,9 +703,46 @@ async def _run_meal_analysis(
         )
         return ADDING_MEAL
 
-    # Reply succeeded: commit the draft and clear any pending retry state.
-    context.user_data.setdefault("current_meal", {}).update(draft)
+    # Reply succeeded: commit the draft and clear any pending retry state. The
+    # draft REPLACES the previous one: a correction's fresh analysis must not
+    # inherit the old attempt's photo, resolution or button state.
+    _remember_draft_message(draft, sent)
+    context.user_data["current_meal"] = draft
     context.user_data.pop("pending_analysis", None)
+    return CONFIRMING_MEAL
+
+
+def _remember_draft_message(draft: dict, sent) -> None:
+    """Where the draft's buttons are, so a newer draft can take them away."""
+    draft["chat_id"] = getattr(sent, "chat_id", None)
+    draft["msg_id"] = getattr(sent, "message_id", None)
+
+
+async def _strip_draft_buttons(context: ContextTypes.DEFAULT_TYPE, draft: dict):
+    """Remove the inline buttons from a draft's message once it is superseded,
+    so an old size chip cannot be tapped against the new numbers. Best effort:
+    the stale-button check (draft id) still guards a message this misses."""
+    bot = getattr(context, "bot", None)
+    if bot is None or not draft.get("msg_id") or draft.get("chat_id") is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=draft["chat_id"], message_id=draft["msg_id"], reply_markup=None
+        )
+    except Exception as e:
+        logger.debug("Could not strip draft buttons: %s", e)
+
+
+async def _resend_draft(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, draft: dict
+) -> int:
+    """The draft changed by a typed reply: a new message below it, with the
+    buttons moved there (the old message would be out of sight above)."""
+    await _strip_draft_buttons(context, draft)
+    sent = await update.message.reply_text(
+        meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
+    )
+    _remember_draft_message(draft, sent)
     return CONFIRMING_MEAL
 
 
@@ -868,123 +909,268 @@ async def process_model_choice(
 
 @subscription_required
 async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Final confirmation of the meal.
+    """A typed reply at the confirm step (the buttons go to ``meal_callback``).
 
-    Three outcomes (TD-015): an explicit **Да** saves; an explicit **Нет/Отмена**
-    discards the draft and restarts; anything else is treated as a typed
-    *correction* — re-analyzed as a new text description while keeping the flow in
-    CONFIRMING_MEAL. The old behavior silently wiped the analyzed draft on any
-    non-"Да" text (a mistyped/lowercase reply, or a real correction).
+    Four outcomes (TD-015): **Да** saves; **Нет/Отмена** discards the draft and
+    restarts; a weight ("150 г", or a bare number after «Поправить вес»)
+    rescales the draft; anything else is a *correction* — re-analyzed together
+    with what came before, the photo included, while staying at this step.
     """
-    intent = _confirm_intent(update.message.text)
+    draft = context.user_data.get("current_meal") or {}
+    text = update.message.text
+    intent = _confirm_intent(text)
+    awaiting = draft.get("awaiting")
+
+    if intent == "correction" and meal_draft.can_rescale(draft):
+        # A bare "2" may mean two pieces — only a weight that was asked for, or
+        # one with its unit, is read as grams.
+        grams = meal_draft.parse_grams(text, unit_required=awaiting != "grams")
+        if grams is not None:
+            meal_draft.set_grams(draft, grams)
+            draft["awaiting"] = None
+            return await _resend_draft(update, context, draft)
+        if awaiting == "grams":
+            await update.message.reply_text(
+                "Не понял вес — напиши число граммов, например 150."
+            )
+            return CONFIRMING_MEAL
 
     if intent == "correction":
-        # A free-text reply to the confirm prompt is a correction, not a reject —
-        # re-run the analysis on it and re-ask, instead of discarding the draft.
-        # NOTE: for a photo draft this re-analyzes the *text* only; combining the
-        # original photo with a text correction needs the photo+text merge that is
-        # still a gap (docs/diagrams/input-processing-flow.md, Gap ①) → TD-013.
-        text = update.message.text
-        # Drop the prior attempt's photo/resolution metadata so the corrected,
-        # text-based draft doesn't inherit a stale photo or resolution_source
-        # (same hygiene as the reject path). meal_time lives outside current_meal
-        # and is intentionally preserved.
-        context.user_data["current_meal"] = {}
-        inbound_id = inbound_msg.record_inbound(
-            telegram_id=update.effective_user.id,
-            kind="text",
-            content=text,
-            photo_file_id=None,
-        )
-        return await _run_meal_analysis(
-            update,
-            context,
-            kind="text",
-            input_ref=text,
-            payload=text,
-            inbound_id=inbound_id,
-        )
+        return await _reanalyze_with_correction(update, context, draft, text)
 
     if intent in ("affirm", "affirm_favorite"):
-        try:
-            # Get meal data from context
-            current_meal = context.user_data.get("current_meal", {})
-            nutrition = current_meal.get("nutrition", {})
-
-            # Create meal object
-            meal_in = MealCreate(
-                description=current_meal.get("description"),
-                meal_time=context.user_data.get("meal_time", datetime.now(UTC)),
-                # The answer to "Когда был прием пищи?" — collected since the
-                # first version, stored since 2026-09-13.
-                meal_type=context.user_data.get("meal_type"),
-                calories=nutrition.get("calories"),
-                proteins=nutrition.get("protein"),
-                fats=nutrition.get("fats"),
-                carbohydrates=nutrition.get("carbs"),
-                nutrients=nutrition,
-                photos=current_meal.get("photos", []),
-                ai_analysis=nutrition,
-                # Pipeline resolution tracking (A1 columns).
-                resolution_source=current_meal.get("resolution_source"),
-                resolution_signals=current_meal.get("resolution_signals"),
-            )
-
-            # Get or create user and save meal
-            with SessionLocal() as db:
-                # Get or create user
-                user = (
-                    db.query(User)
-                    .filter(User.telegram_id == update.effective_user.id)
-                    .first()
-                )
-                if not user:
-                    user = User(
-                        telegram_id=update.effective_user.id,
-                        username=update.effective_user.username,
-                    )
-                    db.add(user)
-                    db.commit()
-                    db.refresh(user)
-
-                # Save meal
-                meal = crud_meal.create(db, meal_in, user.id)
-                _saved_user_id = user.id
-                _saved_meal_id = meal.id
-
-            # B4 learning loop: fire-and-forget embed+upsert (outside the
-            # DB context so SessionLocal is released before Celery dispatch).
-            _schedule_personal_food_save(
-                user_id=_saved_user_id,
-                meal_id=_saved_meal_id,
-                nutrition=nutrition,
-                resolution_signals=current_meal.get("resolution_signals"),
-                resolution_source=current_meal.get("resolution_source"),
-            )
-
-            reply = "Прием пищи сохранен! 👍"
-            if intent == "affirm_favorite":
-                reply += "\n" + _save_favorite(_saved_meal_id, current_meal)
-            await update.message.reply_text(reply, reply_markup=main_keyboard)
-        except Exception as e:
-            logger.error(f"Error saving meal: {e}", exc_info=True)
-            await update.message.reply_text(
-                "Извините, произошла ошибка при сохранении. Пожалуйста, попробуйте еще раз.",
-                reply_markup=main_keyboard,
-            )
-            return CHOOSING_ACTION
-    else:
-        # Rejecting discards the draft — the retry is a fresh entry and must not
-        # inherit stale nutrition/photos from the rejected attempt.
-        context.user_data["current_meal"] = {}
-        await update.message.reply_text(
-            "Давай попробуем ещё раз. Когда был прием пищи?",
-            reply_markup=time_keyboard,
+        await _strip_draft_buttons(context, draft)
+        saved = await _save_current_meal(
+            update.effective_user,
+            draft,
+            context.user_data,
+            update.message.reply_text,
+            favorite=intent == "affirm_favorite",
         )
-        return ADDING_MEAL_TIME
+        if not saved:
+            return CHOOSING_ACTION
+        context.user_data.clear()
+        return CHOOSING_ACTION
 
-    context.user_data.clear()
-    return CHOOSING_ACTION
+    # Rejecting discards the draft — the retry is a fresh entry and must not
+    # inherit stale nutrition/photos from the rejected attempt.
+    await _strip_draft_buttons(context, draft)
+    context.user_data["current_meal"] = {}
+    await update.message.reply_text(
+        "Давай попробуем ещё раз. Когда был прием пищи?",
+        reply_markup=time_keyboard,
+    )
+    return ADDING_MEAL_TIME
+
+
+def _correction_caption(draft: dict, correction: str) -> str:
+    """The photo's caption for a re-analysis: the original words, the
+    correction, and a weight the user already set (it outlives a product fix).
+
+    The original caption stays on the first line — a favorite is named by it.
+    """
+    parts = [draft.get("caption"), correction]
+    if draft.get("grams_by_user"):
+        grams = meal_draft.num(draft["nutrition"]["portion_grams"], 0)
+        parts.append(f"Съедено {grams} г")
+    return "\n".join(p.strip() for p in parts if p and p.strip())
+
+
+async def _reanalyze_with_correction(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, draft: dict, correction: str
+) -> int:
+    """Re-run the analysis with the user's correction, keeping the input.
+
+    A photo draft re-reads the same photo with the correction as part of its
+    caption (the caption beats the photo guess), so a wrong product is fixed
+    without sending the photo again. A text draft is re-analyzed as the old
+    description plus the correction. meal_time and meal_type live outside the
+    draft and are kept.
+    """
+    await _strip_draft_buttons(context, draft)
+    user_id = update.effective_user.id
+    photos = draft.get("photos") or []
+    if photos:
+        file_id = photos[0]
+        caption = _correction_caption(draft, correction)
+        inbound_id = inbound_msg.record_inbound(
+            telegram_id=user_id, kind="image", content=caption, photo_file_id=file_id
+        )
+        try:
+            file = await context.bot.get_file(file_id)
+            image_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            # Not a dead end: the correction still goes through, as text.
+            logger.error("Error re-fetching photo: %s", e, exc_info=True)
+            inbound_msg.mark_failed(inbound_id, f"photo fetch failed: {e}")
+        else:
+            return await _run_meal_analysis(
+                update,
+                context,
+                kind="image",
+                input_ref=file_id,
+                payload=_image_data_url(image_bytes),
+                inbound_id=inbound_id,
+                caption=caption,
+            )
+
+    previous = (draft.get("description") or "").strip()
+    payload = f"{previous}\nУточнение: {correction}" if previous else correction
+    inbound_id = inbound_msg.record_inbound(
+        telegram_id=user_id, kind="text", content=payload, photo_file_id=None
+    )
+    return await _run_meal_analysis(
+        update,
+        context,
+        kind="text",
+        input_ref=payload,
+        payload=payload,
+        inbound_id=inbound_id,
+    )
+
+
+async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favorite):
+    """Save the draft as a meal; True if it was saved.
+
+    ``reply`` sends the outcome (a message's ``reply_text``): the typed "Да"
+    and the «Сохранить» button end the same way.
+    """
+    try:
+        nutrition = draft.get("nutrition", {})
+        meal_in = MealCreate(
+            description=draft.get("description"),
+            meal_time=user_data.get("meal_time", datetime.now(UTC)),
+            # The answer to "Когда был прием пищи?" — collected since the
+            # first version, stored since 2026-09-13.
+            meal_type=user_data.get("meal_type"),
+            calories=nutrition.get("calories"),
+            proteins=nutrition.get("protein"),
+            fats=nutrition.get("fats"),
+            carbohydrates=nutrition.get("carbs"),
+            nutrients=nutrition,
+            photos=draft.get("photos", []),
+            # What the analysis said, before any portion change by the user.
+            ai_analysis=draft.get("base_nutrition") or nutrition,
+            # Pipeline resolution tracking (A1 columns).
+            resolution_source=draft.get("resolution_source"),
+            resolution_signals=draft.get("resolution_signals"),
+        )
+
+        with SessionLocal() as db:
+            db_user = db.query(User).filter(User.telegram_id == user.id).first()
+            if not db_user:
+                db_user = User(telegram_id=user.id, username=user.username)
+                db.add(db_user)
+                db.commit()
+                db.refresh(db_user)
+            meal = crud_meal.create(db, meal_in, db_user.id)
+            saved_user_id = db_user.id
+            saved_meal_id = meal.id
+
+        # B4 learning loop: fire-and-forget embed+upsert (outside the DB
+        # context so SessionLocal is released before Celery dispatch).
+        _schedule_personal_food_save(
+            user_id=saved_user_id,
+            meal_id=saved_meal_id,
+            nutrition=nutrition,
+            resolution_signals=draft.get("resolution_signals"),
+            resolution_source=draft.get("resolution_source"),
+        )
+
+        text = "Прием пищи сохранен! 👍"
+        if favorite:
+            text += "\n" + _save_favorite(saved_meal_id, draft)
+        await reply(text, reply_markup=main_keyboard)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving meal: {e}", exc_info=True)
+        await reply(
+            "Извините, произошла ошибка при сохранении. Пожалуйста, попробуйте еще раз.",
+            reply_markup=main_keyboard,
+        )
+        return False
+
+
+async def _edit_draft_message(query, draft: dict, footer: str | None = None):
+    """Redraw the draft in place; a settled draft (``footer``) loses its buttons."""
+    markup = None if footer else meal_draft.markup(draft)
+    try:
+        await query.edit_message_text(
+            meal_draft.text(draft, footer=footer), reply_markup=markup
+        )
+    except BadRequest as e:
+        # A repeated tap that leads to the same screen: nothing to change.
+        if "not modified" not in str(e).lower():
+            raise
+
+
+async def meal_stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the buttons of a draft that is no longer the current one (saved,
+    cancelled, corrected, or lost to a restart): say so and drop the buttons."""
+    query = update.callback_query
+    await query.answer(
+        "Этот черновик уже неактуален — отправь приём пищи заново", show_alert=True
+    )
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+
+
+async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the draft's inline buttons (``meal:<draft id>:<verb>``)."""
+    query = update.callback_query
+    if not await check_subscription(update.effective_user.id):
+        await query.answer("🔒 Доступно с подпиской", show_alert=True)
+        return None
+    draft = context.user_data.get("current_meal") or {}
+    parsed = meal_draft.parse_callback(query.data)
+    if parsed is None or parsed[0] != draft.get("id"):
+        await meal_stale_callback(update, context)
+        return None
+    _draft_id, verb, arg = parsed
+
+    if verb == meal_draft.SIZE:
+        if not meal_draft.set_size(draft, arg):
+            await query.answer()
+            return None
+        draft["awaiting"] = None
+        await query.answer(f"{meal_draft.SIZES[arg][0]} порция")
+        await _edit_draft_message(query, draft)
+        return None
+    if verb == meal_draft.ASK_GRAMS:
+        draft["awaiting"] = "grams"
+        await query.answer("Напиши вес в граммах")
+        await _edit_draft_message(query, draft)
+        return None
+    if verb == meal_draft.ASK_FOOD:
+        draft["awaiting"] = "food"
+        await query.answer("Напиши, что это")
+        await _edit_draft_message(query, draft)
+        return None
+    if verb in (meal_draft.SAVE, meal_draft.SAVE_FAVORITE):
+        await query.answer()
+        saved = await _save_current_meal(
+            update.effective_user,
+            draft,
+            context.user_data,
+            query.message.reply_text,
+            favorite=verb == meal_draft.SAVE_FAVORITE,
+        )
+        if not saved:
+            await _edit_draft_message(query, draft, footer="⚠️ Не сохранено")
+            return CHOOSING_ACTION
+        await _edit_draft_message(query, draft, footer="✅ Сохранено")
+        context.user_data.clear()
+        return CHOOSING_ACTION
+    if verb == meal_draft.CANCEL:
+        await query.answer("Отменено")
+        await _edit_draft_message(query, draft, footer="✖️ Отменено")
+        context.user_data.clear()
+        await query.message.reply_text("Отменено.", reply_markup=main_keyboard)
+        return CHOOSING_ACTION
+    await query.answer()
+    return None
 
 
 def _save_favorite(meal_id: int, current_meal: dict) -> str:
@@ -1330,6 +1516,13 @@ def create_bot_application() -> Application:
     # updates from users not allowed by the current BOT_ACCESS_MODE.
     application.add_handler(TypeHandler(Update, access_gate), group=-1)
 
+    # The confirm step's inline buttons are tracked per chat, not per message, on
+    # purpose: the draft id in the callback data already tells the current
+    # draft's buttons from an old one's. PTB warns about exactly that setup.
+    warnings.filterwarnings(
+        "ignore", message="If 'per_message=False'", category=PTBUserWarning
+    )
+
     # Add conversation handler
     conv_handler = ConversationHandler(
         # The menu buttons are entry points too: the conversation state lives in
@@ -1357,6 +1550,9 @@ def create_bot_application() -> Application:
             ],
             CONFIRMING_MEAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_meal),
+                CallbackQueryHandler(
+                    meal_callback, pattern=f"^{meal_draft.CALLBACK_PREFIX}"
+                ),
             ],
             CHOOSING_MODEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_model_choice),
@@ -1383,6 +1579,14 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             favorites_callback, pattern=f"^{favorites.CALLBACK_PREFIX}"
+        )
+    )
+
+    # Draft buttons tapped outside the confirm step (after a save, a cancel or
+    # a restart): the conversation above did not take them.
+    application.add_handler(
+        CallbackQueryHandler(
+            meal_stale_callback, pattern=f"^{meal_draft.CALLBACK_PREFIX}"
         )
     )
 
