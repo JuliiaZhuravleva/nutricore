@@ -376,8 +376,12 @@ def test_confirm_prompt_carries_da_net_buttons(entry_mock):
     asyncio.run(tg.process_meal_input(update, context))
 
     assert message.reply_markups[-1] is tg.confirm_keyboard
-    assert tg.confirm_keyboard.keyboard[0][0].text == "Да"
-    assert tg.confirm_keyboard.keyboard[0][1].text == "Нет"
+    assert tg.confirm_keyboard.keyboard[0][0].text == "✅ Да"
+    assert tg.confirm_keyboard.keyboard[1][0].text == "Нет"
+    # Each button's own text classifies as what it says (the favorite button is
+    # covered in test_favorites.py).
+    assert tg._confirm_intent(tg.confirm_keyboard.keyboard[0][0].text) == "affirm"
+    assert tg._confirm_intent(tg.confirm_keyboard.keyboard[1][0].text) == "reject"
 
 
 def test_confirm_meal_lowercase_da_saves(patched_db):

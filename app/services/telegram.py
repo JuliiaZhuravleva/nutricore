@@ -5,8 +5,11 @@ from typing import Dict
 
 import httpx
 from telegram import ReplyKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -21,6 +24,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
+from app.services import favorites
 from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
@@ -78,8 +82,9 @@ subscription_keyboard = ReplyKeyboardMarkup(
 
 main_keyboard = ReplyKeyboardMarkup(
     [
-        ["🍽 Добавить прием пищи", "📊 Статистика"],
-        ["⚖️ Мой вес", "⚙️ Настройки"],
+        ["🍽 Добавить прием пищи", "⭐ Избранное"],
+        ["📊 Статистика", "⚖️ Мой вес"],
+        ["⚙️ Настройки"],
     ],
     resize_keyboard=True,
 )
@@ -118,15 +123,18 @@ def _meal_type_label(text: str | None) -> str | None:
 # Confirm-step keyboard (TD-015): explicit Да / Нет so the owner never has to
 # guess the exact word, and a free-text reply is handled as a correction rather
 # than a silent reject-and-restart.
+# "⭐ Да, и в избранное" saves the meal and adds it to favorites in one tap.
+CONFIRM_YES = "✅ Да"
+CONFIRM_YES_FAVORITE = "⭐ Да, и в избранное"
 confirm_keyboard = ReplyKeyboardMarkup(
-    [["Да", "Нет"]],
+    [[CONFIRM_YES, CONFIRM_YES_FAVORITE], ["Нет"]],
     resize_keyboard=True,
 )
 
 # Accepted spellings for the confirm prompt. Matched case-insensitively and with
 # trailing punctuation stripped, so a lowercase ``да`` or a stray ``Нет.`` is not
 # misread as a correction (the TD-015 papercut).
-_CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅"}
+_CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅", "✅ да"}
 _CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
 
 # Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
@@ -135,8 +143,11 @@ _DEGRADED_LINE = "⚠️ часть путей поиска не сработа�
 
 
 def _confirm_intent(text: str | None) -> str:
-    """Classify a reply to "Всё верно? (Да/Нет)" as affirm | reject | correction."""
+    """Classify a reply to "Всё верно? (Да/Нет)" as
+    affirm | affirm_favorite | reject | correction."""
     norm = (text or "").strip().lower().strip(".!…? ")
+    if norm == CONFIRM_YES_FAVORITE.lower():
+        return "affirm_favorite"
     if norm in _CONFIRM_AFFIRM:
         return "affirm"
     if norm in _CONFIRM_REJECT:
@@ -665,6 +676,8 @@ async def _run_meal_analysis(
             "resolution_signals": (
                 resolution_result.signals if resolution_result else None
             ),
+            # The owner's own words name a favorite better than the food list.
+            "caption": caption,
         }
         header = "Я проанализировал фото. Вот что я нашел:"
     else:
@@ -892,7 +905,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             inbound_id=inbound_id,
         )
 
-    if intent == "affirm":
+    if intent in ("affirm", "affirm_favorite"):
         try:
             # Get meal data from context
             current_meal = context.user_data.get("current_meal", {})
@@ -949,10 +962,10 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 resolution_source=current_meal.get("resolution_source"),
             )
 
-            await update.message.reply_text(
-                "Прием пищи сохранен! 👍",
-                reply_markup=main_keyboard,
-            )
+            reply = "Прием пищи сохранен! 👍"
+            if intent == "affirm_favorite":
+                reply += "\n" + _save_favorite(_saved_meal_id, current_meal)
+            await update.message.reply_text(reply, reply_markup=main_keyboard)
         except Exception as e:
             logger.error(f"Error saving meal: {e}", exc_info=True)
             await update.message.reply_text(
@@ -972,6 +985,73 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     context.user_data.clear()
     return CHOOSING_ACTION
+
+
+def _save_favorite(meal_id: int, current_meal: dict) -> str:
+    """Add the just-saved meal to favorites; the line to append to the reply.
+
+    Runs after the meal is committed and never raises: a favorites failure must
+    not turn a saved meal into "ошибка при сохранении".
+    """
+    name = favorites.favorite_name(
+        caption=current_meal.get("caption"),
+        description=current_meal.get("description"),
+        foods=current_meal.get("nutrition", {}).get("foods"),
+    )
+    try:
+        with SessionLocal() as db:
+            meal = crud_meal.get(db, meal_id)
+            fav, created = favorites.save_from_meal(db, meal, name)
+            name = fav.name
+    except Exception as e:
+        logger.error("Error saving favorite for meal %s: %s", meal_id, e, exc_info=True)
+        return "⚠️ В избранное добавить не получилось — приём пищи сохранён."
+    if created:
+        return f"⭐ В избранном: «{name}»"
+    return f"⭐ «{name}» уже в избранном"
+
+
+@subscription_required
+async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The favorites list (menu button «⭐ Избранное»)."""
+    with SessionLocal() as db:
+        screen = favorites.open_list(db, update.effective_user.id)
+    await update.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+    return CHOOSING_ACTION
+
+
+async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on a favorites inline button (``fav:…``).
+
+    Registered outside the ConversationHandler: the callback data carries the
+    whole step, so it works in any conversation state and after a restart.
+    """
+    query = update.callback_query
+    if not await check_subscription(update.effective_user.id):
+        await query.answer("🔒 Избранное доступно с подпиской", show_alert=True)
+        return
+    try:
+        with SessionLocal() as db:
+            screen = favorites.handle_callback(
+                db, update.effective_user.id, query.data or ""
+            )
+    except Exception as e:
+        logger.error("Favorites callback %r failed: %s", query.data, e, exc_info=True)
+        await query.answer("Не получилось, попробуйте ещё раз", show_alert=True)
+        return
+    await query.answer(screen.toast)
+    if not screen.text:
+        return
+    try:
+        await query.edit_message_text(
+            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+        )
+    except BadRequest as e:
+        # A repeated tap that leads to the same screen: nothing to change.
+        if "not modified" not in str(e).lower():
+            raise
 
 
 @subscription_required
@@ -1252,10 +1332,18 @@ def create_bot_application() -> Application:
 
     # Add conversation handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        # The menu buttons are entry points too: the conversation state lives in
+        # memory, so after a bot restart they would otherwise do nothing until
+        # /start.
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
+            MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
+        ],
         states={
             CHOOSING_ACTION: [
                 MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
+                MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
                 MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
             ],
             ADDING_MEAL_TIME: [
@@ -1290,6 +1378,13 @@ def create_bot_application() -> Application:
     )
 
     application.add_handler(conv_handler)
+
+    # Favorites inline buttons (stateless; see favorites_callback).
+    application.add_handler(
+        CallbackQueryHandler(
+            favorites_callback, pattern=f"^{favorites.CALLBACK_PREFIX}"
+        )
+    )
 
     # Add subscription management commands
     application.add_handler(CommandHandler("grant_sub", grant_subscription))
