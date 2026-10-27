@@ -21,7 +21,11 @@ from app.db.session import SessionLocal
 logger = logging.getLogger(__name__)
 
 # Persisted-setting key for the runtime model override (see TD-005 self-heal).
+# Since ADR-0004 this is the DEFAULT model for every task without its own pick.
 OPENAI_MODEL_SETTING_KEY = "openai_model"
+# Per-task picks (ADR-0004): "model:vision" → "openrouter:google/gemini-3.8-flash".
+# Written when the admin replaces a model that failed for one task.
+TASK_MODEL_KEY_PREFIX = "model:"
 
 
 def get_persisted_model() -> str | None:
@@ -56,6 +60,30 @@ def persist_model(model: str) -> None:
         logger.warning("Could not persist model choice %s: %s", model, e, exc_info=True)
 
 
+def get_persisted_task_models() -> dict[str, str]:
+    """Best-effort read of the per-task picks, as {task: model ref}."""
+    try:
+        with SessionLocal() as db:
+            rows = crud_app_setting.get_prefix(db, TASK_MODEL_KEY_PREFIX)
+    except Exception as e:  # pragma: no cover - defensive best-effort
+        logger.warning("Could not load per-task model picks: %s", e, exc_info=True)
+        return {}
+    return {
+        key[len(TASK_MODEL_KEY_PREFIX) :]: value for key, value in rows.items() if value
+    }
+
+
+def persist_task_model(task: str, ref: str) -> None:
+    """Best-effort save of one task's pick (same contract as ``persist_model``)."""
+    try:
+        with SessionLocal() as db:
+            crud_app_setting.set(db, TASK_MODEL_KEY_PREFIX + task, ref)
+    except Exception as e:
+        logger.warning(
+            "Could not persist model choice %s for %s: %s", ref, task, e, exc_info=True
+        )
+
+
 def apply_persisted_model(service) -> None:
     """Apply the persisted override to a live ``OpenAIService`` instance.
 
@@ -68,3 +96,6 @@ def apply_persisted_model(service) -> None:
     if model:
         service.set_model(model)
         logger.info("Applied persisted OpenAI model override: %s", model)
+    for task, ref in get_persisted_task_models().items():
+        service.set_model(ref, task=task)
+        logger.info("Applied persisted model pick for %s: %s", task, ref)

@@ -577,7 +577,7 @@ class LabelOCRStrategy(ResolutionStrategy):
                 kind="label_ocr",
                 input_ref=signals.input_ref,
                 telegram_id=signals.telegram_id,
-                model=svc.model,
+                model=svc.model_for("label_ocr"),
                 parse=_parse_label_json,
             )
         except ModelUnavailableError:
@@ -1440,7 +1440,7 @@ async def _extract_signals(
         kind="barcode_extraction",
         input_ref=input_ref,
         telegram_id=telegram_id,
-        model=svc.model,
+        model=svc.model_for("barcode"),
         parse=lambda raw: {"barcode": raw},
     )
     vision_coro = analyze_and_log(
@@ -1452,7 +1452,7 @@ async def _extract_signals(
         kind="image",
         input_ref=input_ref,
         telegram_id=telegram_id,
-        model=svc.model,
+        model=svc.model_for("vision"),
         parse=parse_nutrition,
     )
 

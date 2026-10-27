@@ -187,37 +187,6 @@ def test_set_model_switches_subsequent_calls():
     assert _create_kwargs(service)["model"] == "gpt-4o"
 
 
-def test_list_suitable_models_filters_and_excludes():
-    service = OpenAIService()
-    fake = SimpleNamespace(
-        data=[
-            SimpleNamespace(id="gpt-4o"),
-            SimpleNamespace(id="gpt-4o-mini"),
-            SimpleNamespace(id="gpt-4o-audio-preview"),  # non-chat variant
-            SimpleNamespace(id="gpt-3.5-turbo"),  # not in the allowlist
-            SimpleNamespace(id="text-embedding-3-small"),
-            SimpleNamespace(id="o1"),
-        ]
-    )
-    service.client.models.list = AsyncMock(return_value=fake)
-
-    models = asyncio.run(service.list_suitable_models())
-
-    assert {"gpt-4o", "gpt-4o-mini", "o1"} <= set(models)
-    assert "gpt-4o-audio-preview" not in models
-    assert "gpt-3.5-turbo" not in models
-    assert "text-embedding-3-small" not in models
-
-
-def test_list_suitable_models_falls_back_on_error():
-    service = OpenAIService()
-    service.client.models.list = AsyncMock(side_effect=Exception("network down"))
-
-    models = asyncio.run(service.list_suitable_models())
-
-    assert models == ["gpt-4o-mini", "gpt-4o"]
-
-
 # --- embed_text (B2 / ADR-0003 §2) ----------------------------------------
 
 

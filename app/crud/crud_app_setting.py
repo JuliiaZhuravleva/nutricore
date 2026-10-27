@@ -33,5 +33,27 @@ class CRUDAppSetting:
         db.refresh(row)
         return row
 
+    def get_prefix(self, db: Session, prefix: str) -> dict[str, Optional[str]]:
+        """All settings whose key starts with ``prefix``, as {key: value}."""
+        rows = db.execute(
+            select(AppSetting).where(AppSetting.key.startswith(prefix, autoescape=True))
+        ).scalars()
+        return {row.key: row.value for row in rows}
+
+    def delete(self, db: Session, key: str) -> bool:
+        """Remove a setting; True if a row existed."""
+        row = db.execute(
+            select(AppSetting).where(AppSetting.key == key)
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        db.delete(row)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return True
+
 
 crud_app_setting = CRUDAppSetting()

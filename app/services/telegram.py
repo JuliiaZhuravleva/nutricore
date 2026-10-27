@@ -25,7 +25,12 @@ from app.services import inbound_message_service as inbound_msg
 from app.services.access_control import access_gate, admin_required
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
-from app.services.model_selection import apply_persisted_model, persist_model
+from app.services.model_selection import (
+    apply_persisted_model,
+    persist_model,
+    persist_task_model,
+)
+from app.services.model_watch import render_status, run_model_watch
 from app.services.openai_service import ModelUnavailableError, get_openai_service
 from app.services.product_lookup_service import (
     ResolutionResult,
@@ -574,7 +579,7 @@ async def _analyze_and_parse(
         kind=kind,
         input_ref=input_ref,
         telegram_id=telegram_id,
-        model=svc.model,
+        model=svc.model_for("vision" if kind == "image" else "text"),
         parse=_parse_nutrition,
     )
 
@@ -753,8 +758,23 @@ async def _offer_model_choice(
     inbound_id: int | None = None,
     caption: str | None = None,
 ) -> int:
-    """A model went missing mid-analysis: stash the input and show a picker so the
-    owner can switch models and have the analysis retried automatically."""
+    """A model went missing mid-analysis: stash the input and show the owner a
+    picker, so they can switch models and have the analysis retried automatically.
+
+    Only an admin picks (ADR-0004): anyone else is told the owner already knows —
+    the alert went out from ``OpenAIService`` when the failure was detected.
+    """
+    user = update.effective_user
+    if user is None or user.id not in settings.admin_ids:
+        await update.message.reply_text(
+            "Распознавание сейчас недоступно — владелец бота уже получил "
+            "уведомление. Попробуй позже.",
+            reply_markup=main_keyboard,
+        )
+        return CHOOSING_ACTION
+
+    svc = telegram_service.openai_service
+    task = err.task or ("vision" if kind == "image" else "text")
     context.user_data["pending_analysis"] = {
         "kind": kind,
         "input_ref": input_ref,
@@ -765,13 +785,19 @@ async def _offer_model_choice(
         # after a model outage.
         "caption": caption,
     }
-    models = await telegram_service.openai_service.list_suitable_models()
+    # Replace the model where it was configured: a task with its own pick gets a
+    # new pick; a task on the default replaces the default, so one dead default
+    # model takes one choice, not one per task.
+    context.user_data["model_task"] = (
+        None if err.task is None or svc.runs_on_default(task) else task
+    )
+    models = await svc.list_candidates(task, exclude=err.model)
     context.user_data["model_choices"] = models
     keyboard = ReplyKeyboardMarkup(
         [[m] for m in models] + [["Отмена"]], resize_keyboard=True
     )
     await update.message.reply_text(
-        f"⚠️ Модель «{err.model}» недоступна (устарела или удалена).\n"
+        f"⚠️ Модель «{err.model}» недоступна (устарела, удалена или нет ключа).\n"
         "Выбери другую — я запомню её и сразу повторю анализ:",
         reply_markup=keyboard,
     )
@@ -789,12 +815,23 @@ async def process_model_choice(
         await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
         return CHOOSING_ACTION
 
+    user = update.effective_user
+    if user is None or user.id not in settings.admin_ids:
+        # The picker is only ever shown to an admin; this guards a stale state.
+        context.user_data.clear()
+        await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
+        return CHOOSING_ACTION
+
     if text not in context.user_data.get("model_choices", []):
         await update.message.reply_text("Выбери модель кнопкой из списка.")
         return CHOOSING_MODEL
 
-    telegram_service.openai_service.set_model(text)
-    persist_model(text)
+    task = context.user_data.pop("model_task", None)
+    telegram_service.openai_service.set_model(text, task=task)
+    if task is None:
+        persist_model(text)
+    else:
+        persist_task_model(task, text)
     await update.message.reply_text(f"✅ Модель обновлена: {text}. Повторяю анализ…")
 
     pending = context.user_data.get("pending_analysis")
@@ -1083,6 +1120,24 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @admin_required
+async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Which model runs each task, and the shutdown-date check run now (ADR-0004).
+
+    Owner only. The same check as the weekly Celery job: news also goes out as
+    the usual alert and is recorded, so the Monday run won't repeat it.
+    """
+    await update.message.reply_text("⏳ Проверяю модели у OpenAI, Google и Anthropic…")
+    try:
+        report = await run_model_watch(get_openai_service())
+    except Exception as e:
+        logger.error("/models: check failed: %s", e, exc_info=True)
+        await update.message.reply_text("Не удалось проверить модели, смотри логи.")
+        return
+    today = datetime.now(UTC).date()
+    await update.message.reply_text(render_status(report, today))
+
+
+@admin_required
 async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Re-analyze pending/failed inbound messages (owner only — TD-009).
 
@@ -1244,5 +1299,8 @@ def create_bot_application() -> Application:
 
     # Replay failed/pending inbound messages after a model fix (owner only).
     application.add_handler(CommandHandler("reprocess", reprocess))
+
+    # Models per task + shutdown-date check on demand (owner only, ADR-0004).
+    application.add_handler(CommandHandler("models", models_command))
 
     return application

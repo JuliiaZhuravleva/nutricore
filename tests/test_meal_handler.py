@@ -878,8 +878,10 @@ def _restore_model():
     model must not leak that into later tests."""
     svc = tg.telegram_service.openai_service
     original = svc.model
+    original_picks = dict(svc.task_models)
     yield
     svc.model = original
+    svc.task_models = original_picks
 
 
 def test_model_deprecation_offers_picker(monkeypatch):
@@ -891,7 +893,7 @@ def test_model_deprecation_offers_picker(monkeypatch):
     )
     monkeypatch.setattr(
         tg.telegram_service.openai_service,
-        "list_suitable_models",
+        "list_candidates",
         AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"]),
     )
     update, message = _make_text_update("apple")
@@ -919,7 +921,7 @@ def test_model_choice_switches_and_retries(patched_db, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        svc, "list_suitable_models", AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
+        svc, "list_candidates", AsyncMock(return_value=["gpt-4o", "gpt-4o-mini"])
     )
     context = SimpleNamespace(user_data={})
 
@@ -963,6 +965,103 @@ def test_model_choice_cancel_resets():
 
     assert state == tg.CHOOSING_ACTION
     assert context.user_data == {}
+
+
+def test_non_admin_gets_no_picker(monkeypatch):
+    """Only the owner switches models (ADR-0004); everyone else is told the owner
+    already knows."""
+    # A subscriber who is not the owner.
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+    svc = tg.telegram_service.openai_service
+    monkeypatch.setattr(
+        svc,
+        "analyze_food_entry",
+        AsyncMock(side_effect=tg.ModelUnavailableError("gpt-old", Exception("x"))),
+    )
+    candidates = AsyncMock(return_value=["openai:gpt-6-luna"])
+    monkeypatch.setattr(svc, "list_candidates", candidates)
+    update, message = _make_text_update("apple")
+    context = SimpleNamespace(user_data={})
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert "владелец" in message.replies[-1]
+    assert "model_choices" not in context.user_data
+    candidates.assert_not_called()
+
+
+def test_non_admin_cannot_apply_a_stale_pick(monkeypatch):
+    # A subscriber who is not the owner.
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+    svc = tg.telegram_service.openai_service
+    before = svc.model
+    context = SimpleNamespace(user_data={"model_choices": ["openai:gpt-6-luna"]})
+    update, _ = _make_text_update("openai:gpt-6-luna")
+
+    assert asyncio.run(tg.process_model_choice(update, context)) == tg.CHOOSING_ACTION
+    assert svc.model == before
+
+
+def _fail_then_succeed(monkeypatch, err):
+    svc = tg.telegram_service.openai_service
+    monkeypatch.setattr(
+        svc,
+        "analyze_food_entry",
+        AsyncMock(side_effect=[err, json.dumps(_NUTRITION)]),
+    )
+    monkeypatch.setattr(
+        svc, "list_candidates", AsyncMock(return_value=["openai:gpt-6-luna"])
+    )
+    context = SimpleNamespace(user_data={})
+    u1, _ = _make_text_update("apple")
+    assert asyncio.run(tg.process_meal_input(u1, context)) == tg.CHOOSING_MODEL
+    svc.list_candidates.assert_awaited_once_with("text", exclude=err.model)
+    u2, _ = _make_text_update("openai:gpt-6-luna")
+    assert asyncio.run(tg.process_model_choice(u2, context)) == tg.CONFIRMING_MEAL
+    return svc
+
+
+def test_pick_for_a_task_on_the_default_replaces_the_default(patched_db, monkeypatch):
+    """gpt-4o-mini dies for every task at once: one choice, not one per task."""
+    err = tg.ModelUnavailableError("gpt-old", Exception("x"), task="text")
+    svc = _fail_then_succeed(monkeypatch, err)
+
+    assert svc.model == "openai:gpt-6-luna"
+    assert "text" not in svc.task_models
+    with sessionmaker(bind=patched_db)() as db:
+        assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) == "openai:gpt-6-luna"
+        assert crud_app_setting.get(db, "model:text") is None
+
+
+def test_pick_for_a_task_with_its_own_model_replaces_only_that(
+    patched_db, monkeypatch
+):
+    svc = tg.telegram_service.openai_service
+    default = svc.model
+    svc.set_model("openrouter:qwen/qwen3.8-flash", task="text")
+    err = tg.ModelUnavailableError(
+        "openrouter:qwen/qwen3.8-flash", Exception("x"), task="text"
+    )
+    _fail_then_succeed(monkeypatch, err)
+
+    assert svc.model == default
+    assert svc.model_for("text") == "openai:gpt-6-luna"
+    with sessionmaker(bind=patched_db)() as db:
+        assert crud_app_setting.get(db, "model:text") == "openai:gpt-6-luna"
+        assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) is None
+
+
+def test_persisted_task_pick_applies_on_startup(patched_db):
+    svc = tg.telegram_service.openai_service
+    with tg.SessionLocal() as db:
+        crud_app_setting.set(db, "model:vision", "openai:gpt-6-luna")
+
+    tg.apply_persisted_model(svc)
+
+    assert svc.model_for("vision") == "openai:gpt-6-luna"
 
 
 def test_load_persisted_model_applies_on_startup(patched_db):

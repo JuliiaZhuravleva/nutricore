@@ -14,8 +14,9 @@ Nutricore is a **personal** Telegram bot for tracking nutrition — capture meal
 
 **Shipped & working:**
 
-- **Meal logging** — text or photo → foods + calories/macros, confirm to save. A photo's caption is part of the input: a brand, a sauce the camera cannot see, or "I only ate a third of this" changes the recorded numbers. The photo path is hardened (base64 to OpenAI, atomic draft, retries) and self-heals against OpenAI model deprecation (the owner picks a new model in chat; the choice persists).
+- **Meal logging** — text or photo → foods + calories/macros, confirm to save. A photo's caption is part of the input: a brand, a sauce the camera cannot see, or "I only ate a third of this" changes the recorded numbers. The photo path is hardened (base64 to OpenAI, atomic draft, retries) and self-heals against model deprecation (the owner gets an alert and picks a new model for the failed task in chat; the choice persists).
 - **Packaged-food lookup** — a barcode or product name read from the photo → the product's *actual* КБЖУ from [Open Food Facts](https://world.openfoodfacts.org/), then a label-OCR and a web-search fallback, and finally the vision estimate — each with a transparent source/confidence badge. A macro the source does not carry shows as "—", never as a confident 0.
+- **Models per task, any company** — each task (photo, text, barcode, label) can run on its own model, from OpenAI directly or from Anthropic, Google, Qwen and others through [OpenRouter](https://openrouter.ai/) (always with provider data collection denied). A weekly check asks each company for shutdown dates of the models in use and messages the owner once per news; `/models` shows the state and checks now. See [ADR-0004](docs/decisions/ADR-0004-model-providers-and-lifecycle-watch.md).
 - **Access control** — open / whitelist / closed modes with a silent gate.
 - **Secured REST API** (`X-API-Token`, fail-closed) + Telegram webhook secret.
 - **`/consult` relay** to the my-health hub — medical questions never touch the bot's own AI.
@@ -78,6 +79,7 @@ Edit the `.env` file with your specific settings (see `.env.example`):
 - Database credentials
 - Telegram Bot token
 - OpenAI API key
+- Models — `OPENAI_MODEL` (default), optional per-task `MODEL_VISION/TEXT/BARCODE/LABEL_OCR`, optional `OPENROUTER_API_KEY`; the weekly model check — `MODEL_WATCH_ENABLED`, `MODEL_WATCH_WARN_DAYS`
 - Admin settings
 - Access control — `BOT_ACCESS_MODE` (open/whitelist/closed) + `ALLOWED_TELEGRAM_IDS`
 - REST API auth — `API_TOKEN` (the API is disabled until this is set)
