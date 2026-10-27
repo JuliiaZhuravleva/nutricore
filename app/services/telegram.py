@@ -26,10 +26,11 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import favorites
+from app.services import custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
 from app.services import meal_draft
 from app.services.access_control import access_gate, admin_required
+from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
 from app.services.model_selection import (
@@ -1497,6 +1498,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return CHOOSING_ACTION
 
 
+async def _load_custom_emoji(application: Application) -> None:
+    """Read the custom emoji sets at startup; a set that was named but could
+    not be read is told to the owner, the bot starts with plain emoji."""
+    emoji = application.bot.emoji
+    await emoji.load(application.bot, settings.CUSTOM_EMOJI)
+    if emoji.problem:
+        await notify_admins(
+            f"⚠️ Кастомные эмодзи не включились: {emoji.problem}. "
+            "Бот работает с обычными эмодзи. Проверь CUSTOM_EMOJI."
+        )
+
+
 def create_bot_application() -> Application:
     """Create and configure the bot application."""
     # httpx/httpcore log the full request URL at INFO, and the Telegram Bot API
@@ -1510,7 +1523,12 @@ def create_bot_application() -> Application:
     # that construction happened before the DB was ready.
     apply_persisted_model(telegram_service.openai_service)
 
-    application = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+    # The bot draws its marks with custom emoji when CUSTOM_EMOJI names the sets;
+    # unset, every call goes out as before (app/services/custom_emoji.py).
+    bot = custom_emoji.build_bot(
+        settings.TELEGRAM_BOT_TOKEN, custom_emoji.CustomEmoji()
+    )
+    application = Application.builder().bot(bot).post_init(_load_custom_emoji).build()
 
     # Global access gate — runs before every other handler (group=-1) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.

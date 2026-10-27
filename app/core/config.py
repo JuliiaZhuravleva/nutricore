@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # Shared secret for webhook mode; Telegram echoes it in
     # X-Telegram-Bot-Api-Secret-Token. Required to register a webhook.
     TELEGRAM_WEBHOOK_SECRET: Optional[str] = None
+    # Custom emoji sets the bot draws its marks with: "set1,set2" (sticker set
+    # names, the first set wins). Needs the bot owner's Telegram Premium. Unset:
+    # plain emoji, every message as before (app/services/custom_emoji.py).
+    CUSTOM_EMOJI: Optional[str] = None
 
     # Access control (OpenClaw-style modes). Mode: open | whitelist | closed.
     #   open      → everyone may use the bot

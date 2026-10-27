@@ -83,6 +83,7 @@ Edit the `.env` file with your specific settings (see `.env.example`):
 - OpenAI API key
 - Models — `OPENAI_MODEL` (default), optional per-task `MODEL_VISION/TEXT/BARCODE/LABEL_OCR`, optional `OPENROUTER_API_KEY`; the weekly model check — `MODEL_WATCH_ENABLED`, `MODEL_WATCH_WARN_DAYS`
 - Admin settings
+- Custom emoji (optional) — `CUSTOM_EMOJI=set1,set2`: custom-emoji sticker set names; the bot draws its marks with them (needs the bot owner's Telegram Premium). Unset: plain emoji
 - Access control — `BOT_ACCESS_MODE` (open/whitelist/closed) + `ALLOWED_TELEGRAM_IDS`
 - REST API auth — `API_TOKEN` (the API is disabled until this is set)
 - `my-health` consult relay — `MYHEALTH_CONSULT_URL` + `CONSULT_TOKEN`
