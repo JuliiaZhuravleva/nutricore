@@ -80,5 +80,13 @@ next week. A model back to `ok`, or no longer used, is forgotten, so a new probl
 
 - A native Claude adapter (the Anthropic SDK directly) — only if Claude wins the eval.
 - `app/api/v1/ai.py` is not wired into `app/main.py`; it still assumes one model.
-- What to do with the `gpt-4o-mini` default once a winner is chosen (switch `OPENAI_MODEL`
-  in the code before 2027-01-14).
+
+## Update 2026-10-28 — the default and the cost of web search
+
+- The code default `OPENAI_MODEL` is now `gpt-6-luna`. Yellowpot set, 29 runs each: luna,
+  claude-haiku-5.5 and gemini-3.8-flash read the contents 29/29; gpt-4o-mini got the
+  samsa's protein right 2/6. A ~1200 px photo is ~1.2k tokens on luna, ~26k on gpt-4o-mini.
+  The prod `.env` still names `gpt-4o-mini` and wins until changed there or via `/models`.
+- One OpenRouter web search on gemini-3.8-flash cost **$0.70** (luna $0.011, haiku $0.024).
+  Gemini rows say `web_search=False`; such a model's search goes to `WEB_SEARCH_FALLBACK`
+  (gpt-6-luna), even when pinned. Qwen's search cost is not measured.
