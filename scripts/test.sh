@@ -15,10 +15,25 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VENV_PY="$HOME/Library/Caches/pypoetry/virtualenvs/nutricore-SKSdxrGe-py3.12/bin/python"
-if [[ ! -x "$VENV_PY" ]]; then
-  echo "error: cache-venv python not found at $VENV_PY" >&2
-  echo "       run 'poetry install' first, or update the path in scripts/test.sh (TD-001)." >&2
+# Poetry names the cache-venv after this checkout's real path:
+# nutricore-<first 8 chars of urlsafe-base64(sha256(path))>-py3.12. Compute it
+# here so the script works on any machine; the laptop's original venv name stays
+# as a fallback.
+VENVS="$HOME/Library/Caches/pypoetry/virtualenvs"
+venv_hash="$(printf '%s' "$(pwd -P)" | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | cut -c1-8)" || venv_hash=""
+VENV_PY=""
+for name in "nutricore-$venv_hash-py3.12" "nutricore-SKSdxrGe-py3.12"; do
+  if [[ -x "$VENVS/$name/bin/python" ]]; then
+    VENV_PY="$VENVS/$name/bin/python"
+    break
+  fi
+done
+if [[ -z "$VENV_PY" ]]; then
+  echo "error: cache-venv python not found in $VENVS" >&2
+  echo "       (looked for nutricore-$venv_hash-py3.12 and nutricore-SKSdxrGe-py3.12)." >&2
+  echo "       run 'poetry install' first (TD-001). If Poetry fails with" >&2
+  echo "       \"No such file or directory: 'python'\", an inherited CONDA_PREFIX is" >&2
+  echo "       posing as the active venv: run 'env -u CONDA_PREFIX poetry install'." >&2
   exit 1
 fi
 
