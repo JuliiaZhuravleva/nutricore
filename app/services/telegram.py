@@ -288,6 +288,20 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ADDING_MEAL
 
 
+@subscription_required
+async def quick_meal_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A photo sent outside the meal steps is a meal eaten now.
+
+    The same analysis as «🍽 Добавить прием пищи» → «Сейчас» → the photo, minus
+    the two taps: before this the photo matched no handler and was dropped
+    without a word. Starts clean like ``add_meal``.
+    """
+    context.user_data["current_meal"] = {}
+    context.user_data["meal_time"] = datetime.now(UTC)
+    context.user_data.pop("meal_type", None)
+    return await process_meal_input(update, context)
+
+
 # parse_nutrition is imported from product_lookup_service (where the pipeline
 # logic lives).  Keep a private alias so existing tests referencing
 # tg._parse_nutrition continue to work without change.
@@ -1639,20 +1653,29 @@ def create_bot_application() -> Application:
             # A bare weight ("72,5") outside any step: the weight screen's
             # prompt still holds after a restart or an undo.
             MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
+            MessageHandler(filters.PHOTO, quick_meal_photo),
         ],
         states={
             CHOOSING_ACTION: [
                 *menu(),
                 MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
+                MessageHandler(filters.PHOTO, quick_meal_photo),
             ],
             ENTERING_WEIGHT: [
                 *menu(),
+                MessageHandler(filters.PHOTO, quick_meal_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_weight),
             ],
             ADDING_MEAL_TIME: [
+                MessageHandler(filters.PHOTO, quick_meal_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_meal_time),
             ],
             ADDING_MEAL: [
+                # Ahead of the analysis: «Отмена» and the menu buttons are not
+                # food, and sending them to the model costs money. The menu
+                # keyboard is still on screen after a failed quick photo.
+                MessageHandler(filters.Regex("^Отмена$"), cancel),
+                *menu(),
                 MessageHandler(
                     (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
                     process_meal_input,
