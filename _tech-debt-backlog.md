@@ -128,3 +128,11 @@ Medium / Low / без приоритета, открытые. Не читать 
   `times_used` / `last_used_at` on `personal_foods` already feed it.
   - **Priority:** Low · **Source:** personal-food-db plan B5 deferral 2026-07-11 · **Created:** 2026-07-11
 
+
+- [ ] **TD-026**: 💸 cost line — OpenRouter's `usage.cost` is ASSUMED from its docs, never seen live
+  (`usage_meter._reported_cost`). On the first real OpenRouter analysis with ⚙️ «💸 Стоимость
+  запросов» on, check the line shows a sum, not «цена неизвестна»; if the field is absent, ask for
+  usage accounting (`extra_body` `usage.include`) or price OpenRouter calls from the token counts.
+  - **Priority:** Low
+  - **Source:** feat/request-cost (released 2703865)
+  - **Created:** 2026-10-29
