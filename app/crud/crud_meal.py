@@ -35,6 +35,21 @@ class CRUDMeal:
         )
         return list(db.scalars(stmt).all())
 
+    def get_user_meals_between(
+        self, db: Session, user_id: int, start: datetime, end: datetime
+    ) -> list[Meal]:
+        """The user's meals with ``start <= meal_time < end``, earliest first."""
+        stmt = (
+            select(Meal)
+            .where(
+                Meal.user_id == user_id,
+                Meal.meal_time >= start,
+                Meal.meal_time < end,
+            )
+            .order_by(Meal.meal_time)
+        )
+        return list(db.scalars(stmt).all())
+
     def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
         db_obj = Meal(
             user_id=user_id,

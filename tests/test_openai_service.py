@@ -600,3 +600,22 @@ def test_web_search_nutrition_defaults_to_the_active_model(monkeypatch):
         service.web_search_client.responses.create.call_args.kwargs["model"]
         == service.model
     )
+
+
+# --- Russian names (Notion «названия продуктов по-русски») -------------------
+
+
+@pytest.mark.parametrize("method", ["image", "text"])
+def test_both_analyses_ask_for_russian_names_and_keep_brands_as_printed(method):
+    service = _service_with_mock_client()
+
+    if method == "image":
+        asyncio.run(service.analyze_food_image("https://example.test/food.jpg"))
+    else:
+        asyncio.run(service.analyze_food_entry("банан"))
+
+    system_prompt = _create_kwargs(service)["messages"][0]["content"]
+    assert 'Write every "foods" item and "portion" in Russian' in system_prompt
+    assert "stays\n        exactly as printed" in system_prompt
+    # The rule is appended, not a replacement: the JSON contract is still there.
+    assert '"portion_grams"' in system_prompt

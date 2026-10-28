@@ -89,3 +89,20 @@ def _hermetic_openai_model_override(monkeypatch):
         _no_alert,
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def celery_delay(monkeypatch):
+    """TD-025: saving a meal enqueues the personal-food task with ``.delay``,
+    which publishes to Redis synchronously. With no broker that publish blocks
+    ~20 s per save before failing, so every confirm test waited on it. Stub it
+    for every test; a test that asserts the enqueue requests ``celery_delay``.
+    Tests that ``patch`` ``.delay`` themselves still override this stub.
+    """
+    from unittest.mock import MagicMock
+
+    from celery_app.tasks.personal_food import embed_and_save_personal_food
+
+    delay = MagicMock()
+    monkeypatch.setattr(embed_and_save_personal_food, "delay", delay)
+    return delay

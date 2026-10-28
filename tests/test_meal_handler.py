@@ -367,17 +367,32 @@ def test_confirm_intent_classifies():
         assert tg._confirm_intent(t) == "correction", t
 
 
-def test_confirm_prompt_carries_da_net_buttons(entry_mock):
-    # The confirm prompt must ship explicit Да/Нет buttons (TD-015), so the owner
-    # never has to guess the exact word.
+def _button_rows(markup):
+    return [[b.text for b in row] for row in markup.inline_keyboard]
+
+
+def test_confirm_prompt_carries_inline_buttons(entry_mock):
+    # The confirm prompt ships its actions under the message (Notion «поправить»
+    # task): save, save to favorites, fix the weight, fix the product, cancel.
     update, message = _make_text_update("chicken breast 200g")
     context = SimpleNamespace(user_data={})
 
-    asyncio.run(tg.process_meal_input(update, context))
+    state = asyncio.run(tg.process_meal_input(update, context))
 
-    assert message.reply_markups[-1] is tg.confirm_keyboard
-    assert tg.confirm_keyboard.keyboard[0][0].text == "Да"
-    assert tg.confirm_keyboard.keyboard[0][1].text == "Нет"
+    assert state == tg.CONFIRMING_MEAL
+    markup = message.reply_markups[-1]
+    assert _button_rows(markup) == [
+        ["✏️ Поправить вес", "✏️ Поправить продукт"],
+        ["✅ Сохранить", "⭐ И в избранное"],
+        ["✖️ Отмена"],
+    ]
+    draft_id = context.user_data["current_meal"]["id"]
+    datas = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert all(d.startswith(f"meal:{draft_id}:") for d in datas)
+    # The one green button (Bot API ``style``) is the one that records the meal.
+    save = markup.inline_keyboard[1][0]
+    assert save.to_dict()["style"] == "success"
+    assert "style" not in markup.inline_keyboard[1][1].to_dict()
 
 
 def test_confirm_meal_lowercase_da_saves(patched_db):
@@ -417,38 +432,84 @@ def test_confirm_meal_cancel_discards_draft():
 def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
     # THE TD-015 bug: a typed correction in reply to the confirm prompt used to
     # silently discard the analyzed draft and restart. It must now re-analyze the
-    # correction and stay in the confirm step — never a silent loss.
+    # correction together with what came before and stay in the confirm step.
     entry_mock.return_value = json.dumps({**_NUTRITION, "foods": ["turkey"]})
     meal_time = datetime(2026, 7, 8, 19, 0, tzinfo=UTC)
     update, message = _make_text_update("это была индейка, не курица")
     context = SimpleNamespace(
         user_data={
-            "current_meal": {
-                "nutrition": _NUTRITION,
-                "description": "chicken",
-                "photos": ["OLD_PHOTO"],
-                "resolution_source": "barcode_off",
-            },
+            "current_meal": {"nutrition": _NUTRITION, "description": "chicken"},
             "meal_time": meal_time,
         }
     )
 
     state = asyncio.run(tg.confirm_meal(update, context))
 
-    # Re-analyzed the correction, stayed in the confirm step.
+    # Re-analyzed the old description plus the correction, stayed at confirm.
     assert state == tg.CONFIRMING_MEAL
     (sent_text,) = entry_mock.call_args.args
-    assert sent_text == "это была индейка, не курица"
+    assert sent_text == "chicken\nУточнение: это была индейка, не курица"
 
     meal = context.user_data["current_meal"]
     assert meal["nutrition"]["foods"] == ["turkey"]  # fresh analysis replaced it
-    assert meal["description"] == "это была индейка, не курица"
-    # Stale photo/resolution from the prior (photo) attempt were dropped...
-    assert "photos" not in meal
-    assert "resolution_source" not in meal
-    # ...but meal_time (draft context) is preserved.
+    assert meal["description"] == sent_text
+    # meal_time (draft context) is preserved.
     assert context.user_data["meal_time"] == meal_time
-    assert message.reply_markups[-1] is tg.confirm_keyboard
+    assert _button_rows(message.reply_markups[-1])[-1] == ["✖️ Отмена"]
+
+
+def test_correcting_a_photo_draft_reanalyzes_the_same_photo(image_mock):
+    # Notion «поправить продукт»: an error is fixed without sending the photo
+    # again — the same photo goes back with the correction in its caption.
+    image_mock.return_value = json.dumps({**_NUTRITION, "foods": ["самса"]})
+    update, message = _make_text_update("это самса с картошкой")
+    context = _make_photo_context()
+    context.user_data.update(
+        current_meal={
+            "nutrition": _NUTRITION,
+            "description": "pie",
+            "photos": ["OLD_PHOTO"],
+            "caption": "обед",
+            "resolution_source": "vision",
+        },
+        meal_time=datetime(2026, 7, 8, 19, 0, tzinfo=UTC),
+    )
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    assert state == tg.CONFIRMING_MEAL
+    context.bot.get_file.assert_awaited_once_with("OLD_PHOTO")
+    image_mock.assert_awaited_once()
+    meal = context.user_data["current_meal"]
+    assert meal["photos"] == ["OLD_PHOTO"]
+    assert meal["nutrition"]["foods"] == ["самса"]
+    # The original caption stays first (a favorite is named by it).
+    assert meal["caption"] == "обед\nэто самса с картошкой"
+    assert meal["caption"] in image_mock.call_args.args + tuple(
+        image_mock.call_args.kwargs.values()
+    )
+
+
+def test_photo_correction_falls_back_to_text_when_the_photo_is_gone(entry_mock):
+    # No dead end: if the photo cannot be fetched again, the correction still
+    # goes through as a text re-analysis.
+    update, message = _make_text_update("это была индейка")
+    context = SimpleNamespace(
+        user_data={
+            "current_meal": {
+                "nutrition": _NUTRITION,
+                "description": "chicken",
+                "photos": ["OLD_PHOTO"],
+            }
+        }
+    )
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    assert state == tg.CONFIRMING_MEAL
+    (sent_text,) = entry_mock.call_args.args
+    assert sent_text == "chicken\nУточнение: это была индейка"
+    assert "photos" not in context.user_data["current_meal"]
 
 
 # --- shared helpers --------------------------------------------------------
@@ -485,9 +546,11 @@ def test_nutrition_reply_formats_all_fields():
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:")
     assert reply.startswith("Заголовок:\n")
     assert "Продукты: banana, oatmeal" in reply
-    assert "Калории: 350 ккал" in reply
+    # A text analysis is an estimate: a range, whole grams, no ".0".
+    assert "Калории: ≈ 350 ккал (280–420)" in reply
+    assert "Белки: 12г" in reply
     assert "Порция: 1 bowl (300g)" in reply
-    assert reply.endswith("Всё верно? (Да/Нет)")
+    assert reply.endswith("Всё верно? Сохрани или поправь кнопками ниже.")
 
 
 # --- _source_badge + _resolution_detail_lines (A5 transparency helpers) ---
@@ -593,15 +656,17 @@ def test_resolution_detail_lines_barcode_off_with_portion():
     assert not any("не определена" in l for l in lines)
 
 
-def test_resolution_detail_lines_barcode_off_no_portion_warns():
+def test_resolution_detail_lines_leave_the_portion_to_the_portion_line():
+    # The per-100g warning moved to the reply's «Порция:» line, next to the
+    # button that fixes it; the detail lines no longer repeat it.
     result = _make_resolution_result(
         source="barcode_off",
         portion_grams=None,
         signals={"barcode_raw": "1234567890", "product_name": "Test Product"},
     )
     lines = tg._resolution_detail_lines(result)
-    assert any("не определена" in l for l in lines)
-    assert any("100г" in l for l in lines)
+    assert not any("не определена" in l for l in lines)
+    assert any("Test Product" in l for l in lines)
 
 
 def test_resolution_detail_lines_vision_returns_empty():
@@ -628,7 +693,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
     assert "4607195501226" in reply  # EAN
     assert "Pringles" in reply  # product name
     assert "Продукты: banana, oatmeal" in reply  # nutrition block intact
-    assert reply.endswith("Всё верно? (Да/Нет)")
+    assert reply.endswith("Всё верно? Сохрани или поправь кнопками ниже.")
 
 
 def test_nutrition_reply_vision_shows_source_badge():
@@ -636,7 +701,7 @@ def test_nutrition_reply_vision_shows_source_badge():
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
     assert "фото" in reply
     assert "Продукты: banana, oatmeal" in reply
-    assert reply.endswith("Всё верно? (Да/Нет)")
+    assert reply.endswith("Всё верно? Сохрани или поправь кнопками ниже.")
 
 
 def test_nutrition_reply_no_portion_shows_warning():
@@ -646,64 +711,37 @@ def test_nutrition_reply_no_portion_shows_warning():
         signals={"barcode_raw": "999", "product_name": "Item"},
     )
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
-    assert "не определена" in reply
-    assert "100г" in reply
+    assert "Порция: не определена — числа на 100г, поправь вес кнопкой" in reply
 
 
 # --- A6: gram-basis display when OFF per-100g values were scaled (CQ2) -----
 
 
-def test_resolution_detail_lines_shows_gram_basis_line_when_scaled():
-    """A6 CQ2: when scaling was applied, _resolution_detail_lines shows the gram basis."""
+def test_nutrition_reply_shows_the_gram_basis_in_the_portion_line():
+    """A6 CQ2: when per-100g values were scaled, the reply says to what weight
+    and that the weight is a photo estimate (fixable with the buttons)."""
     result = _make_resolution_result(
         source="barcode_off",
         portion_grams=150.0,
         signals={"barcode_raw": "4607195501226", "product_name": "Pringles"},
     )
-    lines = tg._resolution_detail_lines(result)
-    # The gram-basis line must be present.
-    gram_lines = [l for l in lines if "150" in l]
-    assert gram_lines, "Gram-basis line missing when scaling was applied"
-    # It must reference vision estimate origin so user knows this is an estimate.
-    assert any(
-        "фото" in l for l in gram_lines
-    ), "Gram-basis line should indicate the value came from the vision estimate"
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "Порция: 1 bowl (300g), ≈ 150г (оценка по фото)" in reply
 
 
-def test_resolution_detail_lines_gram_basis_includes_correction_hint():
-    """A6: gram-basis line tells the user they can correct the value at confirm step."""
-    result = _make_resolution_result(
-        source="barcode_off",
-        portion_grams=200.0,
-        signals={"barcode_raw": "1234", "product_name": "Test"},
-    )
-    lines = tg._resolution_detail_lines(result)
-    gram_lines = [l for l in lines if "200" in l]
-    assert gram_lines, "Gram-basis line must include the gram value (200г)"
-    assert any(
-        "подтверждени" in l for l in gram_lines
-    ), "Gram-basis line should hint the user can correct at confirm step"
-
-
-def test_resolution_detail_lines_gram_basis_not_shown_for_zero():
-    """A6: a zero gram value (degenerate case) triggers the per-100g warning instead."""
+def test_nutrition_reply_zero_grams_is_per_100g_not_scaled():
+    """A6: a zero gram value (degenerate case) means no valid scaling."""
     result = _make_resolution_result(
         source="barcode_off",
         portion_grams=0.0,
         signals={"barcode_raw": "1234", "product_name": "Test"},
     )
-    lines = tg._resolution_detail_lines(result)
-    # Zero grams means no valid scaling → treated like None → per-100g warning.
-    assert any(
-        "не определена" in l for l in lines
-    ), "Zero-gram case should fall back to per-100g warning"
-    assert not any(
-        "Пересчитано" in l for l in lines
-    ), "Zero-gram case must not show the scaled gram-basis line"
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    assert "не определена — числа на 100г" in reply
+    assert "оценка по фото" not in reply
 
 
-def test_nutrition_reply_barcode_off_scaled_shows_gram_basis_line():
-    """A6: full reply contains the explicit gram-basis scaling line."""
+def test_nutrition_reply_barcode_off_scaled_keeps_every_element():
     result = _make_resolution_result(
         source="barcode_off",
         portion_grams=150.0,
@@ -713,16 +751,13 @@ def test_nutrition_reply_barcode_off_scaled_shows_gram_basis_line():
         },
     )
     reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
-    # Gram-basis line from A6
-    assert "150" in reply
-    assert "фото" in reply  # vision estimate origin
-    assert "подтверждени" in reply  # correction hint
-    # Other elements unaffected
+    assert "≈ 150г (оценка по фото)" in reply
     assert "штрих-коду" in reply  # badge
     assert "4607195501226" in reply  # EAN
     assert "Pringles" in reply  # product name
     assert "Продукты: banana, oatmeal" in reply  # nutrition block
-    assert reply.endswith("Всё верно? (Да/Нет)")
+    # A barcode hit is exact per 100 g: no range on its numbers.
+    assert "Калории: 350 ккал" in reply
 
 
 def test_resolution_detail_lines_no_gram_basis_for_vision_even_with_portion():
@@ -1036,9 +1071,7 @@ def test_pick_for_a_task_on_the_default_replaces_the_default(patched_db, monkeyp
         assert crud_app_setting.get(db, "model:text") is None
 
 
-def test_pick_for_a_task_with_its_own_model_replaces_only_that(
-    patched_db, monkeypatch
-):
+def test_pick_for_a_task_with_its_own_model_replaces_only_that(patched_db, monkeypatch):
     svc = tg.telegram_service.openai_service
     default = svc.model
     svc.set_model("openrouter:qwen/qwen3.8-flash", task="text")
@@ -1394,9 +1427,9 @@ def test_reply_names_the_note_in_the_gram_basis_line():
         },
     )
 
-    lines = tg._resolution_detail_lines(result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
 
-    assert any("твоему описанию" in line for line in lines), (
+    assert "оценка по фото и твоему описанию" in reply, (
         "the portion came from the user's own words but the reply still called "
         "it a photo estimate"
     )
