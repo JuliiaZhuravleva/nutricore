@@ -34,6 +34,7 @@ from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.consult_service import consult_service
+from app.services.loader import Loader
 from app.services.model_selection import (
     apply_persisted_model,
     persist_model,
@@ -615,9 +616,18 @@ async def _analyze_and_parse(
     )
 
 
-async def _run_meal_analysis(
+async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
+    """``_analyze_meal`` under a loader: the analysis takes seconds (a web
+    search, up to half a minute), and silence read as a dead bot."""
+    text = "⏳ Смотрю фото…" if kind == "image" else "⏳ Считаю…"
+    async with Loader(update.message, text) as loader:
+        return await _analyze_meal(update, context, loader, kind=kind, **kw)
+
+
+async def _analyze_meal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    loader: Loader,
     *,
     kind: str,
     input_ref: str,
@@ -657,6 +667,7 @@ async def _run_meal_analysis(
         # Configured model is gone — record the miss, then let the owner pick a
         # new model and retry (the same inbound_id is re-marked on success).
         inbound_msg.mark_failed(inbound_id, str(e))
+        await loader.drop()  # the picker's reply keyboard needs a new message
         return await _offer_model_choice(
             update,
             context,
@@ -670,7 +681,7 @@ async def _run_meal_analysis(
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
         inbound_msg.mark_failed(inbound_id, str(e))
-        await update.message.reply_text(
+        await loader.reply(
             "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
             "или опишите приём пищи иначе."
         )
@@ -706,7 +717,7 @@ async def _run_meal_analysis(
 
     _start_draft(draft, header, resolution_result)
     try:
-        sent = await update.message.reply_text(
+        sent = await loader.reply(
             meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
         )
     except Exception as e:
@@ -1456,10 +1467,11 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         # ValueError covers a malformed/non-object body; InvalidURL covers a
         # misconfigured MYHEALTH_CONSULT_URL (not an httpx.HTTPError subclass).
-        data = await consult_service.ask(question)
+        async with Loader(update.message, "⏳ Спрашиваю…") as loader:
+            data = await consult_service.ask(question)
     except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
         logger.error(f"Consult relay failed: {e}", exc_info=True)
-        await update.message.reply_text("Не удалось получить ответ. Попробуй позже.")
+        await loader.reply("Не удалось получить ответ. Попробуй позже.")
         return
 
     # Record the cooldown only after a successful call, so a failed attempt
@@ -1469,12 +1481,10 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Crisis path FIRST — deterministic, from the hub, before the model answer.
     # Never hardcode psyche logic or a crisis number here; surface crisis_hint verbatim.
     if data.get("crisis_hint"):
-        await update.message.reply_text(f"⚠️ {data['crisis_hint']}")
+        await loader.reply(f"⚠️ {data['crisis_hint']}")
     # str() guards against a non-string answer (e.g. a number) from the hub.
     answer = str(data.get("answer") or "Пустой ответ.")
-    await update.message.reply_text(
-        answer + "\n\n(описательно, не медицинская консультация)"
-    )
+    await loader.reply(answer + "\n\n(описательно, не медицинская консультация)")
 
 
 @admin_required
@@ -1484,15 +1494,16 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     Owner only. The same check as the weekly Celery job: news also goes out as
     the usual alert and is recorded, so the Monday run won't repeat it.
     """
-    await update.message.reply_text("⏳ Проверяю модели у OpenAI, Google и Anthropic…")
+    text = "⏳ Проверяю модели у OpenAI, Google и Anthropic…"
     try:
-        report = await run_model_watch(get_openai_service())
+        async with Loader(update.message, text) as loader:
+            report = await run_model_watch(get_openai_service())
     except Exception as e:
         logger.error("/models: check failed: %s", e, exc_info=True)
-        await update.message.reply_text("Не удалось проверить модели, смотри логи.")
+        await loader.reply("Не удалось проверить модели, смотри логи.")
         return
     today = datetime.now(UTC).date()
-    await update.message.reply_text(render_status(report, today))
+    await loader.reply(render_status(report, today))
 
 
 @admin_required

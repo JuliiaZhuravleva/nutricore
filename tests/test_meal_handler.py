@@ -27,6 +27,7 @@ from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
 from app.services import ai_call_log_service as ai_log
 from app.services import inbound_message_service as im_service
+from app.services import loader as loader_mod
 from app.services import model_selection as ms
 from app.services import telegram as tg
 from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
@@ -1703,3 +1704,100 @@ def test_quick_photo_is_a_meal_eaten_now(image_mock):
     assert context.user_data["meal_time"] >= before
     assert context.user_data["current_meal"]["photos"] == ["PHOTO_FILE_ID"]
     assert "banana, oatmeal" in message.replies[0]
+
+
+# --- the loader while the analysis runs --------------------------------------
+
+
+class _EditableMessage(_FakeMessage):
+    """Replies come back as messages that can be edited, like Telegram's."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.screen = []  # [text, markup] per message still on screen
+
+    async def reply_text(self, text, *args, **kwargs):
+        await super().reply_text(text, *args, **kwargs)
+        shown = [text, kwargs.get("reply_markup")]
+        self.screen.append(shown)
+        message = self
+
+        class _Sent:
+            chat_id, message_id = 42, len(self.screen)
+
+            async def edit_text(self, text, reply_markup=None):
+                shown[:] = [text, reply_markup]
+                return self
+
+            async def delete(self):
+                message.screen.remove(shown)
+
+        return _Sent()
+
+
+def _slow(mock, monkeypatch, takes=0.05, delay=0.01):
+    monkeypatch.setattr(loader_mod, "DELAY", delay)
+    answer, error = mock.return_value, mock.side_effect
+
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(takes)
+        if error:
+            raise error
+        return answer
+
+    return slow
+
+
+def test_a_slow_photo_shows_a_loader_that_becomes_the_draft(image_mock, monkeypatch):
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_image",
+        _slow(image_mock, monkeypatch),
+    )
+    message = _EditableMessage(photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")])
+    update = SimpleNamespace(message=message, effective_user=message.from_user)
+    context = _make_photo_context()
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.CONFIRMING_MEAL
+    assert message.replies == ["⏳ Смотрю фото…"]  # one message, edited
+    ((text, markup),) = message.screen
+    assert "banana, oatmeal" in text
+    assert markup is not None  # the draft's buttons came with the edit
+    assert context.user_data["current_meal"]["msg_id"] == 1
+
+
+def test_a_slow_failure_turns_the_loader_into_the_error(entry_mock, monkeypatch):
+    entry_mock.side_effect = RuntimeError("openai 500")
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_entry",
+        _slow(entry_mock, monkeypatch),
+    )
+    message = _EditableMessage(text="гречка 200 г")
+    update = SimpleNamespace(message=message, effective_user=message.from_user)
+    context = SimpleNamespace(bot=None, user_data={"meal_time": datetime.now(UTC)})
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.ADDING_MEAL
+    assert message.replies == ["⏳ Считаю…"]
+    ((text, _markup),) = message.screen
+    assert "не удалось проанализировать" in text
+
+
+def test_a_fast_answer_shows_no_loader(entry_mock, monkeypatch):
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_entry",
+        _slow(entry_mock, monkeypatch, takes=0.01, delay=0.2),
+    )
+    message = _EditableMessage(text="гречка 200 г")
+    update = SimpleNamespace(message=message, effective_user=message.from_user)
+    context = SimpleNamespace(bot=None, user_data={"meal_time": datetime.now(UTC)})
+
+    asyncio.run(tg.process_meal_input(update, context))
+
+    assert len(message.replies) == 1
+    assert not message.replies[0].startswith("⏳")
