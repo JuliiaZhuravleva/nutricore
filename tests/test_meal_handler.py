@@ -366,8 +366,10 @@ def test_confirm_intent_classifies():
     # lowercase/punctuated variants are exactly what used to fall into reject.
     for t in ("Да", "да", "да.", " ДА ", "ага", "верно", "ок", "👍"):
         assert tg._confirm_intent(t) == "affirm", t
-    for t in ("Нет", "нет", "нет!", "Отмена", "отмена", "❌"):
+    for t in ("Нет", "нет", "нет!", "❌"):
         assert tg._confirm_intent(t) == "reject", t
+    for t in ("Отмена", "отмена", "Отмена.", "cancel", "✖️ Отмена"):
+        assert tg._confirm_intent(t) == "cancel", t
     for t in ("это была индейка", "порция побольше", "не курица", "", None):
         assert tg._confirm_intent(t) == "correction", t
 
@@ -423,15 +425,40 @@ def test_confirm_meal_lowercase_da_saves(patched_db):
         assert db.query(Meal).count() == 1
 
 
-def test_confirm_meal_cancel_discards_draft():
-    # "Отмена" is an explicit reject alongside "Нет".
+def test_confirm_meal_cancel_drops_the_meal_and_goes_to_the_menu(patched_db):
+    # Julia, 2026-10-28: «Отмена» under a draft asked «Когда был прием пищи?»
+    # again; now it ends like the draft's «✖️ Отмена» button.
+    bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
     update, message = _make_text_update("Отмена")
+    context = SimpleNamespace(
+        bot=bot,
+        user_data={
+            "current_meal": {"nutrition": _NUTRITION, "msg_id": 5, "chat_id": 42},
+            "meal_time": datetime(2026, 7, 8, 12, 0, tzinfo=UTC),
+        },
+    )
+
+    state = asyncio.run(tg.confirm_meal(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert message.replies == ["Отменено."]
+    assert message.reply_markups == [tg.main_keyboard]
+    assert context.user_data == {}
+    bot.edit_message_reply_markup.assert_awaited_once()  # old buttons gone
+    with sessionmaker(bind=patched_db)() as db:
+        assert db.query(Meal).count() == 0
+
+
+def test_confirm_meal_no_still_asks_again():
+    # «Нет» keeps its meaning: the analysis was wrong, start the entry over.
+    update, message = _make_text_update("Нет")
     context = SimpleNamespace(user_data={"current_meal": {"nutrition": _NUTRITION}})
 
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.ADDING_MEAL_TIME
     assert context.user_data["current_meal"] == {}
+    assert "Когда был прием пищи?" in message.replies[-1]
 
 
 def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
