@@ -138,7 +138,10 @@ CONFIRM_YES_FAVORITE = "⭐ Да, и в избранное"
 # trailing punctuation stripped, so a lowercase ``да`` or a stray ``Нет.`` is not
 # misread as a correction (the TD-015 papercut).
 _CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅", "✅ да"}
-_CONFIRM_REJECT = {"нет", "отмена", "no", "cancel", "❌"}
+_CONFIRM_REJECT = {"нет", "no", "❌"}
+# «Отмена» drops the meal and goes back to the menu, like the draft's
+# «✖️ Отмена» button; «Нет» asks again (2026-10-28, Julia).
+_CONFIRM_CANCEL = {"отмена", "cancel", "✖️ отмена"}
 
 # Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
 # numbers came from a shallower path than they should have.
@@ -147,7 +150,7 @@ _DEGRADED_LINE = "⚠️ часть путей поиска не сработа�
 
 def _confirm_intent(text: str | None) -> str:
     """Classify a reply to "Всё верно? (Да/Нет)" as
-    affirm | affirm_favorite | reject | correction."""
+    affirm | affirm_favorite | reject | cancel | correction."""
     norm = (text or "").strip().lower().strip(".!…? ")
     if norm == CONFIRM_YES_FAVORITE.lower():
         return "affirm_favorite"
@@ -155,6 +158,8 @@ def _confirm_intent(text: str | None) -> str:
         return "affirm"
     if norm in _CONFIRM_REJECT:
         return "reject"
+    if norm in _CONFIRM_CANCEL:
+        return "cancel"
     return "correction"
 
 
@@ -958,8 +963,8 @@ async def process_model_choice(
 async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """A typed reply at the confirm step (the buttons go to ``meal_callback``).
 
-    Four outcomes (TD-015): **Да** saves; **Нет/Отмена** discards the draft and
-    restarts; a weight ("150 г", or a bare number after «Поправить вес»)
+    Five outcomes (TD-015): **Да** saves; **Нет** discards the draft and
+    restarts; **Отмена** discards it and goes back to the menu; a weight ("150 г", or a bare number after «Поправить вес»)
     rescales the draft; anything else is a *correction* — re-analyzed together
     with what came before, the photo included, while staying at this step.
     """
@@ -997,6 +1002,12 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         if not saved:
             return CHOOSING_ACTION
         context.user_data.clear()
+        return CHOOSING_ACTION
+
+    if intent == "cancel":
+        await _strip_draft_buttons(context, draft)
+        context.user_data.clear()
+        await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
         return CHOOSING_ACTION
 
     # Rejecting discards the draft — the retry is a fresh entry and must not
