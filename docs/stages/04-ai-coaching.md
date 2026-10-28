@@ -6,6 +6,10 @@
 text-only or photo-only trackers. All of it stays in the **food/nutrition domain** on
 nutricore's own OpenAI; medical questions go to `/consult` (Stage 0), never here.
 
+## Owner direction (2026-10-28)
+Later: consultations with a «нутрициолог» and a «психолог», reachable from ⚙️ Настройки.
+Open: where the «психолог» stops and the `/consult` medical boundary above begins.
+
 ## Work
 
 ### 1. "What should I eat?" (remaining-macro suggestions)

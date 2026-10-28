@@ -5,6 +5,18 @@
 **Why first:** everything downstream (budgets, stats, retention digests, coaching)
 needs a stored daily target and meal aggregation, neither of which exists today.
 
+## Owner decision (2026-10-28) — monitor first, no goal wizard yet
+
+> «Пока просто мониторим; после сбора определённого количества данных исходить из
+> дефолтных значений и понемногу комфортно двигать их в сторону целевых.»
+
+So the `/goal` wizard below (sex/age/height/activity → BMR/TDEE) is **not** the next
+step. Order instead: (1) statistics without a goal — shipped 2026-10-28
+(📊 Сегодня / Вчера / 7 дней); (2) once enough days are logged, propose a starting
+target from her own observed intake (a default, not a calculation she must fill in);
+(3) move it toward the target in small, comfortable steps. "Enough data" and the step
+size are still to be agreed. Several goals at once are possible later (see Stage 2).
+
 ## Current state
 
 - Meals are persisted (`crud_meal.create` from `confirm_meal`) with
