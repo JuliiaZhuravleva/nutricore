@@ -537,3 +537,61 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
 def test_week_title_spans_a_month_boundary():
     days = [(date(2026, 10, 29) + timedelta(days=i), []) for i in range(7)]
     assert st.week_screen(days).text.startswith("<b>📊 7 дней</b> · 29 окт – 4 ноя")
+
+
+def _photo_update(caption=None):
+    from telegram import Chat, Message, PhotoSize, Update
+    from telegram import User as TgUser
+
+    message = Message(
+        message_id=1,
+        date=NOW,
+        chat=Chat(id=42, type="private"),
+        from_user=TgUser(id=42, first_name="o", is_bot=False),
+        photo=[PhotoSize("f", "u", 90, 90)],
+        caption=caption,
+    )
+    return Update(update_id=1, message=message)
+
+
+def _first_match_update(handlers, update):
+    for h in handlers:
+        if getattr(h, "filters", None) is not None and h.check_update(update):
+            return h.callback
+    return None
+
+
+@pytest.mark.parametrize("caption", [None, "Вот такие 4 конфеты сегодня съела"])
+@pytest.mark.parametrize("where", ["entry", "menu", "weight", "time"])
+def test_a_photo_outside_the_meal_steps_is_a_meal(conv, where, caption):
+    conv, _handlers = conv
+    handlers = {
+        "entry": conv.entry_points,
+        "menu": conv.states[tg.CHOOSING_ACTION],
+        "weight": conv.states[tg.ENTERING_WEIGHT],
+        "time": conv.states[tg.ADDING_MEAL_TIME],
+    }[where]
+    assert _first_match_update(handlers, _photo_update(caption)) is (
+        tg.quick_meal_photo
+    )
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Отмена", "cancel"),  # not food: no paid analysis of the word
+        ("📊 Статистика", "show_statistics"),
+        ("🍽 Добавить прием пищи", "add_meal"),
+        ("гречка 200 г", "process_meal_input"),  # no finding: food still goes on
+    ],
+)
+def test_meal_step_takes_cancel_and_menu_before_the_analysis(conv, text, expected):
+    conv, _handlers = conv
+    found = _first_match(conv.states[tg.ADDING_MEAL], text)
+    assert found is getattr(tg, expected)
+
+
+def test_meal_step_photo_still_goes_to_the_analysis(conv):
+    conv, _handlers = conv
+    found = _first_match_update(conv.states[tg.ADDING_MEAL], _photo_update("обед"))
+    assert found is tg.process_meal_input

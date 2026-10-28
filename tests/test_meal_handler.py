@@ -1679,3 +1679,27 @@ def test_a_typed_label_is_normalised_rather_than_refused(patched_db):
     with sessionmaker(bind=patched_db)() as db:
         meals = db.query(Meal).all()
     assert meals[0].meal_type == "Завтрак"
+
+
+# --- a photo sent from the menu, without «🍽 Добавить прием пищи» -------------
+
+
+def test_quick_photo_is_a_meal_eaten_now(image_mock):
+    update, message = _make_photo_update()
+    context = _make_photo_context()
+    # Leftovers of an abandoned entry: an old label and an old draft.
+    context.user_data.update(
+        meal_type="Завтрак",
+        meal_time=datetime(2020, 1, 1, tzinfo=UTC),
+        current_meal={"description": "old"},
+    )
+    before = datetime.now(UTC)
+
+    state = asyncio.run(tg.quick_meal_photo(update, context))
+
+    assert state == tg.CONFIRMING_MEAL
+    image_mock.assert_awaited_once()
+    assert "meal_type" not in context.user_data
+    assert context.user_data["meal_time"] >= before
+    assert context.user_data["current_meal"]["photos"] == ["PHOTO_FILE_ID"]
+    assert "banana, oatmeal" in message.replies[0]
