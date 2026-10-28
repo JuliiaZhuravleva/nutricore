@@ -6,6 +6,15 @@
 **no registered handlers** — pressing them today does nothing. This stage makes the
 menu honest.
 
+## Owner decisions (2026-10-28)
+
+- **Weight:** a goal weight and a PNG chart — both **optional, switchable off** in
+  Settings. Shipped so far: «⚖️ Мой вес» with typed weight + undo, last / change /
+  7-day average (no goal, no chart).
+- **Settings editable from the chat:** goal(s) — possibly several, timezone, reminders,
+  the favorites list, weekly-report settings; later the «психолог» / «нутрициолог»
+  consultations (Stage 4). Shipped so far: a read-only «⚙️ Настройки» (timezone, no goal).
+
 ## Current state
 
 - `main_keyboard` ([telegram.py:51](../../app/services/telegram.py#L51)) shows
