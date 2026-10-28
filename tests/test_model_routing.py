@@ -23,6 +23,7 @@ from app.services.openai_service import (
     ModelUnavailableError,
     OpenAIService,
 )
+from app.services.usage_meter import metering as metering
 
 _FAKE = SimpleNamespace(
     choices=[SimpleNamespace(message=SimpleNamespace(content="{}"))]
@@ -447,3 +448,44 @@ def test_runs_on_default_follows_where_the_model_is_configured(monkeypatch):
     assert service.runs_on_default("text")
     service.set_model("openai:gpt-6-luna", task="text")
     assert not service.runs_on_default("text")
+
+
+# --- the 💸 meter ----------------------------------------------------------------
+
+# _OR_OK with the usage OpenRouter adds to a reply; "cost" (USD) is ASSUMED from
+# its docs, not yet seen live: without it the call shows as «цена неизвестна».
+_OR_OK_WITH_COST = (
+    200,
+    {
+        **_OR_OK[1],
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 80,
+            "total_tokens": 1280,
+            "cost": 0.00042,
+        },
+    },
+)
+
+
+@pytest.mark.parametrize("task", ["vision", "web_search"])
+def test_an_openrouter_call_is_metered_at_its_reported_cost(
+    monkeypatch, openrouter_key, task
+):
+    # Gemini has no web search here (the call would fall back to OpenAI).
+    ref = "openrouter:openai/gpt-6-luna"
+    monkeypatch.setattr(settings, "MODEL_VISION", ref)
+    monkeypatch.setattr(settings, "OPENAI_WEB_SEARCH_MODEL", ref)
+    service = OpenAIService()
+    service.web_search_client.responses.create = AsyncMock()  # never the network
+    _openrouter_transport(service, _OR_OK_WITH_COST)
+
+    with metering() as meter:
+        if task == "vision":
+            asyncio.run(service.analyze_food_image("https://example.test/x.jpg"))
+        else:
+            asyncio.run(service.web_search_nutrition(["Alpro soya"]))
+
+    assert meter.calls == 1
+    assert meter.usd == pytest.approx(0.00042)
+    assert meter.unpriced == []

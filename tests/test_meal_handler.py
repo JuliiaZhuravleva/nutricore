@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from openai.types import CompletionUsage
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -25,13 +26,16 @@ from app.db.base import Base
 from app.models.ai_call_log import AiCallLog
 from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
+from app.models.user import User
 from app.services import ai_call_log_service as ai_log
 from app.services import inbound_message_service as im_service
 from app.services import loader as loader_mod
+from app.services import meal_draft
 from app.services import model_selection as ms
 from app.services import telegram as tg
 from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
 from app.services.openai_service import ModelUnavailableError
+from app.services.usage_meter import record as record_usage
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -1801,3 +1805,79 @@ def test_a_fast_answer_shows_no_loader(entry_mock, monkeypatch):
 
     assert len(message.replies) == 1
     assert not message.replies[0].startswith("⏳")
+
+
+# --- 💸 the cost line (⚙️ Настройки → Стоимость запросов) -----------------------
+
+
+def _shows_costs(patched_db, on=True):
+    with sessionmaker(bind=patched_db)() as db:
+        db.add(User(telegram_id=42, username="owner", settings={"show_costs": on}))
+        db.commit()
+
+
+def _metered(mock, *, fails=False):
+    """The analysis as openai_service makes it: one chat call, usage recorded."""
+    answer = mock.return_value
+
+    async def analyze(*args, **kwargs):
+        record_usage(
+            "gpt-6-luna",
+            CompletionUsage(
+                prompt_tokens=2000, completion_tokens=400, total_tokens=2400
+            ),
+        )
+        if fails:
+            raise RuntimeError("openai 500")
+        return answer
+
+    return analyze
+
+
+def _text_meal(monkeypatch, entry_mock, **kw):
+    monkeypatch.setattr(
+        tg.telegram_service.openai_service,
+        "analyze_food_entry",
+        _metered(entry_mock, **kw),
+    )
+    update, message = _make_text_update("гречка 200 г")
+    context = SimpleNamespace(bot=None, user_data={"meal_time": datetime.now(UTC)})
+    state = asyncio.run(tg.process_meal_input(update, context))
+    return state, message, context
+
+
+# gpt-6-luna: 2000 in × $0.10 + 400 out × $0.50 per 1M tokens.
+_COST = "💸 Запрос: $0.0004 · 1 вызов ИИ"
+
+
+def test_the_draft_shows_what_the_analysis_cost(patched_db, entry_mock, monkeypatch):
+    _shows_costs(patched_db)
+
+    state, message, context = _text_meal(monkeypatch, entry_mock)
+
+    assert state == tg.CONFIRMING_MEAL
+    assert _COST in message.replies[-1]
+    # Kept in the draft, so a re-render (a portion change) keeps the line.
+    assert _COST in meal_draft.text(context.user_data["current_meal"])
+
+
+@pytest.mark.parametrize("setting", ["off", "no user"])
+def test_no_cost_line_unless_switched_on(patched_db, entry_mock, monkeypatch, setting):
+    if setting == "off":
+        _shows_costs(patched_db, on=False)
+
+    state, message, context = _text_meal(monkeypatch, entry_mock)
+
+    assert state == tg.CONFIRMING_MEAL
+    assert "💸" not in message.replies[-1]
+    assert "cost_line" not in context.user_data["current_meal"]
+
+
+def test_a_failed_analysis_still_says_what_it_cost(patched_db, entry_mock, monkeypatch):
+    _shows_costs(patched_db)
+
+    state, message, _ = _text_meal(monkeypatch, entry_mock, fails=True)
+
+    assert state == tg.ADDING_MEAL
+    assert "не удалось проанализировать" in message.replies[-1]
+    assert message.replies[-1].endswith(_COST)

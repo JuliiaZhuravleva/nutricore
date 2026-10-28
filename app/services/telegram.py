@@ -1,5 +1,4 @@
 import base64
-import html
 import logging
 import warnings
 from datetime import UTC, datetime
@@ -29,7 +28,7 @@ from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
-from app.services import meal_draft, stats_screen, weight_screen
+from app.services import meal_draft, settings_screen, stats_screen, weight_screen
 from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
@@ -49,6 +48,7 @@ from app.services.product_lookup_service import (
     parse_nutrition,
     resolve_meal_nutrition,
 )
+from app.services.usage_meter import Meter, metering
 
 # Enable logging
 logging.basicConfig(
@@ -618,16 +618,33 @@ async def _analyze_and_parse(
 
 async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
     """``_analyze_meal`` under a loader: the analysis takes seconds (a web
-    search, up to half a minute), and silence read as a dead bot."""
+    search, up to half a minute), and silence read as a dead bot. Metered:
+    the owner may have asked to see what each analysis cost (⚙️ Настройки)."""
     text = "⏳ Смотрю фото…" if kind == "image" else "⏳ Считаю…"
-    async with Loader(update.message, text) as loader:
-        return await _analyze_meal(update, context, loader, kind=kind, **kw)
+    try:
+        with SessionLocal() as db:
+            show_cost = settings_screen.shows_costs(db, update.effective_user.id)
+    except Exception as e:
+        # A display preference must not stop the analysis itself.
+        logger.warning("Could not read the cost setting: %s", e)
+        show_cost = False
+    with metering() as meter:
+        async with Loader(update.message, text) as loader:
+            return await _analyze_meal(
+                update,
+                context,
+                loader,
+                meter if show_cost else None,
+                kind=kind,
+                **kw,
+            )
 
 
 async def _analyze_meal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     loader: Loader,
+    meter: Meter | None,
     *,
     kind: str,
     input_ref: str,
@@ -681,10 +698,11 @@ async def _analyze_meal(
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
         inbound_msg.mark_failed(inbound_id, str(e))
-        await loader.reply(
+        text = (
             "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
             "или опишите приём пищи иначе."
         )
+        await loader.reply(text + (f"\n\n{meter.line()}" if meter else ""))
         return ADDING_MEAL
 
     # Analysis succeeded — record it now, independent of the reply below. A
@@ -715,6 +733,8 @@ async def _analyze_meal(
         draft = {"nutrition": nutrition_info, "description": payload}
         header = "Я проанализировал ваш приём пищи. Вот что получилось:"
 
+    if meter:
+        draft["cost_line"] = meter.line()
     _start_draft(draft, header, resolution_result)
     try:
         sent = await loader.reply(
@@ -1340,18 +1360,21 @@ async def process_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @subscription_required
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """What the bot runs with today (⚙️ Настройки); nothing to change yet."""
-    await update.message.reply_text(
-        "<b>⚙️ Настройки</b>\n\n"
-        f"🕐 Часовой пояс: {html.escape(settings.DEFAULT_TIMEZONE)} — по нему "
-        "📊 Статистика делит дни.\n"
-        "🎯 Цель по калориям: не задана.\n\n"
-        "<i>Менять их из чата пока нельзя: цели и напоминания — "
-        "следующий шаг.</i>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_keyboard,
-    )
+    """What the bot runs with, and its switches (⚙️ Настройки)."""
+    with SessionLocal() as db:
+        screen = settings_screen.open_view(db, update.effective_user.id)
+    await _reply_screen(update, screen)
     return CHOOSING_ACTION
+
+
+async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A switch on the settings screen (``set:…``)."""
+    await _screen_callback(
+        update,
+        settings_screen.handle_callback,
+        "🔒 Настройки доступны с подпиской",
+        "Settings",
+    )
 
 
 async def handle_subscription_inquiry(
@@ -1733,6 +1756,11 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             weight_callback, pattern=f"^{weight_screen.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            settings_callback, pattern=f"^{settings_screen.CALLBACK_PREFIX}"
         )
     )
 

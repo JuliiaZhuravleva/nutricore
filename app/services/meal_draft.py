@@ -236,6 +236,8 @@ def text(draft: dict, footer: Optional[str] = None) -> str:
     parts.append(f"Жиры: {macro_text(nutrition.get('fats'), estimate=estimate)}")
     parts.append(f"Углеводы: {macro_text(nutrition.get('carbs'), estimate=estimate)}")
     parts.append(_portion_line(draft))
+    if draft.get("cost_line"):
+        parts.append(draft["cost_line"])
     parts.append("")
     if footer:
         parts.append(footer)

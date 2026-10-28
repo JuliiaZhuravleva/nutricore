@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import httpx
 import openai
 import pytest
+from openai.types import CompletionUsage
 
 from app.core.config import Settings, settings
 from app.services.model_registry import REGISTRY, parse_model_ref, spec_for
@@ -22,6 +23,7 @@ from app.services.openai_service import (
     OpenAIService,
     is_model_not_found_error,
 )
+from app.services.usage_meter import WEB_SEARCH_CALL_USD, metering
 
 _FAKE_CONTENT = json.dumps(
     {
@@ -619,3 +621,65 @@ def test_both_analyses_ask_for_russian_names_and_keep_brands_as_printed(method):
     assert "stays\n        exactly as printed" in system_prompt
     # The rule is appended, not a replacement: the JSON contract is still there.
     assert '"portion_grams"' in system_prompt
+
+
+# --- the 💸 meter: every call site reports its usage --------------------------
+
+
+def _usage(prompt=1000, completion=100):
+    return CompletionUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+    )
+
+
+def test_a_chat_call_reports_its_usage_to_the_meter():
+    service = _service_with_mock_client()
+    service.client.chat.completions.create.return_value.usage = _usage()
+
+    with metering() as meter:
+        asyncio.run(service.analyze_food_entry("apple"))
+
+    assert meter.calls == 1
+    assert meter.unpriced == []  # the default model is in the price list
+    assert meter.usd > 0
+
+
+def test_a_web_search_reports_its_tokens_and_each_search():
+    service = OpenAIService()
+    service.web_search_client.responses.create = AsyncMock(
+        return_value=SimpleNamespace(
+            output_text="{}",
+            output=[
+                SimpleNamespace(type="web_search_call"),
+                SimpleNamespace(type="web_search_call"),
+                SimpleNamespace(type="message"),
+            ],
+            usage=SimpleNamespace(input_tokens=0, output_tokens=0),
+        )
+    )
+
+    with metering() as meter:
+        asyncio.run(service.web_search_nutrition(["x"]))
+
+    assert meter.calls == 1
+    assert meter.usd == pytest.approx(2 * WEB_SEARCH_CALL_USD)
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_an_embedding_reports_its_usage(monkeypatch, batch):
+    monkeypatch.setattr("app.services.openai_service.record_ai_call", lambda **_: None)
+    service = _service_with_mock_embeddings([_FAKE_VECTOR])
+    service.client.embeddings.create.return_value.usage = SimpleNamespace(
+        prompt_tokens=1_000_000
+    )
+
+    with metering() as meter:
+        if batch:
+            asyncio.run(service.embed_texts(["яблоко"]))
+        else:
+            asyncio.run(service.embed_text("яблоко"))
+
+    assert meter.calls == 1
+    assert meter.usd == pytest.approx(0.02)

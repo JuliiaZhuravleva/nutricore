@@ -21,6 +21,7 @@ from app.services.model_registry import (
 )
 from app.services.model_selection import get_persisted_model, get_persisted_task_models
 from app.services.model_watch_state import report_model_failure
+from app.services.usage_meter import record as meter_usage
 
 logger = logging.getLogger(__name__)
 
@@ -202,11 +203,13 @@ class OpenAIService:
             effort=settings.model_effort_for(task),
         )
         try:
-            return await client.chat.completions.create(**params, **kwargs)
+            response = await client.chat.completions.create(**params, **kwargs)
         except (openai.NotFoundError, openai.BadRequestError) as exc:
             if is_model_not_found_error(exc):
                 raise await self._unavailable(task, ref_str, ref, exc) from exc
             raise
+        meter_usage(ref_str, getattr(response, "usage", None))
+        return response
 
     async def _listed_ids(self, route: str) -> set[str] | None:
         """Model ids the route lists now; None if the list could not be fetched."""
@@ -615,6 +618,7 @@ class OpenAIService:
             tools=[{"type": "openrouter:web_search"}],
             extra_body={"provider": dict(OPENROUTER_PROVIDER_PREFS)},
         )
+        meter_usage(f"openrouter:{ref.model}", getattr(response, "usage", None))
         return response.choices[0].message.content or ""
 
     async def _openai_web_search(
@@ -635,6 +639,11 @@ class OpenAIService:
             tools=[{"type": "web_search"}],
             input=prompt,
         )
+        searches = sum(
+            getattr(item, "type", None) == "web_search_call"
+            for item in getattr(response, "output", None) or []
+        )
+        meter_usage(ref.model, getattr(response, "usage", None), web_searches=searches)
         # Return the text content as a plain string — shape matches existing text methods
         # so analyze_and_log(kind="web_search", parse=...) works unchanged.
         return response.output_text
@@ -689,6 +698,9 @@ class OpenAIService:
                 input=text,
                 dimensions=settings.OPENAI_EMBEDDING_DIMS,
             )
+            meter_usage(
+                settings.OPENAI_EMBEDDING_MODEL, getattr(response, "usage", None)
+            )
             embedding: list[float] = response.data[0].embedding
             record_ai_call(
                 kind="embedding",
@@ -732,6 +744,9 @@ class OpenAIService:
                 model=settings.OPENAI_EMBEDDING_MODEL,
                 input=texts,
                 dimensions=settings.OPENAI_EMBEDDING_DIMS,
+            )
+            meter_usage(
+                settings.OPENAI_EMBEDDING_MODEL, getattr(response, "usage", None)
             )
             # Sort by .index to guarantee input order (the API may reorder batches).
             embeddings: list[list[float]] = [

@@ -20,6 +20,7 @@ from app.db.base import Base
 from app.models.body_metric import BodyMetric
 from app.models.meal import Meal
 from app.models.user import User
+from app.services import settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services import weight_screen as wt
@@ -372,12 +373,56 @@ def test_not_a_weight_gets_the_hint_and_saves_nothing(Session):
         assert db.query(BodyMetric).count() == 0
 
 
-def test_settings_button_answers(Session):
+def test_settings_button_shows_the_cost_switch_off(Session):
     state, message = _run(tg.show_settings, "⚙️ Настройки")
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>⚙️ Настройки</b>")
     assert "Asia/Tbilisi" in message.replies[-1]
-    assert message.kwargs[-1]["reply_markup"] is tg.main_keyboard
+    markup = message.kwargs[-1]["reply_markup"]
+    assert _labels(markup) == ["💸 Стоимость запросов: выкл"]
+    assert _callbacks(markup) == ["set:costs"]
+
+
+def _costs_shown(Session, telegram_id=42):
+    with Session() as db:
+        return settings_screen.shows_costs(db, telegram_id)
+
+
+def test_the_cost_switch_flips_and_says_so(Session):
+    with Session() as db:
+        user = _user(db)
+        user.settings = {"diet": "veg"}  # another setting the switch must keep
+        db.commit()
+
+    update, query = _query("set:costs")
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    (text,), kwargs = query.edit_message_text.await_args
+    assert text.startswith("<i>✓ Стоимость запросов включена</i>")
+    assert _labels(kwargs["reply_markup"]) == ["💸 Стоимость запросов: вкл"]
+    assert _costs_shown(Session)
+    with Session() as db:
+        assert db.query(User).one().settings == {"diet": "veg", "show_costs": True}
+
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    (text,), _ = query.edit_message_text.await_args
+    assert text.startswith("<i>✓ Стоимость запросов скрыта</i>")
+    assert not _costs_shown(Session)
+
+
+def test_the_cost_switch_works_before_the_first_meal(Session):
+    update, _query_ = _query("set:costs")  # the owner, no User row yet
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    assert _costs_shown(Session)
+
+
+def test_an_unknown_settings_tap_changes_nothing(Session):
+    with Session() as db:
+        _user(db)
+    update, query = _query("set:nope")
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    (text,), _ = query.edit_message_text.await_args
+    assert text.startswith("<b>⚙️ Настройки</b>")  # no notice
+    assert not _costs_shown(Session)
 
 
 def _query(data, telegram_id=42):
@@ -410,6 +455,15 @@ def test_weight_undo_tap_deletes_and_toasts(Session):
     assert "не записано" in query.edit_message_text.await_args.args[0]
     with Session() as db:
         assert db.query(BodyMetric).count() == 0
+
+
+def test_the_cost_switch_needs_a_subscription(Session, monkeypatch):
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "1")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=False))
+    update, query = _query("set:costs")
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    assert "подпиской" in query.answer.await_args.args[0]
+    assert not _costs_shown(Session)
 
 
 @pytest.mark.parametrize("callback", ["stats_callback", "weight_callback"])
@@ -532,6 +586,8 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
     assert by_callback[tg.weight_callback].pattern.match("wt:u:1")
     assert not by_callback[tg.weight_callback].pattern.match("fav:p:0")
     assert by_callback[tg.favorites_callback].pattern.match("fav:p:0")
+    assert by_callback[tg.settings_callback].pattern.match("set:costs")
+    assert not by_callback[tg.settings_callback].pattern.match("st:w")
 
 
 def test_week_title_spans_a_month_boundary():
