@@ -36,6 +36,7 @@ from app.services import telegram as tg
 from app.services.model_selection import OPENAI_MODEL_SETTING_KEY
 from app.services.openai_service import ModelUnavailableError
 from app.services.usage_meter import record as record_usage
+from tests.test_ai_errors import CREDITS_BODY, QUOTA_BODY, RATE_BODY, sdk_error
 
 _NUTRITION = {
     "foods": ["banana", "oatmeal"],
@@ -1908,3 +1909,112 @@ def test_a_failed_analysis_still_says_what_it_cost(patched_db, entry_mock, monke
     assert state == tg.ADDING_MEAL
     assert "не удалось проанализировать" in message.replies[-1]
     assert message.replies[-1].endswith(_COST)
+
+
+# --- a used-up AI balance / a rate limit (ai_errors) ------------------------
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    """The owner alerts that went out; the hourly dedupe starts empty."""
+    sent = []
+
+    async def notify(text):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(tg, "notify_admins", notify)
+    monkeypatch.setattr(tg, "_credit_alerted", {})
+    return sent
+
+
+def _not_admin(monkeypatch):
+    """User 42 is a subscribed guest, not the owner."""
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
+    monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+
+
+def test_text_meal_out_of_credit_tells_owner_where_to_pay(entry_mock, alerts):
+    entry_mock.side_effect = sdk_error(429, QUOTA_BODY)
+    update, message = _make_text_update("oatmeal")
+    context = SimpleNamespace(user_data={})
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    reply = message.replies[-1]
+    assert state == tg.CHOOSING_ACTION  # a retry cannot pass: back to the menu
+    assert message.reply_markups[-1] is tg.main_keyboard
+    assert "У OpenAI закончился баланс или лимит трат" in reply
+    assert "platform.openai.com" in reply
+    assert "/reprocess" in reply  # the meal was saved as failed, it waits
+    assert "не удалось проанализировать" not in reply
+    assert alerts == []  # the owner reads it right here
+
+
+def test_photo_meal_out_of_credit_survives_the_pipeline(patched_db, image_mock, alerts):
+    # The pipeline swallows the vision error; it must still be the cause.
+    image_mock.side_effect = sdk_error(429, QUOTA_BODY)
+    update, message = _make_photo_update()
+    context = _make_photo_context()
+
+    state = asyncio.run(tg.process_meal_input(update, context))
+
+    assert state == tg.CHOOSING_ACTION
+    assert "У OpenAI закончился баланс" in message.replies[-1]
+    with sessionmaker(bind=patched_db)() as db:
+        (row,) = db.query(InboundMessage).all()
+    assert row.status == "failed"  # /reprocess picks it up after the top-up
+
+
+def test_openrouter_out_of_credit_names_openrouter(entry_mock, alerts):
+    entry_mock.side_effect = sdk_error(402, CREDITS_BODY, host="openrouter.ai/api")
+    update, message = _make_text_update("oatmeal")
+
+    asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
+
+    assert "У OpenRouter закончился баланс" in message.replies[-1]
+    assert "openrouter.ai → Settings → Credits" in message.replies[-1]
+
+
+def test_out_of_credit_for_a_guest_alerts_the_owner_once(
+    entry_mock, alerts, monkeypatch
+):
+    _not_admin(monkeypatch)
+    entry_mock.side_effect = sdk_error(429, QUOTA_BODY)
+
+    for _ in range(2):
+        update, message = _make_text_update("oatmeal")
+        asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
+        reply = message.replies[-1]
+        assert "временно недоступно — владелец бота уже получил уведомление" in reply
+        assert "platform.openai.com" not in reply  # billing is the owner's business
+
+    assert len(alerts) == 1  # two meals, one alert
+    assert "у пользователя 42" in alerts[0] and "/reprocess" in alerts[0]
+
+
+def test_out_of_credit_for_a_guest_claims_no_alert_that_failed(entry_mock, monkeypatch):
+    _not_admin(monkeypatch)
+    monkeypatch.setattr(tg, "notify_admins", AsyncMock(return_value=False))
+    monkeypatch.setattr(tg, "_credit_alerted", {})
+    entry_mock.side_effect = sdk_error(429, QUOTA_BODY)
+    update, message = _make_text_update("oatmeal")
+
+    asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
+
+    assert message.replies[-1] == (
+        "💳 Распознавание еды временно недоступно. Попробуй позже."
+    )
+    assert tg._credit_alerted == {}  # the next meal tries to tell the owner again
+
+
+def test_rate_limit_asks_to_wait_a_minute(entry_mock, alerts):
+    entry_mock.side_effect = sdk_error(429, RATE_BODY)
+    update, message = _make_text_update("oatmeal")
+
+    state = asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
+
+    assert state == tg.ADDING_MEAL  # it passes in a minute: stay, send again
+    assert "перегружен" in message.replies[-1]
+    assert "💳" not in message.replies[-1]
+    assert alerts == []

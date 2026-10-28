@@ -99,6 +99,10 @@ class ImageSignals:
     # Responses API, 2026-09-13) and one that simply found nothing leave identical
     # traces — which is exactly why that defect survived in production.
     failures: Dict[str, str] = field(default_factory=dict)
+    # Why ``vision_result`` is None, when it failed rather than came back empty.
+    # Raised as the cause of «pipeline exhausted», so the reply can still tell
+    # a used-up AI balance from any other failure (``ai_errors``).
+    vision_error: Optional[BaseException] = None
 
     def note_failure(self, source_id: str, exc: BaseException) -> None:
         """Record a swallowed strategy failure (see ``failures``)."""
@@ -1387,7 +1391,7 @@ async def resolve_meal_nutrition(
     raise RuntimeError(
         "Pipeline exhausted without a result (VisionFallbackStrategy returned None — "
         "vision analysis must have failed)"
-    )
+    ) from signals.vision_error
 
 
 # ---------------------------------------------------------------------------
@@ -1453,8 +1457,10 @@ async def _extract_signals(
     if isinstance(vision_result, Exception):
         logger.error("Vision analysis failed: %s", vision_result, exc_info=True)
         vision_parsed: Optional[dict] = None
+        vision_error: Optional[BaseException] = vision_result
     else:
         vision_parsed = vision_result  # already parse_nutrition'd by analyze_and_log
+        vision_error = None
 
     return ImageSignals(
         image_data_url=image_data_url,
@@ -1465,6 +1471,7 @@ async def _extract_signals(
         input_ref=input_ref,
         caption=caption,
         portion_source="vision+note" if caption else "vision",
+        vision_error=vision_error,
     )
 
 

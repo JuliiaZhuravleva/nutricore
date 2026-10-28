@@ -26,7 +26,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import custom_emoji, favorites
+from app.services import ai_errors, custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
 from app.services import meal_draft, settings_screen, stats_screen, weight_screen
 from app.services.access_control import access_gate, admin_required
@@ -64,6 +64,11 @@ _last_consult: Dict[int, datetime] = {}
 # Max inbound messages re-analyzed per /reprocess call — a cap on OpenAI spend
 # per owner invocation. If more are pending, the owner just runs it again.
 REPROCESS_BATCH_LIMIT = 20
+
+# A used-up AI balance seen by someone other than the owner: tell the owner at
+# most this often per provider (in this process), not once per meal.
+CREDIT_ALERT_EVERY_SECONDS = 3600
+_credit_alerted: Dict[str, datetime] = {}
 
 # Conversation states
 (
@@ -645,6 +650,39 @@ async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
             )
 
 
+async def _out_of_credit_text(update: Update, err, *, saved: int | None) -> str:
+    """What to say when the AI balance or spend limit is used up (``ai_errors``).
+
+    The owner learns where to top up and that the meal waits for /reprocess;
+    anyone else hears that the owner knows — and the owner is told, at most
+    once an hour per provider, so a burst of meals is one alert.
+    """
+    provider, where = ai_errors.billing(err)
+    head = f"💳 У {provider} закончился баланс или лимит трат на ИИ"
+    user = update.effective_user
+    if user is not None and user.id in settings.admin_ids:
+        text = (
+            f"{head} — разобрать еду сейчас не получится, повтор не поможет.\n"
+            f"Пополни баланс или подними лимит: {where}."
+        )
+        if saved is not None:
+            text += "\nСообщение сохранено: после пополнения отправь /reprocess."
+        return text
+    now = datetime.now(UTC)
+    last = _credit_alerted.get(provider)
+    told = (
+        last is not None and (now - last).total_seconds() < CREDIT_ALERT_EVERY_SECONDS
+    )
+    if not told and await notify_admins(
+        f"{head} — у пользователя {user.id if user else '?'} не разобралась еда.\n"
+        f"Пополни баланс или подними лимит: {where}, потом /reprocess."
+    ):
+        _credit_alerted[provider] = now
+        told = True
+    owner = " — владелец бота уже получил уведомление" if told else ""
+    return f"💳 Распознавание еды временно недоступно{owner}. Попробуй позже."
+
+
 async def _analyze_meal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -703,11 +741,24 @@ async def _analyze_meal(
     except Exception as e:
         logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
         inbound_msg.mark_failed(inbound_id, str(e))
-        text = (
-            "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
-            "или опишите приём пищи иначе."
-        )
-        await loader.reply(text + (f"\n\n{meter.line()}" if meter else ""))
+        cost = f"\n\n{meter.line()}" if meter else ""
+        refusal = ai_errors.out_of_credit(e)
+        if refusal is not None:
+            # A retry cannot pass until someone pays: back to the menu, not
+            # «send it again».
+            text = await _out_of_credit_text(update, refusal, saved=inbound_id)
+            await loader.reply(text + cost, reply_markup=main_keyboard)
+            return CHOOSING_ACTION
+        if ai_errors.rate_limited(e):
+            text = (
+                "⏳ ИИ сейчас перегружен запросами. Подожди минуту и отправь ещё раз."
+            )
+        else:
+            text = (
+                "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё "
+                "раз или опишите приём пищи иначе."
+            )
+        await loader.reply(text + cost)
         return ADDING_MEAL
 
     # Analysis succeeded — record it now, independent of the reply below. A
