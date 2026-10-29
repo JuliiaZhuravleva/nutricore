@@ -247,6 +247,10 @@ def _log(db, user_id: int, fav: FavoriteMeal, slot: str) -> Meal:
     return meal
 
 
+def _ints(values: list) -> bool:
+    return all(isinstance(value, int) for value in values)
+
+
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
     """The screen a tap on a favorites button leads to.
 
@@ -267,19 +271,20 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
 
     if verb == "x":
         return Screen("", None)  # the pager's page counter: nothing to do
-    if verb == "p" and len(nums) == 1:
+    ids = len(nums) >= 2 and _ints(nums[:2])  # <favorite id>:<page>
+    if verb == "p" and len(nums) == 1 and _ints(nums):
         return open_list(db, telegram_id, nums[0])
-    if verb == "o" and len(nums) in (2, 3) and nums[2:] in ([], [OPEN]):
+    if verb == "o" and ids and len(nums) in (2, 3) and nums[2:] in ([], [OPEN]):
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)
         return item_screen(fav, nums[1], opened=None if numbers else len(nums) == 3)
-    if verb == "l" and len(nums) == 2 and nums[1] in SLOTS:
+    if verb == "l" and len(nums) == 2 and _ints(nums[:1]) and nums[1] in SLOTS:
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, 0, _STALE)
         return logged_screen(fav, _log(db, user_id, fav, nums[1]), numbers)
-    if verb == "u" and len(nums) == 1:
+    if verb == "u" and len(nums) == 1 and _ints(nums):
         meal = crud_meal.get(db, nums[0]) if user_id else None
         if (
             meal is None
@@ -294,7 +299,7 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
             _back_to_list_markup(),
             "Отменено",
         )
-    if verb == "r" and len(nums) == 2:
+    if verb == "r" and ids and len(nums) == 2:
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)
@@ -307,7 +312,7 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
             f"✖️ «{html.escape(fav.name)}» убрано из избранного.",
             InlineKeyboardMarkup(rows),
         )
-    if verb == "b" and len(nums) == 2:
+    if verb == "b" and ids and len(nums) == 2:
         fav = crud_favorite_meal.get_for_user(db, nums[0], user_id) if user_id else None
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)

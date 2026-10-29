@@ -338,7 +338,7 @@ def test_confirm_meal_saves_with_photo_and_ai_analysis(patched_db):
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     assert context.user_data == {}  # cleared after a successful save
 
     with sessionmaker(bind=patched_db)() as db:
@@ -423,13 +423,13 @@ def test_confirm_meal_lowercase_da_saves(patched_db):
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     with sessionmaker(bind=patched_db)() as db:
         assert db.query(Meal).count() == 1
 
 
 def test_confirm_meal_cancel_drops_the_meal_and_goes_to_the_menu(patched_db):
-    # Julia, 2026-10-28: «Отмена» under a draft asked «Когда был прием пищи?»
+    # Julia, 2026-10-28: «Отмена» under a draft asked «Когда был приём пищи?»
     # again; now it ends like the draft's «✖️ Отмена» button.
     bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
     update, message = _make_text_update("Отмена")
@@ -461,7 +461,7 @@ def test_confirm_meal_no_still_asks_again():
 
     assert state == tg.ADDING_MEAL_TIME
     assert context.user_data["current_meal"] == {}
-    assert "Когда был прием пищи?" in message.replies[-1]
+    assert "Когда был приём пищи?" in message.replies[-1]
 
 
 def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
@@ -811,7 +811,7 @@ def test_resolution_detail_lines_no_gram_basis_for_vision_even_with_portion():
 
 
 def test_add_meal_resets_stale_draft():
-    update, _ = _make_text_update("🍽 Добавить прием пищи")
+    update, _ = _make_text_update("🍽 Добавить приём пищи")
     context = SimpleNamespace(
         user_data={"current_meal": {"nutrition": {"old": 1}}, "meal_time": "stale"}
     )
@@ -1057,7 +1057,7 @@ def test_non_admin_gets_no_picker(monkeypatch):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "владелец" in message.replies[-1]
+    assert "владельцу" in message.replies[-1]
     assert "model_choices" not in context.user_data
     candidates.assert_not_called()
 
@@ -1560,11 +1560,36 @@ def test_reply_warns_when_a_winning_strategy_recorded_a_failure():
     ), "the OFF re-query leg was fully broken and the reply said nothing"
 
 
+def test_draft_keeps_the_number_caveats_with_the_hidden_numbers():
+    """The ⚠️ lines speak about the numbers, so they hide and open with them;
+    the barcode and the product name stay, being about the food (stage 5)."""
+    result = _make_resolution_result(
+        source="name_web",
+        confidence_tier="low",
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Ranch",
+            "off_missing_macros": ["белки"],
+            "strategy_attempts": [{"strategy": "name_web", "error": "Boom"}],
+        },
+    )
+    draft = {"nutrition": dict(_NUTRITION)}
+    tg._start_draft(draft, "Разбор фото:", result, numbers=False)
+    hidden = meal_draft.text(draft)
+    assert "Штрих-код: 1234" in hidden and "Продукт: Ranch" in hidden
+    assert "⚠️" not in hidden
+
+    meal_draft.toggle_numbers(draft)
+    opened = meal_draft.text(draft)
+    assert "⚠️ в базе нет: белки" in opened
+    assert "не сработала" in opened
+
+
 # --- the meal-of-day label: asked since day one, stored since 2026-09-13 ----
 
 
 def test_meal_type_label_reaches_the_saved_meal(patched_db):
-    """The bot asks "Когда был прием пищи?" and offers Завтрак/Обед/Ужин.
+    """The bot asks "Когда был приём пищи?" and offers Завтрак/Обед/Ужин.
 
     The answer used to live only in context.user_data and was dropped when the
     conversation ended — no column, no schema field, no read site anywhere.
@@ -1621,7 +1646,7 @@ def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
     first, _ = _make_text_update("Завтрак")
     asyncio.run(tg.process_meal_time(first, context))  # …then abandoned
 
-    restart, _ = _make_text_update("Добавить прием пищи")
+    restart, _ = _make_text_update("Добавить приём пищи")
     asyncio.run(tg.add_meal(restart, context))
     second, _ = _make_text_update("Сейчас")
     asyncio.run(tg.process_meal_time(second, context))
@@ -1643,7 +1668,7 @@ def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
 def test_declining_a_draft_drops_the_label_on_the_retry(patched_db):
     """The bot's OWN retry path, which does not go through add_meal.
 
-    "Нет" resets the draft and re-asks "Когда был прием пищи?" directly, so the
+    "Нет" resets the draft and re-asks "Когда был приём пищи?" directly, so the
     first fix (clearing the label in add_meal) never ran here: answering "Сейчас"
     on the retry still saved the declined "Завтрак".
     """
@@ -1716,7 +1741,7 @@ def test_a_typed_label_is_normalised_rather_than_refused(patched_db):
     assert meals[0].meal_type == "Завтрак"
 
 
-# --- a photo sent from the menu, without «🍽 Добавить прием пищи» -------------
+# --- a photo sent from the menu, without «🍽 Добавить приём пищи» -------------
 
 
 def test_quick_photo_is_a_meal_eaten_now(image_mock):
@@ -1988,7 +2013,7 @@ def test_out_of_credit_for_a_guest_alerts_the_owner_once(
         update, message = _make_text_update("oatmeal")
         asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
         reply = message.replies[-1]
-        assert "временно недоступно — владелец бота уже получил уведомление" in reply
+        assert "временно недоступно — владельцу бота уже пришло уведомление" in reply
         assert "platform.openai.com" not in reply  # billing is the owner's business
 
     assert len(alerts) == 1  # two meals, one alert

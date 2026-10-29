@@ -355,8 +355,13 @@ def test_remove_then_restore(Session):
 
 
 @pytest.mark.parametrize(
-    "data", ["fav:", "fav:zz", "fav:o:abc:0", "fav:l:1:q", "fav:p"]
-)
+    "data",
+    [
+        "fav:", "fav:zz", "fav:o:abc:0", "fav:l:1:q", "fav:p",
+        # a word where a page or an id goes: once a TypeError deep in the pager
+        "fav:o:5:n", "fav:p:n", "fav:r:1:n", "fav:b:1:n", "fav:l:x:b", "fav:u:x",
+    ],
+)  # fmt: skip
 def test_malformed_data_gets_the_list(Session, data):
     with Session() as db:
         _fav(db, _user(db))
@@ -399,7 +404,7 @@ def test_typed_confirm_intents():
 
 def test_main_keyboard_has_favorites_next_to_add_meal():
     assert [b.text for b in tg.main_keyboard.keyboard[0]] == [
-        "🍽 Добавить прием пищи",
+        "🍽 Добавить приём пищи",
         "⭐ Избранное",
     ]
 
@@ -414,7 +419,7 @@ def test_confirm_with_favorite_saves_meal_and_favorite_named_by_caption(Session)
     state, message = _confirm("⭐ Да, и в избранное", meal)
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     assert "⭐ В избранном: «Самса веган»" in message.replies[-1]
     with Session() as db:
         saved = db.query(Meal).one()
@@ -446,7 +451,7 @@ def test_favorite_failure_keeps_the_saved_meal(Session, monkeypatch):
         "⭐ Да, и в избранное", {"nutrition": _NUTRITION, "description": "x"}
     )
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     assert "не получилось" in message.replies[-1]
     assert "ошибка при сохранении" not in message.replies[-1]
     with Session() as db:

@@ -4,8 +4,9 @@ Stage 5 rules 8 and 10 (G5-R19): the bot says what is there, never what is too
 much or missing, and it is universal, so nothing it says carries the user's or
 its own gender. The scan reads every Cyrillic string literal in ``app/`` and
 ``bot.py`` (docstrings aside); model prompts in ``openai_service.py`` are not
-shown to the user and are skipped. The controls below plant known-bad strings
-through the same checker, so a green run proves the checker can see them.
+shown to the user and are skipped. An f-string is read whole, its placeholders
+as «…». The controls below plant known-bad strings through the same checker and
+through the collector, so a green run proves both can see them.
 """
 
 from __future__ import annotations
@@ -30,31 +31,32 @@ RULES = {
         re.IGNORECASE,
     ),
     "gendered form": re.compile(
-        _W + r"(сделала|записала|съела|выпила|готова|уверена|рада"
+        _W + r"(сделала|записала|съела|выпила|готова?|уверена?|рада?"
+        r"|(понял|смог|нашёл|нашел|нашл|сохранил|увидел|узнал|получил)а?"
         r"|(ты|я) [а-яё]+л[аи]?)" + _E + r"|[а-яё]\((а|ла)\)",
         re.IGNORECASE,
     ),
     "«вы» register": re.compile(
-        _W + r"(вы|вас|вам|ваш\w*|[а-яё]+(ите|йте))" + _E, re.IGNORECASE
+        _W + r"(вы|вас|вам|ваш\w*|[а-яё]+(ите|йте|ьте)(сь)?)" + _E, re.IGNORECASE
     ),
 }
 
-# (file, rule, word) → why the string may keep it.
+# (file, the exact string) → why it may keep its finding.
 EXEMPT = {
-    ("app/services/model_watch.py", "judging word", "осталось"): (
+    ("app/services/model_watch.py", "Отключат … — осталось … дн."): (
         "admin notice: days left before an AI model shuts down, not about food"
     ),
 }
 
 
 def findings(path: str, text: str) -> list[str]:
-    out = []
-    for rule, pattern in RULES.items():
-        for match in pattern.finditer(text):
-            word = match.group(0).lower()
-            if (path, rule, word) not in EXEMPT:
-                out.append(f"{path}: {rule} «{match.group(0)}» in {text!r}")
-    return out
+    if (path, text) in EXEMPT:
+        return []
+    return [
+        f"{path}: {rule} «{match.group(0)}» in {text!r}"
+        for rule, pattern in RULES.items()
+        for match in pattern.finditer(text)
+    ]
 
 
 def _docstrings(tree: ast.AST) -> set[int]:
@@ -68,30 +70,84 @@ def _docstrings(tree: ast.AST) -> set[int]:
     return ids
 
 
-def user_strings() -> list[tuple[str, str]]:
-    files = sorted((ROOT / "app").rglob("*.py")) + [ROOT / "bot.py"]
+def _strings(tree: ast.AST) -> list[str]:
+    """Every string literal but docstrings; an f-string as one text."""
+    skip = _docstrings(tree)
+    whole = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            whole.append(
+                "".join(
+                    part.value if isinstance(part, ast.Constant) else "…"
+                    for part in node.values
+                )
+            )
+            skip |= {id(part) for part in node.values}
+    loose = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in skip
+    ]
+    return whole + loose
+
+
+def user_strings(root: Path = ROOT) -> list[tuple[str, str]]:
+    files = sorted((root / "app").rglob("*.py")) + [root / "bot.py"]
     out = []
     for file in files:
-        path = file.relative_to(ROOT).as_posix()
+        path = file.relative_to(root).as_posix()
         if path in SKIP_FILES:
             continue
         tree = ast.parse(file.read_text(encoding="utf-8"))
-        skip = _docstrings(tree)
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and id(node) not in skip
-                and re.search(r"[а-яё]", node.value, re.IGNORECASE)
-            ):
-                out.append((path, node.value))
+        out += [
+            (path, text)
+            for text in _strings(tree)
+            if re.search(r"[а-яё]", text, re.IGNORECASE)
+        ]
     return out
 
 
 def test_the_scan_sees_the_bot_strings():
-    texts = [text for _path, text in user_strings()]
+    found = user_strings()
+    texts = [text for _path, text in found]
     assert len(texts) > 100
     assert "Разбор фото:" in texts  # a known reply: the collector reaches telegram.py
+    assert "Отключат … — осталось … дн." in texts  # an f-string, read whole
+    paths = {path for path, _text in found}
+    for name in (
+        "favorites", "meal_draft", "numbers", "settings_screen",
+        "stats_screen", "telegram", "weight_screen",
+    ):  # fmt: skip
+        assert any(path.endswith(f"{name}.py") for path in paths), name
+
+
+def test_control_the_collector_reaches_a_planted_file(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "bot.py").write_text("")
+    (tmp_path / "app" / "planted.py").write_text(
+        '"""Модуль: не для пользователя."""\n'
+        "def reply(name):\n"
+        '    """Описание: тоже не для пользователя."""\n'
+        '    first = f"Ты {name} записала обед"\n'
+        '    return "Отправьте фото, " + "{} обращайтесь".format(first)\n',
+        encoding="utf-8",
+    )
+    found = user_strings(tmp_path)
+    assert [text for _path, text in found] == [
+        "Ты … записала обед",
+        "Отправьте фото, ",
+        "{} обращайтесь",
+    ]
+    rules = {
+        rule
+        for path, text in found
+        for f in findings(path, text)
+        for rule in RULES
+        if f.startswith(f"app/planted.py: {rule} «")
+    }
+    assert rules == {"gendered form", "«вы» register"}
 
 
 def test_no_user_facing_string_judges_genders_or_switches_register():
@@ -113,6 +169,11 @@ def test_no_user_facing_string_judges_genders_or_switches_register():
         ("Что съел(а) на обед?", "gendered form"),
         ("Пожалуйста, попробуйте ещё раз", "«вы» register"),
         ("Это ваш приём пищи", "«вы» register"),
+        ("По вопросам подписки обращайтесь к администратору", "«вы» register"),
+        ("Отправьте фото", "«вы» register"),
+        ("Не понял вес — напиши число граммов", "gendered form"),
+        ("Не смог проверить", "gendered form"),
+        ("Я готов", "gendered form"),
     ],
 )
 def test_control_a_planted_string_is_caught(planted, rule):
@@ -121,10 +182,11 @@ def test_control_a_planted_string_is_caught(planted, rule):
     assert all(f.startswith(f"app/x.py: {rule} «") for f in caught)
 
 
-def test_control_the_exemption_is_scoped_to_its_file():
-    text = "⚠️ До отключения модели осталось 5 дн."
+def test_control_the_exemption_is_scoped_to_its_file_and_string():
+    text = "Отключат … — осталось … дн."
     assert findings("app/services/model_watch.py", text) == []
     assert findings("app/services/stats_screen.py", text) != []
+    assert findings("app/services/model_watch.py", "Осталось 300 ккал") != []
 
 
 @pytest.mark.parametrize(
@@ -140,6 +202,11 @@ def test_control_the_exemption_is_scoped_to_its_file():
         "За неделю записей нет.",
         "Выбери пояс",
         "Ты ешь что хочешь",
+        "Вес не распознан — напиши число граммов, например 150.",
+        "Проверить не удалось: источник не ответил",
+        "Не получилось сохранить. Попробуй ещё раз.",
+        "✅ Записано",
+        "Радуга, готово, уверенно",
     ],
 )
 def test_ordinary_strings_produce_no_finding(fine):

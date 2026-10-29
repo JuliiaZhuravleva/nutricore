@@ -195,7 +195,7 @@ def test_a_weight_that_was_asked_for_but_unreadable_asks_again():
     state, message = _type(context, "много")
 
     assert state == tg.CONFIRMING_MEAL
-    assert "Не понял вес" in message.replies[-1]
+    assert "Вес не распознан" in message.replies[-1]
     assert draft["nutrition"] == _NUTRITION
 
 
@@ -255,7 +255,7 @@ def test_save_button_saves_what_is_on_screen(Session, celery_delay):
     # The settled draft keeps its text, loses its buttons.
     assert query.edit_message_text.call_args.args[0].endswith("✅ Сохранено")
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
-    assert "сохранен" in query.message.replies[-1]
+    assert "✅ Записано" in query.message.replies[-1]
     assert query.message.markups[-1] is tg.main_keyboard
     # TD-025: the call site still enqueues the personal-food save, and with a
     # gram basis that matches the saved numbers (350 ккал at 140 г = 250/100 г).

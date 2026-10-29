@@ -95,7 +95,7 @@ subscription_keyboard = ReplyKeyboardMarkup(
 
 main_keyboard = ReplyKeyboardMarkup(
     [
-        ["🍽 Добавить прием пищи", "⭐ Избранное"],
+        ["🍽 Добавить приём пищи", "⭐ Избранное"],
         ["📊 Статистика", "⚖️ Мой вес"],
         ["⚙️ Настройки"],
     ],
@@ -229,11 +229,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     if not await check_subscription(update.effective_user.id):
         text = (
-            "👋 Привет! Я NutriCore — личный помощник "
-            "для дневника питания и здоровья.\n\n"
+            "👋 Привет! Я NutriCore — дневник питания и здоровья.\n\n"
             "🤖 Что я умею:\n"
-            "• Анализировать приемы пищи с помощью AI\n"
-            "• Отслеживать калории и нутриенты\n"
+            "• Разбирать еду по фото и описанию с помощью AI\n"
             "• Вести вес и статистику по дням\n\n"
             "💎 Для доступа к этим функциям нужна подписка."
         )
@@ -256,7 +254,7 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # attached to the NEXT meal (which may well be a different one).
     context.user_data.pop("meal_type", None)
     await update.message.reply_text(
-        "Когда был прием пищи?",
+        "Когда был приём пищи?",
         reply_markup=time_keyboard,
     )
     return ADDING_MEAL_TIME
@@ -284,7 +282,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # This handler is AUTHORITATIVE for both keys: it overwrites meal_type on
     # every answer, including clearing it for "Сейчас". Clearing it only in
     # add_meal covered one of the two ways back to this step — the bot's own
-    # retry ("Нет" → "Когда был прием пищи?") re-enters here directly, so a
+    # retry ("Нет" → "Когда был приём пищи?") re-enters here directly, so a
     # declined label survived and was written to the next meal.
     context.user_data["meal_time"] = datetime.now(UTC)
     label = _meal_type_label(text)
@@ -294,7 +292,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["meal_type"] = label
 
     await update.message.reply_text(
-        "Отлично! Теперь опиши еду или отправь фото.\n\n"
+        "Теперь опиши еду или отправь фото.\n\n"
         "Можешь также отправить и то, и другое.",
         reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True),
     )
@@ -305,7 +303,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def quick_meal_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """A photo sent outside the meal steps is a meal eaten now.
 
-    The same analysis as «🍽 Добавить прием пищи» → «Сейчас» → the photo, minus
+    The same analysis as «🍽 Добавить приём пищи» → «Сейчас» → the photo, minus
     the two taps: before this the photo matched no handler and was dropped
     without a word. Starts clean like ``add_meal``.
     """
@@ -582,11 +580,14 @@ def _start_draft(
             if signals.get("portion_source") == "vision+note"
             else "оценка по фото"
         )
+    # The ⚠️ lines are caveats about the numbers: hidden numbers hide them too.
+    details = _resolution_detail_lines(resolution_result)
     return meal_draft.start(
         draft,
         header=header,
         badge=_source_badge(resolution_result),
-        detail_lines=_resolution_detail_lines(resolution_result),
+        detail_lines=[line for line in details if not line.startswith("⚠️")],
+        number_notes=[line for line in details if line.startswith("⚠️")],
         estimate=resolution_result.confidence_tier != "high",
         base_grams=base,
         per_100g=per_100g,
@@ -650,7 +651,7 @@ async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
             show_numbers = shows_numbers_for(db, update.effective_user.id)
     except Exception as e:
         # A display preference must not stop the analysis itself.
-        logger.warning("Could not read the display settings: %s", e)
+        logger.warning("Could not read the display settings: %s", e, exc_info=True)
         show_cost = show_numbers = False
     with metering() as meter:
         async with Loader(update.message, text) as loader:
@@ -694,7 +695,7 @@ async def _out_of_credit_text(update: Update, err, *, saved: int | None) -> str:
     ):
         _credit_alerted[provider] = now
         told = True
-    owner = " — владелец бота уже получил уведомление" if told else ""
+    owner = " — владельцу бота уже пришло уведомление" if told else ""
     return f"💳 Распознавание еды временно недоступно{owner}. Попробуй позже."
 
 
@@ -936,7 +937,7 @@ async def _offer_model_choice(
     user = update.effective_user
     if user is None or user.id not in settings.admin_ids:
         await update.message.reply_text(
-            "Распознавание сейчас недоступно — владелец бота уже получил "
+            "Распознавание сейчас недоступно — владельцу бота уже пришло "
             "уведомление. Попробуй позже.",
             reply_markup=main_keyboard,
         )
@@ -1046,7 +1047,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return await _resend_draft(update, context, draft)
         if awaiting == "grams":
             await update.message.reply_text(
-                "Не понял вес — напиши число граммов, например 150."
+                "Вес не распознан — напиши число граммов, например 150."
             )
             return CONFIRMING_MEAL
 
@@ -1078,7 +1079,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await _strip_draft_buttons(context, draft)
     context.user_data["current_meal"] = {}
     await update.message.reply_text(
-        "Давай попробуем ещё раз. Когда был прием пищи?",
+        "Давай попробуем ещё раз. Когда был приём пищи?",
         reply_markup=time_keyboard,
     )
     return ADDING_MEAL_TIME
@@ -1161,7 +1162,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
         meal_in = MealCreate(
             description=draft.get("description"),
             meal_time=user_data.get("meal_time", datetime.now(UTC)),
-            # The answer to "Когда был прием пищи?" — collected since the
+            # The answer to "Когда был приём пищи?" — collected since the
             # first version, stored since 2026-09-13.
             meal_type=user_data.get("meal_type"),
             calories=nutrition.get("calories"),
@@ -1198,7 +1199,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
             resolution_source=draft.get("resolution_source"),
         )
 
-        text = "Прием пищи сохранен! 👍"
+        text = "✅ Записано"
         if favorite:
             text += "\n" + _save_favorite(saved_meal_id, draft)
         await reply(text, reply_markup=main_keyboard)
@@ -1246,6 +1247,8 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return None
     draft = context.user_data.get("current_meal") or {}
     parsed = meal_draft.parse_callback(query.data)
+    if parsed is None:
+        logger.warning("meal draft: malformed callback data %r", query.data)
     if parsed is None or parsed[0] != draft.get("id"):
         await meal_stale_callback(update, context)
         return None
@@ -1297,6 +1300,7 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await query.message.reply_text("Отменено.", reply_markup=main_keyboard)
         return CHOOSING_ACTION
+    logger.warning("meal draft: unknown verb in callback data %r", query.data)
     await query.answer()
     return None
 
@@ -1466,10 +1470,9 @@ async def handle_subscription_inquiry(
 
     if text == "❓ О боте":
         response = (
-            "🤖 NutriCore - это умный бот для отслеживания питания и здоровья.\n\n"
+            "🤖 NutriCore — дневник питания и здоровья.\n\n"
             "✨ С подпиской:\n"
-            "• AI-анализ питания\n"
-            "• Отслеживание калорий и нутриентов\n"
+            "• Разбор еды по фото и описанию\n"
             "• Избранные блюда в одно касание\n"
             "• Статистику за день и неделю\n"
             "• Дневник веса"
@@ -1487,9 +1490,7 @@ async def handle_subscription_inquiry(
 
     elif text == "📱 Связаться с админом":
         admin_username = settings.TELEGRAM_ADMIN_USERNAME
-        response = (
-            f"По вопросам подписки обращайтесь к администратору: {admin_username}"
-        )
+        response = f"По вопросам подписки пиши администратору: {admin_username}"
 
     else:
         return SUBSCRIPTION_INQUIRY
@@ -1749,7 +1750,8 @@ def create_bot_application() -> Application:
     # The main menu (main_keyboard): a tapped button comes back as its text.
     def menu():
         return [
-            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
+            # «прием» is the label keyboards already on phones still carry.
+            MessageHandler(filters.Regex("^🍽 Добавить при[её]м пищи$"), add_meal),
             MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
             MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
             MessageHandler(filters.Regex("^⚖️ Мой вес$"), show_weight),

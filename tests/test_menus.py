@@ -387,7 +387,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     markup = message.kwargs[-1]["reply_markup"]
     assert _labels(markup) == [
         "🕐 Часовой пояс",
-        "🔢 Цифры: выкл",
+        "🔢 Цифры сразу: выкл",
         "💸 Стоимость запросов: выкл",
     ]
     assert _callbacks(markup) == ["set:tz", "set:num", "set:costs"]
@@ -711,7 +711,7 @@ def _text_update(text):
 
 
 _MENU = {
-    "🍽 Добавить прием пищи": "add_meal",
+    "🍽 Добавить приём пищи": "add_meal",
     "⭐ Избранное": "show_favorites",
     "📊 Статистика": "show_statistics",
     "⚖️ Мой вес": "show_weight",
@@ -773,7 +773,9 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
 
 def test_week_title_spans_a_month_boundary():
     days = [(date(2026, 10, 29) + timedelta(days=i), []) for i in range(7)]
-    assert st.week_screen(days).text.startswith("<b>📊 7 дней</b> · 29 окт – 4 ноя")
+    assert st.week_screen(days, UTC).text.startswith(
+        "<b>📊 7 дней</b> · 29 окт – 4 ноя"
+    )
 
 
 def _photo_update(caption=None):
@@ -818,7 +820,8 @@ def test_a_photo_outside_the_meal_steps_is_a_meal(conv, where, caption):
     [
         ("Отмена", "cancel"),  # not food: no paid analysis of the word
         ("📊 Статистика", "show_statistics"),
-        ("🍽 Добавить прием пищи", "add_meal"),
+        ("🍽 Добавить приём пищи", "add_meal"),
+        ("🍽 Добавить прием пищи", "add_meal"),  # a keyboard sent before the fix
         ("гречка 200 г", "process_meal_input"),  # no finding: food still goes on
     ],
 )
@@ -863,7 +866,7 @@ def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
         assert "ккал" not in closed.text
 
 
-def test_numbers_off_week_lists_logged_days_only_and_no_averages(Session):
+def test_numbers_off_week_lists_logged_days_with_times_and_no_counts(Session):
     with Session() as db:
         user = _user(db)
         _meal(db, user, NOW, 2000)
@@ -871,8 +874,8 @@ def test_numbers_off_week_lists_logged_days_only_and_no_averages(Session):
         _meal(db, user, NOW - timedelta(days=2), 1000)
         screen = st.open_view(db, 42, st.WEEK, NOW)
     lines = screen.text.split("\n")
-    assert lines[2:] == ["пн 26.10 · 1 запись", "ср 28.10 · 2 записи"]
-    for hidden in ("ккал", "▱", "—", "В среднем", "из 7"):
+    assert lines[2:] == ["пн 26.10 · 12:00", "ср 28.10 · 10:00, 12:00"]
+    for hidden in ("ккал", "▱", "—", "В среднем", "из 7", "запис"):
         assert hidden not in screen.text  # an empty day is not a gap
     assert _callbacks(screen.markup)[-1] == "st:wn"
 
@@ -882,14 +885,6 @@ def test_numbers_off_empty_week_says_so_without_a_miss(Session):
         _user(db)
         screen = st.open_view(db, 42, st.WEEK, NOW)
     assert screen.text.endswith("За неделю записей нет.")
-
-
-@pytest.mark.parametrize("count, word", [
-    (1, "1 запись"), (3, "3 записи"), (5, "5 записей"),
-    (11, "11 записей"), (21, "21 запись"), (22, "22 записи"),
-])  # fmt: skip
-def test_records_are_counted_in_russian(count, word):
-    assert st._records(count) == word
 
 
 @pytest.mark.parametrize("data", ["st:tx", "st:q", "st:wnn", "st:"])
@@ -907,7 +902,7 @@ def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
         db.commit()
     on = _tap(Session, "set:num")
     assert on.text.startswith("<i>✓ Цифры видны сразу</i>")
-    assert "🔢 Цифры: вкл" in _labels(on.markup)
+    assert "🔢 Цифры сразу: вкл" in _labels(on.markup)
     with Session() as db:
         stored = db.query(User).filter(User.telegram_id == 42).one().settings
         assert stored == {"diet": "veg", SHOW_NUMBERS: True}
@@ -917,5 +912,5 @@ def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
     assert _rows(day.markup) == [["✓ Сегодня", "Вчера", "7 дней"]]  # no button
 
     off = _tap(Session, "set:num")
-    assert off.text.startswith("<i>✓ Цифры под кнопкой «🔢 Цифры»</i>")
-    assert "🔢 Цифры: выкл" in _labels(off.markup)
+    assert off.text.startswith("<i>✓ Цифры теперь за кнопкой</i>")
+    assert "🔢 Цифры сразу: выкл" in _labels(off.markup)

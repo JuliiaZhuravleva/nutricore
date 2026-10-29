@@ -121,6 +121,7 @@ def start(
     badge: str,
     detail_lines: list,
     estimate: bool,
+    number_notes: tuple = (),
     base_grams: Optional[float],
     per_100g: bool = False,
     chips: bool = False,
@@ -130,6 +131,7 @@ def start(
     """Stamp the view state onto a fresh draft (its nutrition already set).
 
     ``numbers`` is the ⚙️ setting: True shows calories and macros with no button.
+    ``number_notes`` are caveats about those numbers; they show only with them.
     """
     nutrition = draft["nutrition"]
     draft.update(
@@ -137,6 +139,7 @@ def start(
         header=header,
         badge=badge,
         detail_lines=list(detail_lines),
+        number_notes=list(number_notes),
         estimate=estimate,
         base_grams=base_grams if base_grams and base_grams > 0 else None,
         base_nutrition=dict(nutrition),
@@ -227,7 +230,9 @@ def _portion_line(draft: dict) -> str:
             return f"Порция: ≈ {grams}г ({SIZES[draft['size']][0].lower()})"
         return f"Порция: {grams}г (твой вес)"
     if draft.get("per_100g"):
-        return "Порция: не определена — числа на 100г, поправь вес кнопкой"
+        if draft.get("numbers"):
+            return "Порция: не определена — числа на 100г, поправь вес кнопкой"
+        return "Порция: не определена — поправь вес кнопкой"
     if draft.get("basis") and draft.get("base_grams"):
         grams = num(draft["base_grams"], 0)
         note = str(nutrition.get("portion") or "").strip()
@@ -261,6 +266,7 @@ def text(draft: dict, footer: Optional[str] = None) -> str:
             parts.append(
                 f"{label}: {macro_text(nutrition.get(key), estimate=estimate)}"
             )
+        parts.extend(draft.get("number_notes") or [])
     parts.append(_portion_line(draft))
     if draft.get("cost_line"):
         parts.append(draft["cost_line"])

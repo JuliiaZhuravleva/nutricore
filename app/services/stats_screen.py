@@ -125,12 +125,8 @@ def _tabs(current: str, opened: bool | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _records(count: int) -> str:
-    if count % 10 == 1 and count % 100 != 11:
-        return f"{count} запись"
-    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        return f"{count} записи"
-    return f"{count} записей"
+def _when(meal: Meal, zone: ZoneInfo) -> str:
+    return local_time(meal.meal_time, zone).strftime("%H:%M") if meal.meal_time else "—"
 
 
 # --- screens ----------------------------------------------------------------
@@ -154,11 +150,7 @@ def day_screen(
         )
         return Screen("\n".join(lines), _tabs(tab, opened))
     for meal in meals:
-        when = (
-            local_time(meal.meal_time, zone).strftime("%H:%M")
-            if meal.meal_time
-            else "—"
-        )
+        when = _when(meal, zone)
         label = f" · {meal.meal_type}" if meal.meal_type else ""
         kcal = f" · {_kcal(_sum([meal], 'calories'))}" if numbers else ""
         lines.append(f"{when}{label} · {html.escape(_meal_name(meal))}{kcal}")
@@ -172,10 +164,13 @@ def day_screen(
 
 
 def week_screen(
-    days: list[tuple[date, list[Meal]]], opened: bool | None = None
+    days: list[tuple[date, list[Meal]]],
+    zone: ZoneInfo,
+    opened: bool | None = None,
 ) -> Screen:
     """``days`` oldest first, today last. Without the numbers it lists only the
-    days that have records: an empty day is not shown as a gap."""
+    days that have records, each with its meal times: an empty day is not shown
+    as a gap, and no count invites comparing one week's logging with another's."""
     first, last = days[0][0], days[-1][0]
     lines = [
         f"<b>📊 {WEEK_DAYS} дней</b> · {first.day} {_MONTHS[first.month - 1]} – "
@@ -186,7 +181,7 @@ def week_screen(
         logged_days = [(day, meals) for day, meals in days if meals]
         for day, meals in logged_days:
             title = f"{_WEEKDAYS[day.weekday()]} {day.day:02d}.{day.month:02d}"
-            lines.append(f"{title} · {_records(len(meals))}")
+            lines.append(f"{title} · {', '.join(_when(m, zone) for m in meals)}")
         if not logged_days:
             lines.append("За неделю записей нет.")
         return Screen("\n".join(lines), _tabs(WEEK, opened))
@@ -242,7 +237,7 @@ def open_view(
     if tab == WEEK:
         days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
         return week_screen(
-            [(day, _meals_on(db, user, day, zone)) for day in days], shown
+            [(day, _meals_on(db, user, day, zone)) for day in days], zone, shown
         )
     return day_screen(_meals_on(db, user, today, zone), today, TODAY, zone, shown)
 

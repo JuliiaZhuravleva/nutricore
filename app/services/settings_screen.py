@@ -1,7 +1,7 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры: выкл] [💸 Стоимость запросов: выкл]
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -134,7 +134,7 @@ def screen(
     ]
     rows = [
         [_btn("🕐 Часовой пояс", _ZONES_CB)],
-        [_btn(f"🔢 Цифры: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
+        [_btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
         [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
@@ -235,7 +235,7 @@ def handle_callback(
     if data == _NUMBERS_CB:
         on = not shows_numbers(_user(db, telegram_id))
         _save(db, telegram_id, **{SHOW_NUMBERS: on})
-        notice = "✓ Цифры видны сразу" if on else "✓ Цифры под кнопкой «🔢 Цифры»"
+        notice = "✓ Цифры видны сразу" if on else "✓ Цифры теперь за кнопкой"
         return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:
