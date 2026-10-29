@@ -4,7 +4,7 @@
     [✓ Сегодня] [Вчера] [7 дней]
 
 The numbers are the saved meals' own, summed — no goal yet (Stage 1 adds one).
-Days are the owner's calendar days (``DEFAULT_TIMEZONE``), not UTC. Every tab
+Days are the user's calendar days (their ⚙️ time zone), not UTC. Every tab
 edits the same message; the callback data carries the whole view, so a tap
 works after a restart too. Telegram-free apart from the keyboard, like
 ``favorites``.
@@ -19,12 +19,12 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.core.config import settings
 from app.crud.crud_meal import crud_meal
 from app.models.meal import Meal
 from app.models.user import User
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
+from app.services.settings_screen import user_zone
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +43,17 @@ _MONTHS = (
 )  # fmt: skip
 
 
-def _zone() -> ZoneInfo:
-    return ZoneInfo(settings.DEFAULT_TIMEZONE)
-
-
-def local_time(moment: datetime) -> datetime:
+def local_time(moment: datetime, zone: ZoneInfo) -> datetime:
     # SQLite hands back naive datetimes; the column is written in UTC.
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(_zone())
+    return moment.astimezone(zone)
 
 
-def _day_bounds(day: date) -> tuple[datetime, datetime]:
+def _day_bounds(day: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
     """The local calendar day as a UTC [start, end) range."""
-    start = datetime.combine(day, time(), tzinfo=_zone())
-    end = datetime.combine(day + timedelta(days=1), time(), tzinfo=_zone())
+    start = datetime.combine(day, time(), tzinfo=zone)
+    end = datetime.combine(day + timedelta(days=1), time(), tzinfo=zone)
     return start.astimezone(UTC), end.astimezone(UTC)
 
 
@@ -115,7 +111,7 @@ def _tabs(current: str) -> InlineKeyboardMarkup:
 # --- screens ----------------------------------------------------------------
 
 
-def day_screen(meals: list[Meal], day: date, tab: str) -> Screen:
+def day_screen(meals: list[Meal], day: date, tab: str, zone: ZoneInfo) -> Screen:
     head = "Сегодня" if tab == TODAY else "Вчера"
     lines = [f"<b>📊 {head}, {day_title(day)}</b>", ""]
     if not meals:
@@ -125,7 +121,11 @@ def day_screen(meals: list[Meal], day: date, tab: str) -> Screen:
         )
         return Screen("\n".join(lines), _tabs(tab))
     for meal in meals:
-        when = local_time(meal.meal_time).strftime("%H:%M") if meal.meal_time else "—"
+        when = (
+            local_time(meal.meal_time, zone).strftime("%H:%M")
+            if meal.meal_time
+            else "—"
+        )
         label = f" · {meal.meal_type}" if meal.meal_type else ""
         lines.append(
             f"{when}{label} · {html.escape(_meal_name(meal))} · "
@@ -175,28 +175,24 @@ def week_screen(days: list[tuple[date, list[Meal]]]) -> Screen:
 # --- operations -------------------------------------------------------------
 
 
-def _user_id(db, telegram_id: int) -> int | None:
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
-    return user.id if user else None
-
-
-def _meals_on(db, user_id: int | None, day: date) -> list[Meal]:
-    if user_id is None:
+def _meals_on(db, user: User | None, day: date, zone: ZoneInfo) -> list[Meal]:
+    if user is None:
         return []
-    start, end = _day_bounds(day)
-    return crud_meal.get_user_meals_between(db, user_id, start, end)
+    start, end = _day_bounds(day, zone)
+    return crud_meal.get_user_meals_between(db, user.id, start, end)
 
 
 def open_view(db, telegram_id: int, tab: str = TODAY, now: datetime | None = None):
-    today = local_time(now or datetime.now(UTC)).date()
-    user_id = _user_id(db, telegram_id)
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    zone = user_zone(user)
+    today = local_time(now or datetime.now(UTC), zone).date()
     if tab == YESTERDAY:
         day = today - timedelta(days=1)
-        return day_screen(_meals_on(db, user_id, day), day, YESTERDAY)
+        return day_screen(_meals_on(db, user, day, zone), day, YESTERDAY, zone)
     if tab == WEEK:
         days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
-        return week_screen([(day, _meals_on(db, user_id, day)) for day in days])
-    return day_screen(_meals_on(db, user_id, today), today, TODAY)
+        return week_screen([(day, _meals_on(db, user, day, zone)) for day in days])
+    return day_screen(_meals_on(db, user, today, zone), today, TODAY, zone)
 
 
 def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None):
