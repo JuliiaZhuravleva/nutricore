@@ -51,7 +51,7 @@ and no medical logic or medical data storage lives in the bot.
 | 2 | [02-weight-and-settings.md](02-weight-and-settings.md) | Weight tracking + settings | 🟡 «⚖️ Мой вес»: typed weight + undo, last / change / 7-day average; «⚙️ Настройки» with the cost switch and the time zone (cities or UTC±). Goal, chart, other editable settings not started |
 | 3 | [03-retention.md](03-retention.md) | Reminders, streaks, weekly digest (streaks dropped by stage 5; digest → week card) | ⛔ not started |
 | 4 | [04-ai-coaching.md](04-ai-coaching.md) | "What to eat", insights, voice logging ("what to eat" → stage 5 next step) | ⛔ not started |
-| 5 | [05-gentle-review.md](05-gentle-review.md) | Day and week cards, numbers behind «🔢 Цифры», food groups, routine ticks, one next step | 📝 planned 2026-10-29; owner answers pending. **Revises** stage 1 (no "remaining"), 3 (no streaks), 4 (no "what to eat from the remaining macros") |
+| 5 | [05-gentle-review.md](05-gentle-review.md) | Day and week cards, numbers behind «🔢 Цифры», food groups, routine ticks, one next step | 📝 planned 2026-10-29; decisions recorded the same day ([05-gentle-review-decisions.md](05-gentle-review-decisions.md)). **Revises** stage 1 (no "remaining"), 3 (no streaks), 4 (no "what to eat from the remaining macros") |
 | 90 | [90-deferred-hub-integration.md](90-deferred-hub-integration.md) | my-health indicators in chat | 🧊 deferred |
 | — | [access-control.md](access-control.md) | Bot access modes (open/whitelist/closed) + whitelist | ✅ shipped (runtime `/mode` deferred) |
 
