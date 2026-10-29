@@ -175,8 +175,8 @@ The order below is the build order (G5-R16). Rough size is in "sessions" of focu
   ticks them for this export (default follows «🔢 Цифры»). Weight, routines and photos are separate opt-ins,
   off by default.
 - The same rules as the cards: no judgement, no "missed", empty days shown as plain dates.
-- Open before building: the format (a PDF a person reads, or also a table), and whether the specialist ever gets
-  a live link instead of a file (default: no, file only). Today's `/api/v1/meals/export` is a token-gated feed
+- Format (owner, 2026-10-30): both, a PDF a person reads and a table (CSV) to count in. Open before building:
+  whether the specialist ever gets a live link instead of a file (default: no, file only). Today's `/api/v1/meals/export` is a token-gated feed
   for my-health, not this.
 
 ## What this stage does not do

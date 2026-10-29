@@ -28,7 +28,7 @@ unanswered and the stated default applies.
 | G5-R18 | Up to 3–4 review agents before each release without asking; a cost line after each run | all |
 | G5-R19 | **All user-facing text is gender-neutral**: the project is open source and the bot is universal. «✅ Готово», never «✅ Сделала». Enforced by a test with a positive control | all |
 | G5-R20 | Ready-made and convenience food is first-class. Steps add to it; they never "fix" or replace it | F, H |
-| G5-R21 | Future: the user can export the food diary for a period as a file to hand to a psychologist or a nutritionist (owner, 2026-10-29). Format still open | I |
+| G5-R21 | Future: the user can export the food diary for a period as a file to hand to a psychologist or a nutritionist (owner, 2026-10-29). Format: both — a PDF a person reads and a table (CSV) to count in (owner, 2026-10-30) | I |
 
 ## Notes behind three answers
 
