@@ -6,6 +6,13 @@
 text-only or photo-only trackers. All of it stays in the **food/nutrition domain** on
 nutricore's own OpenAI; medical questions go to `/consult` (Stage 0), never here.
 
+## Revised by stage 5 (2026-10-29)
+
+§1 "what to eat from the remaining macro budget" is **replaced** by the one-next-step
+engine ([stage 5, slice F](05-gentle-review.md)): rule-based, additive, effort-sized, and
+never derived from a calorie or macro gap (G5-R03, R10). Insights and voice logging below
+are unaffected.
+
 ## Owner direction (2026-10-28)
 Later: consultations with a «нутрициолог» and a «психолог», reachable from ⚙️ Настройки.
 Open: where the «психолог» stops and the `/consult` medical boundary above begins.

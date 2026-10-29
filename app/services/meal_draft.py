@@ -7,6 +7,10 @@ on one of its inline buttons, and to read a typed weight.
 The draft remembers the analysis as it came (``base_nutrition`` at
 ``base_grams``) and every portion change rescales from that base, never from
 the previous change, so tapping sizes back and forth cannot drift the numbers.
+
+Calories and macros follow «🔢 Цифры» (stage 5, G5-R02): hidden unless ⚙️ shows
+them, and a tap on the draft's own «🔢 Цифры» opens them for this draft. The
+portion and its buttons stay either way — they are how a log is corrected.
 """
 
 import re
@@ -14,6 +18,8 @@ import secrets
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from app.services.numbers import toggle_label
 
 CALLBACK_PREFIX = "meal:"
 
@@ -36,6 +42,7 @@ ASK_GRAMS = "w"
 ASK_FOOD = "f"
 CANCEL = "x"
 SIZE = "p"
+NUMBERS = "n"
 
 _GRAMS_RE = re.compile(
     r"^\s*(?:≈|~)?\s*(\d+(?:[.,]\d+)?)\s*"
@@ -118,8 +125,12 @@ def start(
     per_100g: bool = False,
     chips: bool = False,
     basis: Optional[str] = None,
+    numbers: bool = False,
 ) -> dict:
-    """Stamp the view state onto a fresh draft (its nutrition already set)."""
+    """Stamp the view state onto a fresh draft (its nutrition already set).
+
+    ``numbers`` is the ⚙️ setting: True shows calories and macros with no button.
+    """
     nutrition = draft["nutrition"]
     draft.update(
         id=new_draft_id(),
@@ -136,8 +147,18 @@ def start(
         size="m" if chips and base_grams else None,
         grams_by_user=False,
         awaiting=None,
+        numbers=numbers,
+        numbers_setting=numbers,
     )
     return draft
+
+
+def toggle_numbers(draft: dict) -> bool:
+    """The draft's «🔢 Цифры»: open or close them. False if ⚙️ shows them anyway."""
+    if draft.get("numbers_setting"):
+        return False
+    draft["numbers"] = not draft.get("numbers")
+    return True
 
 
 def can_rescale(draft: dict) -> bool:
@@ -229,12 +250,17 @@ def text(draft: dict, footer: Optional[str] = None) -> str:
         parts.append(f"Источник: {draft['badge']}")
     parts.extend(draft.get("detail_lines") or [])
     parts.append(f"Продукты: {', '.join(nutrition.get('foods') or [])}")
-    parts.append(
-        f"Калории: {calories_text(nutrition.get('calories'), estimate=estimate)}"
-    )
-    parts.append(f"Белки: {macro_text(nutrition.get('protein'), estimate=estimate)}")
-    parts.append(f"Жиры: {macro_text(nutrition.get('fats'), estimate=estimate)}")
-    parts.append(f"Углеводы: {macro_text(nutrition.get('carbs'), estimate=estimate)}")
+    if draft.get("numbers"):
+        calories = calories_text(nutrition.get("calories"), estimate=estimate)
+        parts.append(f"Калории: {calories}")
+        for label, key in (
+            ("Белки", "protein"),
+            ("Жиры", "fats"),
+            ("Углеводы", "carbs"),
+        ):
+            parts.append(
+                f"{label}: {macro_text(nutrition.get(key), estimate=estimate)}"
+            )
     parts.append(_portion_line(draft))
     if draft.get("cost_line"):
         parts.append(draft["cost_line"])
@@ -296,7 +322,16 @@ def markup(draft: dict) -> InlineKeyboardMarkup:
             ),
         ]
     )
-    rows.append([InlineKeyboardButton("✖️ Отмена", callback_data=_cb(draft, CANCEL))])
+    last = [InlineKeyboardButton("✖️ Отмена", callback_data=_cb(draft, CANCEL))]
+    if not draft.get("numbers_setting"):
+        last.insert(
+            0,
+            InlineKeyboardButton(
+                toggle_label(bool(draft.get("numbers"))),
+                callback_data=_cb(draft, NUMBERS),
+            ),
+        )
+    rows.append(last)
     return InlineKeyboardMarkup(rows)
 
 

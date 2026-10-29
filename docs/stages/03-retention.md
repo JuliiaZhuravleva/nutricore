@@ -6,6 +6,13 @@ times).
 **Why:** a chat bot's structural advantage is native push into a conversation the user
 already has open. This is the cheapest, highest-leverage retention lever available.
 
+## Revised by stage 5 (2026-10-29)
+
+**No streaks** and no evening "streak-save" nudge (G5-R04): a missed day must not read as
+failure. The weekly digest becomes the week card, sent silently on Sunday at 22:00 in the
+user's time zone ([stage 5, slice E](05-gentle-review.md), G5-R15). Reminders stay
+optional and gentle. The streak parts below are kept as history only.
+
 ## Current state
 
 - Celery worker + Redis broker are configured (`celery_app/celery_app.py`), but there

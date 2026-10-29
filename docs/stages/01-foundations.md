@@ -5,6 +5,14 @@
 **Why first:** everything downstream (budgets, stats, retention digests, coaching)
 needs a stored daily target and meal aggregation, neither of which exists today.
 
+## Revised by stage 5 (2026-10-29)
+
+No calorie goal and no "remaining" anywhere (G5-R03): §4 "remaining-budget reply" and the
+"totals vs goal + remaining" part of §5 are **dropped**, and the goal steps below no longer
+apply. Moving towards target values goes through additive weekly anchors instead
+([stage 5, slice F](05-gentle-review.md)). Calories and macros on 📊 now wait behind
+«🔢 Цифры» unless ⚙️ shows them (G5-R01). Kept as history.
+
 ## Owner decision (2026-10-28) — monitor first, no goal wizard yet
 
 > «Пока просто мониторим; после сбора определённого количества данных исходить из

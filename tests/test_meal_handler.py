@@ -226,9 +226,11 @@ def test_photo_meal_flow(image_mock):
     assert meal["description"] == "banana, oatmeal"
     assert meal["photos"] == ["PHOTO_FILE_ID"]
 
-    # Reply shows parsed foods and calories (proves JSON parse + portion key).
+    # Reply shows parsed foods and portion (proves JSON parse + portion key);
+    # calories wait behind «🔢 Цифры» by default (stage 5, G5-R01).
     assert "banana, oatmeal" in message.replies[0]
-    assert "350" in message.replies[0]
+    assert "1 bowl (300g)" in message.replies[0]
+    assert "350" not in message.replies[0]
 
 
 def test_photo_meal_empty_foods_gets_fallback_description(image_mock):
@@ -261,7 +263,7 @@ def test_photo_meal_analysis_error_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
     assert "current_meal" in context.user_data  # nothing half-written into nutrition
     assert "nutrition" not in context.user_data["current_meal"]
 
@@ -274,7 +276,7 @@ def test_photo_meal_invalid_json_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
 
 
 # --- process_meal_input: text branch ---------------------------------------
@@ -314,7 +316,7 @@ def test_text_meal_analysis_error_falls_back(entry_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
 
 
 # --- confirm_meal ----------------------------------------------------------
@@ -392,7 +394,7 @@ def test_confirm_prompt_carries_inline_buttons(entry_mock):
     assert _button_rows(markup) == [
         ["✏️ Поправить вес", "✏️ Поправить продукт"],
         ["✅ Сохранить", "⭐ И в избранное"],
-        ["✖️ Отмена"],
+        ["🔢 Цифры", "✖️ Отмена"],
     ]
     draft_id = context.user_data["current_meal"]["id"]
     datas = [b.callback_data for row in markup.inline_keyboard for b in row]
@@ -488,7 +490,7 @@ def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
     assert meal["description"] == sent_text
     # meal_time (draft context) is preserved.
     assert context.user_data["meal_time"] == meal_time
-    assert _button_rows(message.reply_markups[-1])[-1] == ["✖️ Отмена"]
+    assert _button_rows(message.reply_markups[-1])[-1] == ["🔢 Цифры", "✖️ Отмена"]
 
 
 def test_correcting_a_photo_draft_reanalyzes_the_same_photo(image_mock):
@@ -576,7 +578,7 @@ def test_parse_nutrition_coerces_non_string_foods():
 
 
 def test_nutrition_reply_formats_all_fields():
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:")
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", numbers=True)
     assert reply.startswith("Заголовок:\n")
     assert "Продукты: banana, oatmeal" in reply
     # A text analysis is an estimate: a range, whole grams, no ".0".
@@ -720,7 +722,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
             "product_name": "Чипсы Pringles Original",
         },
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert reply.startswith("Заголовок:\n")
     assert "штрих-коду" in reply  # badge
     assert "4607195501226" in reply  # EAN
@@ -731,7 +733,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
 
 def test_nutrition_reply_vision_shows_source_badge():
     result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "фото" in reply
     assert "Продукты: banana, oatmeal" in reply
     assert reply.endswith("Всё верно? Сохрани или поправь кнопками ниже.")
@@ -743,7 +745,7 @@ def test_nutrition_reply_no_portion_shows_warning():
         portion_grams=None,
         signals={"barcode_raw": "999", "product_name": "Item"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "Порция: не определена — числа на 100г, поправь вес кнопкой" in reply
 
 
@@ -758,7 +760,7 @@ def test_nutrition_reply_shows_the_gram_basis_in_the_portion_line():
         portion_grams=150.0,
         signals={"barcode_raw": "4607195501226", "product_name": "Pringles"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "Порция: 1 bowl (300g), ≈ 150г (оценка по фото)" in reply
 
 
@@ -769,7 +771,7 @@ def test_nutrition_reply_zero_grams_is_per_100g_not_scaled():
         portion_grams=0.0,
         signals={"barcode_raw": "1234", "product_name": "Test"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "не определена — числа на 100г" in reply
     assert "оценка по фото" not in reply
 
@@ -783,7 +785,7 @@ def test_nutrition_reply_barcode_off_scaled_keeps_every_element():
             "product_name": "Чипсы Pringles Original",
         },
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "≈ 150г (оценка по фото)" in reply
     assert "штрих-коду" in reply  # badge
     assert "4607195501226" in reply  # EAN
@@ -1442,7 +1444,7 @@ def test_reply_renders_an_unknown_macro_as_a_dash():
     """OFF routinely lacks a macro; printing 0 stated a fact it never had."""
     nutrition = dict(_NUTRITION, protein=None)
 
-    reply = tg._nutrition_reply(nutrition, "Заголовок:")
+    reply = tg._nutrition_reply(nutrition, "Заголовок:", numbers=True)
 
     assert "Белки: —" in reply
     assert "Белки: —г" not in reply, "the unit was kept on the dash — reads as a number"
@@ -1460,7 +1462,7 @@ def test_reply_names_the_note_in_the_gram_basis_line():
         },
     )
 
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
 
     assert "оценка по фото и твоему описанию" in reply, (
         "the portion came from the user's own words but the reply still called "
@@ -1816,7 +1818,7 @@ def test_a_slow_failure_turns_the_loader_into_the_error(entry_mock, monkeypatch)
     assert state == tg.ADDING_MEAL
     assert message.replies == ["⏳ Считаю…"]
     ((text, _markup),) = message.screen
-    assert "не удалось проанализировать" in text
+    assert "Не получилось разобрать" in text
 
 
 def test_a_fast_answer_shows_no_loader(entry_mock, monkeypatch):
@@ -1907,7 +1909,7 @@ def test_a_failed_analysis_still_says_what_it_cost(patched_db, entry_mock, monke
     state, message, _ = _text_meal(monkeypatch, entry_mock, fails=True)
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
     assert message.replies[-1].endswith(_COST)
 
 
@@ -1947,7 +1949,7 @@ def test_text_meal_out_of_credit_tells_owner_where_to_pay(entry_mock, alerts):
     assert "У OpenAI закончился баланс или лимит трат" in reply
     assert "platform.openai.com" in reply
     assert "/reprocess" in reply  # the meal was saved as failed, it waits
-    assert "не удалось проанализировать" not in reply
+    assert "Не получилось разобрать" not in reply
     assert alerts == []  # the owner reads it right here
 
 

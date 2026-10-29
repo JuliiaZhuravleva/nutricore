@@ -23,6 +23,7 @@ from app.models.meal import Meal
 from app.models.user import User
 from app.services import favorites as fv
 from app.services import telegram as tg
+from app.services.numbers import SHOW_NUMBERS
 
 _NUTRITION = {
     "foods": ["savory pastry"],
@@ -47,8 +48,10 @@ def Session(monkeypatch):
     engine.dispose()
 
 
-def _user(db, telegram_id=42) -> User:
+def _user(db, telegram_id=42, numbers=False) -> User:
     user = User(telegram_id=telegram_id, username=f"u{telegram_id}")
+    if numbers:  # ⚙️ «🔢 Цифры» on: calories shown without a tap
+        user.settings = {SHOW_NUMBERS: True}
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -148,7 +151,7 @@ def test_empty_list_points_to_the_confirm_button(Session):
 
 def test_list_is_most_recent_first_and_pages_by_four(Session):
     with Session() as db:
-        user = _user(db)
+        user = _user(db, numbers=True)
         favs = [_fav(db, user, name=f"Блюдо {i}") for i in range(6)]
         base = datetime(2026, 10, 1, tzinfo=UTC)
         for i, f in enumerate(favs):
@@ -181,8 +184,14 @@ def test_list_is_most_recent_first_and_pages_by_four(Session):
 
 def test_single_page_has_no_pager(Session):
     with Session() as db:
-        _fav(db, _user(db))
+        _fav(db, _user(db, numbers=True))
         assert _labels(fv.open_list(db, 42).markup) == ["Самса веган · 420 ккал"]
+
+
+def test_list_names_dishes_only_while_numbers_are_off(Session):
+    with Session() as db:
+        _fav(db, _user(db))
+        assert _labels(fv.open_list(db, 42).markup) == ["Самса веган"]
 
 
 def test_list_shows_only_my_active_favorites(Session):
@@ -207,7 +216,7 @@ def test_names_are_html_escaped(Session):
 
 def test_open_shows_macros_and_four_plain_chips(Session):
     with Session() as db:
-        fav = _fav(db, _user(db))
+        fav = _fav(db, _user(db, numbers=True))
         screen = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1")
     assert "420 ккал · Б 12 · Ж 22.2 · У 42" in screen.text  # round(22.25, 1)
     assert _labels(screen.markup) == [
@@ -222,9 +231,29 @@ def test_open_shows_macros_and_four_plain_chips(Session):
     assert _callbacks(screen.markup)[4] == "fav:p:1"
 
 
+def test_numbers_off_keeps_macros_behind_a_button_that_flips(Session):
+    with Session() as db:
+        fav = _fav(db, _user(db))
+        hidden = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1")
+        assert "ккал" not in hidden.text and "Самса веган" in hidden.text
+        assert _labels(hidden.markup)[4:] == ["🔢 Цифры", "⬅️ Назад", "✖️ Убрать"]
+        assert _callbacks(hidden.markup)[4] == f"fav:o:{fav.id}:1:n"
+        assert len(hidden.markup.inline_keyboard) <= 4
+
+        shown = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1:n")
+        assert "420 ккал · Б 12 · Ж 22.2 · У 42" in shown.text
+        assert _labels(shown.markup)[4] == "✓ 🔢 Цифры"
+        assert _callbacks(shown.markup)[4] == f"fav:o:{fav.id}:1"
+
+        # Restoring a removed dish lands on its screen with numbers hidden again.
+        fv.handle_callback(db, 42, f"fav:r:{fav.id}:1")
+        back = fv.handle_callback(db, 42, f"fav:b:{fav.id}:1")
+        assert "ккал" not in back.text and "🔢 Цифры" in _labels(back.markup)
+
+
 def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
     with Session() as db:
-        user = _user(db)
+        user = _user(db, numbers=True)
         fav = _fav(db, user)
         meals_before = db.query(Meal).count()
 
@@ -252,6 +281,14 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         again = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert "уже отменена" in again.text
         assert db.query(Meal).count() == meals_before
+
+
+def test_logged_line_names_the_dish_only_while_numbers_are_off(Session):
+    with Session() as db:
+        fav = _fav(db, _user(db))
+        screen = fv.handle_callback(db, 42, f"fav:l:{fav.id}:l")
+    assert "Записано:</b> Самса веган\n" in screen.text
+    assert "ккал" not in screen.text
 
 
 def test_now_chip_stores_no_meal_type(Session):
@@ -427,7 +464,7 @@ def test_menu_button_sends_the_list(Session):
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>⭐ Избранное</b>")
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _labels(message.kwargs[-1]["reply_markup"]) == ["Самса веган · 420 ккал"]
+    assert _labels(message.kwargs[-1]["reply_markup"]) == ["Самса веган"]
 
 
 def _query(data, telegram_id=42, edit=None):

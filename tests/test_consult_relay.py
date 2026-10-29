@@ -310,7 +310,7 @@ def test_consult_rate_limited(enabled_relay, monkeypatch):
     update, message = _make_update()
     asyncio.run(tg.consult(update, _make_context(["вопрос"])))
 
-    assert message.replies == ["Слишком часто — подожди пару секунд."]
+    assert message.replies == ["Подожди пару секунд и спроси снова."]
     assert captured2 == {}
 
 
