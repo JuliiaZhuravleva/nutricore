@@ -24,6 +24,7 @@ from app.services import settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services import weight_screen as wt
+from app.services.numbers import SHOW_NUMBERS
 
 # Wed 28 Oct 2026, 12:00 in Tbilisi (UTC+4).
 NOW = datetime(2026, 10, 28, 8, 0, tzinfo=UTC)
@@ -44,8 +45,10 @@ def Session(monkeypatch):
     engine.dispose()
 
 
-def _user(db, telegram_id=42) -> User:
+def _user(db, telegram_id=42, numbers=False) -> User:
     user = User(telegram_id=telegram_id, username=f"u{telegram_id}")
+    if numbers:  # ⚙️ «🔢 Цифры» on: calories shown without a tap
+        user.settings = {SHOW_NUMBERS: True}
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -95,7 +98,7 @@ def _labels(markup) -> list[str]:
 
 def test_day_is_the_local_calendar_day_not_utc(Session):
     with Session() as db:
-        user = _user(db)
+        user = _user(db, numbers=True)
         # 01:30 on the 28th in Tbilisi, still the 27th in UTC: today.
         _meal(db, user, datetime(2026, 10, 27, 21, 30, tzinfo=UTC), 300, "сырники")
         # 23:30 on the 27th in Tbilisi: yesterday.
@@ -113,7 +116,7 @@ def test_day_is_the_local_calendar_day_not_utc(Session):
 
 def test_today_lists_meals_in_order_with_totals(Session):
     with Session() as db:
-        user = _user(db)
+        user = _user(db, numbers=True)
         _meal(db, user, NOW - timedelta(hours=1), 250.4, "<b>омлет</b>",
               proteins=20, fats=15.4, carbohydrates=2, meal_type="Завтрак")  # fmt: skip
         _meal(db, user, NOW - timedelta(hours=3), 1000, "кофе",
@@ -145,7 +148,7 @@ def test_unknown_user_gets_an_empty_day_not_an_error(Session):
 
 def test_only_my_meals_are_counted(Session):
     with Session() as db:
-        me, other = _user(db), _user(db, telegram_id=7)
+        me, other = _user(db, numbers=True), _user(db, telegram_id=7)
         _meal(db, me, NOW, 100, "мой")
         _meal(db, other, NOW, 900, "чужой")
         screen = st.open_view(db, 42, st.TODAY, NOW)
@@ -158,7 +161,7 @@ def test_only_my_meals_are_counted(Session):
 
 def test_week_has_seven_days_and_averages_over_logged_days(Session):
     with Session() as db:
-        user = _user(db)
+        user = _user(db, numbers=True)
         _meal(db, user, NOW, 2000)  # today
         _meal(db, user, NOW - timedelta(days=2), 1000)  # Mon 26
         _meal(db, user, NOW - timedelta(days=7), 5000)  # Wed 21: outside
@@ -345,9 +348,12 @@ def test_statistics_button_sends_today_with_tabs(Session):
     state, message = _run(tg.show_statistics, "📊 Статистика")
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>📊 Сегодня")
-    assert "321 ккал" in message.replies[-1]
+    assert "гречка" in message.replies[-1]
+    assert "ккал" not in message.replies[-1]  # behind «🔢 Цифры» by default
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _callbacks(message.kwargs[-1]["reply_markup"]) == ["st:t", "st:y", "st:w"]
+    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [
+        "st:t", "st:y", "st:w", "st:tn",
+    ]  # fmt: skip
 
 
 def test_weight_button_then_typed_weight_saves_with_undo(Session):
@@ -379,8 +385,13 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert message.replies[-1].startswith("<b>⚙️ Настройки</b>")
     assert "🕐 Часовой пояс: Тбилиси (UTC+4)" in message.replies[-1]
     markup = message.kwargs[-1]["reply_markup"]
-    assert _labels(markup) == ["🕐 Часовой пояс", "💸 Стоимость запросов: выкл"]
-    assert _callbacks(markup) == ["set:tz", "set:costs"]
+    assert _labels(markup) == [
+        "🕐 Часовой пояс",
+        "🔢 Цифры сразу: выкл",
+        "💸 Стоимость запросов: выкл",
+    ]
+    assert _callbacks(markup) == ["set:tz", "set:num", "set:costs"]
+    assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
 
 
 def _costs_shown(Session, telegram_id=42):
@@ -502,7 +513,7 @@ def test_statistics_days_follow_the_chosen_zone(Session):
         today = st.open_view(db, 42, st.TODAY, NOW)
         yesterday = st.open_view(db, 42, st.YESTERDAY, NOW)
     assert "блины" not in today.text
-    assert "23:30 · блины · 500 ккал" in yesterday.text
+    assert "23:30 · блины" in yesterday.text
 
 
 def test_weight_dates_follow_the_chosen_zone(Session):
@@ -700,7 +711,7 @@ def _text_update(text):
 
 
 _MENU = {
-    "🍽 Добавить прием пищи": "add_meal",
+    "🍽 Добавить приём пищи": "add_meal",
     "⭐ Избранное": "show_favorites",
     "📊 Статистика": "show_statistics",
     "⚖️ Мой вес": "show_weight",
@@ -762,7 +773,9 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
 
 def test_week_title_spans_a_month_boundary():
     days = [(date(2026, 10, 29) + timedelta(days=i), []) for i in range(7)]
-    assert st.week_screen(days).text.startswith("<b>📊 7 дней</b> · 29 окт – 4 ноя")
+    assert st.week_screen(days, UTC).text.startswith(
+        "<b>📊 7 дней</b> · 29 окт – 4 ноя"
+    )
 
 
 def _photo_update(caption=None):
@@ -807,7 +820,8 @@ def test_a_photo_outside_the_meal_steps_is_a_meal(conv, where, caption):
     [
         ("Отмена", "cancel"),  # not food: no paid analysis of the word
         ("📊 Статистика", "show_statistics"),
-        ("🍽 Добавить прием пищи", "add_meal"),
+        ("🍽 Добавить приём пищи", "add_meal"),
+        ("🍽 Добавить прием пищи", "add_meal"),  # a keyboard sent before the fix
         ("гречка 200 г", "process_meal_input"),  # no finding: food still goes on
     ],
 )
@@ -821,3 +835,82 @@ def test_meal_step_photo_still_goes_to_the_analysis(conv):
     conv, _handlers = conv
     found = _first_match_update(conv.states[tg.ADDING_MEAL], _photo_update("обед"))
     assert found is tg.process_meal_input
+
+
+# --- «🔢 Цифры» (stage 5, G5-R01/R02) ----------------------------------------
+
+
+def test_numbers_off_day_lists_meals_without_calories_and_offers_the_button(Session):
+    with Session() as db:
+        user = _user(db)
+        _meal(db, user, NOW - timedelta(hours=1), 250, "омлет", proteins=20)
+        screen = st.open_view(db, 42, st.TODAY, NOW)
+    assert "11:00 · омлет" in screen.text
+    for hidden in ("ккал", "Итого", "Б 20"):
+        assert hidden not in screen.text
+    assert _rows(screen.markup) == [["✓ Сегодня", "Вчера", "7 дней"], ["🔢 Цифры"]]
+    assert _callbacks(screen.markup)[-1] == "st:tn"
+
+
+def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
+    with Session() as db:
+        user = _user(db)
+        _meal(db, user, NOW - timedelta(hours=1), 250, "омлет")
+        opened = st.handle_callback(db, 42, "st:tn", NOW)
+        assert "11:00 · омлет · 250 ккал" in opened.text
+        assert "<b>🔥 Итого: 250 ккал</b>" in opened.text
+        assert _rows(opened.markup)[-1] == ["✓ 🔢 Цифры"]
+        assert _callbacks(opened.markup) == ["st:tn", "st:yn", "st:wn", "st:t"]
+
+        closed = st.handle_callback(db, 42, "st:t", NOW)
+        assert "ккал" not in closed.text
+
+
+def test_numbers_off_week_lists_logged_days_with_times_and_no_counts(Session):
+    with Session() as db:
+        user = _user(db)
+        _meal(db, user, NOW, 2000)
+        _meal(db, user, NOW - timedelta(hours=2), 300)
+        _meal(db, user, NOW - timedelta(days=2), 1000)
+        screen = st.open_view(db, 42, st.WEEK, NOW)
+    lines = screen.text.split("\n")
+    assert lines[2:] == ["пн 26.10 · 12:00", "ср 28.10 · 10:00, 12:00"]
+    for hidden in ("ккал", "▱", "—", "В среднем", "из 7", "запис"):
+        assert hidden not in screen.text  # an empty day is not a gap
+    assert _callbacks(screen.markup)[-1] == "st:wn"
+
+
+def test_numbers_off_empty_week_says_so_without_a_miss(Session):
+    with Session() as db:
+        _user(db)
+        screen = st.open_view(db, 42, st.WEEK, NOW)
+    assert screen.text.endswith("За неделю записей нет.")
+
+
+@pytest.mark.parametrize("data", ["st:tx", "st:q", "st:wnn", "st:"])
+def test_malformed_stats_data_falls_back_to_today(Session, data):
+    with Session() as db:
+        _user(db)
+        screen = st.handle_callback(db, 42, data, NOW)
+    assert screen.text.startswith("<b>📊 Сегодня")
+
+
+def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
+    with Session() as db:
+        user = _user(db)
+        user.settings = {"diet": "veg"}
+        db.commit()
+    on = _tap(Session, "set:num")
+    assert on.text.startswith("<i>✓ Цифры видны сразу</i>")
+    assert "🔢 Цифры сразу: вкл" in _labels(on.markup)
+    with Session() as db:
+        stored = db.query(User).filter(User.telegram_id == 42).one().settings
+        assert stored == {"diet": "veg", SHOW_NUMBERS: True}
+        _meal(db, db.query(User).one(), NOW, 400)
+        day = st.open_view(db, 42, st.TODAY, NOW)
+    assert "400 ккал" in day.text
+    assert _rows(day.markup) == [["✓ Сегодня", "Вчера", "7 дней"]]  # no button
+
+    off = _tap(Session, "set:num")
+    assert off.text.startswith("<i>✓ Цифры теперь за кнопкой</i>")
+    assert "🔢 Цифры сразу: выкл" in _labels(off.markup)

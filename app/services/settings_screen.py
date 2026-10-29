@@ -1,8 +1,9 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
-    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, goal, the cost line
-    [🕐 Часовой пояс] [💸 Стоимость запросов: выкл]
+    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, the cost line
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
+    🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
       a city → <i>✓ Часовой пояс: Москва (UTC+3)</i> on top of ⚙️ Настройки
 
@@ -25,6 +26,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from app.core.config import settings
 from app.models.user import User
 from app.services.favorites import Screen
+from app.services.numbers import SHOW_NUMBERS, shows_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ CALLBACK_PREFIX = "set:"
 SHOW_COSTS = "show_costs"  # the 💸 line under each analysis
 TIMEZONE = "timezone"  # an IANA name; days in 📊 and dates in ⚖️ follow it
 _COSTS_CB = CALLBACK_PREFIX + "costs"
+_NUMBERS_CB = CALLBACK_PREFIX + "num"
 _ZONES_CB = CALLBACK_PREFIX + "tz"
 _PICK = _ZONES_CB + ":"  # + the zone's IANA name
 _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
@@ -111,19 +114,27 @@ def _btn(text: str, data: str) -> InlineKeyboardButton:
 # --- screens ----------------------------------------------------------------
 
 
-def screen(on: bool, zone: str, now: datetime, notice: str | None = None) -> Screen:
+def screen(
+    on: bool,
+    zone: str,
+    now: datetime,
+    notice: str | None = None,
+    numbers: bool = False,
+) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
         "<b>⚙️ Настройки</b>",
         "",
         f"🕐 Часовой пояс: {zone_label(zone, now)} — по нему "
         "📊 Статистика делит дни.",
-        "🎯 Цель по калориям: не задана.",
+        "🔢 Калории и БЖУ: "
+        + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
         f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
         "под каждым разбором еды.",
     ]
     rows = [
         [_btn("🕐 Часовой пояс", _ZONES_CB)],
+        [_btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
         [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
@@ -195,7 +206,9 @@ def open_view(
 ) -> Screen:
     user = _user(db, telegram_id)
     on = bool(user and (user.settings or {}).get(SHOW_COSTS))
-    return screen(on, zone_name(user), now or datetime.now(UTC), notice)
+    return screen(
+        on, zone_name(user), now or datetime.now(UTC), notice, shows_numbers(user)
+    )
 
 
 def _save(db, telegram_id: int, **values) -> None:
@@ -218,6 +231,11 @@ def handle_callback(
         notice = (
             "✓ Стоимость запросов включена" if on else "✓ Стоимость запросов скрыта"
         )
+        return open_view(db, telegram_id, notice, now)
+    if data == _NUMBERS_CB:
+        on = not shows_numbers(_user(db, telegram_id))
+        _save(db, telegram_id, **{SHOW_NUMBERS: on})
+        notice = "✓ Цифры видны сразу" if on else "✓ Цифры теперь за кнопкой"
         return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:

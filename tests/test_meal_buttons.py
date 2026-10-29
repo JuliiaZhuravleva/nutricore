@@ -84,6 +84,7 @@ def _draft():
         base_grams=100.0,
         chips=True,
         basis="оценка по фото",
+        numbers=True,
     )
     draft.update(chat_id=42, msg_id=7)
     return draft
@@ -194,7 +195,7 @@ def test_a_weight_that_was_asked_for_but_unreadable_asks_again():
     state, message = _type(context, "много")
 
     assert state == tg.CONFIRMING_MEAL
-    assert "Не понял вес" in message.replies[-1]
+    assert "Вес не распознан" in message.replies[-1]
     assert draft["nutrition"] == _NUTRITION
 
 
@@ -254,7 +255,7 @@ def test_save_button_saves_what_is_on_screen(Session, celery_delay):
     # The settled draft keeps its text, loses its buttons.
     assert query.edit_message_text.call_args.args[0].endswith("✅ Сохранено")
     assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
-    assert "сохранен" in query.message.replies[-1]
+    assert "✅ Записано" in query.message.replies[-1]
     assert query.message.markups[-1] is tg.main_keyboard
     # TD-025: the call site still enqueues the personal-food save, and with a
     # gram basis that matches the saved numbers (350 ккал at 140 г = 250/100 г).
@@ -351,3 +352,44 @@ def test_the_buttons_are_wired_to_the_confirm_step_and_globally(monkeypatch):
         if isinstance(h, CallbackQueryHandler) and h.callback is tg.meal_stale_callback
     ]
     assert stale.pattern.match("meal:abc123:s")
+
+
+def _hidden_draft():
+    draft = _draft()
+    draft["numbers"] = draft["numbers_setting"] = False
+    return draft
+
+
+def test_numbers_off_draft_hides_calories_but_keeps_the_portion():
+    draft = _hidden_draft()
+    text = md.text(draft)
+    assert "Калории" not in text and "Белки" not in text
+    assert "Порция:" in text  # grams still correct a log
+    rows = md.markup(draft).inline_keyboard
+    assert [b.text for b in rows[-1]] == ["🔢 Цифры", "✖️ Отмена"]
+    assert len(rows) <= 4
+
+
+def test_numbers_button_opens_them_in_place_and_closes_again():
+    draft = _hidden_draft()
+    context = _context(draft)
+
+    state, query = _tap(context, _cb(draft, md.NUMBERS))
+    assert state is None
+    text = query.edit_message_text.call_args.args[0]
+    assert "Калории: ≈ " in text
+    markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[-1][0].text == "✓ 🔢 Цифры"
+
+    _state, query = _tap(context, _cb(draft, md.NUMBERS))
+    assert "Калории" not in query.edit_message_text.call_args.args[0]
+
+
+def test_numbers_setting_on_means_no_button_and_a_stale_tap_changes_nothing():
+    draft = _draft()  # numbers=True: the ⚙️ switch is on
+    assert [b.text for b in md.markup(draft).inline_keyboard[-1]] == ["✖️ Отмена"]
+    context = _context(draft)
+    _state, query = _tap(context, _cb(draft, md.NUMBERS))
+    query.answer.assert_awaited_once_with()
+    query.edit_message_text.assert_not_awaited()
+    assert draft["numbers"] is True

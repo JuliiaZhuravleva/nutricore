@@ -233,7 +233,7 @@ def test_schedule_skips_when_there_is_no_per_100g_basis(caplog):
 
     Until 2026-09-13 this path used factor=1.0: the 97 kcal of "половина тарелки"
     were stored as 97 kcal *per 100g* and then served back by SavedFoodRAGStrategy
-    under the "⭐ из вашей базы" badge, which carries no "проверь" qualifier. The
+    under the "⭐ из твоей базы" badge, which carries no "проверь" qualifier. The
     wrong number outlived the meal that produced it.
     """
     delay_mock = MagicMock()

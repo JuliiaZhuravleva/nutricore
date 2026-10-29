@@ -1078,7 +1078,7 @@ def _has_usable_macros(pf: PersonalFood) -> bool:
     """True when a saved row is worth serving (see ``has_usable_macros``).
 
     Without calories the row would be served as a confident "0 ккал" under the
-    "⭐ из вашей базы" badge, which carries no "проверь" qualifier.
+    "⭐ из твоей базы" badge, which carries no "проверь" qualifier.
     """
     return has_usable_macros(pf.per_100g_calories)
 

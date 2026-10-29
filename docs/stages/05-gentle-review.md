@@ -7,7 +7,7 @@ next step, reliable foods, the cooking ladder.
 eating-disorder safety, picky eating, cooking) and [`vegan-slices-evidence.md`](../researches/vegan-slices-evidence.md)
 (which nutrition signals are valid and robust). Scoping: [`review-cards-scoping.md`](../researches/review-cards-scoping.md).
 **Status:** 📝 planned 2026-10-29; owner decisions taken the same day:
-[`05-gentle-review-decisions.md`](05-gentle-review-decisions.md) (requirements G5-R01…R20, cited below).
+[`05-gentle-review-decisions.md`](05-gentle-review-decisions.md) (requirements G5-R01…R21, cited below).
 
 ## Why this stage, and why it changes stages 1, 3 and 4
 
@@ -166,6 +166,18 @@ The order below is the build order (G5-R16). Rough size is in "sessions" of focu
 - Every experiment names its fallback («если не зайдёт — обычная еда, ничего компенсировать не нужно»).
 - A new food is a teaspoon beside a safe meal, never the whole dinner, and at most one new food a week.
   "Didn't like it" is logged as information.
+
+### I. Diary export for a specialist (future, G5-R21; ≈1–2 sessions)
+
+- «📤 Выгрузить дневник» (in ⚙️ or 📊): the user picks a period (a week, two weeks, a month) and gets a file in
+  the chat to forward to a psychologist or a nutritionist. The bot itself sends nothing to anyone else.
+- Per day: meal times, what was eaten (the user's own names), meal type. Calories and macros only if the user
+  ticks them for this export (default follows «🔢 Цифры»). Weight, routines and photos are separate opt-ins,
+  off by default.
+- The same rules as the cards: no judgement, no "missed", empty days shown as plain dates.
+- Open before building: the format (a PDF a person reads, or also a table), and whether the specialist ever gets
+  a live link instead of a file (default: no, file only). Today's `/api/v1/meals/export` is a token-gated feed
+  for my-health, not this.
 
 ## What this stage does not do
 

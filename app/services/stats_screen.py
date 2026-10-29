@@ -2,9 +2,12 @@
 
     📊 Статистика → <b>📊 Сегодня, вт 28 окт</b> — the meals, then the totals
     [✓ Сегодня] [Вчера] [7 дней]
+    [🔢 Цифры]
 
-The numbers are the saved meals' own, summed — no goal yet (Stage 1 adds one).
-Days are the user's calendar days (their ⚙️ time zone), not UTC. Every tab
+The numbers are the saved meals' own, summed, and there is no goal (stage 5,
+G5-R03). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01): the screen
+lists what was eaten and when. Days are the user's calendar days (their ⚙️
+time zone), not UTC. Every tab
 edits the same message; the callback data carries the whole view, so a tap
 works after a restart too. Telegram-free apart from the keyboard, like
 ``favorites``.
@@ -24,6 +27,7 @@ from app.models.meal import Meal
 from app.models.user import User
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
+from app.services.numbers import shows_numbers, toggle_label
 from app.services.settings_screen import user_zone
 
 logger = logging.getLogger(__name__)
@@ -34,6 +38,7 @@ NAME_MAX = 32
 BAR_WIDTH = 8
 
 TODAY, YESTERDAY, WEEK = "t", "y", "w"
+OPEN = "n"  # appended to a tab: the numbers are open on it
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
 
 _WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
@@ -94,24 +99,48 @@ def _meal_name(meal: Meal) -> str:
     return name
 
 
-def _tabs(current: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def _tabs(current: str, opened: bool | None = None) -> InlineKeyboardMarkup:
+    """The tabs; ``opened`` is None when ⚙️ shows the numbers anyway (no button),
+    else whether «🔢 Цифры» is open on this view. An open view stays open
+    across the tabs."""
+    keep = OPEN if opened else ""
+    rows = [
         [
+            InlineKeyboardButton(
+                ("✓ " if code == current else "") + label,
+                callback_data=CALLBACK_PREFIX + code + keep,
+            )
+            for code, label in _TABS
+        ]
+    ]
+    if opened is not None:
+        flip = "" if opened else OPEN
+        rows.append(
             [
                 InlineKeyboardButton(
-                    ("✓ " if code == current else "") + label,
-                    callback_data=CALLBACK_PREFIX + code,
+                    toggle_label(opened), callback_data=CALLBACK_PREFIX + current + flip
                 )
-                for code, label in _TABS
             ]
-        ]
-    )
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def _when(meal: Meal, zone: ZoneInfo) -> str:
+    return local_time(meal.meal_time, zone).strftime("%H:%M") if meal.meal_time else "—"
 
 
 # --- screens ----------------------------------------------------------------
 
 
-def day_screen(meals: list[Meal], day: date, tab: str, zone: ZoneInfo) -> Screen:
+def day_screen(
+    meals: list[Meal],
+    day: date,
+    tab: str,
+    zone: ZoneInfo,
+    opened: bool | None = None,
+) -> Screen:
+    """``opened``: see ``_tabs``; the numbers show unless it is False."""
+    numbers = opened is not False
     head = "Сегодня" if tab == TODAY else "Вчера"
     lines = [f"<b>📊 {head}, {day_title(day)}</b>", ""]
     if not meals:
@@ -119,34 +148,43 @@ def day_screen(meals: list[Meal], day: date, tab: str, zone: ZoneInfo) -> Screen
             "Записей нет. Еда попадает сюда после «✅ Сохранить» "
             "или из ⭐ Избранного."
         )
-        return Screen("\n".join(lines), _tabs(tab))
+        return Screen("\n".join(lines), _tabs(tab, opened))
     for meal in meals:
-        when = (
-            local_time(meal.meal_time, zone).strftime("%H:%M")
-            if meal.meal_time
-            else "—"
-        )
+        when = _when(meal, zone)
         label = f" · {meal.meal_type}" if meal.meal_type else ""
-        lines.append(
-            f"{when}{label} · {html.escape(_meal_name(meal))} · "
-            f"{_kcal(_sum([meal], 'calories'))}"
-        )
-    lines += [
-        "",
-        f"<b>🔥 Итого: {_kcal(_sum(meals, 'calories'))}</b>",
-        _macros(meals),
-    ]
-    return Screen("\n".join(lines), _tabs(tab))
+        kcal = f" · {_kcal(_sum([meal], 'calories'))}" if numbers else ""
+        lines.append(f"{when}{label} · {html.escape(_meal_name(meal))}{kcal}")
+    if numbers:
+        lines += [
+            "",
+            f"<b>🔥 Итого: {_kcal(_sum(meals, 'calories'))}</b>",
+            _macros(meals),
+        ]
+    return Screen("\n".join(lines), _tabs(tab, opened))
 
 
-def week_screen(days: list[tuple[date, list[Meal]]]) -> Screen:
-    """``days`` oldest first, today last."""
+def week_screen(
+    days: list[tuple[date, list[Meal]]],
+    zone: ZoneInfo,
+    opened: bool | None = None,
+) -> Screen:
+    """``days`` oldest first, today last. Without the numbers it lists only the
+    days that have records, each with its meal times: an empty day is not shown
+    as a gap, and no count invites comparing one week's logging with another's."""
     first, last = days[0][0], days[-1][0]
     lines = [
         f"<b>📊 {WEEK_DAYS} дней</b> · {first.day} {_MONTHS[first.month - 1]} – "
         f"{last.day} {_MONTHS[last.month - 1]}",
         "",
     ]
+    if opened is False:
+        logged_days = [(day, meals) for day, meals in days if meals]
+        for day, meals in logged_days:
+            title = f"{_WEEKDAYS[day.weekday()]} {day.day:02d}.{day.month:02d}"
+            lines.append(f"{title} · {', '.join(_when(m, zone) for m in meals)}")
+        if not logged_days:
+            lines.append("За неделю записей нет.")
+        return Screen("\n".join(lines), _tabs(WEEK, opened))
     totals = [_sum(meals, "calories") for _day, meals in days]
     top = max(totals) or 1.0
     for (day, meals), total in zip(days, totals):
@@ -169,7 +207,7 @@ def week_screen(days: list[tuple[date, list[Meal]]]) -> Screen:
             _macros(everything, len(logged)),
             f"<i>Среднее по {len(logged)} дн. с записями из {WEEK_DAYS}.</i>",
         ]
-    return Screen("\n".join(lines), _tabs(WEEK))
+    return Screen("\n".join(lines), _tabs(WEEK, opened))
 
 
 # --- operations -------------------------------------------------------------
@@ -182,22 +220,32 @@ def _meals_on(db, user: User | None, day: date, zone: ZoneInfo) -> list[Meal]:
     return crud_meal.get_user_meals_between(db, user.id, start, end)
 
 
-def open_view(db, telegram_id: int, tab: str = TODAY, now: datetime | None = None):
+def open_view(
+    db,
+    telegram_id: int,
+    tab: str = TODAY,
+    now: datetime | None = None,
+    opened: bool = False,
+):
     user = db.query(User).filter(User.telegram_id == telegram_id).first()
     zone = user_zone(user)
     today = local_time(now or datetime.now(UTC), zone).date()
+    shown = None if shows_numbers(user) else opened
     if tab == YESTERDAY:
         day = today - timedelta(days=1)
-        return day_screen(_meals_on(db, user, day, zone), day, YESTERDAY, zone)
+        return day_screen(_meals_on(db, user, day, zone), day, YESTERDAY, zone, shown)
     if tab == WEEK:
         days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
-        return week_screen([(day, _meals_on(db, user, day, zone)) for day in days])
-    return day_screen(_meals_on(db, user, today, zone), today, TODAY, zone)
+        return week_screen(
+            [(day, _meals_on(db, user, day, zone)) for day in days], zone, shown
+        )
+    return day_screen(_meals_on(db, user, today, zone), today, TODAY, zone, shown)
 
 
 def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None):
-    tab = data[len(CALLBACK_PREFIX) :]
-    if tab not in dict(_TABS):
+    view = data[len(CALLBACK_PREFIX) :]
+    tab, opened = view[:1], view[1:] == OPEN
+    if tab not in dict(_TABS) or view[1:] not in ("", OPEN):
         logger.warning("stats: unknown callback data %r", data)
-        tab = TODAY
-    return open_view(db, telegram_id, tab, now)
+        tab, opened = TODAY, False
+    return open_view(db, telegram_id, tab, now, opened)

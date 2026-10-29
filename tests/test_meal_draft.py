@@ -161,10 +161,26 @@ def test_portion_line_names_the_models_words_and_the_basis():
 
 
 def test_per_100g_draft_says_so_next_to_the_fix():
-    draft = _photo_draft(per_100g=True, chips=False, basis=None)
+    draft = _photo_draft(per_100g=True, chips=False, basis=None, numbers=True)
     assert "Порция: не определена — числа на 100г, поправь вес кнопкой" in md.text(
         draft
     )
+
+
+def test_hidden_numbers_hide_what_is_said_about_them():
+    draft = _photo_draft(
+        per_100g=True,
+        chips=False,
+        basis=None,
+        number_notes=["⚠️ в базе нет: белки — впиши при подтверждении"],
+    )
+    hidden = md.text(draft)
+    assert "Порция: не определена — поправь вес кнопкой" in hidden
+    assert "100г" not in hidden and "⚠️" not in hidden
+    md.toggle_numbers(draft)
+    opened = md.text(draft)
+    assert "числа на 100г" in opened
+    assert opened.index("Углеводы:") < opened.index("⚠️ в базе нет: белки")
 
 
 def test_the_closing_line_follows_what_the_draft_waits_for():

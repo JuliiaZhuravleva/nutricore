@@ -40,6 +40,7 @@ from app.services.model_selection import (
     persist_task_model,
 )
 from app.services.model_watch import render_status, run_model_watch
+from app.services.numbers import shows_numbers_for
 from app.services.openai_service import ModelUnavailableError, get_openai_service
 from app.services.product_lookup_service import (
     ResolutionResult,
@@ -94,7 +95,7 @@ subscription_keyboard = ReplyKeyboardMarkup(
 
 main_keyboard = ReplyKeyboardMarkup(
     [
-        ["🍽 Добавить прием пищи", "⭐ Избранное"],
+        ["🍽 Добавить приём пищи", "⭐ Избранное"],
         ["📊 Статистика", "⚖️ Мой вес"],
         ["⚙️ Настройки"],
     ],
@@ -215,7 +216,7 @@ def subscription_required(func):
                 "• Узнать о возможностях бота\n"
                 "• Связаться с администратором\n"
                 "• Получить подписку\n\n"
-                "Нажмите кнопку 'Получить подписку' чтобы узнать больше!"
+                "Подробнее — кнопка «💎 Получить подписку»."
             )
             await update.message.reply_text(text, reply_markup=subscription_keyboard)
             return SUBSCRIPTION_INQUIRY
@@ -228,17 +229,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     if not await check_subscription(update.effective_user.id):
         text = (
-            "👋 Привет! Я NutriCore бот - ваш персональный помощник в отслеживании питания и здоровья!\n\n"
+            "👋 Привет! Я NutriCore — дневник питания и здоровья.\n\n"
             "🤖 Что я умею:\n"
-            "• Анализировать приемы пищи с помощью AI\n"
-            "• Отслеживать калории и нутриенты\n"
+            "• Разбирать еду по фото и описанию с помощью AI\n"
             "• Вести вес и статистику по дням\n\n"
             "💎 Для доступа к этим функциям нужна подписка."
         )
         await update.message.reply_text(text, reply_markup=subscription_keyboard)
         return SUBSCRIPTION_INQUIRY
     else:
-        text = "✅ У вас активная подписка! Выберите действие:"
+        text = "✅ Подписка активна. Что делаем?"
         await update.message.reply_text(text, reply_markup=main_keyboard)
         return CHOOSING_ACTION
 
@@ -254,7 +254,7 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # attached to the NEXT meal (which may well be a different one).
     context.user_data.pop("meal_type", None)
     await update.message.reply_text(
-        "Когда был прием пищи?",
+        "Когда был приём пищи?",
         reply_markup=time_keyboard,
     )
     return ADDING_MEAL_TIME
@@ -267,7 +267,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if text == "Назад":
         await update.message.reply_text(
-            "Выберите действие:",
+            "Что делаем?",
             reply_markup=main_keyboard,
         )
         return CHOOSING_ACTION
@@ -282,7 +282,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # This handler is AUTHORITATIVE for both keys: it overwrites meal_type on
     # every answer, including clearing it for "Сейчас". Clearing it only in
     # add_meal covered one of the two ways back to this step — the bot's own
-    # retry ("Нет" → "Когда был прием пищи?") re-enters here directly, so a
+    # retry ("Нет" → "Когда был приём пищи?") re-enters here directly, so a
     # declined label survived and was written to the next meal.
     context.user_data["meal_time"] = datetime.now(UTC)
     label = _meal_type_label(text)
@@ -292,7 +292,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["meal_type"] = label
 
     await update.message.reply_text(
-        "Отлично! Теперь опиши, что ты ел(а), или отправь фото.\n\n"
+        "Теперь опиши еду или отправь фото.\n\n"
         "Можешь также отправить и то, и другое.",
         reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True),
     )
@@ -303,7 +303,7 @@ async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def quick_meal_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """A photo sent outside the meal steps is a meal eaten now.
 
-    The same analysis as «🍽 Добавить прием пищи» → «Сейчас» → the photo, minus
+    The same analysis as «🍽 Добавить приём пищи» → «Сейчас» → the photo, minus
     the two taps: before this the photo matched no handler and was dropped
     without a word. Starts clean like ``add_meal``.
     """
@@ -389,7 +389,7 @@ def _schedule_personal_food_save(
         else:
             # The old code used factor=1.0 here, which stored the macros of a WHOLE
             # portion in the per_100g_* columns. Those rows are then served back by
-            # SavedFoodRAGStrategy at medium confidence under "⭐ из вашей базы" —
+            # SavedFoodRAGStrategy at medium confidence under "⭐ из твоей базы" —
             # a wrong number that outlives the meal that created it. Learn nothing
             # rather than learn a lie.
             logger.warning(
@@ -467,7 +467,7 @@ def _source_badge(result: ResolutionResult | None) -> str:
     if result is None:
         return ""
     if result.source == "saved_rag":
-        return "⭐ из вашей базы"
+        return "⭐ из твоей базы"
     if result.source == "barcode_off":
         # The tier is downgraded when OFF is missing macros for this product. The
         # badge has to follow, otherwise the downgrade exists only in the DB and
@@ -539,7 +539,10 @@ def _resolution_detail_lines(result: ResolutionResult | None) -> list:
 
 
 def _start_draft(
-    draft: dict, header: str, resolution_result: ResolutionResult | None
+    draft: dict,
+    header: str,
+    resolution_result: ResolutionResult | None,
+    numbers: bool = False,
 ) -> dict:
     """Stamp the confirm view onto a fresh draft: badge, details, gram basis.
 
@@ -558,6 +561,7 @@ def _start_draft(
             detail_lines=[],
             estimate=True,
             base_grams=_parse_portion_grams(nutrition),
+            numbers=numbers,
         )
     grams = resolution_result.portion_grams
     estimated = grams is not None and grams > 0
@@ -576,27 +580,37 @@ def _start_draft(
             if signals.get("portion_source") == "vision+note"
             else "оценка по фото"
         )
+    # The ⚠️ lines are caveats about the numbers: hidden numbers hide them too.
+    details = _resolution_detail_lines(resolution_result)
     return meal_draft.start(
         draft,
         header=header,
         badge=_source_badge(resolution_result),
-        detail_lines=_resolution_detail_lines(resolution_result),
+        detail_lines=[line for line in details if not line.startswith("⚠️")],
+        number_notes=[line for line in details if line.startswith("⚠️")],
         estimate=resolution_result.confidence_tier != "high",
         base_grams=base,
         per_100g=per_100g,
         chips=estimated,
         basis=basis,
+        numbers=numbers,
     )
 
 
-def _nutrition_reply(data, header, resolution_result: ResolutionResult | None = None):
+def _nutrition_reply(
+    data,
+    header,
+    resolution_result: ResolutionResult | None = None,
+    numbers: bool = False,
+):
     """The confirm message for freshly analyzed ``data`` (no buttons pressed).
 
     ``resolution_result`` is provided for image inputs so the reply can surface
     the source/confidence badge and key intermediate values (EAN, product name,
     gram basis). Text inputs pass ``None``.
     """
-    return meal_draft.text(_start_draft({"nutrition": data}, header, resolution_result))
+    draft = _start_draft({"nutrition": data}, header, resolution_result, numbers)
+    return meal_draft.text(draft)
 
 
 async def _analyze_and_parse(
@@ -634,10 +648,11 @@ async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
     try:
         with SessionLocal() as db:
             show_cost = settings_screen.shows_costs(db, update.effective_user.id)
+            show_numbers = shows_numbers_for(db, update.effective_user.id)
     except Exception as e:
         # A display preference must not stop the analysis itself.
-        logger.warning("Could not read the cost setting: %s", e)
-        show_cost = False
+        logger.warning("Could not read the display settings: %s", e, exc_info=True)
+        show_cost = show_numbers = False
     with metering() as meter:
         async with Loader(update.message, text) as loader:
             return await _analyze_meal(
@@ -646,6 +661,7 @@ async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
                 loader,
                 meter if show_cost else None,
                 kind=kind,
+                numbers=show_numbers,
                 **kw,
             )
 
@@ -679,7 +695,7 @@ async def _out_of_credit_text(update: Update, err, *, saved: int | None) -> str:
     ):
         _credit_alerted[provider] = now
         told = True
-    owner = " — владелец бота уже получил уведомление" if told else ""
+    owner = " — владельцу бота уже пришло уведомление" if told else ""
     return f"💳 Распознавание еды временно недоступно{owner}. Попробуй позже."
 
 
@@ -694,6 +710,7 @@ async def _analyze_meal(
     payload: str,
     inbound_id: int | None = None,
     caption: str | None = None,
+    numbers: bool = False,
 ) -> int:
     """Analyze one meal input (image data URL or text), reply, and stage the draft.
 
@@ -754,10 +771,7 @@ async def _analyze_meal(
                 "⏳ ИИ сейчас перегружен запросами. Подожди минуту и отправь ещё раз."
             )
         else:
-            text = (
-                "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё "
-                "раз или опишите приём пищи иначе."
-            )
+            text = "Не получилось разобрать. Попробуй ещё раз или опиши еду иначе."
         await loader.reply(text + cost)
         return ADDING_MEAL
 
@@ -784,14 +798,14 @@ async def _analyze_meal(
             # The owner's own words name a favorite better than the food list.
             "caption": caption,
         }
-        header = "Я проанализировал фото. Вот что я нашел:"
+        header = "Разбор фото:"
     else:
         draft = {"nutrition": nutrition_info, "description": payload}
-        header = "Я проанализировал ваш приём пищи. Вот что получилось:"
+        header = "Разбор приёма пищи:"
 
     if meter:
         draft["cost_line"] = meter.line()
-    _start_draft(draft, header, resolution_result)
+    _start_draft(draft, header, resolution_result, numbers)
     try:
         sent = await loader.reply(
             meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
@@ -801,8 +815,7 @@ async def _analyze_meal(
         # atomic (don't commit) and ask the owner to send the meal again.
         logger.error("Error sending meal confirmation (%s): %s", kind, e, exc_info=True)
         await update.message.reply_text(
-            "Извините, не удалось проанализировать. Пожалуйста, попробуйте ещё раз "
-            "или опишите приём пищи иначе."
+            "Не получилось разобрать. Попробуй ещё раз или опиши еду иначе."
         )
         return ADDING_MEAL
 
@@ -882,7 +895,7 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.error("Error fetching photo: %s", e, exc_info=True)
             inbound_msg.mark_failed(inbound_id, f"photo fetch failed: {e}")
             await update.message.reply_text(
-                "Не удалось загрузить фото. Пожалуйста, опишите приём пищи текстом."
+                "Не удалось загрузить фото. Опиши еду текстом."
             )
             return ADDING_MEAL
         payload = _image_data_url(image_bytes)
@@ -924,7 +937,7 @@ async def _offer_model_choice(
     user = update.effective_user
     if user is None or user.id not in settings.admin_ids:
         await update.message.reply_text(
-            "Распознавание сейчас недоступно — владелец бота уже получил "
+            "Распознавание сейчас недоступно — владельцу бота уже пришло "
             "уведомление. Попробуй позже.",
             reply_markup=main_keyboard,
         )
@@ -1034,7 +1047,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             return await _resend_draft(update, context, draft)
         if awaiting == "grams":
             await update.message.reply_text(
-                "Не понял вес — напиши число граммов, например 150."
+                "Вес не распознан — напиши число граммов, например 150."
             )
             return CONFIRMING_MEAL
 
@@ -1066,7 +1079,7 @@ async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await _strip_draft_buttons(context, draft)
     context.user_data["current_meal"] = {}
     await update.message.reply_text(
-        "Давай попробуем ещё раз. Когда был прием пищи?",
+        "Давай попробуем ещё раз. Когда был приём пищи?",
         reply_markup=time_keyboard,
     )
     return ADDING_MEAL_TIME
@@ -1149,7 +1162,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
         meal_in = MealCreate(
             description=draft.get("description"),
             meal_time=user_data.get("meal_time", datetime.now(UTC)),
-            # The answer to "Когда был прием пищи?" — collected since the
+            # The answer to "Когда был приём пищи?" — collected since the
             # first version, stored since 2026-09-13.
             meal_type=user_data.get("meal_type"),
             calories=nutrition.get("calories"),
@@ -1186,7 +1199,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
             resolution_source=draft.get("resolution_source"),
         )
 
-        text = "Прием пищи сохранен! 👍"
+        text = "✅ Записано"
         if favorite:
             text += "\n" + _save_favorite(saved_meal_id, draft)
         await reply(text, reply_markup=main_keyboard)
@@ -1194,7 +1207,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
     except Exception as e:
         logger.error(f"Error saving meal: {e}", exc_info=True)
         await reply(
-            "Извините, произошла ошибка при сохранении. Пожалуйста, попробуйте еще раз.",
+            "Не получилось сохранить. Попробуй ещё раз.",
             reply_markup=main_keyboard,
         )
         return False
@@ -1234,6 +1247,8 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return None
     draft = context.user_data.get("current_meal") or {}
     parsed = meal_draft.parse_callback(query.data)
+    if parsed is None:
+        logger.warning("meal draft: malformed callback data %r", query.data)
     if parsed is None or parsed[0] != draft.get("id"):
         await meal_stale_callback(update, context)
         return None
@@ -1245,6 +1260,13 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return None
         draft["awaiting"] = None
         await query.answer(f"{meal_draft.SIZES[arg][0]} порция")
+        await _edit_draft_message(query, draft)
+        return None
+    if verb == meal_draft.NUMBERS:
+        if not meal_draft.toggle_numbers(draft):
+            await query.answer()
+            return None
+        await query.answer()
         await _edit_draft_message(query, draft)
         return None
     if verb == meal_draft.ASK_GRAMS:
@@ -1278,6 +1300,7 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await query.message.reply_text("Отменено.", reply_markup=main_keyboard)
         return CHOOSING_ACTION
+    logger.warning("meal draft: unknown verb in callback data %r", query.data)
     await query.answer()
     return None
 
@@ -1333,7 +1356,7 @@ async def _screen_callback(update: Update, handle, locked: str, what: str):
             screen = handle(db, update.effective_user.id, query.data or "")
     except Exception as e:
         logger.error("%s callback %r failed: %s", what, query.data, e, exc_info=True)
-        await query.answer("Не получилось, попробуйте ещё раз", show_alert=True)
+        await query.answer("Не получилось, попробуй ещё раз", show_alert=True)
         return
     await query.answer(screen.toast)
     if not screen.text:
@@ -1447,10 +1470,9 @@ async def handle_subscription_inquiry(
 
     if text == "❓ О боте":
         response = (
-            "🤖 NutriCore - это умный бот для отслеживания питания и здоровья.\n\n"
-            "✨ С подпиской вы получите:\n"
-            "• AI-анализ питания\n"
-            "• Отслеживание калорий и нутриентов\n"
+            "🤖 NutriCore — дневник питания и здоровья.\n\n"
+            "✨ С подпиской:\n"
+            "• Разбор еды по фото и описанию\n"
             "• Избранные блюда в одно касание\n"
             "• Статистику за день и неделю\n"
             "• Дневник веса"
@@ -1463,14 +1485,12 @@ async def handle_subscription_inquiry(
             "• 1 месяц - X руб\n"
             "• 3 месяца - Y руб\n"
             "• 12 месяцев - Z руб\n\n"
-            "Для оформления нажмите 'Связаться с админом'"
+            "Чтобы оформить, нажми «📱 Связаться с админом»."
         )
 
     elif text == "📱 Связаться с админом":
         admin_username = settings.TELEGRAM_ADMIN_USERNAME
-        response = (
-            f"По вопросам подписки обращайтесь к администратору: {admin_username}"
-        )
+        response = f"По вопросам подписки пиши администратору: {admin_username}"
 
     else:
         return SUBSCRIPTION_INQUIRY
@@ -1513,9 +1533,7 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     except ValueError:
         logger.error(f"Invalid command format: {update.message.text}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Неверный формат команды. Используйте: /grant_sub user_id months"
-        )
+        await update.message.reply_text("❌ Формат команды: /grant_sub user_id months")
     except Exception as e:
         logger.error(
             f"Unexpected error while granting subscription: {str(e)}", exc_info=True
@@ -1546,7 +1564,7 @@ async def consult(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     last = _last_consult.get(user_id)
     if last and (now - last).total_seconds() < CONSULT_COOLDOWN_SECONDS:
-        await update.message.reply_text("Слишком часто — подожди пару секунд.")
+        await update.message.reply_text("Подожди пару секунд и спроси снова.")
         return
 
     try:
@@ -1732,7 +1750,8 @@ def create_bot_application() -> Application:
     # The main menu (main_keyboard): a tapped button comes back as its text.
     def menu():
         return [
-            MessageHandler(filters.Regex("^🍽 Добавить прием пищи$"), add_meal),
+            # «прием» is the label keyboards already on phones still carry.
+            MessageHandler(filters.Regex("^🍽 Добавить при[её]м пищи$"), add_meal),
             MessageHandler(filters.Regex("^⭐ Избранное$"), show_favorites),
             MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
             MessageHandler(filters.Regex("^⚖️ Мой вес$"), show_weight),

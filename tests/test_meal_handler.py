@@ -226,9 +226,11 @@ def test_photo_meal_flow(image_mock):
     assert meal["description"] == "banana, oatmeal"
     assert meal["photos"] == ["PHOTO_FILE_ID"]
 
-    # Reply shows parsed foods and calories (proves JSON parse + portion key).
+    # Reply shows parsed foods and portion (proves JSON parse + portion key);
+    # calories wait behind «🔢 Цифры» by default (stage 5, G5-R01).
     assert "banana, oatmeal" in message.replies[0]
-    assert "350" in message.replies[0]
+    assert "1 bowl (300g)" in message.replies[0]
+    assert "350" not in message.replies[0]
 
 
 def test_photo_meal_empty_foods_gets_fallback_description(image_mock):
@@ -261,7 +263,7 @@ def test_photo_meal_analysis_error_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
     assert "current_meal" in context.user_data  # nothing half-written into nutrition
     assert "nutrition" not in context.user_data["current_meal"]
 
@@ -274,7 +276,7 @@ def test_photo_meal_invalid_json_falls_back(image_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
 
 
 # --- process_meal_input: text branch ---------------------------------------
@@ -314,7 +316,7 @@ def test_text_meal_analysis_error_falls_back(entry_mock):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
 
 
 # --- confirm_meal ----------------------------------------------------------
@@ -336,7 +338,7 @@ def test_confirm_meal_saves_with_photo_and_ai_analysis(patched_db):
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     assert context.user_data == {}  # cleared after a successful save
 
     with sessionmaker(bind=patched_db)() as db:
@@ -392,7 +394,7 @@ def test_confirm_prompt_carries_inline_buttons(entry_mock):
     assert _button_rows(markup) == [
         ["✏️ Поправить вес", "✏️ Поправить продукт"],
         ["✅ Сохранить", "⭐ И в избранное"],
-        ["✖️ Отмена"],
+        ["🔢 Цифры", "✖️ Отмена"],
     ]
     draft_id = context.user_data["current_meal"]["id"]
     datas = [b.callback_data for row in markup.inline_keyboard for b in row]
@@ -421,13 +423,13 @@ def test_confirm_meal_lowercase_da_saves(patched_db):
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
     with sessionmaker(bind=patched_db)() as db:
         assert db.query(Meal).count() == 1
 
 
 def test_confirm_meal_cancel_drops_the_meal_and_goes_to_the_menu(patched_db):
-    # Julia, 2026-10-28: «Отмена» under a draft asked «Когда был прием пищи?»
+    # Julia, 2026-10-28: «Отмена» under a draft asked «Когда был приём пищи?»
     # again; now it ends like the draft's «✖️ Отмена» button.
     bot = SimpleNamespace(edit_message_reply_markup=AsyncMock())
     update, message = _make_text_update("Отмена")
@@ -459,7 +461,7 @@ def test_confirm_meal_no_still_asks_again():
 
     assert state == tg.ADDING_MEAL_TIME
     assert context.user_data["current_meal"] == {}
-    assert "Когда был прием пищи?" in message.replies[-1]
+    assert "Когда был приём пищи?" in message.replies[-1]
 
 
 def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
@@ -488,7 +490,7 @@ def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
     assert meal["description"] == sent_text
     # meal_time (draft context) is preserved.
     assert context.user_data["meal_time"] == meal_time
-    assert _button_rows(message.reply_markups[-1])[-1] == ["✖️ Отмена"]
+    assert _button_rows(message.reply_markups[-1])[-1] == ["🔢 Цифры", "✖️ Отмена"]
 
 
 def test_correcting_a_photo_draft_reanalyzes_the_same_photo(image_mock):
@@ -576,7 +578,7 @@ def test_parse_nutrition_coerces_non_string_foods():
 
 
 def test_nutrition_reply_formats_all_fields():
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:")
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", numbers=True)
     assert reply.startswith("Заголовок:\n")
     assert "Продукты: banana, oatmeal" in reply
     # A text analysis is an estimate: a range, whole grams, no ".0".
@@ -720,7 +722,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
             "product_name": "Чипсы Pringles Original",
         },
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert reply.startswith("Заголовок:\n")
     assert "штрих-коду" in reply  # badge
     assert "4607195501226" in reply  # EAN
@@ -731,7 +733,7 @@ def test_nutrition_reply_barcode_off_shows_badge_and_ean():
 
 def test_nutrition_reply_vision_shows_source_badge():
     result = _make_resolution_result(source="vision", confidence_tier="low", signals={})
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "фото" in reply
     assert "Продукты: banana, oatmeal" in reply
     assert reply.endswith("Всё верно? Сохрани или поправь кнопками ниже.")
@@ -743,7 +745,7 @@ def test_nutrition_reply_no_portion_shows_warning():
         portion_grams=None,
         signals={"barcode_raw": "999", "product_name": "Item"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "Порция: не определена — числа на 100г, поправь вес кнопкой" in reply
 
 
@@ -758,7 +760,7 @@ def test_nutrition_reply_shows_the_gram_basis_in_the_portion_line():
         portion_grams=150.0,
         signals={"barcode_raw": "4607195501226", "product_name": "Pringles"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "Порция: 1 bowl (300g), ≈ 150г (оценка по фото)" in reply
 
 
@@ -769,7 +771,7 @@ def test_nutrition_reply_zero_grams_is_per_100g_not_scaled():
         portion_grams=0.0,
         signals={"barcode_raw": "1234", "product_name": "Test"},
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "не определена — числа на 100г" in reply
     assert "оценка по фото" not in reply
 
@@ -783,7 +785,7 @@ def test_nutrition_reply_barcode_off_scaled_keeps_every_element():
             "product_name": "Чипсы Pringles Original",
         },
     )
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
     assert "≈ 150г (оценка по фото)" in reply
     assert "штрих-коду" in reply  # badge
     assert "4607195501226" in reply  # EAN
@@ -809,7 +811,7 @@ def test_resolution_detail_lines_no_gram_basis_for_vision_even_with_portion():
 
 
 def test_add_meal_resets_stale_draft():
-    update, _ = _make_text_update("🍽 Добавить прием пищи")
+    update, _ = _make_text_update("🍽 Добавить приём пищи")
     context = SimpleNamespace(
         user_data={"current_meal": {"nutrition": {"old": 1}}, "meal_time": "stale"}
     )
@@ -1055,7 +1057,7 @@ def test_non_admin_gets_no_picker(monkeypatch):
     state = asyncio.run(tg.process_meal_input(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "владелец" in message.replies[-1]
+    assert "владельцу" in message.replies[-1]
     assert "model_choices" not in context.user_data
     candidates.assert_not_called()
 
@@ -1442,7 +1444,7 @@ def test_reply_renders_an_unknown_macro_as_a_dash():
     """OFF routinely lacks a macro; printing 0 stated a fact it never had."""
     nutrition = dict(_NUTRITION, protein=None)
 
-    reply = tg._nutrition_reply(nutrition, "Заголовок:")
+    reply = tg._nutrition_reply(nutrition, "Заголовок:", numbers=True)
 
     assert "Белки: —" in reply
     assert "Белки: —г" not in reply, "the unit was kept on the dash — reads as a number"
@@ -1460,7 +1462,7 @@ def test_reply_names_the_note_in_the_gram_basis_line():
         },
     )
 
-    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result)
+    reply = tg._nutrition_reply(_NUTRITION, "Заголовок:", result, numbers=True)
 
     assert "оценка по фото и твоему описанию" in reply, (
         "the portion came from the user's own words but the reply still called "
@@ -1558,11 +1560,36 @@ def test_reply_warns_when_a_winning_strategy_recorded_a_failure():
     ), "the OFF re-query leg was fully broken and the reply said nothing"
 
 
+def test_draft_keeps_the_number_caveats_with_the_hidden_numbers():
+    """The ⚠️ lines speak about the numbers, so they hide and open with them;
+    the barcode and the product name stay, being about the food (stage 5)."""
+    result = _make_resolution_result(
+        source="name_web",
+        confidence_tier="low",
+        signals={
+            "barcode_raw": "1234",
+            "product_name": "Ranch",
+            "off_missing_macros": ["белки"],
+            "strategy_attempts": [{"strategy": "name_web", "error": "Boom"}],
+        },
+    )
+    draft = {"nutrition": dict(_NUTRITION)}
+    tg._start_draft(draft, "Разбор фото:", result, numbers=False)
+    hidden = meal_draft.text(draft)
+    assert "Штрих-код: 1234" in hidden and "Продукт: Ranch" in hidden
+    assert "⚠️" not in hidden
+
+    meal_draft.toggle_numbers(draft)
+    opened = meal_draft.text(draft)
+    assert "⚠️ в базе нет: белки" in opened
+    assert "не сработала" in opened
+
+
 # --- the meal-of-day label: asked since day one, stored since 2026-09-13 ----
 
 
 def test_meal_type_label_reaches_the_saved_meal(patched_db):
-    """The bot asks "Когда был прием пищи?" and offers Завтрак/Обед/Ужин.
+    """The bot asks "Когда был приём пищи?" and offers Завтрак/Обед/Ужин.
 
     The answer used to live only in context.user_data and was dropped when the
     conversation ended — no column, no schema field, no read site anywhere.
@@ -1619,7 +1646,7 @@ def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
     first, _ = _make_text_update("Завтрак")
     asyncio.run(tg.process_meal_time(first, context))  # …then abandoned
 
-    restart, _ = _make_text_update("Добавить прием пищи")
+    restart, _ = _make_text_update("Добавить приём пищи")
     asyncio.run(tg.add_meal(restart, context))
     second, _ = _make_text_update("Сейчас")
     asyncio.run(tg.process_meal_time(second, context))
@@ -1641,7 +1668,7 @@ def test_a_new_meal_does_not_inherit_the_previous_label(patched_db):
 def test_declining_a_draft_drops_the_label_on_the_retry(patched_db):
     """The bot's OWN retry path, which does not go through add_meal.
 
-    "Нет" resets the draft and re-asks "Когда был прием пищи?" directly, so the
+    "Нет" resets the draft and re-asks "Когда был приём пищи?" directly, so the
     first fix (clearing the label in add_meal) never ran here: answering "Сейчас"
     on the retry still saved the declined "Завтрак".
     """
@@ -1714,7 +1741,7 @@ def test_a_typed_label_is_normalised_rather_than_refused(patched_db):
     assert meals[0].meal_type == "Завтрак"
 
 
-# --- a photo sent from the menu, without «🍽 Добавить прием пищи» -------------
+# --- a photo sent from the menu, without «🍽 Добавить приём пищи» -------------
 
 
 def test_quick_photo_is_a_meal_eaten_now(image_mock):
@@ -1816,7 +1843,7 @@ def test_a_slow_failure_turns_the_loader_into_the_error(entry_mock, monkeypatch)
     assert state == tg.ADDING_MEAL
     assert message.replies == ["⏳ Считаю…"]
     ((text, _markup),) = message.screen
-    assert "не удалось проанализировать" in text
+    assert "Не получилось разобрать" in text
 
 
 def test_a_fast_answer_shows_no_loader(entry_mock, monkeypatch):
@@ -1907,7 +1934,7 @@ def test_a_failed_analysis_still_says_what_it_cost(patched_db, entry_mock, monke
     state, message, _ = _text_meal(monkeypatch, entry_mock, fails=True)
 
     assert state == tg.ADDING_MEAL
-    assert "не удалось проанализировать" in message.replies[-1]
+    assert "Не получилось разобрать" in message.replies[-1]
     assert message.replies[-1].endswith(_COST)
 
 
@@ -1947,7 +1974,7 @@ def test_text_meal_out_of_credit_tells_owner_where_to_pay(entry_mock, alerts):
     assert "У OpenAI закончился баланс или лимит трат" in reply
     assert "platform.openai.com" in reply
     assert "/reprocess" in reply  # the meal was saved as failed, it waits
-    assert "не удалось проанализировать" not in reply
+    assert "Не получилось разобрать" not in reply
     assert alerts == []  # the owner reads it right here
 
 
@@ -1986,7 +2013,7 @@ def test_out_of_credit_for_a_guest_alerts_the_owner_once(
         update, message = _make_text_update("oatmeal")
         asyncio.run(tg.process_meal_input(update, SimpleNamespace(user_data={})))
         reply = message.replies[-1]
-        assert "временно недоступно — владелец бота уже получил уведомление" in reply
+        assert "временно недоступно — владельцу бота уже пришло уведомление" in reply
         assert "platform.openai.com" not in reply  # billing is the owner's business
 
     assert len(alerts) == 1  # two meals, one alert

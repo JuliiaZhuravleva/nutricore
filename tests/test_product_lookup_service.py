@@ -2661,7 +2661,7 @@ def test_saved_rag_serves_unknown_macros_as_unknown(monkeypatch):
     """A saved row learned without a macro must not report it as 0.
 
     _build_result coerced every NULL with `or 0`, so a row with calories but no
-    protein was served as "Белки: 0г" under the "⭐ из вашей базы" badge — which
+    protein was served as "Белки: 0г" under the "⭐ из твоей базы" badge — which
     carries no "проверь" qualifier at all.
     """
     import app.services.product_lookup_service as pls

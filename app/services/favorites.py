@@ -10,6 +10,10 @@ buttons whose callback data carries everything the step needs, so a tap works
 after a bot restart too. Logging copies the stored numbers: no OpenAI call.
 Undo instead of "are you sure?" (sweet-home message design, P6).
 
+Calories follow «🔢 Цифры» (stage 5, G5-R01): with the ⚙️ switch off the list
+and the «Записано» line name the dish only, and the dish screen keeps its
+numbers behind a «🔢 Цифры» button.
+
 This module is Telegram-free apart from building the keyboards: ``handle_callback``
 takes the callback data and the tapping user's id and returns the screen, so the
 whole flow is testable without a bot.
@@ -30,11 +34,13 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.user import User
 from app.schemas.meal import MealCreate
+from app.services.numbers import shows_numbers, toggle_label
 
 logger = logging.getLogger(__name__)
 
 CALLBACK_PREFIX = "fav:"
 PAGE_SIZE = 4
+OPEN = "n"  # dish screen with its numbers opened (the setting is off)
 NAME_MAX = 60
 BUTTON_NAME_MAX = 30
 # meals.resolution_source for a meal logged from a favorite.
@@ -107,11 +113,11 @@ def macro_line(fav: FavoriteMeal) -> str:
     return " · ".join(parts)
 
 
-def _button_label(fav: FavoriteMeal) -> str:
+def _button_label(fav: FavoriteMeal, numbers: bool = True) -> str:
     name = fav.name
     if len(name) > BUTTON_NAME_MAX:
         name = name[: BUTTON_NAME_MAX - 1].rstrip() + "…"
-    return f"{name} · {_kcal(fav.calories)}"
+    return f"{name} · {_kcal(fav.calories)}" if numbers else name
 
 
 def _btn(text: str, *parts) -> InlineKeyboardButton:
@@ -124,7 +130,10 @@ def _btn(text: str, *parts) -> InlineKeyboardButton:
 
 
 def list_screen(
-    favs: list[FavoriteMeal], page: int, notice: str | None = None
+    favs: list[FavoriteMeal],
+    page: int,
+    notice: str | None = None,
+    numbers: bool = True,
 ) -> Screen:
     head = _HEADER + (f"\n{notice}" if notice else "")
     if not favs:
@@ -136,7 +145,7 @@ def list_screen(
     pages = (len(favs) + PAGE_SIZE - 1) // PAGE_SIZE
     page = min(max(page, 0), pages - 1)
     shown = favs[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
-    rows = [[_btn(_button_label(f), "o", f.id, page)] for f in shown]
+    rows = [[_btn(_button_label(f, numbers), "o", f.id, page)] for f in shown]
     if pages > 1:
         pager = []
         if page > 0:
@@ -150,20 +159,31 @@ def list_screen(
     )
 
 
-def item_screen(fav: FavoriteMeal, page: int, notice: str | None = None) -> Screen:
-    text = f"<b>⭐ {html.escape(fav.name)}</b>\n{macro_line(fav)}"
+def item_screen(
+    fav: FavoriteMeal,
+    page: int,
+    notice: str | None = None,
+    opened: bool | None = None,
+) -> Screen:
+    """``opened=None``: ⚙️ shows the numbers, so no «🔢 Цифры» button."""
+    text = f"<b>⭐ {html.escape(fav.name)}</b>"
+    if opened is not False:
+        text += f"\n{macro_line(fav)}"
     if notice:
         text += f"\n{notice}"
     text += "\n\nКогда?"
-    rows = [
-        [_btn(label, "l", fav.id, code) for code, label in _SLOT_CHIPS],
-        [_btn("⬅️ Назад", "p", page), _btn("✖️ Убрать", "r", fav.id, page)],
-    ]
+    rows = [[_btn(label, "l", fav.id, code) for code, label in _SLOT_CHIPS]]
+    if opened is not None:
+        flip = [] if opened else [OPEN]
+        rows.append([_btn(toggle_label(opened), "o", fav.id, page, *flip)])
+    rows.append([_btn("⬅️ Назад", "p", page), _btn("✖️ Убрать", "r", fav.id, page)])
     return Screen(text, InlineKeyboardMarkup(rows))
 
 
-def logged_screen(fav: FavoriteMeal, meal: Meal) -> Screen:
-    text = f"✅ <b>Записано:</b> {html.escape(fav.name)} · {_kcal(fav.calories)}"
+def logged_screen(fav: FavoriteMeal, meal: Meal, numbers: bool = True) -> Screen:
+    text = f"✅ <b>Записано:</b> {html.escape(fav.name)}"
+    if numbers:
+        text += f" · {_kcal(fav.calories)}"
     if meal.meal_type:
         text += f"\n🕐 {meal.meal_type}"
     return Screen(
@@ -187,15 +207,19 @@ def save_from_meal(db, meal: Meal, name: str) -> tuple[FavoriteMeal, bool]:
     return crud_favorite_meal.create_from_meal(db, meal, name), True
 
 
+def _user(db, telegram_id: int) -> User | None:
+    return db.query(User).filter(User.telegram_id == telegram_id).first()
+
+
 def _user_id(db, telegram_id: int) -> int | None:
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    user = _user(db, telegram_id)
     return user.id if user else None
 
 
 def open_list(db, telegram_id: int, page: int = 0, notice: str | None = None) -> Screen:
-    user_id = _user_id(db, telegram_id)
-    favs = crud_favorite_meal.list_active(db, user_id) if user_id else []
-    return list_screen(favs, page, notice)
+    user = _user(db, telegram_id)
+    favs = crud_favorite_meal.list_active(db, user.id) if user else []
+    return list_screen(favs, page, notice, shows_numbers(user))
 
 
 def _active(db, user_id: int | None, fav_id: int) -> FavoriteMeal | None:
@@ -223,6 +247,10 @@ def _log(db, user_id: int, fav: FavoriteMeal, slot: str) -> Meal:
     return meal
 
 
+def _ints(values: list) -> bool:
+    return all(isinstance(value, int) for value in values)
+
+
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
     """The screen a tap on a favorites button leads to.
 
@@ -237,23 +265,26 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
         nums = [int(a) if a.lstrip("-").isdigit() else a for a in args]
     except ValueError:
         nums = []
-    user_id = _user_id(db, telegram_id)
+    user = _user(db, telegram_id)
+    user_id = user.id if user else None
+    numbers = shows_numbers(user)
 
     if verb == "x":
         return Screen("", None)  # the pager's page counter: nothing to do
-    if verb == "p" and len(nums) == 1:
+    ids = len(nums) >= 2 and _ints(nums[:2])  # <favorite id>:<page>
+    if verb == "p" and len(nums) == 1 and _ints(nums):
         return open_list(db, telegram_id, nums[0])
-    if verb == "o" and len(nums) == 2:
+    if verb == "o" and ids and len(nums) in (2, 3) and nums[2:] in ([], [OPEN]):
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)
-        return item_screen(fav, nums[1])
-    if verb == "l" and len(nums) == 2 and nums[1] in SLOTS:
+        return item_screen(fav, nums[1], opened=None if numbers else len(nums) == 3)
+    if verb == "l" and len(nums) == 2 and _ints(nums[:1]) and nums[1] in SLOTS:
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, 0, _STALE)
-        return logged_screen(fav, _log(db, user_id, fav, nums[1]))
-    if verb == "u" and len(nums) == 1:
+        return logged_screen(fav, _log(db, user_id, fav, nums[1]), numbers)
+    if verb == "u" and len(nums) == 1 and _ints(nums):
         meal = crud_meal.get(db, nums[0]) if user_id else None
         if (
             meal is None
@@ -268,7 +299,7 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
             _back_to_list_markup(),
             "Отменено",
         )
-    if verb == "r" and len(nums) == 2:
+    if verb == "r" and ids and len(nums) == 2:
         fav = _active(db, user_id, nums[0])
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)
@@ -281,12 +312,17 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
             f"✖️ «{html.escape(fav.name)}» убрано из избранного.",
             InlineKeyboardMarkup(rows),
         )
-    if verb == "b" and len(nums) == 2:
+    if verb == "b" and ids and len(nums) == 2:
         fav = crud_favorite_meal.get_for_user(db, nums[0], user_id) if user_id else None
         if fav is None:
             return open_list(db, telegram_id, nums[1], _STALE)
         crud_favorite_meal.set_removed(db, fav, False)
-        return item_screen(fav, nums[1], "<i>↩️ Снова в избранном.</i>")
+        return item_screen(
+            fav,
+            nums[1],
+            "<i>↩️ Снова в избранном.</i>",
+            opened=None if numbers else False,
+        )
 
     logger.warning("favorites: unknown callback data %r", data)
     return open_list(db, telegram_id, 0)

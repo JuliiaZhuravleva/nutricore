@@ -406,7 +406,8 @@ def test_barcode_reply_warns_per_100g_when_no_portion_estimate(monkeypatch):
 
     reply = message.replies[0]
     assert "не определена" in reply, "Per-100g warning missing from reply"
-    assert "100г" in reply, "100г basis not mentioned in reply"
+    # The per-100g numbers themselves wait behind «🔢 Цифры» (stage 5, G5-R01).
+    assert "поправь вес кнопкой" in reply, "the fix is not offered"
 
 
 # ===========================================================================
@@ -466,7 +467,7 @@ def test_confirm_meal_persists_resolution_source(patched_db):
     state = asyncio.run(tg.confirm_meal(update, context))
 
     assert state == tg.CHOOSING_ACTION
-    assert "сохранен" in message.replies[-1]
+    assert "✅ Записано" in message.replies[-1]
 
     with sessionmaker(bind=patched_db)() as db:
         meals = db.query(Meal).all()

@@ -103,8 +103,8 @@ def _headline(finding: Finding, today: datetime.date) -> str:
     if finding.state == "missing_from_list":
         return "OpenRouter больше не предлагает эту модель"
     if finding.state == "source_broken":
-        return "Не смог проверить: страница сроков изменилась"
-    return "Не смог проверить: источник не ответил"
+        return "Проверить не удалось: страница сроков изменилась"
+    return "Проверить не удалось: источник не ответил"
 
 
 def render_message(
