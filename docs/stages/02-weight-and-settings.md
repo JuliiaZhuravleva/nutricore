@@ -13,7 +13,8 @@ menu honest.
   7-day average (no goal, no chart).
 - **Settings editable from the chat:** goal(s) — possibly several, timezone, reminders,
   the favorites list, weekly-report settings; later the «психолог» / «нутрициолог»
-  consultations (Stage 4). Shipped so far: a read-only «⚙️ Настройки» (timezone, no goal).
+  consultations (Stage 4). Shipped so far: «⚙️ Настройки» with the cost switch and an editable time zone
+  (nine cities or a bare UTC offset, in `User.settings["timezone"]`; 📊 and ⚖️ follow it), no goal.
 
 ## Current state
 

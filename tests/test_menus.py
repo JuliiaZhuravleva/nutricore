@@ -377,10 +377,10 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     state, message = _run(tg.show_settings, "⚙️ Настройки")
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>⚙️ Настройки</b>")
-    assert "Asia/Tbilisi" in message.replies[-1]
+    assert "🕐 Часовой пояс: Тбилиси (UTC+4)" in message.replies[-1]
     markup = message.kwargs[-1]["reply_markup"]
-    assert _labels(markup) == ["💸 Стоимость запросов: выкл"]
-    assert _callbacks(markup) == ["set:costs"]
+    assert _labels(markup) == ["🕐 Часовой пояс", "💸 Стоимость запросов: выкл"]
+    assert _callbacks(markup) == ["set:tz", "set:costs"]
 
 
 def _costs_shown(Session, telegram_id=42):
@@ -398,7 +398,7 @@ def test_the_cost_switch_flips_and_says_so(Session):
     asyncio.run(tg.settings_callback(update, SimpleNamespace()))
     (text,), kwargs = query.edit_message_text.await_args
     assert text.startswith("<i>✓ Стоимость запросов включена</i>")
-    assert _labels(kwargs["reply_markup"]) == ["💸 Стоимость запросов: вкл"]
+    assert _labels(kwargs["reply_markup"])[-1] == "💸 Стоимость запросов: вкл"
     assert _costs_shown(Session)
     with Session() as db:
         assert db.query(User).one().settings == {"diet": "veg", "show_costs": True}
@@ -433,6 +433,176 @@ def _query(data, telegram_id=42):
         callback_query=query, effective_user=SimpleNamespace(id=telegram_id)
     )
     return update, query
+
+
+# --- settings: time zone ------------------------------------------------------
+
+
+def _tap(Session, data, telegram_id=42):
+    with Session() as db:
+        return settings_screen.handle_callback(db, telegram_id, data, NOW)
+
+
+def _rows(markup) -> list[list[str]]:
+    return [[b.text for b in row] for row in markup.inline_keyboard]
+
+
+def _stored_zone(Session, telegram_id=42):
+    with Session() as db:
+        user = db.query(User).filter(User.telegram_id == telegram_id).one()
+        return (user.settings or {}).get(settings_screen.TIMEZONE)
+
+
+def test_zone_screen_marks_the_current_city_and_goes_back_to_settings(Session):
+    screen = _tap(Session, "set:tz")
+    assert screen.text.startswith("<b>🕐 Часовой пояс</b>")
+    assert "Сейчас: Тбилиси (UTC+4), там 12:00." in screen.text
+    assert _rows(screen.markup) == [
+        ["✓ Тбилиси", "Ереван", "Баку"],
+        ["Москва", "Стамбул", "Киев"],
+        ["Минск", "Берлин", "Лондон"],
+        ["🌐 Другой: UTC±"],
+        ["⬅️ Настройки"],
+    ]
+    assert _callbacks(screen.markup)[-1] == "set:open"
+    back = _tap(Session, "set:open")
+    assert back.text.startswith("<b>⚙️ Настройки</b>")  # no notice
+
+
+def test_picking_a_city_saves_it_and_says_so_on_settings(Session):
+    with Session() as db:
+        user = _user(db)
+        user.settings = {"show_costs": True}  # a setting the pick must keep
+        db.commit()
+    screen = _tap(Session, "set:tz:Europe/Moscow")
+    assert screen.text.startswith("<i>✓ Часовой пояс: Москва (UTC+3)</i>")
+    assert "🕐 Часовой пояс: Москва (UTC+3)" in screen.text
+    with Session() as db:
+        assert db.query(User).one().settings == {
+            "show_costs": True,
+            "timezone": "Europe/Moscow",
+        }
+    assert "✓ Москва" in _labels(_tap(Session, "set:tz").markup)
+
+
+def test_a_pick_before_the_first_meal_creates_the_user(Session):
+    _tap(Session, "set:tz:Asia/Yerevan")
+    assert _stored_zone(Session) == "Asia/Yerevan"
+
+
+def test_statistics_days_follow_the_chosen_zone(Session):
+    with Session() as db:
+        user = _user(db)
+        # 00:30 on the 28th in Tbilisi, 23:30 on the 27th in Moscow.
+        _meal(db, user, datetime(2026, 10, 27, 20, 30, tzinfo=UTC), 500, "блины")
+    with Session() as db:
+        assert "00:30 · блины" in st.open_view(db, 42, st.TODAY, NOW).text
+    _tap(Session, "set:tz:Europe/Moscow")
+    with Session() as db:
+        today = st.open_view(db, 42, st.TODAY, NOW)
+        yesterday = st.open_view(db, 42, st.YESTERDAY, NOW)
+    assert "блины" not in today.text
+    assert "23:30 · блины · 500 ккал" in yesterday.text
+
+
+def test_weight_dates_follow_the_chosen_zone(Session):
+    with Session() as db:
+        _weigh(db, _user(db), 72, datetime(2026, 10, 27, 20, 30, tzinfo=UTC))
+        assert "72 кг</b> · ср 28 окт" in wt.open_view(db, 42, now=NOW).text
+    _tap(Session, "set:tz:Europe/London")
+    with Session() as db:
+        assert "72 кг</b> · вт 27 окт" in wt.open_view(db, 42, now=NOW).text
+
+
+def test_a_city_follows_its_summer_time():
+    july = datetime(2026, 7, 1, 12, tzinfo=UTC)
+    assert settings_screen.zone_label("Europe/Berlin", july) == "Берлин (UTC+2)"
+    assert settings_screen.zone_label("Europe/Berlin", NOW) == "Берлин (UTC+1)"
+    assert settings_screen.zone_label("Etc/GMT-4", july) == "UTC+4"
+    assert settings_screen.zone_label("Etc/GMT+3", july) == "UTC−3"
+
+
+def test_offsets_page_through_and_pick_a_bare_offset(Session):
+    screen = _tap(Session, "set:tzo:1")  # UTC−3 … UTC+5
+    assert screen.text.startswith("<b>🕐 Часовой пояс: UTC±</b>")
+    assert "Летнее время здесь не учитывается" in screen.text
+    rows = _rows(screen.markup)
+    assert rows[0] == ["UTC−3", "UTC−2", "UTC−1"]
+    assert rows[2] == ["UTC+3", "UTC+4", "UTC+5"]  # Тбилиси is a city, not UTC+4
+    assert rows[-2] == ["‹", "2/3", "›"]
+    assert rows[-1] == ["⬅️ Часовой пояс"]
+    assert _callbacks(screen.markup)[-4:] == [
+        "set:tzo:0",
+        "set:tzo:1",
+        "set:tzo:2",
+        "set:tz",
+    ]
+    picked = _tap(Session, "set:tz:Etc/GMT-5")
+    assert picked.text.startswith("<i>✓ Часовой пояс: UTC+5</i>")
+    assert _stored_zone(Session) == "Etc/GMT-5"
+    # The «Другой» button opens the page that holds the chosen offset.
+    assert _callbacks(_tap(Session, "set:tz").markup)[-2] == "set:tzo:1"
+
+
+def test_the_offset_pages_cover_utc_minus_12_to_plus_14(Session):
+    labels = [
+        label
+        for page in range(3)
+        for row in _rows(_tap(Session, f"set:tzo:{page}").markup)[:-2]
+        for label in row
+    ]
+    assert labels[0] == "UTC−12" and labels[-1] == "UTC+14"
+    assert len(labels) == 27 and "UTC+0" in labels
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "set:tz:Asia/Pyongyang",  # a real zone the screen never offers
+        "set:tz:Mars/Olympus",
+        "set:tz:",
+        "set:tzo:3",
+        "set:tzo:-1",
+        "set:tzo:x",
+    ],
+)
+def test_a_forged_or_stale_zone_tap_changes_nothing(Session, data):
+    with Session() as db:
+        _user(db)
+    screen = _tap(Session, data)
+    assert screen.text.startswith("<b>⚙️ Настройки</b>")
+    assert _stored_zone(Session) is None
+
+
+def test_an_unknown_stored_zone_falls_back_to_the_default(Session):
+    with Session() as db:
+        user = _user(db)
+        user.settings = {"timezone": "Mars/Olympus"}
+        db.commit()
+        assert settings_screen.zone_name(user) == "Asia/Tbilisi"
+        assert st.open_view(db, 42, st.TODAY, NOW).text.startswith(
+            "<b>📊 Сегодня, ср 28 окт</b>"
+        )
+
+
+def test_zone_screens_fit_telegram(Session):
+    screens = [_tap(Session, "set:tz")] + [
+        _tap(Session, f"set:tzo:{page}") for page in range(3)
+    ]
+    for screen in screens:
+        rows = _rows(screen.markup)
+        assert all(len(row) <= 3 for row in rows)
+        assert len(rows) <= 5  # four rows of choices + the back row
+        assert all(len(data.encode()) <= 64 for data in _callbacks(screen.markup))
+
+
+def test_zone_tap_through_the_bot_edits_in_place(Session):
+    update, query = _query("set:tz:Asia/Baku")
+    asyncio.run(tg.settings_callback(update, SimpleNamespace()))
+    (text,), kwargs = query.edit_message_text.await_args
+    assert text.startswith("<i>✓ Часовой пояс: Баку (UTC+4)</i>")
+    assert kwargs["parse_mode"] == "HTML"
+    assert _stored_zone(Session) == "Asia/Baku"
 
 
 def test_stats_tab_edits_in_place(Session):

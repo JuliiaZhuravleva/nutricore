@@ -48,7 +48,7 @@ and no medical logic or medical data storage lives in the bot.
 | 0 | — | Unfreeze hygiene: consult relay, drift fixes, access control, secured API | ✅ done |
 | 00 | [00-user-scenarios.md](00-user-scenarios.md) | Personas + journeys | ✅ agreed |
 | 1 | [01-foundations.md](01-foundations.md) | Goals, remaining-budget, statistics | 🟡 statistics screen (today / yesterday / 7 days, no goal) on `feat/custom-emoji-menus`; goals + remaining budget not started |
-| 2 | [02-weight-and-settings.md](02-weight-and-settings.md) | Weight tracking + settings | 🟡 «⚖️ Мой вес»: typed weight + undo, last / change / 7-day average; read-only «⚙️ Настройки». Goal, chart, editable settings not started |
+| 2 | [02-weight-and-settings.md](02-weight-and-settings.md) | Weight tracking + settings | 🟡 «⚖️ Мой вес»: typed weight + undo, last / change / 7-day average; «⚙️ Настройки» with the cost switch and the time zone (cities or UTC±). Goal, chart, other editable settings not started |
 | 3 | [03-retention.md](03-retention.md) | Reminders, streaks, weekly digest | ⛔ not started |
 | 4 | [04-ai-coaching.md](04-ai-coaching.md) | "What to eat", insights, voice logging | ⛔ not started |
 | 90 | [90-deferred-hub-integration.md](90-deferred-hub-integration.md) | my-health indicators in chat | 🧊 deferred |

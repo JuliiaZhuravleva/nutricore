@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -23,6 +24,7 @@ from app.models.user import User
 from app.schemas.body_metric import BodyMetricCreate
 from app.services.favorites import Screen
 from app.services.meal_draft import num
+from app.services.settings_screen import user_zone
 from app.services.stats_screen import day_title, local_time
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,7 @@ def _btn(text: str, *parts) -> InlineKeyboardButton:
 def view_screen(
     weighings: list[BodyMetric],
     week: list[BodyMetric],
+    zone: ZoneInfo,
     notice: str | None = None,
 ) -> Screen:
     """``weighings`` latest first (the last few); ``week`` the last 7 days'."""
@@ -81,7 +84,7 @@ def view_screen(
         lines += ["Записей пока нет.", "", ASK]
         return Screen("\n".join(lines), None)
     latest = weighings[0]
-    when = day_title(local_time(latest.timestamp).date())
+    when = day_title(local_time(latest.timestamp, zone).date())
     lines.append(f"<b>{_kg(latest.weight)}</b> · {when}")
     if len(weighings) > 1:
         lines.append(f"С прошлого раза: {_delta(latest.weight - weighings[1].weight)}")
@@ -93,7 +96,7 @@ def view_screen(
     if len(weighings) > 1:
         lines.append("")
         for metric in weighings[1:]:
-            when = local_time(metric.timestamp)
+            when = local_time(metric.timestamp, zone)
             lines.append(f"{day_title(when.date())} · {_kg(metric.weight)}")
     lines += ["", ASK]
     return Screen("\n".join(lines), None)
@@ -126,11 +129,11 @@ def open_view(
 ) -> Screen:
     user = _user(db, telegram_id)
     if user is None:
-        return view_screen([], [], notice)
+        return view_screen([], [], user_zone(None), notice)
     since = (now or datetime.now(UTC)) - timedelta(days=AVERAGE_DAYS)
     weighings = crud_body_metric.latest_weights(db, user.id, HISTORY)
     week = crud_body_metric.get_user_weights_since(db, user.id, since)
-    return view_screen(weighings, week, notice)
+    return view_screen(weighings, week, user_zone(user), notice)
 
 
 def record(db, telegram_id: int, kg: float, username: str | None = None) -> Screen:
