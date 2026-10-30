@@ -236,6 +236,7 @@ def day_screen(
         "gap": f"{facts.gap.capitalize()} длинный перерыв" if facts.gap else None,
         "grain": facts.grain,
         "anchor": facts.anchor,
+        "foods": day_card.foods_label(facts),
     }
     lines += ticks
     beside = ()
@@ -329,7 +330,7 @@ def week_screen(
         lines.append(week_card.NO_TAGS)
         picture |= {
             "emptyTitle": "Записи есть",
-            "emptyNote": "Группы в них пока не отмечены.",
+            "emptyNote": "Группы в них пока не видны.",
         }
     lines += ticks
     finding = week_card.finding_line(week, new_label, html.escape)

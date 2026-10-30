@@ -22,7 +22,7 @@ PAUSE_DAYS = 7
 _ROW = 2  # groups on one line of the text
 _FINDING_NAME_MAX = 20  # longer, and the words after it no longer fit on the card
 _SHORT_WORDS = {"anchor": "опора", "nuts": "орехи"}  # the rest use their own word
-NO_TAGS = "🍽 Записи есть, группы в них пока не отмечены."
+NO_TAGS = "🍽 Записи есть, группы в них пока не видны."
 BACK_LINE = "✨ Снова с записями — после паузы"
 
 

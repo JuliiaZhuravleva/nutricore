@@ -34,7 +34,7 @@ body.evening {
 .one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .two { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
 
-/* rhythm: the day as a line from 6 to 24, a dot per meal, its time above */
+/* rhythm: the day as a line from 6 to 24, from 0 when there was food in the night, a dot per meal, its time above */
 .rhythm { position: relative; height: 96px; margin: 6px 6px 0; }
 .rhythm .track { position: absolute; left: 0; right: 0; top: 60px; height: 6px; border-radius: 3px; background: var(--track); }
 .rhythm .night { position: absolute; top: 52px; height: 6px; border-radius: 3px; background: var(--line); opacity: .6; }
@@ -131,10 +131,12 @@ body.pdf { background: #E9E4DA; }
     add(p, kick("clock", "Когда была еда"));
     var r = el("div", "rhythm");
     add(r, el("div", "track"));
-    function x(h) { return Math.max(0, Math.min(100, (h - 6) / 18 * 100)); }
-    [6, 12, 18, 24].forEach(function (h) { var t = el("div", "tick", h + ":00"); t.style.left = x(h) + "%"; r.appendChild(t); });
+    var night = meals.some(function (m) { return m.h < 6; });
+    var from = night ? 0 : 6, span = 24 - from;
+    function x(h) { return Math.max(0, Math.min(100, (h - from) / span * 100)); }
+    (night ? [0, 6, 12, 18, 24] : [6, 12, 18, 24]).forEach(function (h) { var t = el("div", "tick", h + ":00"); t.style.left = x(h) + "%"; r.appendChild(t); });
     // Two rows of times. A time with no room in either stays a dot: the caption lists them all.
-    var ROOM = 2.2, lastNear = -99, lastFar = -99;
+    var ROOM = 2.2 * span / 18, lastNear = -99, lastFar = -99;
     meals.forEach(function (m) {
       var d = el("div", "dot"); d.style.left = x(m.h) + "%"; r.appendChild(d);
       var cls = null;
@@ -148,9 +150,9 @@ body.pdf { background: #E9E4DA; }
     return p;
   }
   function kick(icon, text) { var k = el("div", "kicker"); add(k, tile(icon, 26, 4), el("span", "", text)); k.style.marginBottom = "4px"; return k; }
-  function grow(g, what) {
+  function grow(g, what, name) {
     var row = el("div", "grow"), t = el("div");
-    add(t, el("div", "gname", GROUPS[g].name), el("div", "gwhat two", what));
+    add(t, el("div", "gname", name || GROUPS[g].name), el("div", "gwhat two", what));
     add(row, tile(g, 44), t);
     return row;
   }
@@ -183,10 +185,12 @@ body.pdf { background: #E9E4DA; }
       if (R.gap) add(rp, el("div", "gapline", R.gap));
       add(c, rp);
     }
-    if (!R.empty && (R.grain || R.anchor)) {
+    if (!R.empty && (R.grain || R.anchor || R.foods)) {
       var g = el("div", "panel rows");
       if (R.grain) add(g, grow("grain", R.grain));
       if (R.anchor) add(g, grow("anchor", R.anchor));
+      // The text twin's words: «Ещё: чипсы» or just the foods. The label is the panel's own.
+      if (R.foods) add(g, grow("plate", R.foods.replace(/^Ещё: /, "").replace(/ещё (\d+)$/, "ещё\u00a0$1"), /^Ещё: /.test(R.foods) ? "Ещё" : "Что было"));
       add(c, g);
     }
     if (R.routines && R.routines.length) {

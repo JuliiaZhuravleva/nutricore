@@ -83,7 +83,7 @@ def test_the_card_says_when_and_which_groups_in_the_mocks_words(db):
     assert _card(db).text.split("\n")[:5] == [
         "<b>📊 Сегодня, пт 30 октября</b>",
         "",
-        "🕐 Еда: 8:40 · 13:15 · 18:30",
+        "🕐 8:40 · 13:15 · 18:30",
         "🌾 Цельные злаки: овсянка утром",
         "⚓ Белковая опора: тофу в обед · чечевица вечером",
     ]
@@ -93,7 +93,7 @@ def test_a_group_with_nothing_behind_it_gets_no_line_at_all(db):
     _meal(db, _at(9), items=[_item("яблоко", "fruit")], groups=["fruit"])
     text = _card(db).text
     assert "Цельные злаки" not in text and "Белковая опора" not in text
-    assert "яблоко" not in text  # the day card names two groups only (G5-R07)
+    assert "🍽 Яблоко" in text  # named as food, not as a group (G5-R07, G5-R28)
 
 
 def test_the_user_decides_not_the_analysis(db):
@@ -141,9 +141,25 @@ def test_parts_of_the_day_start_where_the_design_says(hour, word):
 
 def test_a_long_gap_is_described_in_words_without_hours(db):
     _meal(db, _at(8, 40))
+    _meal(db, _at(9, 40))
     _meal(db, _at(18, 30))
     line = next(x for x in _card(db).text.split("\n") if x.startswith("🕐"))
-    assert line == "🕐 Еда: 8:40 · 18:30, днём длинный перерыв"
+    assert line == "🕐 8:40 · 9:40 · 18:30, днём длинный перерыв"
+
+
+def test_two_meals_get_no_gap_line_the_times_already_show_it(db):
+    _meal(db, _at(14))
+    _meal(db, _at(20))
+    assert "перерыв" not in _card(db).text
+
+
+def test_sleep_is_not_a_gap_but_a_gap_after_it_still_is(db):
+    _meal(db, _at(0, 30))
+    _meal(db, _at(3, 15))
+    _meal(db, _at(16))
+    assert "перерыв" not in _card(db).text
+    _meal(db, _at(22))
+    assert "🕐 0:30 · 3:15 · 16:00 · 22:00, вечером длинный перерыв" in _card(db).text
 
 
 def test_under_six_hours_is_no_gap_and_six_is(db):
@@ -161,7 +177,7 @@ def test_one_meal_has_no_gap_and_a_meal_without_time_shows_no_time(db):
     timeless.meal_time = None
     assert day_card.facts(
         [timed, timeless], ZONE, lambda m: m.description
-    ) == day_card.DayFacts(times=("9:00",), anchor="тофу")
+    ) == day_card.DayFacts(times=("9:00",), anchor="тофу", foods="еда")
 
 
 def test_the_numbers_are_collapsed_and_there_is_no_goal(db):
@@ -242,6 +258,54 @@ def test_yesterday_uses_yesterdays_meals_only(db):
     assert "тофу" not in today.text
     assert yesterday.text.startswith("<b>📊 Вчера, чт 29 октября</b>")
     assert "⚓ Белковая опора: тофу утром" in yesterday.text
+
+
+# --- the hard day: the card records it, plainly and without a verdict ----------
+
+
+def test_a_day_of_chips_is_the_times_and_the_chips(db):
+    chips = [_item("чипсы")]
+    _meal(db, _at(14), name="чипсы", items=chips, groups=[], calories=1400)
+    _meal(db, _at(20), name="чипсы", items=chips, groups=[], calories=1400)
+    assert _card(db).text.split("\n")[2:4] == ["🕐 14:00 · 20:00", "🍽 Чипсы"]
+    assert _card(db).picture["foods"] == "Чипсы"
+    assert "ккал" not in _card(db).text and "2800" not in _card(db).text
+
+
+def test_foods_already_in_a_group_line_are_not_named_twice(db):
+    items = [_item("тофу", "anchor"), _item("чипсы")]
+    _meal(db, _at(13), name="обед", items=items, groups=["anchor"])
+    text = _card(db).text
+    assert "⚓ Белковая опора: тофу в обед\n🍽 Ещё: чипсы" in text
+    assert _card(db).picture["foods"] == "Ещё: чипсы"
+
+
+def test_a_day_with_everything_in_groups_has_no_food_line(db):
+    _meal(db, _at(9), items=[_item("овсянка", "grain")], groups=["grain"])
+    assert "🍽" not in _card(db).text
+
+
+def test_a_meal_without_analysis_is_named_by_its_own_name(db):
+    _meal(db, _at(9), name="<лапша> быстрая")
+    assert "🍽 &lt;лапша&gt; быстрая" in _card(db).text
+
+
+def test_a_hand_ticked_meal_is_not_named_again_by_its_items(db):
+    _meal(db, _at(13), name="суп дня", items=[_item("суп", "veg")], groups=["anchor"])
+    assert "🍽" not in _card(db).text
+
+
+def test_a_long_day_of_foods_is_cut_and_counted(db):
+    names = ["лапша", "чипсы", "печенье", "пицца", "кола", "чипсы", "конфеты"]
+    for hour, name in enumerate(names, 8):
+        _meal(db, _at(hour), name=name, items=[_item(name)], groups=[])
+    assert "🍽 Лапша, чипсы, печенье, пицца, ещё 2" in _card(db).text
+
+
+def test_the_food_line_has_no_verdict_words(db):
+    _meal(db, _at(4), name="чипсы", items=[_item("чипсы")], groups=[], calories=3000)
+    text = _card(db).text.casefold()
+    assert not re.search(r"поздно|ночной|вредн|полезн|переработ|жир", text)
 
 
 def test_no_card_text_names_what_is_missing(db):

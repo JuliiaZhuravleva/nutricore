@@ -128,7 +128,7 @@ def test_today_lists_meals_in_order_with_totals(Session):
         screen = st.open_view(db, 42, st.TODAY, NOW)
 
     lines = screen.text.split("\n")
-    assert "🕐 Еда: 9:00 · 11:00" in lines
+    assert "🕐 9:00 · 11:00" in lines
     assert (
         "<blockquote expandable>🔢 За день: ≈ 1 250 ккал · Б 21 г · Ж 16 г · У 5 г"
         in lines
@@ -355,7 +355,7 @@ def test_statistics_button_sends_today_with_tabs(Session):
     state, message = _run(tg.show_statistics, "📊 Статистика")
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>📊 Сегодня")
-    assert "🕐 Еда: " in message.replies[-1]
+    assert "🕐 " in message.replies[-1]
     assert "ккал" not in message.replies[-1]  # behind «🔢 Цифры» by default
     assert message.kwargs[-1]["parse_mode"] == "HTML"
     assert _callbacks(message.kwargs[-1]["reply_markup"])[-5:] == [
@@ -524,13 +524,13 @@ def test_statistics_days_follow_the_chosen_zone(Session):
         # 00:30 on the 28th in Tbilisi, 23:30 on the 27th in Moscow.
         _meal(db, user, datetime(2026, 10, 27, 20, 30, tzinfo=UTC), 500, "блины")
     with Session() as db:
-        assert "🕐 Еда: 0:30" in st.open_view(db, 42, st.TODAY, NOW).text
+        assert "🕐 0:30" in st.open_view(db, 42, st.TODAY, NOW).text
     _tap(Session, "set:tz:Europe/Moscow")
     with Session() as db:
         today = st.open_view(db, 42, st.TODAY, NOW)
         yesterday = st.open_view(db, 42, st.YESTERDAY, NOW)
     assert "🕐 Еда" not in today.text
-    assert "🕐 Еда: 23:30" in yesterday.text
+    assert "🕐 23:30" in yesterday.text
 
 
 def test_weight_dates_follow_the_chosen_zone(Session):
@@ -920,7 +920,7 @@ def test_numbers_off_day_lists_meals_without_calories_and_offers_the_button(Sess
         user = _user(db)
         _meal(db, user, NOW - timedelta(hours=1), 250, "омлет", proteins=20)
         screen = st.open_view(db, 42, st.TODAY, NOW)
-    assert "🕐 Еда: 11:00" in screen.text
+    assert "🕐 11:00" in screen.text
     for hidden in ("ккал", "За день", "Б 20", "омлет"):
         assert hidden not in screen.text
     assert _rows(screen.markup)[-2:] == [
@@ -986,7 +986,10 @@ def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
         _meal(db, db.query(User).one(), NOW, 400)
         day = st.open_view(db, 42, st.TODAY, NOW)
     assert "400 ккал" in day.text
-    assert _rows(day.markup)[-2:] == [["🔋 Силы: обычно"], ["✓ Сегодня", "Вчера", "7 дней"]]  # no numbers button
+    assert _rows(day.markup)[-2:] == [
+        ["🔋 Силы: обычно"],
+        ["✓ Сегодня", "Вчера", "7 дней"],
+    ]  # no numbers button
 
     off = _tap(Session, "set:num")
     assert off.text.startswith("<i>✓ Цифры теперь за кнопкой</i>")

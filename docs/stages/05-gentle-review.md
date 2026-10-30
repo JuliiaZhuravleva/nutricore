@@ -29,11 +29,14 @@ So three earlier plans conflict with the evidence and are revised here:
 
 These come from the "top principles" of both docs. A slice is not done until its screens pass them.
 
-1. **Two layers.** Default: at most three observations plus one next step. Numbers (kcal, macros, grams) appear
+1. **Two layers.** Default: the record of what was eaten (G5-R28), at most three observations, and one step the
+   person chose (G5-R27). Numbers (kcal, macros, grams) appear
    only behind «🔢 Цифры» by default; a switch in ⚙️ shows them again (G5-R01, R02).
-2. **Presence, not deficit.** Say what was there. Never say what was missing, too much, too little, over or under.
+2. **Presence first.** The day says what was there, never what was missing, too much, too little, over or under.
+   Only the week may name an absence, under G5-R25: one line, about the records, never about the person.
 3. **Add, never restrict.** No generated goal removes or reduces a food. A missed step brings no compensating step.
-4. **No streaks, badges or "perfect" anything.** Praise only process: coming back, a flexible fix, a pattern noticed.
+4. **No streaks, badges or "perfect" anything.** No praise per entry. Name a specific thing that was seen, such as a
+   return or a count that moved (G5-R26). Counts of days do not reset.
 5. **Neutral look.** No red/green for food. Colour and the green button only for navigation and Done.
 6. **Weekly for micronutrients.** No daily miss for anything on a weekly schedule.
 7. **Non-medical.** Never "deficient", "low", "not enough". Ticks and presence only (product philosophy, boundary).
@@ -153,6 +156,23 @@ The order below is the build order (G5-R16). Rough size is in "sessions" of focu
   Repeats are never a variety failure.
 - «Не предлагать»: foods the user never wants suggested. Typed once, honoured by slice F (G5-R13).
 - Both live in ⚙️ or in a 🍽 hub.
+
+### J. The hard day's card (G5-R28; ≈1 session)
+
+- Foods named plainly on the day card and its picture; the day's line widens to 0:00 for food before 6:00.
+- Sleep is not a long gap; the week's line stops suggesting that groups were not looked at.
+
+### K. A step the person chose, and a count of days (G5-R26, R27; ≈2 sessions)
+
+- 2–3 options from the records; no step on the card until one is chosen; a day boundary that does not take
+  sleep for a meal gap.
+- The count against the person's own past, in three states: moved, no clear movement, too few records (fewer than
+  4 days with records in either week; a heuristic, see the evidence doc).
+
+### L. The week's one absence (G5-R25; ≈1 session)
+
+- One tap on the week card: «записано почти всё?». Only then the one line, and an offer to take it as the step.
+- A return after a long break says the history is still there.
 
 ### H. Cooking ladder (after the day and week cards, G5-R14; ≈2+ sessions)
 

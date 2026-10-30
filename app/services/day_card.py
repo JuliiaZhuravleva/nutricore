@@ -1,8 +1,9 @@
 """What the day card says about the food (stage 5, slice D). Pure, no Telegram.
 
-When food happened as plain times (G5-R06) and the two groups the day card names
-(G5-R07): whole grains and protein anchors, each only if it was there. Nothing
-here can name what was missing, and a long gap gets words, never hours.
+When food happened as plain times (G5-R06), the two groups the day card names
+(G5-R07): whole grains and protein anchors, each only if it was there, and the rest
+of what was eaten, as plainly as it was logged (G5-R28). Nothing here can name what
+was missing, and a long gap gets words, never hours.
 """
 
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ from app.models.meal import Meal
 from app.services import food_groups
 
 GAP_HOURS = 6
+GAP_MIN_MEALS = 3  # with two meals the times already show the gap
+NIGHT_ENDS = 6  # the day's line starts here, and food before it is the night's
+DAY_GROUPS = ("grain", "anchor")
 MAX_NAMES = 4
 NAME_MAX = 32
 
@@ -31,6 +35,7 @@ class DayFacts:
     gap: Optional[str] = None  # «днём», where the one long gap fell
     grain: Optional[str] = None  # «овсянка утром»
     anchor: Optional[str] = None  # «тофу в обед · чечевица вечером»
+    foods: Optional[str] = None  # «чипсы, лапша»: what no group line named
 
 
 def plain_time(moment: datetime) -> str:
@@ -59,10 +64,10 @@ def _hour(moment: datetime) -> float:
 
 
 def _long_gap(moments: list) -> Optional[str]:
-    """The longest gap between two meals, if it is long; the night is not a gap,
-    since only meals of one day are ever passed in."""
-    pairs = list(zip(moments, moments[1:]))
-    if not pairs:
+    """The longest gap between two meals, if it is long. Only meals of one day are
+    passed in, and a gap that starts in the night is sleep, so it is never one."""
+    pairs = [pair for pair in zip(moments, moments[1:]) if _hour(pair[0]) >= NIGHT_ENDS]
+    if len(moments) < GAP_MIN_MEALS or not pairs:
         return None
     first, last = max(pairs, key=lambda pair: pair[1] - pair[0])
     if (last - first).total_seconds() < GAP_HOURS * 3600:
@@ -128,6 +133,35 @@ def _group_line(meals: list, group: str, zone: ZoneInfo, name_of: Callable):
     return line + (f" · ещё {total - MAX_NAMES}" if total > MAX_NAMES else "")
 
 
+def _item_names(meal: Meal) -> list:
+    items = tags(meal).get("food_items")
+    return [
+        item["name"]
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+
+
+def _foods_line(meals: list, name_of: Callable) -> Optional[str]:
+    """What no group line named, each food once, past ``MAX_NAMES`` a count. A meal
+    whose own name stands in a group line (ticked by hand) has been named already."""
+    named, foods = set(), []
+    for meal in meals:
+        grouped = [x for g in DAY_GROUPS for x in _foods_in(meal, g, name_of)]
+        items = _item_names(meal)
+        if name_of(meal) in grouped and name_of(meal) not in items:
+            continue
+        named.update(name.casefold() for name in grouped)
+        for name in items or [name_of(meal)]:
+            if name.casefold() not in named:
+                named.add(name.casefold())
+                foods.append(short(name))
+    if not foods:
+        return None
+    extra = len(foods) - MAX_NAMES
+    return ", ".join(foods[:MAX_NAMES]) + (f", ещё {extra}" if extra > 0 else "")
+
+
 def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
     """``meals`` in time order, as the CRUD returns them."""
     moments = [local_time(m.meal_time, zone) for m in meals if m.meal_time]
@@ -136,6 +170,7 @@ def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
         gap=_long_gap(moments),
         grain=_group_line(meals, "grain", zone, name_of),
         anchor=_group_line(meals, "anchor", zone, name_of),
+        foods=_foods_line(meals, name_of),
     )
 
 
@@ -149,11 +184,20 @@ def marks(meals: list, zone: ZoneInfo) -> list:
     return out
 
 
+def foods_label(day: DayFacts) -> Optional[str]:
+    """The food line's words, one for the text and the picture."""
+    if not day.foods:
+        return None
+    if day.grain or day.anchor:
+        return f"Ещё: {day.foods}"
+    return day.foods[:1].upper() + day.foods[1:]
+
+
 def lines(day: DayFacts, escape: Callable) -> list:
     """The card's text; every name passes ``escape``."""
     out = []
     if day.times:
-        rhythm = "🕐 Еда: " + " · ".join(day.times)
+        rhythm = "🕐 " + " · ".join(day.times)
         out.append(rhythm + (f", {day.gap} длинный перерыв" if day.gap else ""))
     if day.grain:
         out.append(
@@ -163,4 +207,7 @@ def lines(day: DayFacts, escape: Callable) -> list:
         out.append(
             f"{food_groups.GROUPS['anchor'][0]} Белковая опора: {escape(day.anchor)}"
         )
+    label = foods_label(day)
+    if label:
+        out.append(f"🍽 {escape(label)}")
     return out
