@@ -8,6 +8,7 @@ from .inbound_message import InboundMessage
 from .meal import Meal
 from .personal_food import PersonalFood, PersonalFoodEmbedding
 from .product_cache import ProductCache
+from .routine_tick import RoutineTick
 from .subscription import Subscription
 from .user import User
 
@@ -16,6 +17,7 @@ __all__ = [
     "BodyMetric",
     "Meal",
     "FavoriteMeal",
+    "RoutineTick",
     "Activity",
     "AnalysisReport",
     "Subscription",

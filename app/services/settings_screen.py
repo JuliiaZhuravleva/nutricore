@@ -1,7 +1,7 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
-    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💸 Стоимость запросов: выкл]
+    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💊 Рутины] [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -27,6 +27,8 @@ from app.core.config import settings
 from app.models.user import User
 from app.services.favorites import Screen
 from app.services.numbers import SHOW_NUMBERS, shows_numbers
+from app.services.routines import CALLBACK_PREFIX as ROUTINES_PREFIX
+from app.services.routines import active as active_routines
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,7 @@ def screen(
     now: datetime,
     notice: str | None = None,
     numbers: bool = False,
+    routines: int = 0,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -129,12 +132,14 @@ def screen(
         "📊 Статистика делит дни.",
         "🔢 Калории и БЖУ: "
         + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
+        f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
         f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
         "под каждым разбором еды.",
     ]
     rows = [
         [_btn("🕐 Часовой пояс", _ZONES_CB)],
         [_btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
+        [_btn("💊 Рутины", ROUTINES_PREFIX + "open")],
         [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
@@ -207,7 +212,12 @@ def open_view(
     user = _user(db, telegram_id)
     on = bool(user and (user.settings or {}).get(SHOW_COSTS))
     return screen(
-        on, zone_name(user), now or datetime.now(UTC), notice, shows_numbers(user)
+        on,
+        zone_name(user),
+        now or datetime.now(UTC),
+        notice,
+        shows_numbers(user),
+        len(active_routines(user)),
     )
 
 

@@ -1,7 +1,7 @@
 import base64
 import logging
 import warnings
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Dict
 
 import httpx
@@ -33,7 +33,13 @@ from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import ai_errors, custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
-from app.services import meal_draft, settings_screen, stats_screen, weight_screen
+from app.services import (
+    meal_draft,
+    routines,
+    settings_screen,
+    stats_screen,
+    weight_screen,
+)
 from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
@@ -65,6 +71,8 @@ logger = logging.getLogger(__name__)
 
 # Light anti-spam for /consult: min seconds between a user's hub calls.
 CONSULT_COOLDOWN_SECONDS = 3
+# How long «➕» or «✏️» waits for the typed routine name.
+ROUTINE_NAME_WAIT = timedelta(minutes=10)
 _last_consult: Dict[int, datetime] = {}
 
 # Max inbound messages re-analyzed per /reprocess call — a cap on OpenAI spend
@@ -87,7 +95,8 @@ _credit_alerted: Dict[str, datetime] = {}
     CHOOSING_MODEL,
     DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
     ENTERING_WEIGHT,
-) = range(9)
+    ENTERING_ROUTINE_NAME,
+) = range(10)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -1506,6 +1515,93 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def routines_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the routine screens (``rt:…``)."""
+    await _screen_callback(
+        update, routines.handle_callback, "🔒 Рутины доступны с подпиской", "Routines"
+    )
+
+
+async def routine_ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """➕ or ✏️ on the routine screens: the next text message is the name. A tap
+    that opens no name step changes no state."""
+    asked = {}
+
+    def handle(db, telegram_id, data):
+        screen, asked["rename"], asked["wait"] = routines.ask_name(
+            db, telegram_id, data
+        )
+        return screen
+
+    await _screen_callback(update, handle, "🔒 Рутины доступны с подпиской", "Routines")
+    if not asked.get("wait"):
+        return None
+    context.user_data["routine_rename"] = asked["rename"]
+    context.user_data["routine_asked_at"] = datetime.now(UTC)
+    return ENTERING_ROUTINE_NAME
+
+
+async def routine_leave_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A routine button instead of a name: the question is closed, so the next
+    text is not taken for a name."""
+    context.user_data.pop("routine_rename", None)
+    context.user_data.pop("routine_asked_at", None)
+    await routines_callback(update, context)
+    return CHOOSING_ACTION
+
+
+async def routine_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Any other inline tap, in its own handler group: those screens run outside
+    the conversation and do not change its state, but the user has moved on."""
+    context.user_data.pop("routine_asked_at", None)
+
+
+@subscription_required
+async def process_routine_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """The typed name; a name that does not fit asks again. Text arriving after
+    the user moved on is what it would be anywhere else, never a silent rename."""
+    asked_at = context.user_data.pop("routine_asked_at", None)
+    if asked_at is None or datetime.now(UTC) - asked_at > ROUTINE_NAME_WAIT:
+        context.user_data.pop("routine_rename", None)
+        if weight_screen.KG_PATTERN.match(update.message.text or ""):
+            return await process_weight(update, context)
+        return await typed_routine_tick(update, context) or CHOOSING_ACTION
+    with SessionLocal() as db:
+        screen, done = routines.submit_name(
+            db,
+            update.effective_user.id,
+            update.message.text,
+            context.user_data.get("routine_rename"),
+        )
+    await _reply_screen(update, screen)
+    if not done:
+        context.user_data["routine_asked_at"] = asked_at
+        return ENTERING_ROUTINE_NAME
+    context.user_data.pop("routine_rename", None)
+    return CHOOSING_ACTION
+
+
+async def typed_routine_tick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A message that is exactly a routine on today's card ticks it (G5-R08).
+
+    Any other text stays ignored in these states, as before; no subscription
+    notice either, for a message that was not asking for anything.
+    """
+    user = update.effective_user
+    if not await check_subscription(user.id):
+        return None
+    with SessionLocal() as db:
+        name = stats_screen.tick_by_name(db, user.id, update.message.text)
+    if name is None:
+        return None
+    await update.message.reply_text(
+        f"✓ {name}", reply_markup=_day_card_button()
+    )
+    return CHOOSING_ACTION
+
+
 async def handle_subscription_inquiry(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
@@ -1802,6 +1898,14 @@ def create_bot_application() -> Application:
             MessageHandler(filters.Regex("^⚙️ Настройки$"), show_settings),
         ]
 
+    routine_ask = CallbackQueryHandler(routine_ask_name, pattern=routines.ASK_PATTERN)
+    # Past the fallbacks' two reply-keyboard buttons, or it would swallow them.
+    routine_tick = MessageHandler(
+        filters.TEXT
+        & ~filters.COMMAND
+        & ~filters.Regex("^(❓ О боте|💎 Получить подписку)$"),
+        typed_routine_tick,
+    )
     conv_handler = ConversationHandler(
         # The menu buttons are entry points too: the conversation state lives in
         # memory, so after a bot restart they would otherwise do nothing until
@@ -1813,15 +1917,29 @@ def create_bot_application() -> Application:
             # prompt still holds after a restart or an undo.
             MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
             MessageHandler(filters.PHOTO, quick_meal_photo),
+            routine_ask,
+            routine_tick,
         ],
         states={
             CHOOSING_ACTION: [
                 *menu(),
                 MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
                 MessageHandler(filters.PHOTO, quick_meal_photo),
+                routine_ask,
+                routine_tick,
+            ],
+            ENTERING_ROUTINE_NAME: [
+                *menu(),
+                routine_ask,
+                CallbackQueryHandler(
+                    routine_leave_name, pattern=f"^{routines.CALLBACK_PREFIX}"
+                ),
+                MessageHandler(filters.PHOTO, quick_meal_photo),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_routine_name),
             ],
             ENTERING_WEIGHT: [
                 *menu(),
+                routine_ask,
                 MessageHandler(filters.PHOTO, quick_meal_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_weight),
             ],
@@ -1887,6 +2005,17 @@ def create_bot_application() -> Application:
         CallbackQueryHandler(
             settings_callback, pattern=f"^{settings_screen.CALLBACK_PREFIX}"
         )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            routines_callback, pattern=f"^{routines.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            routine_left_by_tap, pattern=f"^(?!{routines.CALLBACK_PREFIX})"
+        ),
+        group=1,
     )
 
     # Draft buttons tapped outside the confirm step (after a save, a cancel or

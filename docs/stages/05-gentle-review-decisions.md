@@ -29,6 +29,7 @@ unanswered and the stated default applies.
 | G5-R19 | **All user-facing text is gender-neutral**: the project is open source and the bot is universal. «✅ Готово», never «✅ Сделала». Enforced by a test with a positive control | all |
 | G5-R20 | Ready-made and convenience food is first-class. Steps add to it; they never "fix" or replace it | F, H |
 | G5-R21 | Future: the user can export the food diary for a period as a file to hand to a psychologist or a nutritionist (owner, 2026-10-29). Format: both — a PDF a person reads and a table (CSV) to count in (owner, 2026-10-30) | I |
+| G5-R22 | The bot explains itself: a base of short explanations of what each feature does, how it works and where the idea comes from, reached by tapping (owner, 2026-10-30). Plain text in the repo, no model call. Each new feature adds its entry in its own slice. Text comes from `docs/researches/`, rewritten for the user: never the research documents themselves, no judging words, no eating-disorder material, no supplement advice | J, then each of D–I |
 
 ## Notes behind three answers
 
@@ -78,6 +79,31 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - Validation (invented meals, `tests/fixtures/food_groups_eval.json`, text analysis on gpt-6-luna, $0.0096):
   74 of 75 required tags, no extra ones; the miss is «anchor» on ready-made nuggets. The photo path uses the same
   rule and was not run. The owner's real meals are still to be run, through `--set`, outside the repo.
+
+## Slice C, as built
+
+- Routines live in `User.settings["routines"]`; each tick is a row in `routine_ticks` (migration `a9b8c7d6e5f4`). A day
+  without a tick leaves no row, so nothing can count it.
+- A removed routine stays stored and its ticks stay: undo restores it, and a tick on an earlier day still happened.
+- A new routine is a hidden draft from the typed name on. Leaving it halfway shows nothing, and the next new one
+  replaces it.
+- The steps run name → days → icon (screen question 4). «🔣 Значок» on one routine's screen is an addition to the mock:
+  the icon chosen at creation has to be changeable somewhere.
+- The card's day travels in the tick button. A card left open overnight ticks nothing and shows today.
+- A weekly routine shows every day of its Mon–Sun week until ticked, then only on the day of the tick.
+- A typed message ticks only when it equals a routine on today's card, ignoring case and extra spaces. Other text stays
+  ignored as before, and text being entered as a meal never reaches this check.
+- Up to 9 routines, names up to 30 characters. Button rows narrow for long names and count ✓ in advance, so a tick
+  never moves a button.
+- A tick button carries the state it asks for, so an old card or a double tap cannot flip a tick set elsewhere. A
+  routine ticked today stays on the card even if its schedule has changed since, so the tick can be taken back.
+- The name step closes on any other inline tap and after 10 minutes. Text after that is what it would be anywhere else:
+  a weight, a routine tick or nothing, never a silent rename. «➕» and «✏️» do not pull the user out of a meal being
+  entered: they answer with a short notice and the meal stays.
+- Names that read as a weight («72,5», «100») are refused, because typing one is a weigh-in. Undo from an older message
+  rechecks the name and the limit; a second tap on «🗑» keeps the undo button.
+- Known gap: the name step lives in memory like every conversation state, so a bot restart between «➕» and the typed
+  name loses it. The name then goes unanswered, and tapping «➕» again recovers.
 
 ## Facts confirmed
 

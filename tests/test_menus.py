@@ -388,9 +388,10 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _labels(markup) == [
         "🕐 Часовой пояс",
         "🔢 Цифры сразу: выкл",
+        "💊 Рутины",
         "💸 Стоимость запросов: выкл",
     ]
-    assert _callbacks(markup) == ["set:tz", "set:num", "set:costs"]
+    assert _callbacks(markup) == ["set:tz", "set:num", "rt:open", "set:costs"]
     assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
 
 
@@ -739,9 +740,11 @@ def test_every_menu_button_has_a_handler_everywhere_the_menu_shows(conv):
         ("72,5", "menu", "process_weight"),
         ("72,5", "weight", "process_weight"),
         ("гречка", "weight", "process_weight"),  # gets the hint
-        ("гречка", "entry", None),  # no finding: free text is not a weight
-        ("гречка", "menu", None),
-        ("150 г", "menu", None),
+        # Free text is not a weight. The typed tick looks at it and stays silent
+        # unless it is exactly a routine (tests/test_routines.py).
+        ("гречка", "entry", "typed_routine_tick"),
+        ("гречка", "menu", "typed_routine_tick"),
+        ("150 г", "menu", "typed_routine_tick"),
     ],
 )
 def test_typed_text_routing(conv, text, where, expected):

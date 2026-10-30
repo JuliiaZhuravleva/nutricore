@@ -1,11 +1,13 @@
 """📊 Статистика: what was eaten today, yesterday and over the last 7 days.
 
     📊 Статистика → <b>📊 Сегодня, вт 28 окт</b> — the meals, then the totals
+    [💊 Прогулка] — up to three ticks of the user's routines, then [💊 Ещё N]
     [✓ Сегодня] [Вчера] [7 дней]
     [🔢 Цифры]
 
 The numbers are the saved meals' own, summed, and there is no goal (stage 5,
-G5-R03). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01): the screen
+G5-R03). Only ticked routines are named in the text, on any day; an unticked one
+is a button today and nothing afterwards (G5-R08). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01): the screen
 lists what was eaten and when. Days are the user's calendar days (their ⚙️
 time zone), not UTC. Every tab
 edits the same message; the callback data carries the whole view, so a tap
@@ -17,17 +19,20 @@ from __future__ import annotations
 
 import html
 import logging
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
 from app.services.numbers import shows_numbers, toggle_label
+from app.services import routines
 from app.services.settings_screen import user_zone
 
 logger = logging.getLogger(__name__)
@@ -39,6 +44,9 @@ BAR_WIDTH = 8
 
 TODAY, YESTERDAY, WEEK = "t", "y", "w"
 OPEN = "n"  # appended to a tab: the numbers are open on it
+# Routine ticks: k:<id>:<day>:<1 tick, 0 untick>:<n or empty>; m:<day>:<n or empty>
+TICK, MORE_TICK, MORE = "k", "K", "m"
+TICK_ROW = 3
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
 
 _WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
@@ -99,19 +107,22 @@ def _meal_name(meal: Meal) -> str:
     return name
 
 
-def _tabs(current: str, opened: bool | None = None) -> InlineKeyboardMarkup:
-    """The tabs; ``opened`` is None when ⚙️ shows the numbers anyway (no button),
-    else whether «🔢 Цифры» is open on this view. An open view stays open
-    across the tabs."""
+def _tabs(
+    current: str, opened: bool | None = None, above: tuple = ()
+) -> InlineKeyboardMarkup:
+    """The tabs, under the rows in ``above``; ``opened`` is None when ⚙️ shows the
+    numbers anyway (no button), else whether «🔢 Цифры» is open on this view. An
+    open view stays open across the tabs."""
     keep = OPEN if opened else ""
     rows = [
+        *above,
         [
             InlineKeyboardButton(
                 ("✓ " if code == current else "") + label,
                 callback_data=CALLBACK_PREFIX + code + keep,
             )
             for code, label in _TABS
-        ]
+        ],
     ]
     if opened is not None:
         flip = "" if opened else OPEN
@@ -138,8 +149,12 @@ def day_screen(
     tab: str,
     zone: ZoneInfo,
     opened: bool | None = None,
+    routine_line: str | None = None,
+    routine_rows: tuple = (),
 ) -> Screen:
     """``opened``: see ``_tabs``; the numbers show unless it is False."""
+    markup = _tabs(tab, opened, routine_rows)
+    ticks = ["", routine_line] if routine_line else []
     numbers = opened is not False
     head = "Сегодня" if tab == TODAY else "Вчера"
     lines = [f"<b>📊 {head}, {day_title(day)}</b>", ""]
@@ -148,19 +163,20 @@ def day_screen(
             "Записей нет. Еда попадает сюда после «✅ Сохранить» "
             "или из ⭐ Избранного."
         )
-        return Screen("\n".join(lines), _tabs(tab, opened))
+        return Screen("\n".join(lines + ticks), markup)
     for meal in meals:
         when = _when(meal, zone)
         label = f" · {meal.meal_type}" if meal.meal_type else ""
         kcal = f" · {_kcal(_sum([meal], 'calories'))}" if numbers else ""
         lines.append(f"{when}{label} · {html.escape(_meal_name(meal))}{kcal}")
+    lines += ticks
     if numbers:
         lines += [
             "",
             f"<b>🔥 Итого: {_kcal(_sum(meals, 'calories'))}</b>",
             _macros(meals),
         ]
-    return Screen("\n".join(lines), _tabs(tab, opened))
+    return Screen("\n".join(lines), markup)
 
 
 def week_screen(
@@ -210,6 +226,129 @@ def week_screen(
     return Screen("\n".join(lines), _tabs(WEEK, opened))
 
 
+# --- routine ticks ----------------------------------------------------------
+
+
+def _day_code(day: date) -> str:
+    return day.strftime("%Y%m%d")
+
+
+def _tick_button(routine: dict, ticked: bool, verb: str, day: date, keep: str):
+    label = ("✓ " if ticked else "") + routines.button_label(routine)
+    # What the button shows travels with it, so an old card or a double tap can
+    # only ask for that state, never flip one set elsewhere.
+    want = "0" if ticked else "1"
+    data = f"{CALLBACK_PREFIX}{verb}:{routine['id']}:{_day_code(day)}:{want}:{keep}"
+    return InlineKeyboardButton(label, callback_data=data)
+
+
+def _day_ticks(db, user: User | None, day: date) -> tuple[list[dict], set]:
+    """What the card offers on ``day``, and the ids ticked that day."""
+    if user is None:
+        return [], set()
+    first, last = routines.week_bounds(day)
+    ticks = crud_routine_tick.between(db, user.id, first, last)
+    done = {tick.routine_id for tick in ticks if tick.day == day}
+    return routines.due(user, ticks, day), done
+
+
+def _routine_rows(due: list[dict], done: set, day: date, keep: str) -> tuple:
+    """Up to three ticks in their own order (a tap never moves a button), then
+    «Ещё N»; the rest of the card stays one screen."""
+    if not due:
+        return ()
+    shown = [
+        _tick_button(routine, routine["id"] in done, TICK, day, keep)
+        for routine in due[:TICK_ROW]
+    ]
+    rows = routines.button_rows(due[:TICK_ROW], shown)
+    if len(due) > TICK_ROW:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"💊 Ещё {len(due) - TICK_ROW}",
+                    callback_data=f"{CALLBACK_PREFIX}{MORE}:{_day_code(day)}:{keep}",
+                )
+            ]
+        )
+    return tuple(rows)
+
+
+def _more_screen(user: User, due: list[dict], done: set, day: date, keep: str):
+    buttons = [
+        _tick_button(routine, routine["id"] in done, MORE_TICK, day, keep)
+        for routine in due
+    ]
+    rows = routines.button_rows(due, buttons)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Сегодня", callback_data=CALLBACK_PREFIX + TODAY + keep
+            )
+        ]
+    )
+    lines = ["<b>💊 Рутины на сегодня</b>", ""]
+    line = routines.ticked_line(user, done)
+    lines.append(line or "Отметка ставится и снимается нажатием.")
+    return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
+
+
+def _tick_view(db, telegram_id: int, parts: list, now: datetime | None) -> Screen:
+    """A tap on a tick or on «Ещё N». The card's day travels in the button, so a
+    card left open overnight cannot tick the wrong day."""
+    verb, *rest = parts
+    keep = rest[-1] if rest and rest[-1] == OPEN else ""
+    opened = keep == OPEN
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    today = local_time(now or datetime.now(UTC), user_zone(user)).date()
+
+    def today_card(toast: str) -> Screen:
+        return replace(open_view(db, telegram_id, TODAY, now, opened), toast=toast)
+
+    shape = 2 if verb == MORE else 4
+    day = rest[0] if verb == MORE else rest[1] if len(rest) > 1 else None
+    if len(rest) != shape or day != _day_code(today):
+        return today_card("Это карточка прошлого дня, вот сегодняшняя")
+    due, done = _day_ticks(db, user, today)
+    if verb == MORE:
+        return _more_screen(user, due, done, today, keep)
+    rid, want = rest[0], rest[2]
+    routine = next((r for r in due if r["id"] == rid), None)
+    if routine is None or want not in ("0", "1"):
+        exists = any(r["id"] == rid for r in routines.active(user))
+        return today_card(
+            "Этой рутины сегодня нет на карточке" if exists else "Этой рутины уже нет"
+        )
+    if want == "1":
+        crud_routine_tick.tick(db, user.id, rid, today)
+        toast = f"✓ {routine.get('name')}"
+    else:
+        crud_routine_tick.untick(db, user.id, rid, today)
+        toast = "Отметка снята"
+    if verb == MORE_TICK:
+        due, done = _day_ticks(db, user, today)
+        return replace(_more_screen(user, due, done, today, keep), toast=toast)
+    return today_card(toast)
+
+
+def tick_by_name(
+    db, telegram_id: int, text: str | None, now: datetime | None = None
+) -> str | None:
+    """A typed message that is exactly a routine on today's card ticks it; returns
+    its name. Anything else is None, and the message is not a tick."""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if user is None:
+        return None
+    wanted = routines.clean_name(text).casefold()
+    today = local_time(now or datetime.now(UTC), user_zone(user)).date()
+    due, _done = _day_ticks(db, user, today)
+    for routine in due:
+        if routines.clean_name(str(routine.get("name"))).casefold() == wanted:
+            crud_routine_tick.tick(db, user.id, routine["id"], today)
+            return routine.get("name")
+    return None
+
+
 # --- operations -------------------------------------------------------------
 
 
@@ -233,17 +372,37 @@ def open_view(
     shown = None if shows_numbers(user) else opened
     if tab == YESTERDAY:
         day = today - timedelta(days=1)
-        return day_screen(_meals_on(db, user, day, zone), day, YESTERDAY, zone, shown)
+        _due, done = _day_ticks(db, user, day)
+        return day_screen(
+            _meals_on(db, user, day, zone),
+            day,
+            YESTERDAY,
+            zone,
+            shown,
+            routines.ticked_line(user, done),
+        )
     if tab == WEEK:
         days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
         return week_screen(
             [(day, _meals_on(db, user, day, zone)) for day in days], zone, shown
         )
-    return day_screen(_meals_on(db, user, today, zone), today, TODAY, zone, shown)
+    due, done = _day_ticks(db, user, today)
+    return day_screen(
+        _meals_on(db, user, today, zone),
+        today,
+        TODAY,
+        zone,
+        shown,
+        routines.ticked_line(user, done),
+        _routine_rows(due, done, today, OPEN if opened else ""),
+    )
 
 
 def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None):
     view = data[len(CALLBACK_PREFIX) :]
+    parts = view.split(":")
+    if parts[0] in (TICK, MORE_TICK, MORE) and len(parts) > 1:
+        return _tick_view(db, telegram_id, parts, now)
     tab, opened = view[:1], view[1:] == OPEN
     if tab not in dict(_TABS) or view[1:] not in ("", OPEN):
         logger.warning("stats: unknown callback data %r", data)
