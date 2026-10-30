@@ -20,6 +20,8 @@
  {"text": "арахисовая паста на белом хлебе", "must": ["nuts"], "maybe": ["legumes"]},
  {"text": "салат из огурцов и помидоров с подсолнечным маслом", "must": ["veg"], "maybe": []},
  {"text": "льняная каша с малиной", "must": ["nuts","omega","fruit"], "maybe": ["grain"]},
+ {"text": "запечённый лосось 150 г", "must": ["anchor"], "maybe": []},
+ {"text": "огурцы и помидоры с льняным маслом", "must": ["veg","omega"], "maybe": []},
  {"text": "коричневый рис с фасолью и кукурузой", "must": ["grain","legumes","anchor"], "maybe": ["veg"]},
  {"text": "веганская пицца с грибами", "must": ["veg"], "maybe": []},
  {"text": "кофе с соевым молоком", "must": [], "maybe": ["legumes","calcium"]},

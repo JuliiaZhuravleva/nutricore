@@ -183,22 +183,26 @@ def toggle_group(draft: dict, key: str) -> bool:
     return True
 
 
+def _stamped(draft: dict, analysis: dict) -> dict:
+    """``analysis`` with the groups, if anyone tagged it: the model or the user.
+
+    No tags and no edit stays unstamped, so the re-tag run still finds the meal;
+    «food_groups: []» would say the meal was looked at and has none.
+    """
+    by_user = bool(draft.get("groups_by_user"))
+    if not by_user and not analysis.get("food_items"):
+        return dict(analysis)
+    return food_groups.stamp(analysis, draft.get("groups") or [], by_user=by_user)
+
+
 def stored_analysis(draft: dict) -> dict:
     """What a saved meal keeps: the analysis as it came, with the confirmed groups."""
-    return food_groups.stamp(
-        draft.get("base_nutrition") or draft.get("nutrition") or {},
-        draft.get("groups") or [],
-        by_user=bool(draft.get("groups_by_user")),
-    )
+    return _stamped(draft, draft.get("base_nutrition") or draft.get("nutrition") or {})
 
 
 def stored_nutrients(draft: dict) -> dict:
     """The numbers on screen, with the confirmed groups (a favorite copies these)."""
-    return food_groups.stamp(
-        draft.get("nutrition") or {},
-        draft.get("groups") or [],
-        by_user=bool(draft.get("groups_by_user")),
-    )
+    return _stamped(draft, draft.get("nutrition") or {})
 
 
 def toggle_numbers(draft: dict) -> bool:

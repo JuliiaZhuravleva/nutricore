@@ -121,9 +121,9 @@ _FOOD_GROUPS_RULE = """Also return "food_items": one entry per item in "foods", 
         - "nuts": nuts, seeds, nut and seed butters, tahini
         - "calcium": calcium-rich or fortified (fortified plant milk or yogurt, calcium-set tofu,
           dairy, kale, sesame paste)
-        - "omega": plant omega-3 sources (flax, chia, hemp seeds, walnuts) or oily fish
-        A ready-made or frozen food is tagged by what is in it, like any other. Sauces, oil,
-        salt and spices get an empty list. Never guess a group from a vague name."""
+        - "omega": plant omega-3 sources only (flax seeds or flax oil, chia, hemp seeds, walnuts)
+        A ready-made or frozen food is tagged by what is in it, like any other. Sauces, other
+        oils, salt and spices get an empty list. Never guess a group from a vague name."""
 
 
 class OpenAIService:

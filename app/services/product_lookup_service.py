@@ -66,6 +66,8 @@ def parse_nutrition(raw: Any) -> dict:
     data["foods"] = [str(x) for x in foods]
     if "food_items" in data:
         data["food_items"] = food_groups.clean_items(data["food_items"])
+    else:
+        logger.warning("analysis reply has no food_items: the meal stays untagged")
     missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
     if missing:
         raise ValueError(f"nutrition response missing keys: {missing}")

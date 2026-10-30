@@ -346,10 +346,9 @@ def test_confirm_meal_saves_with_photo_and_ai_analysis(patched_db):
         assert len(meals) == 1
         assert meals[0].calories == 350
         assert meals[0].photos == ["PHOTO_FILE_ID"]
+        # No tags from the analysis: left unstamped, for the re-tag run.
         assert meals[0].ai_analysis == {
             **_NUTRITION,
-            "food_groups": [],
-            "food_groups_by_user": False,
         }
 
 

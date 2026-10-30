@@ -12,7 +12,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -1328,9 +1328,14 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not saved:
             await _edit_draft_message(query, draft, footer="⚠️ Не сохранено")
             return CHOOSING_ACTION
-        await _edit_draft_message(
-            query, draft, footer="✅ Сохранено", settled_markup=_day_card_button()
-        )
+        # The meal is written: a failed redraw must not leave the draft live, or
+        # another tap on Save writes it twice. «✅ Записано» has already gone out.
+        try:
+            await _edit_draft_message(
+                query, draft, footer="✅ Сохранено", settled_markup=_day_card_button()
+            )
+        except TelegramError as e:
+            logger.warning("Saved draft not redrawn: %s", type(e).__name__)
         context.user_data.clear()
         return CHOOSING_ACTION
     if verb == meal_draft.CANCEL:

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError
 
 from app.core.config import settings
 from app.db.base import Base
@@ -318,6 +318,29 @@ def test_after_a_save_the_old_buttons_are_stale_not_a_second_save(Session):
     _state, query = _tap(context, _cb(draft, md.SAVE))
 
     assert "неактуален" in query.answer.call_args.args[0]
+    with Session() as db:
+        assert db.query(Meal).count() == 1
+
+
+def test_a_failed_redraw_after_a_save_cannot_write_the_meal_twice(Session):
+    draft = _draft()
+    context = _context(draft)
+    message = _Msg()
+    query = SimpleNamespace(
+        data=_cb(draft, md.SAVE),
+        message=message,
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(side_effect=NetworkError("down")),
+        edit_message_reply_markup=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        callback_query=query, effective_user=SimpleNamespace(id=42, username="owner")
+    )
+
+    state = asyncio.run(tg.meal_callback(update, context))
+
+    assert state == tg.CHOOSING_ACTION and context.user_data == {}
+    _tap(context, _cb(draft, md.SAVE))
     with Session() as db:
         assert db.query(Meal).count() == 1
 

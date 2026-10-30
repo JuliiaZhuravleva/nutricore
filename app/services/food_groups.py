@@ -88,10 +88,13 @@ def stamp(analysis: dict, groups: list, *, by_user: bool) -> dict:
 
 def carried(nutrients: Optional[dict]) -> Optional[dict]:
     """What a meal logged from a favorite keeps; None if the favorite is untagged."""
-    if not nutrients or "food_groups" not in nutrients:
+    if not isinstance(nutrients, dict) or "food_groups" not in nutrients:
+        return None
+    if not isinstance(nutrients["food_groups"], list):
+        logger.warning("favorite: food_groups is not a list, logging it untagged")
         return None
     return {
         "food_items": nutrients.get("food_items") or [],
-        "food_groups": ordered(nutrients["food_groups"] or []),
+        "food_groups": ordered(nutrients["food_groups"]),
         "food_groups_by_user": bool(nutrients.get("food_groups_by_user")),
     }

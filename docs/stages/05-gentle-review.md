@@ -119,7 +119,7 @@ The order below is the build order (G5-R16). Rough size is in "sessions" of focu
 ### E. Week card (≈1–2 sessions)
 
 - 📊 «7 дней» becomes the week card:
-  - group days for all eight groups («бобовые 5 из 7», G5-R07);
+  - group days for the groups that were there («бобовые 5 дн.», no «из 7»; G5-R07);
   - routines;
   - the number of different plants, with no target and no comparison (G5-R09);
   - **one real win** picked from data, never invented: "came back after a break", "three steady mornings";

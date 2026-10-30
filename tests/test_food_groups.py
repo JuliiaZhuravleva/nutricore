@@ -3,6 +3,8 @@
 import json
 import logging
 
+import pytest
+
 from app.services import food_groups as fg
 from app.services import meal_draft as md
 from app.services.openai_service import _FOOD_GROUPS_RULE
@@ -176,3 +178,56 @@ def test_favorite_keeps_groups_and_an_untagged_one_stays_untagged():
     }
     assert fg.carried(_NUTRITION) is None
     assert fg.carried(None) is None
+
+
+@pytest.mark.parametrize("nutrients", [None, [], 5, {"foods": ["тофу"]}])
+def test_carried_is_none_for_a_favorite_without_tags(nutrients):
+    assert fg.carried(nutrients) is None
+
+
+def test_carried_survives_a_broken_stored_value(caplog):
+    assert fg.carried({"food_groups": 5}) is None
+    assert "not a list" in caplog.text
+
+
+def _draft_with(nutrition):
+    draft = {"nutrition": nutrition}
+    return md.start(
+        draft, header="h", badge="", detail_lines=[], estimate=False, base_grams=None
+    )
+
+
+def test_a_meal_nobody_tagged_is_saved_unstamped_so_the_retag_finds_it():
+    for nutrition in ({"foods": ["x"]}, {"foods": ["x"], "food_items": []}):
+        draft = _draft_with(nutrition)
+        assert "food_groups" not in md.stored_analysis(draft)
+        assert "food_groups" not in md.stored_nutrients(draft)
+
+
+def test_a_user_edit_counts_as_tagged_even_without_the_analysis_tags():
+    draft = _draft_with({"foods": ["x"]})
+    md.toggle_group(draft, "veg")
+    md.toggle_group(draft, "veg")
+
+    analysis = md.stored_analysis(draft)
+
+    assert analysis["food_groups"] == [] and analysis["food_groups_by_user"] is True
+
+
+def test_an_analysis_without_tags_says_so_in_the_log(caplog):
+    reply = {
+        "foods": ["x"],
+        "calories": 1,
+        "protein": 1,
+        "fats": 1,
+        "carbs": 1,
+        "portion": "1",
+    }
+    with caplog.at_level(logging.WARNING):
+        parse_nutrition(dict(reply))
+    assert "no food_items" in caplog.text
+
+
+def test_omega_is_plant_sources_only():
+    assert "plant omega-3 sources only" in _FOOD_GROUPS_RULE
+    assert "fish" not in _FOOD_GROUPS_RULE.split('"omega"')[1].split("\n")[0]

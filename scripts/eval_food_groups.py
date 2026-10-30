@@ -12,6 +12,7 @@ Meals here are invented: a personal set stays out of the repo, passed by --set.
 import argparse
 import asyncio
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from app.services.product_lookup_service import parse_nutrition
 DEFAULT_SET = Path(__file__).parents[1] / "tests/fixtures/food_groups_eval.json"
 
 
-async def main() -> None:
+async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--one", action="store_true")
     parser.add_argument("--set", type=Path, default=DEFAULT_SET)
@@ -32,7 +33,8 @@ async def main() -> None:
         meals = meals[:1]
 
     service = get_openai_service()
-    hit, missed, extra, failed = Counter(), Counter(), Counter(), 0
+    hit, missed, extra = Counter(), Counter(), Counter()
+    failed, untagged = 0, 0
     with usage_meter.metering() as meter:
         for meal in meals:
             try:
@@ -40,6 +42,11 @@ async def main() -> None:
             except Exception as e:
                 failed += 1
                 print(f"FAILED  {meal['text']}: {type(e).__name__}")
+                continue
+            if not reply.get("food_items"):
+                # A missing answer is not a wrong one: scored apart from the misses.
+                untagged += 1
+                print(f"NO TAGS  {meal['text']}")
                 continue
             got = set(food_groups.from_items(reply.get("food_items")))
             must, maybe = set(meal["must"]), set(meal["maybe"])
@@ -53,11 +60,14 @@ async def main() -> None:
                 )
 
     print(
-        f"\n{len(meals)} meals, {failed} failed, ${meter.usd:.4f}", meter.unpriced or ""
+        f"\n{len(meals)} meals, {failed} failed, {untagged} without tags, "
+        f"${meter.usd:.4f}",
+        meter.unpriced or "",
     )
     for key in food_groups.GROUPS:
         print(f"{key:8} hit {hit[key]:3}  missed {missed[key]:3}  extra {extra[key]:3}")
+    return 1 if failed or untagged else 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

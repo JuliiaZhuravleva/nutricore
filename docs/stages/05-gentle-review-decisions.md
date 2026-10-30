@@ -48,6 +48,37 @@ the NOVA classification has only moderate validity without brand data. So the pl
 It adds whole-food anchors to ready meals, such as frozen vegetables, a legume pouch or fruit. That serves
 the same goal through the "add, never restrict" route.
 
+## Screen questions for slices B–I (2026-10-30)
+
+The mocks asked 12 questions and said that silence takes the recommendation. The owner answered «давай делать»,
+so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle-review-stories.md).
+
+| # | Question | Taken |
+|---|---|---|
+| 1 | «из 7» on the week card | No. «овощи 7 дн.», present groups only |
+| 2 | Energy mode control | One cycling button |
+| 3 | Mode names | обычно / мало сил / минимум сил |
+| 4 | Routine icon | Choose one of 💊 🚶 🧘 💧 😴 on creating a routine |
+| 5 | Marks for omega-3 and anchor | 🌰 and ⚓ |
+| 6 | Custom icons on the old buttons | Yes, once the emoji set is uploaded |
+| 7 | Independent fresh-eyes round | **Open:** runs only on the owner's yes (about 260k tokens) |
+| 8 | Emoji set upload | **Open:** needs the owner's Premium account and a set name; plain emoji until then |
+| 9 | Stories in the repo | Yes |
+| 10 | «🗓 Итог недели» switch | Keep |
+| 11 | «7 дней» vs «Неделя» | Last seven days vs Monday to Sunday |
+| 12 | Size chips | «Меньше 240г · ✓ 350г · Больше 490г» (grams are rounded to tens), without waiting for a phone screenshot |
+
+## Slice B, as built
+
+- Stored in `ai_analysis` and in `nutrients` (a favorite copies `nutrients`): `food_items` is what the analysis
+  said, per item; `food_groups` is what the user confirmed; `food_groups_by_user` says whether they edited it.
+- Omega-3 is plant sources only, flax oil included (G5-R07). Fish is «anchor».
+- A meal nobody tagged carries no `food_groups` at all, so the re-tag run finds it. `[]` means «looked at, none».
+- A correction typed into the draft is a new analysis: its groups replace the earlier ticks.
+- Validation (invented meals, `tests/fixtures/food_groups_eval.json`, text analysis on gpt-6-luna, $0.0096):
+  74 of 75 required tags, no extra ones; the miss is «anchor» on ready-made nuggets. The photo path uses the same
+  rule and was not run. The owner's real meals are still to be run, through `--set`, outside the repo.
+
 ## Facts confirmed
 
 - Cooking time: steps stay within 15–20 minutes.
