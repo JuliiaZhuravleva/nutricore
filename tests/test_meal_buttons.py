@@ -142,7 +142,7 @@ def test_a_size_chip_rescales_the_draft_in_place():
     assert "Калории: ≈ 350 ккал (280–420)" in text
     assert "Порция: ≈ 140г (большая)" in text
     markup = query.edit_message_text.call_args.kwargs["reply_markup"]
-    assert markup.inline_keyboard[0][2].text == "✓ Большая 140г"
+    assert markup.inline_keyboard[0][2].text == "✓ Больше 140г"
 
 
 def test_a_repeated_tap_on_the_same_chip_is_not_an_error():
@@ -252,9 +252,13 @@ def test_save_button_saves_what_is_on_screen(Session, celery_delay):
         # What the analysis said, before the user's portion change.
         assert meal.ai_analysis["calories"] == 250.0
         assert meal.resolution_signals["portion_grams"] == 140.0
-    # The settled draft keeps its text, loses its buttons.
+    # The settled draft keeps its text; of its buttons only the way to the day.
     assert query.edit_message_text.call_args.args[0].endswith("✅ Сохранено")
-    assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+    settled = query.edit_message_text.call_args.kwargs["reply_markup"]
+    assert [[b.text for b in row] for row in settled.inline_keyboard] == [
+        ["📊 Карточка дня"]
+    ]
+    assert settled.inline_keyboard[0][0].callback_data == "st:t"
     assert "✅ Записано" in query.message.replies[-1]
     assert query.message.markups[-1] is tg.main_keyboard
     # TD-025: the call site still enqueues the personal-food save, and with a
@@ -366,7 +370,7 @@ def test_numbers_off_draft_hides_calories_but_keeps_the_portion():
     assert "Калории" not in text and "Белки" not in text
     assert "Порция:" in text  # grams still correct a log
     rows = md.markup(draft).inline_keyboard
-    assert [b.text for b in rows[-1]] == ["🔢 Цифры", "✖️ Отмена"]
+    assert [b.text for b in rows[-1]] == ["🏷 Группы", "🔢 Цифры", "✖️ Отмена"]
     assert len(rows) <= 4
 
 
@@ -379,7 +383,7 @@ def test_numbers_button_opens_them_in_place_and_closes_again():
     text = query.edit_message_text.call_args.args[0]
     assert "Калории: ≈ " in text
     markup = query.edit_message_text.call_args.kwargs["reply_markup"]
-    assert markup.inline_keyboard[-1][0].text == "✓ 🔢 Цифры"
+    assert markup.inline_keyboard[-1][1].text == "✓ 🔢 Цифры"
 
     _state, query = _tap(context, _cb(draft, md.NUMBERS))
     assert "Калории" not in query.edit_message_text.call_args.args[0]
@@ -387,9 +391,84 @@ def test_numbers_button_opens_them_in_place_and_closes_again():
 
 def test_numbers_setting_on_means_no_button_and_a_stale_tap_changes_nothing():
     draft = _draft()  # numbers=True: the ⚙️ switch is on
-    assert [b.text for b in md.markup(draft).inline_keyboard[-1]] == ["✖️ Отмена"]
+    assert [b.text for b in md.markup(draft).inline_keyboard[-1]] == [
+        "🏷 Группы",
+        "✖️ Отмена",
+    ]
     context = _context(draft)
     _state, query = _tap(context, _cb(draft, md.NUMBERS))
     query.answer.assert_awaited_once_with()
     query.edit_message_text.assert_not_awaited()
     assert draft["numbers"] is True
+
+
+# --- food groups (stage 5, slice B) ---------------------------------------------
+
+
+def _tagged_draft():
+    draft = _draft()
+    draft["groups"] = ["legumes"]
+    return draft
+
+
+def test_groups_open_toggle_in_place_and_back_shows_the_new_line():
+    draft = _tagged_draft()
+    context = _context(draft)
+
+    state, query = _tap(context, _cb(draft, md.GROUPS_OPEN))
+    assert state is None
+    assert query.edit_message_text.call_args.args[0] == md.GROUPS_TEXT
+
+    state, query = _tap(context, _cb(draft, md.GROUP_TOGGLE, "veg"))
+    assert state is None
+    query.answer.assert_awaited_once_with()
+    markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert "🥦 Овощи ✓" in labels and "🫘 Бобовые ✓" in labels
+
+    _state, query = _tap(context, _cb(draft, md.GROUPS_CLOSE))
+    text = query.edit_message_text.call_args.args[0]
+    assert "🏷 Группы: 🫘 бобовые · 🥦 овощи" in text
+    markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[-1][0].text == "🏷 Группы"
+
+
+def test_a_group_key_from_a_forged_callback_changes_nothing(caplog):
+    draft = _tagged_draft()
+    context = _context(draft)
+
+    _state, query = _tap(context, _cb(draft, md.GROUP_TOGGLE, "vitamins"))
+
+    query.edit_message_text.assert_not_awaited()
+    query.answer.assert_awaited_once_with()
+    assert draft["groups"] == ["legumes"]
+    assert "unknown group" in caplog.text
+
+
+def test_saved_meal_carries_the_groups_the_user_left(Session, celery_delay):
+    draft = _tagged_draft()
+    context = _context(draft)
+    _tap(context, _cb(draft, md.GROUPS_OPEN))
+    _tap(context, _cb(draft, md.GROUP_TOGGLE, "veg"))
+
+    _tap(context, _cb(draft, md.SAVE))
+
+    with Session() as db:
+        (meal,) = db.query(Meal).all()
+        assert meal.ai_analysis["food_groups"] == ["legumes", "veg"]
+        assert meal.ai_analysis["food_groups_by_user"] is True
+        assert meal.nutrients["food_groups"] == ["legumes", "veg"]
+
+
+def test_a_typed_weight_after_the_groups_screen_redraws_the_draft():
+    draft = _tagged_draft()
+    context = _context(draft)
+    _tap(context, _cb(draft, md.GROUPS_OPEN))
+    _tap(context, _cb(draft, md.GROUPS_CLOSE))
+    _tap(context, _cb(draft, md.ASK_GRAMS))
+
+    _type(context, "200")
+
+    assert draft["groups_open"] is False
+    assert draft["groups"] == ["legumes"]
+    assert "Порция: 200г" in md.text(draft)

@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from typing import Dict
 
 import httpx
-from telegram import ReplyKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -1169,10 +1174,11 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
             proteins=nutrition.get("protein"),
             fats=nutrition.get("fats"),
             carbohydrates=nutrition.get("carbs"),
-            nutrients=nutrition,
+            nutrients=meal_draft.stored_nutrients(draft),
             photos=draft.get("photos", []),
-            # What the analysis said, before any portion change by the user.
-            ai_analysis=draft.get("base_nutrition") or nutrition,
+            # What the analysis said, before any portion change by the user,
+            # plus the food groups the user confirmed.
+            ai_analysis=meal_draft.stored_analysis(draft),
             # Pipeline resolution tracking (A1 columns).
             resolution_source=draft.get("resolution_source"),
             resolution_signals=draft.get("resolution_signals"),
@@ -1213,9 +1219,26 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
         return False
 
 
-async def _edit_draft_message(query, draft: dict, footer: str | None = None):
-    """Redraw the draft in place; a settled draft (``footer``) loses its buttons."""
-    markup = None if footer else meal_draft.markup(draft)
+def _day_card_button() -> InlineKeyboardMarkup:
+    """Under a saved draft: the day, where the new meal now shows."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📊 Карточка дня",
+                    callback_data=stats_screen.CALLBACK_PREFIX + stats_screen.TODAY,
+                )
+            ]
+        ]
+    )
+
+
+async def _edit_draft_message(
+    query, draft: dict, footer: str | None = None, settled_markup=None
+):
+    """Redraw the draft in place; a settled draft (``footer``) loses its buttons,
+    bar ``settled_markup``."""
+    markup = settled_markup if footer else meal_draft.markup(draft)
     try:
         await query.edit_message_text(
             meal_draft.text(draft, footer=footer), reply_markup=markup
@@ -1269,6 +1292,20 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await _edit_draft_message(query, draft)
         return None
+    if verb in (meal_draft.GROUPS_OPEN, meal_draft.GROUPS_CLOSE):
+        draft["groups_open"] = verb == meal_draft.GROUPS_OPEN
+        draft["awaiting"] = None
+        await query.answer()
+        await _edit_draft_message(query, draft)
+        return None
+    if verb == meal_draft.GROUP_TOGGLE:
+        if not meal_draft.toggle_group(draft, arg):
+            logger.warning("meal draft: unknown group in callback %r", query.data)
+            await query.answer()
+            return None
+        await query.answer()
+        await _edit_draft_message(query, draft)
+        return None
     if verb == meal_draft.ASK_GRAMS:
         draft["awaiting"] = "grams"
         await query.answer("Напиши вес в граммах")
@@ -1291,7 +1328,9 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not saved:
             await _edit_draft_message(query, draft, footer="⚠️ Не сохранено")
             return CHOOSING_ACTION
-        await _edit_draft_message(query, draft, footer="✅ Сохранено")
+        await _edit_draft_message(
+            query, draft, footer="✅ Сохранено", settled_markup=_day_card_button()
+        )
         context.user_data.clear()
         return CHOOSING_ACTION
     if verb == meal_draft.CANCEL:

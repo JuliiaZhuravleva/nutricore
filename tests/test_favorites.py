@@ -557,3 +557,20 @@ def test_handlers_are_registered(monkeypatch):
     add_text, fav_text = (b.text for b in tg.main_keyboard.keyboard[0])
     assert by_callback[tg.show_favorites].filters.pattern.match(fav_text)
     assert by_callback[tg.add_meal].filters.pattern.match(add_text)
+
+
+def test_tap_logs_a_favorite_with_its_food_groups(Session):
+    with Session() as db:
+        user = _user(db)
+        fav = _fav(db, user)
+        fav.nutrients = {**_NUTRITION, "food_groups": ["veg"], "food_items": []}
+        db.commit()
+
+        fv.handle_callback(db, 42, f"fav:l:{fav.id}:l")
+
+        meal = db.query(Meal).order_by(Meal.id.desc()).first()
+        assert meal.ai_analysis == {
+            "food_items": [],
+            "food_groups": ["veg"],
+            "food_groups_by_user": False,
+        }

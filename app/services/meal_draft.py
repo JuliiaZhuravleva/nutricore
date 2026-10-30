@@ -19,6 +19,7 @@ from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.services import food_groups
 from app.services.numbers import toggle_label
 
 CALLBACK_PREFIX = "meal:"
@@ -29,6 +30,9 @@ MACROS = ("calories", "protein", "fats", "carbs")
 # estimate is the main source of error (the samosa: 250 ккал for ~140 г), so the
 # chips span roughly what a person can tell apart by eye.
 SIZES = {"s": ("Маленькая", 0.7), "m": ("Средняя", 1.0), "l": ("Большая", 1.4)}
+# What a chip says before its grams: Telegram cuts about 12 characters at three
+# buttons a row, and «Маленькая 245г» came out as «Маленькая 2…».
+CHIP_WORDS = {"s": "Меньше ", "m": "", "l": "Больше "}
 
 # A photo estimate is off by ±30–40%; the shown range is narrower on purpose —
 # wide enough to read as an estimate, narrow enough to still mean something.
@@ -43,11 +47,20 @@ ASK_FOOD = "f"
 CANCEL = "x"
 SIZE = "p"
 NUMBERS = "n"
+GROUPS_OPEN = "g"
+GROUP_TOGGLE = "gt"
+GROUPS_CLOSE = "gb"
 
 _GRAMS_RE = re.compile(
     r"^\s*(?:≈|~)?\s*(\d+(?:[.,]\d+)?)\s*"
     r"(кг|kg|г|гр|грамм[а-я]*|g|gr|grams?)?\.?\s*$",
     re.IGNORECASE,
+)
+
+
+GROUPS_TEXT = (
+    "🏷 Группы в этой записи\n\n"
+    "Отметь, что было на тарелке. Это видно только на карточках дня и недели."
 )
 
 
@@ -152,8 +165,40 @@ def start(
         awaiting=None,
         numbers=numbers,
         numbers_setting=numbers,
+        groups=food_groups.from_items(nutrition.get("food_items")),
+        groups_by_user=False,
+        groups_open=False,
     )
     return draft
+
+
+def toggle_group(draft: dict, key: str) -> bool:
+    """A tap on one group in the groups screen. False if there is no such group."""
+    if key not in food_groups.GROUPS:
+        return False
+    chosen = set(draft.get("groups") or [])
+    chosen.symmetric_difference_update({key})
+    draft["groups"] = food_groups.ordered(chosen)
+    draft["groups_by_user"] = True
+    return True
+
+
+def stored_analysis(draft: dict) -> dict:
+    """What a saved meal keeps: the analysis as it came, with the confirmed groups."""
+    return food_groups.stamp(
+        draft.get("base_nutrition") or draft.get("nutrition") or {},
+        draft.get("groups") or [],
+        by_user=bool(draft.get("groups_by_user")),
+    )
+
+
+def stored_nutrients(draft: dict) -> dict:
+    """The numbers on screen, with the confirmed groups (a favorite copies these)."""
+    return food_groups.stamp(
+        draft.get("nutrition") or {},
+        draft.get("groups") or [],
+        by_user=bool(draft.get("groups_by_user")),
+    )
 
 
 def toggle_numbers(draft: dict) -> bool:
@@ -220,6 +265,7 @@ def set_grams(draft: dict, grams: float) -> None:
         }
     draft["grams_by_user"] = True
     draft["size"] = None
+    draft["groups_open"] = False  # a typed weight redraws the draft itself
 
 
 def _portion_line(draft: dict) -> str:
@@ -248,6 +294,8 @@ def _portion_line(draft: dict) -> str:
 def text(draft: dict, footer: Optional[str] = None) -> str:
     """The confirm message for the draft as it stands; ``footer`` replaces the
     closing question once the draft is settled ("✅ Сохранено")."""
+    if draft.get("groups_open") and not footer:
+        return GROUPS_TEXT
     nutrition = draft["nutrition"]
     estimate = draft.get("estimate", False)
     parts = [draft["header"]]
@@ -268,6 +316,9 @@ def text(draft: dict, footer: Optional[str] = None) -> str:
             )
         parts.extend(draft.get("number_notes") or [])
     parts.append(_portion_line(draft))
+    groups_line = food_groups.line(draft.get("groups"))
+    if groups_line:
+        parts.append(groups_line)
     if draft.get("cost_line"):
         parts.append(draft["cost_line"])
     parts.append("")
@@ -289,18 +340,39 @@ def _cb(draft: dict, verb: str, arg: str = "") -> str:
     return f"{CALLBACK_PREFIX}{draft['id']}:{verb}" + (f":{arg}" if arg else "")
 
 
+def _groups_markup(draft: dict) -> InlineKeyboardMarkup:
+    """Three groups a row. The check goes last: a label that starts with its
+    mark is the one ``custom_emoji`` can draw as an icon."""
+    chosen = draft.get("groups") or []
+    buttons = [
+        InlineKeyboardButton(
+            f"{mark} {label}" + (" ✓" if key in chosen else ""),
+            callback_data=_cb(draft, GROUP_TOGGLE, key),
+        )
+        for key, (mark, label, _word) in food_groups.GROUPS.items()
+    ]
+    rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    rows.append(
+        [InlineKeyboardButton("⬅️ К записи", callback_data=_cb(draft, GROUPS_CLOSE))]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
 def markup(draft: dict) -> InlineKeyboardMarkup:
     """Inline buttons under the draft. Sizes first (the main error of a photo
     estimate), then the two corrections, then save; cancel is the way out."""
+    if draft.get("groups_open"):
+        return _groups_markup(draft)
     rows = []
     if draft.get("chips") and can_rescale(draft):
         row = []
-        for key, (label, _factor) in SIZES.items():
+        for key in SIZES:
             mark = "✓ " if draft.get("size") == key else ""
             grams = num(chip_grams(draft, key), 0)
             row.append(
                 InlineKeyboardButton(
-                    f"{mark}{label} {grams}г", callback_data=_cb(draft, SIZE, key)
+                    f"{mark}{CHIP_WORDS[key]}{grams}г",
+                    callback_data=_cb(draft, SIZE, key),
                 )
             )
         rows.append(row)
@@ -328,10 +400,13 @@ def markup(draft: dict) -> InlineKeyboardMarkup:
             ),
         ]
     )
-    last = [InlineKeyboardButton("✖️ Отмена", callback_data=_cb(draft, CANCEL))]
+    last = [
+        InlineKeyboardButton("🏷 Группы", callback_data=_cb(draft, GROUPS_OPEN)),
+        InlineKeyboardButton("✖️ Отмена", callback_data=_cb(draft, CANCEL)),
+    ]
     if not draft.get("numbers_setting"):
         last.insert(
-            0,
+            1,
             InlineKeyboardButton(
                 toggle_label(bool(draft.get("numbers"))),
                 callback_data=_cb(draft, NUMBERS),

@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -103,6 +104,26 @@ def _has_valid_gs1_check_digit(code: str) -> bool:
 _RUSSIAN_NAMES_RULE = """Write every "foods" item and "portion" in Russian ("овсянка",
         "банан", "1 миска (300 г)"). A brand or any text printed on a package stays
         exactly as printed ("Pringles Original", "Простоквашино")."""
+
+
+# Stage 5, slice B. Same call as the analysis, no extra one. Keys are the ones in
+# ``food_groups.GROUPS``. Presence only: an empty list is a normal answer.
+_FOOD_GROUPS_RULE = """Also return "food_items": one entry per item in "foods", same names:
+        [{"name": "тофу", "groups": ["legumes", "anchor"]}]. "groups" is a list of zero or more
+        of these keys, only for what the item really contains in a meaningful amount:
+        - "legumes": beans, lentils, chickpeas, peas, soy (tofu, tempeh, edamame, soy milk), hummus
+        - "anchor": the item is a substantial protein source of the meal (tofu, tempeh, seitan,
+          legumes, a plant protein product, eggs, dairy like cottage cheese, fish, meat)
+        - "veg": vegetables and greens, including frozen and cooked; not potatoes
+        - "fruit": fruit and berries, fresh, frozen or dried
+        - "grain": WHOLE grains only (oats, buckwheat, bulgur, brown rice, quinoa, whole-grain
+          bread); not white rice, white bread or ordinary pasta
+        - "nuts": nuts, seeds, nut and seed butters, tahini
+        - "calcium": calcium-rich or fortified (fortified plant milk or yogurt, calcium-set tofu,
+          dairy, kale, sesame paste)
+        - "omega": plant omega-3 sources (flax, chia, hemp seeds, walnuts) or oily fish
+        A ready-made or frozen food is tagged by what is in it, like any other. Sauces, oil,
+        salt and spices get an empty list. Never guess a group from a vague name."""
 
 
 class OpenAIService:
@@ -264,7 +285,8 @@ class OpenAIService:
             "portion": string, # e.g. "1 serving (250g)"
             "portion_grams": float|null,  # the SAME portion in absolute grams,
                                           # null if you cannot estimate it
-            "foods": list[str] # list of identified food items
+            "foods": list[str], # list of identified food items
+            "food_items": list[{"name": str, "groups": list[str]}]
         }
 
         All macro numbers are ABSOLUTE for the amount actually eaten — never per 100g,
@@ -274,6 +296,8 @@ class OpenAIService:
 
         """
             + _RUSSIAN_NAMES_RULE
+            + "\n\n        "
+            + _FOOD_GROUPS_RULE
         )
 
         user_prompt = (
@@ -287,6 +311,26 @@ class OpenAIService:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            response_format={"type": "json_object"},
+        )
+        return response.choices[0].message.content
+
+    async def tag_food_groups(self, foods: list) -> str:
+        """Food-group tags for an already logged meal's foods (the re-tag run);
+        a new meal gets them from its analysis, with no call of its own."""
+        system_prompt = (
+            """You tag foods with food groups. Return JSON: {"food_items": [...]}, nothing else.
+
+        """
+            + _FOOD_GROUPS_RULE
+        )
+        response = await self._create(
+            task="text",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(foods, ensure_ascii=False)},
+            ],
             max_tokens=self.max_tokens,
             response_format={"type": "json_object"},
         )
@@ -313,8 +357,9 @@ class OpenAIService:
             "fats": float,                # in grams
             "carbs": float,               # in grams
             "portion": string,            # the eaten portion, human-readable
-            "portion_grams": float|null   # the SAME portion in absolute grams,
+            "portion_grams": float|null,  # the SAME portion in absolute grams,
                                           # null if you cannot estimate it
+            "food_items": list[{"name": str, "groups": list[str]}]
         }
 
         All macro numbers are ABSOLUTE for the amount actually eaten — never per 100g.
@@ -336,6 +381,8 @@ class OpenAIService:
 
         """
             + _RUSSIAN_NAMES_RULE
+            + "\n\n        "
+            + _FOOD_GROUPS_RULE
         )
 
         user_content = [

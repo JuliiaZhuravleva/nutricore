@@ -28,6 +28,10 @@ for name in "nutricore-$venv_hash-py3.12" "nutricore-SKSdxrGe-py3.12"; do
     break
   fi
 done
+# A checkout whose Poetry keeps the venv in the project (the cache one is gone).
+if [[ -z "$VENV_PY" && -x ".venv/bin/python" ]]; then
+  VENV_PY=".venv/bin/python"
+fi
 if [[ -z "$VENV_PY" ]]; then
   echo "error: cache-venv python not found in $VENVS" >&2
   echo "       (looked for nutricore-$venv_hash-py3.12 and nutricore-SKSdxrGe-py3.12)." >&2

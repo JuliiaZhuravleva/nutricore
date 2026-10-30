@@ -346,7 +346,11 @@ def test_confirm_meal_saves_with_photo_and_ai_analysis(patched_db):
         assert len(meals) == 1
         assert meals[0].calories == 350
         assert meals[0].photos == ["PHOTO_FILE_ID"]
-        assert meals[0].ai_analysis == _NUTRITION
+        assert meals[0].ai_analysis == {
+            **_NUTRITION,
+            "food_groups": [],
+            "food_groups_by_user": False,
+        }
 
 
 def test_confirm_meal_declined_returns_to_time():
@@ -394,7 +398,7 @@ def test_confirm_prompt_carries_inline_buttons(entry_mock):
     assert _button_rows(markup) == [
         ["✏️ Поправить вес", "✏️ Поправить продукт"],
         ["✅ Сохранить", "⭐ И в избранное"],
-        ["🔢 Цифры", "✖️ Отмена"],
+        ["🏷 Группы", "🔢 Цифры", "✖️ Отмена"],
     ]
     draft_id = context.user_data["current_meal"]["id"]
     datas = [b.callback_data for row in markup.inline_keyboard for b in row]
@@ -490,7 +494,11 @@ def test_confirm_meal_free_text_reanalyzes_keeps_flow(entry_mock):
     assert meal["description"] == sent_text
     # meal_time (draft context) is preserved.
     assert context.user_data["meal_time"] == meal_time
-    assert _button_rows(message.reply_markups[-1])[-1] == ["🔢 Цифры", "✖️ Отмена"]
+    assert _button_rows(message.reply_markups[-1])[-1] == [
+        "🏷 Группы",
+        "🔢 Цифры",
+        "✖️ Отмена",
+    ]
 
 
 def test_correcting_a_photo_draft_reanalyzes_the_same_photo(image_mock):

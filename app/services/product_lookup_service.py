@@ -32,6 +32,7 @@ from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
 from app.models.personal_food import PersonalFood
+from app.services import food_groups
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.model_registry import loads_model_json
 from app.services.open_food_facts_service import OFFLookupResult, OpenFoodFactsService
@@ -63,10 +64,20 @@ def parse_nutrition(raw: Any) -> dict:
     # Coerce elements to str: models the owner swaps in (o-series, etc.) may
     # return foods as dicts/numbers, which would blow up ", ".join(...) later.
     data["foods"] = [str(x) for x in foods]
+    if "food_items" in data:
+        data["food_items"] = food_groups.clean_items(data["food_items"])
     missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
     if missing:
         raise ValueError(f"nutrition response missing keys: {missing}")
     return data
+
+
+def parse_food_items(raw: Any) -> list:
+    """The re-tag call's reply → clean items; a reply that is not JSON raises."""
+    data = loads_model_json(raw) if isinstance(raw, str) else raw
+    if not isinstance(data, dict) or "food_items" not in data:
+        raise ValueError("food_items reply has no food_items")
+    return food_groups.clean_items(data["food_items"])
 
 
 # ---------------------------------------------------------------------------
@@ -1374,6 +1385,12 @@ async def resolve_meal_nutrition(
                 # one site cannot drift out of sync with a seventh strategy.
                 result.signals["caption"] = signals.caption
                 result.signals["portion_source"] = signals.portion_source
+                # Only the vision call tags food groups; a database hit keeps
+                # what it saw on the same photo. One site, as above.
+                if signals.vision_result and "food_items" not in result.nutrition:
+                    items = signals.vision_result.get("food_items")
+                    if items is not None:
+                        result.nutrition["food_items"] = items
                 # The pipeline had no INFO line at all, so at the deployed
                 # LOG_LEVEL=INFO a meal left no trace of which paths were even
                 # attempted. One line per meal, not one per strategy.

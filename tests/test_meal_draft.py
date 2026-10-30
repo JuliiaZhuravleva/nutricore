@@ -129,7 +129,7 @@ def test_a_size_chip_shows_its_grams_and_marks_the_current_one():
 
     chips = [b.text for b in md.markup(draft).inline_keyboard[0]]
 
-    assert chips == ["Маленькая 70г", "Средняя 100г", "✓ Большая 140г"]
+    assert chips == ["Меньше 70г", "100г", "✓ Больше 140г"]
     assert "Порция: ≈ 140г (большая)" in md.text(draft)
 
 

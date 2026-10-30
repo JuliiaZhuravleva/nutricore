@@ -2813,3 +2813,44 @@ def test_parse_web_response_takes_the_first_object_of_a_list():
         ]
     )
     assert _parse_web_nutrition_response(raw)["identification"] == "Natto (generic)"
+
+
+# ---------------------------------------------------------------------------
+# Food groups survive whichever strategy wins (stage 5, slice B)
+# ---------------------------------------------------------------------------
+
+_TAGS = [{"name": "тофу", "groups": ["legumes", "anchor"]}]
+
+
+def _resolve_with(monkeypatch, off_result, vision):
+    import app.services.product_lookup_service as pls
+
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
+        return await _build_signals("4607195501226", vision, image_data_url)
+
+    monkeypatch.setattr(pls, "_extract_signals", fake_extract)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.lookup",
+        AsyncMock(return_value=off_result),
+    )
+    return asyncio.run(
+        resolve_meal_nutrition("data:image/jpeg;base64,abc", telegram_id=42)
+    )
+
+
+def test_a_database_hit_keeps_the_tags_vision_gave_the_same_photo(monkeypatch):
+    result = _resolve_with(monkeypatch, _OFF_RESULT, {**_NUTRITION, "food_items": _TAGS})
+    assert result.source == "barcode_off"
+    assert result.nutrition["food_items"] == _TAGS
+
+
+def test_vision_fallback_keeps_its_own_tags(monkeypatch):
+    result = _resolve_with(monkeypatch, None, {**_NUTRITION, "food_items": _TAGS})
+    assert result.source == "vision"
+    assert result.nutrition["food_items"] == _TAGS
+
+
+def test_a_vision_reply_without_tags_leaves_a_database_hit_untagged(monkeypatch):
+    result = _resolve_with(monkeypatch, _OFF_RESULT, _NUTRITION)
+    assert result.source == "barcode_off"
+    assert "food_items" not in result.nutrition

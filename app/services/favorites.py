@@ -34,6 +34,7 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.user import User
 from app.schemas.meal import MealCreate
+from app.services import food_groups
 from app.services.numbers import shows_numbers, toggle_label
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,7 @@ def _log(db, user_id: int, fav: FavoriteMeal, slot: str) -> Meal:
         fats=fav.fats,
         carbohydrates=fav.carbohydrates,
         nutrients=fav.nutrients,
+        ai_analysis=food_groups.carried(fav.nutrients),
         resolution_source=FAVORITE_SOURCE,
         resolution_signals={"favorite_id": fav.id},
     )
