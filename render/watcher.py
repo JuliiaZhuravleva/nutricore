@@ -54,7 +54,7 @@ WARM_START_TIMEOUT = CHROME_TIMEOUT  # seconds for the browser started with the 
 WARM_STRIKES = 3  # failures in a row that turn the warm browser off until a restart
 POLL = 0.05
 KEEP_IN = 3600  # a job nobody could render in an hour is dropped
-HEARTBEAT_MAX_AGE = 30  # seconds; an older heartbeat means the loop is stuck or gone
+HEARTBEAT_MAX_AGE = 60  # seconds, above the slowest card; an older heartbeat means the loop is stuck or gone
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 NAME = re.compile(r"[0-9a-f]{64}")
 MARKS = ("<!--BASE-->", "<!--REPORT-->")
@@ -530,6 +530,7 @@ def serve(root: Path) -> None:
         taken: set[Path] = set()
         while (job := newest_job(in_dir, taken)) is not None:  # a fresh look at in/ after every card
             taken.add(job)
+            _write_atomic(root / "heartbeat", str(int(time.time())).encode())  # a queue is no silence
             process(job, out_dir, warm)
         if warm is not None:
             warm.idle()

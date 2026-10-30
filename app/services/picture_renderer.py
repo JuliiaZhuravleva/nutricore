@@ -21,7 +21,9 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-HEARTBEAT_MAX_AGE = 30.0  # the sidecar writes one every loop; older means stuck or gone
+# The sidecar beats between cards; its slowest one takes 48 s (render/watcher.py).
+# Older than this means stuck or gone.
+HEARTBEAT_MAX_AGE = 60.0
 ERR_HOLD = 600.0
 POLL = 0.1
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
@@ -79,13 +81,27 @@ class PictureRenderer:
         self.root = root
         self.poll = poll
         self._clock = clock
+        self._problem: Optional[str] = None
 
     def alive(self) -> bool:
+        problem = self._find_problem()
+        if problem != self._problem:
+            # Once per change: this is asked on every tap and every poll.
+            if problem:
+                logger.warning("render: pictures are off, text only: %s", problem)
+            else:
+                logger.info("render: pictures are on again")
+            self._problem = problem
+        return problem is None
+
+    def _find_problem(self) -> Optional[str]:
         try:
             beat = int((self.root / "heartbeat").read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            return False
-        return self._clock() - beat <= HEARTBEAT_MAX_AGE
+        except (OSError, ValueError) as e:
+            return f"no readable heartbeat ({type(e).__name__})"
+        if self._clock() - beat > HEARTBEAT_MAX_AGE:
+            return f"heartbeat older than {HEARTBEAT_MAX_AGE:.0f} s"
+        return None
 
     def request(self, report: dict) -> Optional[Ticket]:
         """Queue the card unless it is drawn; None when no picture can come."""

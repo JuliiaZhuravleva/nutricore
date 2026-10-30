@@ -5,8 +5,9 @@ sidecar, a failed card or a caption over the limit all give the same screen in
 text. A card drawn fast goes straight in. A slower one shows a loading picture
 with the final caption and buttons, then swaps in; it never stays a loader.
 
-A later tap on the same message wins. A photo cannot be edited into plain text
-or back, so crossing between the two sends the new message and deletes the old.
+A later tap on the same screen wins. A photo cannot be edited into plain text or
+back, so crossing between the two sends the new message and deletes the old; a tap
+still on its way from the old message then acts on the new one.
 """
 
 import asyncio
@@ -16,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from telegram import InputMediaPhoto
+from telegram import InaccessibleMessage, InputMediaPhoto
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 
@@ -28,6 +29,7 @@ FAST_WAIT = 1.5  # a warm browser draws in about this; no loader flash under it
 SLOW_WAIT = 60.0
 CAPTION_LIMIT = 1024
 FILE_IDS_MAX = 1000
+SCREENS_MAX = 1000
 LOADING_DIR = Path(__file__).resolve().parent.parent / "assets"
 _TAG = re.compile(r"<[^>]*>")
 
@@ -40,6 +42,15 @@ def fits_caption(text: str) -> bool:
 def _not_modified(error: BadRequest) -> bool:
     # A repeated tap that leads to the same screen: nothing to change.
     return "not modified" in str(error).lower()
+
+
+class _Live:
+    """One live screen: the message showing it now, whichever it crossed to."""
+
+    def __init__(self, message):
+        self.message = message
+        self.turn = 0  # the tap whose result may land
+        self.lock = asyncio.Lock()  # an upload must not land after a newer edit
 
 
 class CardDelivery:
@@ -55,7 +66,7 @@ class CardDelivery:
         self._fast_wait = fast_wait
         self._slow_wait = slow_wait
         self._loading_dir = loading_dir
-        self._turns: dict = {}  # (chat, message) -> the tap whose result may land
+        self._screens: dict = {}  # (chat, message) -> _Live, old messages included
         self._turn = 0
         self._file_ids: dict = {}  # per bot, so per process is enough
         self._tasks: set = set()  # a task nobody holds can be collected mid-wait
@@ -69,54 +80,49 @@ class CardDelivery:
             return
         try:
             sent = await self._reply_photo(message, screen, ticket, png)
-        except TelegramError as e:
+        except (TelegramError, OSError) as e:
             logger.warning("card: the photo did not go, text instead: %s", e)
             await self._reply_text(message, screen)
             return
         if png is None:
-            self._finish_later(sent, screen, ticket, self._claim(sent))
+            live = self._live(sent)
+            self._finish_later(live, screen, ticket, self._claim(live))
 
     async def tap(self, query, screen) -> None:
         """The next screen after a tap on ``query.message``."""
         message = query.message
-        if not hasattr(message, "reply_photo"):
-            # Too old for Telegram to show it to the bot: only an edit by id works.
-            await self._edit_text(query, screen)
+        if isinstance(message, InaccessibleMessage):
+            # Too old for Telegram to show it: neither an edit nor a photo reaches it.
+            await query.get_bot().send_message(
+                message.chat.id,
+                screen.text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=screen.markup,
+            )
             return
-        was_photo = bool(getattr(message, "photo", None))
-        turn = self._claim(message)
+        if message is None:
+            await self._edit_text(query.edit_message_text, screen)
+            return
+        live = self._live(message)
+        turn = self._claim(live)
         ticket = self._ticket(screen)
         png = None
         if ticket is not None:
-            png = await ticket.wait(
-                self._fast_wait, lambda: not self._current(message, turn)
-            )
-            if not self._current(message, turn):
+            png = await ticket.wait(self._fast_wait, lambda: live.turn != turn)
+        async with live.lock:
+            if live.turn != turn:
                 return
-        shown = None
-        if ticket is not None and not ticket.failed:
+            if ticket is None or ticket.failed:
+                await self._show_text(live, screen)
+                return
             try:
-                if was_photo:
-                    await self._edit_photo(message, screen, ticket, png)
-                    shown = message
-                else:
-                    shown = await self._reply_photo(message, screen, ticket, png)
-                    await self._delete(message)
-            except TelegramError as e:
+                await self._show_card(live, screen, ticket, png)
+            except (TelegramError, OSError) as e:
                 logger.warning("card: tap failed, text instead: %s", e)
-        if shown is None:
-            self._release(message, turn)
-            if was_photo:
-                await self._replace_with_text(message, screen)
-            else:
-                await self._edit_text(query, screen)
-        elif png is not None:
-            self._release(message, turn)
-        elif shown is message:
-            self._finish_later(shown, screen, ticket, turn)
-        else:
-            self._release(message, turn)
-            self._finish_later(shown, screen, ticket, self._claim(shown))
+                await self._show_text(live, screen)
+                return
+        if png is None:
+            self._finish_later(live, screen, ticket, turn)
 
     # --- what a message is showing ----------------------------------------------
 
@@ -124,17 +130,24 @@ class CardDelivery:
     def _key(message) -> tuple:
         return (message.chat.id, message.message_id)
 
-    def _claim(self, message) -> int:
+    def _live(self, message) -> _Live:
+        key = self._key(message)
+        live = self._screens.get(key)
+        if live is None:
+            if len(self._screens) >= SCREENS_MAX:
+                self._screens.clear()
+            live = self._screens[key] = _Live(message)
+        return live
+
+    def _move(self, live: _Live, message) -> None:
+        # The old message stays in the map: a tap may already be on its way from it.
+        live.message = message
+        self._screens[self._key(message)] = live
+
+    def _claim(self, live: _Live) -> int:
         self._turn += 1
-        self._turns[self._key(message)] = self._turn
+        live.turn = self._turn
         return self._turn
-
-    def _current(self, message, turn: int) -> bool:
-        return self._turns.get(self._key(message)) == turn
-
-    def _release(self, message, turn: int) -> None:
-        if self._current(message, turn):
-            del self._turns[self._key(message)]
 
     def _ticket(self, screen) -> Optional[Ticket]:
         report = getattr(screen, "picture", None)
@@ -142,32 +155,54 @@ class CardDelivery:
             return None
         return self._renderer.request(report)
 
+    async def _show_card(self, live: _Live, screen, ticket, png) -> None:
+        old = live.message
+        if old.photo:
+            await self._edit_photo(old, screen, ticket, png)
+            return
+        self._move(live, await self._reply_photo(old, screen, ticket, png))
+        await self._delete(old)
+
+    async def _show_text(self, live: _Live, screen) -> None:
+        old = live.message
+        if not old.photo:
+            await self._edit_text(old.edit_text, screen)
+            return
+        self._move(live, await self._reply_text(old, screen))
+        await self._delete(old)
+
     # --- the slow way -----------------------------------------------------------
 
-    def _finish_later(self, message, screen, ticket: Ticket, turn: int) -> None:
-        task = asyncio.create_task(self._finish(message, screen, ticket, turn))
+    def _finish_later(self, live: _Live, screen, ticket: Ticket, turn: int) -> None:
+        task = asyncio.create_task(self._finish(live, screen, ticket, turn))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _finish(self, message, screen, ticket: Ticket, turn: int) -> None:
+    async def _finish(self, live: _Live, screen, ticket: Ticket, turn: int) -> None:
         try:
-            png = await ticket.wait(
-                self._slow_wait, lambda: not self._current(message, turn)
-            )
-            if not self._current(message, turn):
-                return
-            if png is None:
-                await self._replace_with_text(message, screen)
-            else:
-                await self._edit_photo(message, screen, ticket, png)
+            png = await ticket.wait(self._slow_wait, lambda: live.turn != turn)
+            async with live.lock:
+                if live.turn != turn:
+                    return
+                if png is None:
+                    if not ticket.failed:
+                        logger.warning(
+                            "render: %s not drawn in %.0f s, text instead",
+                            ticket.name[:12],
+                            self._slow_wait,
+                        )
+                    await self._show_text(live, screen)
+                    return
+                try:
+                    await self._edit_photo(live.message, screen, ticket, png)
+                except Exception:
+                    logger.exception("card: the swap failed, text instead")
+                    # A newer tap is waiting for this lock and has its own screen.
+                    if live.turn == turn:
+                        await self._show_text(live, screen)
         except Exception:
-            logger.exception("card: the swap failed, text instead")
-            try:
-                await self._replace_with_text(message, screen)
-            except TelegramError:
-                logger.exception("card: the text did not go either")
-        finally:
-            self._release(message, turn)
+            # The loader stays, with the final caption and working buttons.
+            logger.exception("card: the text did not go either")
 
     # --- Telegram ---------------------------------------------------------------
 
@@ -210,23 +245,20 @@ class CardDelivery:
             return  # the same screen tapped again; a loader still gets its swap
         self._remember(key, sent)
 
-    async def _reply_text(self, message, screen) -> None:
-        await message.reply_text(
+    async def _reply_text(self, message, screen):
+        return await message.reply_text(
             screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
         )
 
-    async def _edit_text(self, query, screen) -> None:
+    @staticmethod
+    async def _edit_text(edit, screen) -> None:
         try:
-            await query.edit_message_text(
+            await edit(
                 screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
             )
         except BadRequest as e:
             if not _not_modified(e):
                 raise
-
-    async def _replace_with_text(self, message, screen) -> None:
-        await self._reply_text(message, screen)
-        await self._delete(message)
 
     @staticmethod
     async def _delete(message) -> None:

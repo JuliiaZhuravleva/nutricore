@@ -16,14 +16,14 @@ from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
-from telegram import InputMediaPhoto
+from telegram import CallbackQuery, Chat, InaccessibleMessage, InputMediaPhoto, User
 from telegram.error import BadRequest, NetworkError
 
 from app.models.meal import Meal
 from app.services import stats_screen
 from app.services.card_delivery import CardDelivery, fits_caption
 from app.services.favorites import Screen
-from app.services.picture_renderer import ERR_HOLD, PictureRenderer
+from app.services.picture_renderer import ERR_HOLD, HEARTBEAT_MAX_AGE, PictureRenderer
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
 LOADER = b"\x89PNG\r\n\x1a\nloader"
@@ -56,7 +56,9 @@ def _draw(root, suffix=".png", body=PNG):
 
 def test_a_fresh_heartbeat_is_a_renderer_an_old_or_missing_one_is_not(root):
     assert _renderer(root).alive()
-    assert not PictureRenderer(root, clock=lambda: time.time() + 31).alive()
+    assert not PictureRenderer(
+        root, clock=lambda: time.time() + HEARTBEAT_MAX_AGE + 2
+    ).alive()
     (root / "heartbeat").unlink()
     assert not _renderer(root).alive()
 
@@ -120,12 +122,21 @@ def test_a_half_written_png_is_not_a_card(root):
 
 
 def _message(photo=False, message_id=7):
+    written = SimpleNamespace(
+        photo=None,
+        chat=SimpleNamespace(id=42),
+        message_id=message_id + 2,
+        edit_text=AsyncMock(),
+        reply_photo=AsyncMock(),
+        delete=AsyncMock(),
+    )
     sent = SimpleNamespace(
         photo=[SimpleNamespace(file_id="drawn")],
         chat=SimpleNamespace(id=42),
         message_id=message_id + 1,
         edit_media=AsyncMock(return_value=SimpleNamespace(photo=None)),
-        reply_text=AsyncMock(),
+        edit_text=AsyncMock(),
+        reply_text=AsyncMock(return_value=written),
         reply_photo=AsyncMock(),
         delete=AsyncMock(),
     )
@@ -133,11 +144,13 @@ def _message(photo=False, message_id=7):
         photo=[object()] if photo else None,
         chat=SimpleNamespace(id=42),
         message_id=message_id,
-        reply_text=AsyncMock(),
+        edit_text=AsyncMock(),
+        reply_text=AsyncMock(return_value=written),
         reply_photo=AsyncMock(return_value=sent),
         edit_media=AsyncMock(return_value=SimpleNamespace(photo=None)),
         delete=AsyncMock(),
         sent=sent,
+        written=written,
     )
 
 
@@ -179,7 +192,7 @@ def test_sidecar_stopped_a_tap_edits_the_text_screen_in_place(root, tmp_path_fac
     message, query = _message(), None
     query = _query(message)
     asyncio.run(_delivery(root, tmp_path_factory).tap(query, _screen()))
-    query.edit_message_text.assert_awaited_once()
+    message.edit_text.assert_awaited_once()
     message.reply_photo.assert_not_awaited()
 
 
@@ -248,7 +261,6 @@ def test_a_slow_card_shows_the_loader_with_the_final_caption_then_swaps(
     assert isinstance(media, InputMediaPhoto)
     assert media.caption == "<b>📊 Сегодня</b>" and media.parse_mode == "HTML"
     assert kwargs["reply_markup"] == "buttons"
-    assert not delivery._turns  # nothing stays behind per message
 
 
 @pytest.mark.parametrize("how", ["err", "timeout", "sidecar gone", "swap refused"])
@@ -316,7 +328,7 @@ def test_photo_to_text_sends_new_and_deletes_old_never_edits_text(
     message = _message(photo=True)
     query = _query(message)
     asyncio.run(delivery.tap(query, _screen(picture=None)))
-    query.edit_message_text.assert_not_awaited()
+    message.edit_text.assert_not_awaited()
     message.reply_text.assert_awaited_once()
     message.delete.assert_awaited_once()
 
@@ -372,10 +384,203 @@ def test_a_photo_that_does_not_go_is_answered_in_text(root, tmp_path_factory, er
     message.reply_text.assert_awaited_once()
 
 
-def test_a_tap_on_a_message_too_old_to_see_is_edited_by_id(root, tmp_path_factory):
-    query = _query(SimpleNamespace(chat=SimpleNamespace(id=42), message_id=1))
+def test_a_tap_on_a_message_too_old_to_see_gets_a_new_text_screen(
+    root, tmp_path_factory
+):
+    # Real PTB objects: a stub would hide that PTB refuses to edit such a message.
+    query = CallbackQuery(
+        id="1",
+        from_user=User(1, "a", False),
+        chat_instance="x",
+        message=InaccessibleMessage(chat=Chat(42, "private"), message_id=1),
+        data="st:y",
+    )
+    bot = AsyncMock()
+    query.set_bot(bot)
     asyncio.run(_delivery(root, tmp_path_factory).tap(query, _screen()))
-    query.edit_message_text.assert_awaited_once()
+    (chat, text), kwargs = bot.send_message.await_args
+    assert chat == 42 and text == "<b>📊 Сегодня</b>"
+    assert kwargs["reply_markup"] == "buttons"
+    bot.edit_message_text.assert_not_awaited()
+
+
+# --- two taps, and a tap against a card on its way ----------------------------
+
+
+def test_a_second_tap_from_a_text_message_already_replaced_edits_the_card(
+    root, tmp_path_factory
+):
+    delivery = _delivery(root, tmp_path_factory)
+    _renderer(root).request(REPORT)
+    _draw(root)
+    message = _message()
+    query = _query(message)
+
+    async def run():
+        await delivery.tap(query, _screen())
+        await delivery.tap(query, _screen("<b>📊 Снова</b>"))
+
+    asyncio.run(run())
+    message.reply_photo.assert_awaited_once()  # one screen, not two
+    message.delete.assert_awaited_once()
+    (media,), _ = message.sent.edit_media.await_args
+    assert media.caption == "<b>📊 Снова</b>"
+
+
+def test_a_second_tap_from_a_photo_already_replaced_edits_the_text(
+    root, tmp_path_factory
+):
+    delivery = _delivery(root, tmp_path_factory)
+    message = _message(photo=True)
+    query = _query(message)
+
+    async def run():
+        await delivery.tap(query, _screen("<b>📊 7 дней</b>", picture=None))
+        await delivery.tap(query, _screen("<b>📊 7 дней, снова</b>", picture=None))
+
+    asyncio.run(run())
+    message.reply_text.assert_awaited_once()
+    assert message.written.edit_text.await_args.args == ("<b>📊 7 дней, снова</b>",)
+
+
+def test_a_tap_after_the_loader_turned_into_text_edits_that_text(
+    root, tmp_path_factory
+):
+    delivery = _delivery(root, tmp_path_factory)
+    message = _message()
+
+    async def run():
+        await delivery.send(message, _screen())
+        _draw(root, ".err", b"boom")
+        await _settle(delivery)
+        await delivery.tap(_query(message.sent), _screen("<b>Дальше</b>", picture=None))
+
+    asyncio.run(run())
+    message.sent.reply_text.assert_awaited_once()  # the twin, once
+    written = message.sent.reply_text.return_value
+    assert written.edit_text.await_args.args == ("<b>Дальше</b>",)
+
+
+def test_a_tap_on_the_new_message_ends_the_card_still_waiting(root, tmp_path_factory):
+    delivery = _delivery(root, tmp_path_factory)
+    message = _message()
+
+    async def run():
+        await delivery.tap(_query(message), _screen())  # text to a loader
+        await delivery.tap(_query(message.sent), _screen("<b>Дальше</b>", picture=None))
+        _draw(root)
+        await _settle(delivery)
+
+    asyncio.run(run())
+    message.sent.edit_media.assert_not_awaited()
+    message.sent.reply_text.assert_awaited_once()
+
+
+def test_a_slow_upload_cannot_land_after_the_newer_tap(root, tmp_path_factory):
+    delivery = _delivery(root, tmp_path_factory)
+    message = _message(photo=True)
+    order, uploading, release = [], asyncio.Event(), asyncio.Event()
+
+    async def edit(media, **kw):
+        order.append(media.caption)
+        if len(order) == 2:  # the first card, on a slow connection
+            uploading.set()
+            await release.wait()
+            order.append("upload done")
+        return SimpleNamespace(photo=None)
+
+    message.edit_media.side_effect = edit
+    query = _query(message)
+    newer = {**REPORT, "title": "Вчера"}
+
+    async def run():
+        _renderer(root).request(newer)
+        _draw(root)
+        await delivery.tap(query, _screen())  # the loader; the swap is waiting
+        _draw(root)
+        await uploading.wait()
+        tap = asyncio.create_task(delivery.tap(query, _screen("<b>Вчера</b>", newer)))
+        await asyncio.sleep(0.05)
+        release.set()
+        await tap
+        await _settle(delivery)
+
+    asyncio.run(run())
+    assert order[-2:] == ["upload done", "<b>Вчера</b>"]
+
+
+def test_a_failed_upload_sends_no_old_text_under_the_newer_tap(root, tmp_path_factory):
+    delivery = _delivery(root, tmp_path_factory)
+    message = _message(photo=True)
+    uploading, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def edit(media, **kw):
+        calls.append(media.caption)
+        if len(calls) == 2:
+            uploading.set()
+            await release.wait()
+            raise NetworkError("timed out")
+        return SimpleNamespace(photo=None)
+
+    message.edit_media.side_effect = edit
+    query = _query(message)
+
+    async def run():
+        await delivery.tap(query, _screen())
+        _draw(root)
+        await uploading.wait()
+        tap = asyncio.create_task(
+            delivery.tap(query, _screen("<b>7 дней</b>", picture=None))
+        )
+        await asyncio.sleep(0.05)
+        release.set()
+        await tap
+        await _settle(delivery)
+
+    asyncio.run(run())
+    assert [c.args[0] for c in message.reply_text.await_args_list] == ["<b>7 дней</b>"]
+
+
+# --- what the owner can see, and what cannot stop an answer -------------------
+
+
+def test_a_missing_loader_file_still_answers_in_text(root, tmp_path_factory):
+    delivery = _delivery(root, tmp_path_factory)
+    (delivery._loading_dir / "card_loading-day.png").unlink()
+    sent, tapped = _message(), _message(photo=True)
+
+    async def run():
+        await delivery.send(sent, _screen())
+        await delivery.tap(_query(tapped), _screen())
+
+    asyncio.run(run())
+    sent.reply_text.assert_awaited_once()
+    tapped.reply_text.assert_awaited_once()
+
+
+def test_pictures_going_off_and_on_is_logged_once_each_with_the_reason(root, caplog):
+    renderer = _renderer(root)
+    caplog.set_level("INFO", logger="app.services.picture_renderer")
+    (root / "heartbeat").unlink()
+    assert not renderer.alive() and not renderer.alive()
+    (root / "heartbeat").write_text(str(int(time.time())))
+    assert renderer.alive() and renderer.alive()
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 2
+    assert "pictures are off" in lines[0] and "no readable heartbeat" in lines[0]
+    assert "pictures are on" in lines[1]
+
+
+def test_a_card_not_drawn_in_time_is_logged(root, tmp_path_factory, caplog):
+    delivery = _delivery(root, tmp_path_factory, slow_wait=0.02)
+
+    async def run():
+        await delivery.send(_message(), _screen())
+        await _settle(delivery)
+
+    asyncio.run(run())
+    assert any("not drawn in" in r.getMessage() for r in caplog.records)
 
 
 def test_the_loading_pictures_ship_for_both_looks():
@@ -485,6 +690,33 @@ def test_the_template_puts_text_in_as_text_only():
     for line in uses:
         for value in re.findall(r"innerHTML = ([^;]+);", line):
             assert value == '""' or value.startswith("svg("), line
+
+
+def test_the_slowest_card_is_not_taken_for_a_dead_sidecar(watcher):
+    slowest = watcher.WARM_TIMEOUT + 2 * watcher.CHROME_TIMEOUT
+    assert HEARTBEAT_MAX_AGE > slowest
+    assert watcher.HEARTBEAT_MAX_AGE == HEARTBEAT_MAX_AGE
+
+
+def test_a_queue_of_cards_keeps_the_heartbeat_going(watcher, tmp_path, monkeypatch):
+    now = [1000.0]
+    seen = []
+
+    def process(job, out_dir, warm):
+        seen.append(int((tmp_path / "heartbeat").read_text()))
+        now[0] += 50
+        if len(seen) == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(watcher, "WARM", False)
+    monkeypatch.setattr(watcher, "process", process)
+    monkeypatch.setattr(watcher.time, "time", lambda: now[0])
+    (tmp_path / "in").mkdir()
+    for name in ("a", "b"):
+        (tmp_path / "in" / f"{name}.json").write_text("{}")
+    with pytest.raises(KeyboardInterrupt):
+        watcher.serve(tmp_path)
+    assert seen == [1000, 1050]
 
 
 def test_the_newest_job_goes_first(watcher, tmp_path):
