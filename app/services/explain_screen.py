@@ -1,7 +1,8 @@
 """«ℹ️ Как это работает»: the bot explains itself (stage 5, G5-R22).
 
     ⚙️ Настройки → [ℹ️ Как это работает] → a list of topics → one topic's screen:
-    what it is, how it works, where the idea comes from.
+    what it is, how it works, where the idea comes from. Beside the topics, a reference
+    on vitamins and minerals: what the studies found, with links (G5-R23).
 
 Plain text in the repo: no model call, the same answer for everyone, and the
 banned-words scan reads it like any other bot string. Each new feature adds its
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 CALLBACK_PREFIX = "hw:"
 OPEN = CALLBACK_PREFIX + "open"
 _TOPIC = CALLBACK_PREFIX + "t:"
+NUTRIENTS_OPEN = CALLBACK_PREFIX + "nl"
+_NUTRIENT = CALLBACK_PREFIX + "n:"
+_NUTRIENTS_ROW = 3
 _SETTINGS = "set:open"  # settings_screen imports this module for its button
 
 
@@ -35,6 +39,17 @@ class Topic:
     how: str
     why: str
     source: str
+    more: bool = False  # a button to the reference on vitamins and minerals
+
+
+@dataclass(frozen=True)
+class Nutrient:
+    label: str  # the button
+    title: str
+    what: str
+    found: str
+    unknown: str
+    sources: tuple  # (what the link is, PMID), read in PubMed, abstracts only
 
 
 _GROUP_WORDS = ", ".join(f"{mark} {word}" for mark, _label, word in GROUPS.values())
@@ -153,11 +168,131 @@ TOPICS = {
             "Бот не предлагает рутины и ничего не советует про добавки."
         ),
         why=(
-            "Отметка нажатием не зависит от точности разбора еды, поэтому ей можно "
-            "верить. А запись только о том, что было, не делает день без отметки "
-            "ошибкой. Это решение проекта, отдельно его никто не проверял."
+            "B12, йод и витамин D по записям еды не оценить: их не видно ни на фото, "
+            "ни в названии блюда. А регулярность видно по отметке, и она не зависит от "
+            "точности разбора. Что об этих веществах пишут исследования, собрано в "
+            "справке ниже. Сама отметка — решение проекта, отдельно её никто не "
+            "проверял, и день без отметки ошибкой не считается."
         ),
-        source="отдельного исследования у этой функции нет.",
+        source="у самой отметки исследования нет, у веществ — в справке.",
+        more=True,
+    ),
+}
+
+NUTRIENTS_TITLE = "🧪 Витамины и минералы"
+_NUTRIENTS_INTRO = (
+    "Почему в боте можно отмечать добавки и что о них пишут исследования.\n\n"
+    "Почти все работы здесь — о веганах и вегетарианцах, а средние цифры по группе "
+    "ничего не говорят о конкретном человеке.\n\n"
+    "Бот ничего не назначает и не называет доз."
+)
+_NUTRIENTS_POSITION = (
+    "Позиция Академии питания и диетологии США, 2025",
+    39923894,
+)
+_NUTRIENTS_ADEQUATE = (
+    "По этой позиции продуманный веганский рацион может давать всё нужное взрослым, "
+    "кроме времени беременности и кормления."
+)
+_NUTRIENT_CLOSING = (
+    "Это справка, не совет. Принимать ли что-то и сколько — решать тебе и врачу."
+)
+
+_REVIEW_2021 = (
+    "Обзор 141 работы, 2021. Авторы — сотрудники Unilever, которая продаёт "
+    "обогащённые продукты и добавки",
+    35010904,
+)
+
+NUTRIENTS = {
+    "b12": Nutrient(
+        label="B12",
+        title="💊 Витамин B12",
+        what="Участвует в работе крови и нервной системы. В еде без животных продуктов "
+        "его почти нет, если она не обогащена. Авторы обзора исходят из того, что долгое "
+        "малое поступление ведёт к дефициту и рискам для здоровья.",
+        found="В метаанализе 17 работ у веганов B12 в крови ниже, а гомоцистеин выше, чем "
+        "у людей, которые едят мясо. В подгруппах у веганов с добавками все показатели "
+        "статистически значимо благоприятнее, чем у веганов без них.",
+        unknown="Ещё два показателя при сравнении с мясоедами сдвинуты так же, но "
+        "значимости не достигли. Абстракт не называет дозу и форму.",
+        sources=(("Niklewicz и соавт., 2024, метаанализ", 39373282),),
+    ),
+    "calcium": Nutrient(
+        label="Кальций",
+        title="🥛 Кальций",
+        what="Основа костей. Приходит и с едой: обогащённые напитки, тофу с кальцием.",
+        found="В обзоре 74 работ (о веганах из них 23) веганы получают кальция меньше, "
+        "чем вегетарианцы и те, кто ест мясо. Между вегетарианцами и теми, кто ест мясо, "
+        "значимой разницы не нашли. В британском наблюдении переломы бедра у веганов "
+        "случались чаще, чем у тех, кто ест мясо: примерно на 15 случаев больше на 1000 "
+        "человек за 10 лет (от 8 до 25).",
+        unknown="Эти работы не проверяли таблетки. Переломы — наблюдение, а не причина: "
+        "учёт кальция и белка лишь немного менял разницу, а без поправки на вес она была "
+        "больше. Авторы пишут, что нужны новые исследования.",
+        sources=(
+            ("Bickelmann и соавт., 2023, метаанализ", 38054787),
+            ("Tong и соавт., 2020, EPIC-Oxford", 33222682),
+        ),
+    ),
+    "iodine": Nutrient(
+        label="Йод",
+        title="🧂 Йод",
+        what="Нужен щитовидной железе. Много зависит от страны: где соль обычно йодируют, "
+        "там его получают незаметно.",
+        found="В обзоре 11 работ (4421 взрослый) у веганов самые низкие поступление и йод "
+        "в моче. Медиана йода в моче ни в одной группе питания не попала в диапазон ВОЗ. "
+        "Разница в поступлении зависела от пола, йодирования соли в стране и "
+        "обеспеченности страны йодом.",
+        unknown="Работа сравнивает поступление и анализы, а не проверяет добавки.",
+        sources=(("Eveleigh и соавт., 2023, метаанализ", 36912094),),
+    ),
+    "vitamin_d": Nutrient(
+        label="Витамин D",
+        title="☀️ Витамин D",
+        what="Участвует в усвоении кальция. Образуется в коже на солнце, поэтому многое "
+        "зависит от широты и времени года.",
+        found="В обзоре 141 работы о питании в целом поступление и уровень в крови у людей "
+        "на растительном питании обычно ниже, чем у тех, кто ест мясо. Риск малого "
+        "поступления есть и у тех, кто ест мясо.",
+        unknown="В абстракте нет данных о том, что будет от добавки.",
+        sources=(_REVIEW_2021,),
+    ),
+    "omega": Nutrient(
+        label="Омега-3",
+        title="🌰 Омега-3 (EPA и DHA)",
+        what="Жирные кислоты. В льне и орехах другая форма, ALA, и в EPA и DHA она "
+        "превращается слабо.",
+        found="В картирующем обзоре 13 работ высокие дозы льняного масла и масла эхиума не "
+        "подняли индекс омега-3, а в части работ он снизился. Масло микроводорослей "
+        "подняло его во всех работах. Авторы называют свой вывод предварительным.",
+        unknown="Индекс — показатель в крови, а не здоровье. Официальные рекомендации к "
+        "единому мнению пока не пришли.",
+        sources=(("Lane и соавт., 2022, обзор", 33576691),),
+    ),
+    "iron": Nutrient(
+        label="Железо",
+        title="🩸 Железо",
+        what="Участвует в переносе кислорода. Из растений усваивается меньшая его доля, "
+        "чем из мяса.",
+        found="В метаанализе 24 поперечных работ ферритин, запас железа, у вегетарианцев "
+        "ниже примерно на 30 мкг/л, чем у невегетарианцев. У мужчин разница больше, чем "
+        "у женщин.",
+        unknown="Это снимок, а не причина. Авторы считают высокий запас тоже фактором "
+        "риска, например диабета 2 типа, и предлагают контролировать статус железа не "
+        "только вегетарианцам. По записям еды запас не оценить.",
+        sources=(("Haider и соавт., 2018, метаанализ", 27880062),),
+    ),
+    "zinc": Nutrient(
+        label="Цинк",
+        title="🌱 Цинк",
+        what="Участвует в работе иммунитета и заживлении. Есть в бобовых, орехах и "
+        "семечках.",
+        found="В обзоре 141 работы о питании в целом поступление и уровень цинка у людей "
+        "на растительном питании обычно ниже, чем у тех, кто ест мясо.",
+        unknown="В абстракте о проверке добавок нет ни слова, а источник у этого экрана "
+        "один. Дни бобовых и орехов в боте — примета, а не оценка цинка.",
+        sources=(_REVIEW_2021,),
     ),
 }
 
@@ -171,6 +306,7 @@ def list_screen() -> Screen:
         [InlineKeyboardButton(topic.label, callback_data=_TOPIC + key)]
         for key, topic in TOPICS.items()
     ]
+    rows.append([InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN)])
     rows.append([InlineKeyboardButton("⬅️ Настройки", callback_data=_SETTINGS)])
     return Screen(text, InlineKeyboardMarkup(rows))
 
@@ -184,12 +320,58 @@ def topic_screen(topic: Topic) -> Screen:
         f"<i>Источник: {topic.source}</i>"
     )
     back = InlineKeyboardButton("⬅️ Как это работает", callback_data=OPEN)
+    rows = [[back]]
+    if topic.more:
+        rows.insert(
+            0, [InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN)]
+        )
+    return Screen(text, InlineKeyboardMarkup(rows))
+
+
+def _link(source: tuple) -> str:
+    name, pmid = source
+    return f'<a href="https://pubmed.ncbi.nlm.nih.gov/{pmid}/">{name}</a>'
+
+
+def nutrients_screen() -> Screen:
+    text = (
+        f"<b>{NUTRIENTS_TITLE}</b>\n\n{_NUTRIENTS_INTRO}\n\n"
+        f"{_NUTRIENTS_ADEQUATE} {_link(_NUTRIENTS_POSITION)}."
+    )
+    buttons = [
+        InlineKeyboardButton(item.label, callback_data=_NUTRIENT + key)
+        for key, item in NUTRIENTS.items()
+    ]
+    rows = [
+        buttons[i : i + _NUTRIENTS_ROW] for i in range(0, len(buttons), _NUTRIENTS_ROW)
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Как это работает", callback_data=OPEN)])
+    return Screen(text, InlineKeyboardMarkup(rows))
+
+
+def nutrient_screen(item: Nutrient) -> Screen:
+    links = "\n".join(f"• {_link(source)}" for source in item.sources)
+    text = (
+        f"<b>{item.title}</b>\n\n"
+        f"<b>Что это.</b> {item.what}\n\n"
+        f"<b>Что нашли.</b> {item.found}\n\n"
+        f"<b>Чего не знаем.</b> {item.unknown}\n\n"
+        f"<b>Источники:</b>\n{links}\n\n"
+        f"<i>{_NUTRIENT_CLOSING}</i>"
+    )
+    back = InlineKeyboardButton(
+        f"⬅️ {NUTRIENTS_TITLE.split(' ', 1)[1]}", callback_data=NUTRIENTS_OPEN
+    )
     return Screen(text, InlineKeyboardMarkup([[back]]))
 
 
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
     if data == OPEN:
         return list_screen()
+    if data == NUTRIENTS_OPEN:
+        return nutrients_screen()
+    if data.startswith(_NUTRIENT) and data[len(_NUTRIENT) :] in NUTRIENTS:
+        return nutrient_screen(NUTRIENTS[data[len(_NUTRIENT) :]])
     topic = TOPICS.get(data[len(_TOPIC) :]) if data.startswith(_TOPIC) else None
     if topic is None:
         # A topic renamed in a release leaves old buttons behind.

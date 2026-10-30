@@ -9,6 +9,7 @@ import httpx
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     ReplyKeyboardMarkup,
     Update,
 )
@@ -1440,7 +1441,10 @@ async def _screen_callback(
         return
     try:
         await query.edit_message_text(
-            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+            screen.text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=screen.markup,
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
     except BadRequest as e:
         # A repeated tap that leads to the same screen: nothing to change.
