@@ -389,9 +389,16 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "🕐 Часовой пояс",
         "🔢 Цифры сразу: выкл",
         "💊 Рутины",
+        "ℹ️ Как это работает",
         "💸 Стоимость запросов: выкл",
     ]
-    assert _callbacks(markup) == ["set:tz", "set:num", "rt:open", "set:costs"]
+    assert _callbacks(markup) == [
+        "set:tz",
+        "set:num",
+        "rt:open",
+        "hw:open",
+        "set:costs",
+    ]
     assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
 
 

@@ -34,6 +34,7 @@ from app.schemas.meal import MealCreate
 from app.services import ai_errors, custom_emoji, favorites
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
+    explain_screen,
     meal_draft,
     routines,
     settings_screen,
@@ -1522,6 +1523,16 @@ async def routines_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def explain_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on «ℹ️ Как это работает» (``hw:…``)."""
+    await _screen_callback(
+        update,
+        explain_screen.handle_callback,
+        "🔒 Пояснения доступны с подпиской",
+        "Explanations",
+    )
+
+
 async def routine_ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """➕ or ✏️ on the routine screens: the next text message is the name. A tap
     that opens no name step changes no state."""
@@ -2009,6 +2020,11 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             routines_callback, pattern=f"^{routines.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            explain_callback, pattern=f"^{explain_screen.CALLBACK_PREFIX}"
         )
     )
     application.add_handler(
