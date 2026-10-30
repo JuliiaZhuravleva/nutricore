@@ -80,7 +80,7 @@ def test_the_card_says_when_and_which_groups_in_the_mocks_words(db):
     _meal(db, _at(13, 15), items=[_item("тофу", "anchor")], groups=["anchor"])
     _meal(db, _at(18, 30), items=[_item("чечевица", "anchor")], groups=["anchor"])
 
-    assert _card(db).text.split("\n") == [
+    assert _card(db).text.split("\n")[:5] == [
         "<b>📊 Сегодня, пт 30 октября</b>",
         "",
         "🕐 Еда: 8:40 · 13:15 · 18:30",
@@ -182,13 +182,13 @@ def test_the_numbers_setting_opens_them_without_a_button(db):
     _meal(db, _at(9))
     card = _card(db)
     assert "🔢 За день" in card.text
-    assert _rows(card) == [["✓ Сегодня", "Вчера", "7 дней"]]
+    assert _rows(card)[-2:] == [["🔋 Силы: обычно"], ["✓ Сегодня", "Вчера", "7 дней"]]
 
 
 def test_tabs_are_the_last_row_under_ticks_and_numbers(db):
     _meal(db, _at(9))
     assert _rows(_card(db))[-1] == ["✓ Сегодня", "Вчера", "7 дней"]
-    assert _rows(_card(db))[-2] == ["🔢 Цифры"]
+    assert _rows(_card(db))[-2] == ["🔢 Цифры", "🔋 Силы: обычно"]
     assert _rows(_card(db, st.YESTERDAY)) == [["Сегодня", "✓ Вчера", "7 дней"]]
 
 
@@ -212,7 +212,7 @@ def test_the_intro_is_shown_once_on_a_card_with_food(db):
     user = db.get(User, 1)
     user.settings = {}
     db.commit()
-    intro = "<i>Это карточка дня: что было, без оценок.</i>"
+    intro = "<i>Это карточка дня: что было, без оценок. Шаг внизу — по желанию.</i>"
     assert intro not in _card(db).text  # an empty card does not use it up
     _meal(db, _at(9))
     assert _card(db).text.split("\n")[2] == intro
@@ -226,7 +226,8 @@ def test_the_intro_keeps_the_users_other_settings(db):
     db.commit()
     _meal(db, _at(9))
     _card(db)
-    assert db.get(User, 1).settings == {"diet": "veg", st.DAY_CARD_SEEN: True}
+    saved = db.get(User, 1).settings
+    assert saved["diet"] == "veg" and saved[st.DAY_CARD_SEEN] is True
 
 
 def test_add_outside_the_conversation_explains_and_shows_the_card(db):

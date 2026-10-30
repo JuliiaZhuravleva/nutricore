@@ -154,6 +154,36 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - The summary's only button is «🔢 Цифры», with its own Monday in the data, so it keeps its week days later. No tabs: it is
   a message, not the screen.
 
+## Slice F, as built
+
+- `app/services/next_step.py` is pure rules with no model and no learning; `stats_screen` draws it. Order: drop what the
+  user never wants suggested, then the week's least-present group (days over the last seven), then benefit × chance ÷
+  minutes. Benefit and chance are the project's own rough marks, and no study tested this card. A step with two groups
+  counts by the rarer one.
+- **Departs from the spec:** the «regular sufficient eating» branch is not built, because the app has no rhythm setting
+  to switch it on. The 15–20 minute size is left for the ladder (slice H): normal mode offers up to 10 minutes, as the
+  mock's toast says.
+- The step is chosen once a day, on the first view of today with a meal, and stays when more meals are logged. Yesterday's
+  step is not chosen again, so «завтра будет новый» holds. An empty day has no step and no energy button; yesterday and
+  the week have neither.
+- The state lives in `User.settings["next_step"]`, the mode in `settings["energy"]`. The mode changes only by the user's
+  tap and stays across days. Changing it chooses an open step again for the new size, and leaves a step done or put off.
+- `row` counts «😴 Не сейчас» in a row: at two the next step is one size smaller, without a word. «Вернуть шаг» and undo
+  restore it, «Готово» clears it. Nothing else reads it and no screen shows it.
+- **Two sources disagree, the mock wins:** US-F1 says a put-off step is shown nowhere, the design has a «day-later» screen.
+  Built: that day's own card says «😴 Шаг отложен» with «👣 Вернуть шаг»; no other day, tab or count ever shows it.
+- The catalogue goes past the anchor list: fruit, vegetables, seeds and any nuts are the project's additions.
+- `no_suggest` and `reliable_foods` are read here and filled by slice G. A refused word also drops a step that merely
+  goes with it: refusing «хлеб» drops «хумус к хлебу». Matching is by word start with the ending cut, so it can refuse one
+  step too many. That costs a step, and the other way would suggest what was refused.
+- **Known gap:** the user model has no allergy data, so until slice G's list a nut step can reach someone allergic to
+  nuts. «🔄 Другой шаг» is the remedy until then.
+- In the lowest mode the keyboard keeps to the step, as in the mock: ticks leave the buttons, stay in the text and still
+  work by typed name.
+- A time zone change across midnight can drop that day's done or put-off mark and choose again. Rare, accepted.
+- Callback data carries the step shown, the card's day and, for energy, the mode wanted, so a double tap or an old card
+  changes nothing. A button from another day shows today's card with the usual notice.
+
 ## Facts confirmed
 
 - Cooking time: steps stay within 15–20 minutes.

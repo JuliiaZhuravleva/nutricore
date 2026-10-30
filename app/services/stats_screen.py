@@ -2,8 +2,9 @@
 
     📊 Статистика → <b>📊 Сегодня, вт 28 октября</b> — the times of food, whole
     grains and protein anchors if there were any (``day_card``), ticked routines
+    [✅ Готово] [🔄 Другой шаг] [😴 Не сейчас] — today's one step (``next_step``)
     [💊 Прогулка] — up to three ticks of the user's routines, then [💊 Ещё N]
-    [🔢 Цифры]
+    [🔢 Цифры] [🔋 Силы: обычно]
     [✓ Сегодня] [Вчера] [7 дней]
     7 дней → <b>📊 7 дней, 24–30 октября</b> — different plants, the days of each
     food group, ticked routines, at most one finding (``week_card``)
@@ -34,7 +35,7 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import day_card, routines, week_card
+from app.services import day_card, next_step, routines, week_card
 from app.services.day_card import local_time
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
@@ -53,6 +54,8 @@ OPEN = "n"  # appended to a tab: the numbers are open on it
 # Routine ticks: k:<id>:<day>:<1 tick, 0 untick>:<n or empty>; m:<day>:<n or empty>
 TICK, MORE_TICK, MORE = "k", "K", "m"
 SUMMARY = "i"  # i:<its Monday>[:n]: Sunday's message, on the week it was sent for
+# The next step: s:<verb>:<day>:<the step shown>:<n or empty>; e:<mode>:<n or empty>
+STEP, ENERGY = "s", "e"
 SUMMARY_NOTE = (
     "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
 )
@@ -124,22 +127,24 @@ def _meal_name(meal: Meal) -> str:
 
 
 def _tabs(
-    current: str, opened: bool | None = None, above: tuple = ()
+    current: str, opened: bool | None = None, above: tuple = (), beside: tuple = ()
 ) -> InlineKeyboardMarkup:
     """The tabs, under the rows in ``above``; ``opened`` is None when ⚙️ shows the
     numbers anyway (no button), else whether «🔢 Цифры» is open on this view. An
-    open view stays open across the tabs."""
+    open view stays open across the tabs. ``beside``: buttons on the numbers' row."""
     keep = OPEN if opened else ""
     rows = [*above]
+    row = [*beside]
     if opened is not None:
         flip = "" if opened else OPEN
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    toggle_label(opened), callback_data=CALLBACK_PREFIX + current + flip
-                )
-            ]
+        row.insert(
+            0,
+            InlineKeyboardButton(
+                toggle_label(opened), callback_data=CALLBACK_PREFIX + current + flip
+            ),
         )
+    if row:
+        rows.append(row)
     rows.append(
         [
             InlineKeyboardButton(
@@ -180,8 +185,10 @@ def day_screen(
     first_time: bool = False,
     ticked: tuple = (),
     look: str = LOOK_DAY,
+    step: next_step.View | None = None,
 ) -> Screen:
-    """``opened``: see ``_tabs``; the numbers show unless it is False."""
+    """``opened``: see ``_tabs``; the numbers show unless it is False. ``step``:
+    today's next step; an empty day never gets one."""
     head = "Сегодня" if tab == TODAY else "Вчера"
     lines = [f"<b>📊 {head}, {_card_title(day)}</b>", ""]
     ticks = [routine_line] if routine_line else []
@@ -215,8 +222,13 @@ def day_screen(
             lines += ["", *ticks]
         picture["empty"] = True
         return Screen("\n".join(lines), _tabs(tab, None, above), picture=picture)
+    mode_line = next_step.MODES[step.mode][2] if step else None
+    if mode_line:
+        lines += [mode_line, ""]
+        picture["mode"] = step.mode
     if first_time:
-        lines += ["<i>Это карточка дня: что было, без оценок.</i>", ""]
+        tail = " Шаг внизу — по желанию." if step and step.step else ""
+        lines += [f"<i>Это карточка дня: что было, без оценок.{tail}</i>", ""]
     facts = day_card.facts(meals, zone, _meal_name)
     lines += day_card.lines(facts, html.escape)
     picture |= {
@@ -226,9 +238,18 @@ def day_screen(
         "anchor": facts.anchor,
     }
     lines += ticks
+    beside = ()
+    if step:
+        told = next_step.lines(step)
+        if told:
+            lines += ["", *told]
+            picture["step"] = next_step.picture(step)
+        routine_rows = (*_step_rows(step, day, opened), *routine_rows)
+        beside = (_energy_button(step.mode, opened),)
     if opened is not False:
         lines += ["", _numbers_block(meals, zone)]
-    return Screen("\n".join(lines), _tabs(tab, opened, routine_rows), picture=picture)
+    markup = _tabs(tab, opened, routine_rows, beside)
+    return Screen("\n".join(lines), markup, picture=picture)
 
 
 def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
@@ -328,6 +349,40 @@ def week_screen(
     return Screen("\n".join(lines), markup, picture=picture)
 
 
+# --- the next step ----------------------------------------------------------
+
+
+def _step_rows(step: next_step.View, day: date, opened: bool | None) -> list:
+    if step.step is None:
+        return []
+    keep = OPEN if opened else ""
+
+    def button(label: str, verb: str, **extra) -> InlineKeyboardButton:
+        data = f"{CALLBACK_PREFIX}{STEP}:{verb}:{_day_code(day)}:{step.step.id}:{keep}"
+        return InlineKeyboardButton(label, callback_data=data, **extra)
+
+    if step.state == next_step.DONE:
+        return [[button("↩️ Отменить", next_step.UNDO)]]
+    if step.state == next_step.LATER:
+        return [[button("👣 Вернуть шаг", next_step.BRING_BACK)]]
+    return [
+        [
+            # PTB 21.9 predates ``style``: see meal_draft's «✅ Сохранить».
+            button("✅ Готово", next_step.TAKE, api_kwargs={"style": "success"}),
+            button("🔄 Другой шаг", next_step.SWAP),
+            button("😴 Не сейчас", next_step.PUT_OFF),
+        ]
+    ]
+
+
+def _energy_button(mode: str, opened: bool | None) -> InlineKeyboardButton:
+    """The mode it leads to travels with it: a double tap moves it once."""
+    keep = OPEN if opened else ""
+    wanted = next_step.next_energy(mode)
+    data = f"{CALLBACK_PREFIX}{ENERGY}:{wanted}:{keep}"
+    return InlineKeyboardButton(next_step.MODES[mode][0], callback_data=data)
+
+
 # --- routine ticks ----------------------------------------------------------
 
 
@@ -395,6 +450,12 @@ def _more_screen(user: User, due: list[dict], done: set, day: date, keep: str):
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
+def _stale_card(db, telegram_id: int, now: datetime | None, opened: bool) -> Screen:
+    card = open_view(db, telegram_id, TODAY, now, opened)
+    notice = "<i>Это была карточка прошлого дня, вот сегодняшняя.</i>"
+    return replace(card, text=f"{notice}\n\n{card.text}")
+
+
 def _tick_view(db, telegram_id: int, parts: list, now: datetime | None) -> Screen:
     """A tap on a tick or on «Ещё N». The card's day travels in the button, so a
     card left open overnight cannot tick the wrong day."""
@@ -407,17 +468,12 @@ def _tick_view(db, telegram_id: int, parts: list, now: datetime | None) -> Scree
     def today_card(toast: str | None) -> Screen:
         return replace(open_view(db, telegram_id, TODAY, now, opened), toast=toast)
 
-    def stale_card() -> Screen:
-        card = open_view(db, telegram_id, TODAY, now, opened)
-        notice = "<i>Это была карточка прошлого дня, вот сегодняшняя.</i>"
-        return replace(card, text=f"{notice}\n\n{card.text}")
-
     shape = 2 if verb == MORE else 4
     day = rest[0] if verb == MORE else rest[1] if len(rest) > 1 else None
     if len(rest) != shape:
         return today_card(None)  # not ours to explain: nothing happened on a day
     if day != _day_code(today):
-        return stale_card()
+        return _stale_card(db, telegram_id, now, opened)
     due, done = _day_ticks(db, user, today)
     if verb == MORE:
         return _more_screen(user, due, done, today, keep)
@@ -547,6 +603,65 @@ def _summary_callback(db, telegram_id: int, parts: list, now) -> Screen | None:
     return summary_view(db, user, monday, moment, opened=bool(keep))
 
 
+def _group_days(db, user: User, today: date, zone: ZoneInfo) -> dict:
+    """Days per food group over the seven days up to today."""
+    first = today - timedelta(days=WEEK_DAYS - 1)
+    dates = [first + timedelta(days=shift) for shift in range(WEEK_DAYS)]
+    days = [(day, _meals_on(db, user, day, zone)) for day in dates]
+    return dict(week_card.facts(days, [], zone).groups)
+
+
+def _save_settings(db, user: User, values: dict) -> None:
+    if values != (user.settings or {}):
+        user.settings = values
+        db.commit()
+
+
+def _step_view(db, user: User, today: date, zone: ZoneInfo) -> next_step.View:
+    values = next_step.current(
+        user.settings or {}, today, lambda: _group_days(db, user, today, zone)
+    )
+    _save_settings(db, user, values)
+    return next_step.view(values)
+
+
+def _step_callback(
+    db, telegram_id: int, parts: list, now: datetime | None
+) -> Screen | None:
+    """A tap on the step or on «🔋 Силы»; None when the data is not one. The card's
+    day travels in the step's buttons, as in the ticks."""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if user is None:
+        return None
+    verb, *rest = parts
+    keep = rest[-1] if rest else None
+    if keep not in ("", OPEN) or len(rest) != (4 if verb == STEP else 2):
+        return None
+    zone = user_zone(user)
+    today = local_time(now or datetime.now(UTC), zone).date()
+
+    def days() -> dict:
+        return _group_days(db, user, today, zone)
+
+    if verb == ENERGY:
+        values, toast = next_step.switch_energy(
+            user.settings or {}, rest[0], today, days
+        )
+    else:
+        action, day, shown = rest[:3]
+        if action not in next_step.VERBS:
+            return None
+        if day != _day_code(today):
+            try:
+                datetime.strptime(day, "%Y%m%d")
+            except ValueError:
+                return None
+            return _stale_card(db, telegram_id, now, keep == OPEN)
+        values, toast = next_step.tap(user.settings or {}, action, shown, today, days)
+    _save_settings(db, user, values)
+    return replace(open_view(db, telegram_id, TODAY, now, keep == OPEN), toast=toast)
+
+
 def open_view(
     db,
     telegram_id: int,
@@ -578,6 +693,9 @@ def open_view(
         return _week_view(db, user, first, zone, shown, look)
     due, done = _day_ticks(db, user, today)
     meals = _meals_on(db, user, today, zone)
+    step = _step_view(db, user, today, zone) if meals and user else None
+    # The lowest mode keeps the keyboard to the step: ticks wait, typed names still work.
+    hide_ticks = bool(step) and step.mode == next_step.SIMPLE
     return day_screen(
         meals,
         today,
@@ -585,10 +703,11 @@ def open_view(
         zone,
         shown,
         routines.ticked_line(user, done),
-        _routine_rows(due, done, today, OPEN if opened else ""),
+        () if hide_ticks else _routine_rows(due, done, today, OPEN if opened else ""),
         first_time=bool(meals) and _first_day_card(db, user),
         ticked=tuple(routines.ticked_names(user, done)),
         look=look,
+        step=step,
     )
 
 
@@ -599,6 +718,10 @@ def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None
         return _tick_view(db, telegram_id, parts, now)
     if parts[0] == SUMMARY:
         screen = _summary_callback(db, telegram_id, parts, now)
+        if screen is not None:
+            return screen
+    if parts[0] in (STEP, ENERGY):
+        screen = _step_callback(db, telegram_id, parts, now)
         if screen is not None:
             return screen
     if view == ADD:

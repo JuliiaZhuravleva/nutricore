@@ -771,6 +771,11 @@ chrome = os.environ.get("CHROME")
     "name, code",
     [
         ("day", 0),
+        ("day_step", 0),
+        ("day_done", 0),
+        ("day_later", 0),
+        ("day_low", 0),
+        ("day_simple", 0),
         ("evening", 0),
         ("empty_ticked", 0),
         ("injection", 0),
