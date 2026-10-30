@@ -70,7 +70,7 @@ def _long_gap(moments: list) -> Optional[str]:
     return _gap_word((_hour(first) + _hour(last)) / 2)
 
 
-def _tags(meal: Meal) -> dict:
+def tags(meal: Meal) -> dict:
     for source in (meal.ai_analysis, meal.nutrients):
         if isinstance(source, dict) and "food_groups" in source:
             return source
@@ -81,11 +81,11 @@ def _foods_in(meal: Meal, group: str, name_of: Callable) -> list:
     """The foods behind a group the meal confirmed. A group ticked by hand has no
     item behind it, so the meal's own name stands in; one unticked by hand hides
     the items the analysis had tagged."""
-    tags = _tags(meal)
-    confirmed = tags.get("food_groups")
+    found = tags(meal)
+    confirmed = found.get("food_groups")
     if not isinstance(confirmed, list) or group not in confirmed:
         return []
-    items = tags.get("food_items")
+    items = found.get("food_items")
     names = [
         item["name"]
         for item in (items if isinstance(items, list) else [])
@@ -96,7 +96,7 @@ def _foods_in(meal: Meal, group: str, name_of: Callable) -> list:
     return names or [name_of(meal)]
 
 
-def _short(name: str) -> str:
+def short(name: str) -> str:
     name = name.strip()
     return name if len(name) <= NAME_MAX else name[: NAME_MAX - 1].rstrip() + "…"
 
@@ -119,9 +119,9 @@ def _group_line(meals: list, group: str, zone: ZoneInfo, name_of: Callable):
             if total > MAX_NAMES:
                 continue
             if parts and parts[-1][0] == part:
-                parts[-1][1].append(_short(name))
+                parts[-1][1].append(short(name))
             else:
-                parts.append((part, [_short(name)]))
+                parts.append((part, [short(name)]))
     if not parts:
         return None
     line = " · ".join(f"{', '.join(names)} {part}".strip() for part, names in parts)

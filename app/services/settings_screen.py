@@ -1,8 +1,8 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💊 Рутины] [ℹ️ Как это работает]
-    [💸 Стоимость запросов: выкл]
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл]
+    [💊 Рутины] [ℹ️ Как это работает] [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 CALLBACK_PREFIX = "set:"
 SHOW_COSTS = "show_costs"  # the 💸 line under each analysis
 TIMEZONE = "timezone"  # an IANA name; days in 📊 and dates in ⚖️ follow it
+WEEK_PUSH = "week_push"  # False: no summary on Sunday; on unless turned off
+WEEK_PUSH_SENT = "week_push_last"  # the Monday of the last summary sent
 _COSTS_CB = CALLBACK_PREFIX + "costs"
+_WEEK_CB = CALLBACK_PREFIX + "week"
 _NUMBERS_CB = CALLBACK_PREFIX + "num"
 _ZONES_CB = CALLBACK_PREFIX + "tz"
 _PICK = _ZONES_CB + ":"  # + the zone's IANA name
@@ -91,6 +94,10 @@ def user_zone(user: User | None) -> ZoneInfo:
     return ZoneInfo(zone_name(user))
 
 
+def week_push_on(user: User | None) -> bool:
+    return (user.settings or {}).get(WEEK_PUSH) is not False if user else True
+
+
 def shows_costs(db, telegram_id: int) -> bool:
     user = _user(db, telegram_id)
     return bool(user and (user.settings or {}).get(SHOW_COSTS))
@@ -125,6 +132,7 @@ def screen(
     notice: str | None = None,
     numbers: bool = False,
     routines: int = 0,
+    week_push: bool = True,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -134,13 +142,18 @@ def screen(
         "📊 Статистика делит дни.",
         "🔢 Калории и БЖУ: "
         + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
+        "🗓 Итог недели: "
+        + ("воскресенье, 22:00, без звука." if week_push else "не присылаю."),
         f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
         f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
         "под каждым разбором еды.",
     ]
     rows = [
-        [_btn("🕐 Часовой пояс", _ZONES_CB)],
-        [_btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
+        [
+            _btn("🕐 Часовой пояс", _ZONES_CB),
+            _btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB),
+        ],
+        [_btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB)],
         [
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
             _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
@@ -223,6 +236,7 @@ def open_view(
         notice,
         shows_numbers(user),
         len(active_routines(user)),
+        week_push_on(user),
     )
 
 
@@ -251,6 +265,11 @@ def handle_callback(
         on = not shows_numbers(_user(db, telegram_id))
         _save(db, telegram_id, **{SHOW_NUMBERS: on})
         notice = "✓ Цифры видны сразу" if on else "✓ Цифры теперь за кнопкой"
+        return open_view(db, telegram_id, notice, now)
+    if data == _WEEK_CB:
+        on = not week_push_on(_user(db, telegram_id))
+        _save(db, telegram_id, **{WEEK_PUSH: on})
+        notice = "✓ Итог недели включён" if on else "✓ Итог недели выключен"
         return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:

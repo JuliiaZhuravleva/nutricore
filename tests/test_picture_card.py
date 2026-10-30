@@ -647,9 +647,10 @@ def test_an_empty_day_draws_the_same_words_as_its_caption(tab, title, note):
     assert ("emptyNote" in screen.picture) == note
 
 
-def test_a_week_has_no_picture():
+def test_a_week_is_a_picture_too():
     day = date(2026, 10, 30)
-    assert stats_screen.week_screen([(day, [_meal(8)])], ZONE).picture is None
+    picture = stats_screen.week_screen([(day, [_meal(8)])], ZONE).picture
+    assert picture["view"] == "week" and picture["title"]
 
 
 @pytest.mark.parametrize(
@@ -768,7 +769,19 @@ chrome = os.environ.get("CHROME")
 @pytest.mark.skipif(not chrome, reason="no CHROME: real drawing did not run")
 @pytest.mark.parametrize(
     "name, code",
-    [("day", 0), ("evening", 0), ("empty_ticked", 0), ("injection", 0), ("broken", 1)],
+    [
+        ("day", 0),
+        ("evening", 0),
+        ("empty_ticked", 0),
+        ("injection", 0),
+        ("week", 0),
+        ("week_few", 0),
+        ("week_empty", 0),
+        ("week_no_tags", 0),
+        ("week_summary", 0),
+        ("broken", 1),
+        ("week_broken", 1),
+    ],
 )
 def test_real_chrome_draws_the_samples_and_refuses_broken(name, code, tmp_path):
     out = tmp_path / "card.png"

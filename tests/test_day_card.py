@@ -127,8 +127,8 @@ def test_a_long_list_is_cut_and_counted_and_a_long_name_shortened(db):
     assert line == "⚓ Белковая опора: тофу, нут, чечевица, темпе утром · ещё 2"
 
     long_name = "очень длинное название одного блюда из кафе"
-    assert len(day_card._short(long_name)) == day_card.NAME_MAX
-    assert day_card._short(long_name).endswith("…")
+    assert len(day_card.short(long_name)) == day_card.NAME_MAX
+    assert day_card.short(long_name).endswith("…")
 
 
 @pytest.mark.parametrize(

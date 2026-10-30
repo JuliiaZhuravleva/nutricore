@@ -171,7 +171,7 @@ def test_only_my_meals_are_counted(Session):
 # --- statistics: week ---------------------------------------------------------
 
 
-def test_week_has_seven_days_and_averages_over_logged_days(Session):
+def test_week_numbers_cover_the_period_and_average_over_logged_days(Session):
     with Session() as db:
         user = _user(db, numbers=True)
         _meal(db, user, NOW, 2000)  # today
@@ -180,16 +180,11 @@ def test_week_has_seven_days_and_averages_over_logged_days(Session):
         screen = st.open_view(db, 42, st.WEEK, NOW)
 
     lines = screen.text.split("\n")
-    assert lines[0] == "<b>📊 7 дней</b> · 22 окт – 28 окт"
-    days = [line for line in lines if line[:2] in st._WEEKDAYS]
-    assert [d.split()[1] for d in days] == [
-        "22.10", "23.10", "24.10", "25.10", "26.10", "27.10", "28.10",
-    ]  # fmt: skip
-    assert days[-1] == "ср 28.10  ▰▰▰▰▰▰▰▰  2 000 ккал"
-    assert days[-3] == "пн 26.10  ▰▰▰▰▱▱▱▱  1 000 ккал"
-    assert days[0] == "чт 22.10  ▱▱▱▱▱▱▱▱  —"
-    assert "<b>🔥 В среднем: 1 500 ккал</b> в день" in lines
-    assert "Среднее по 2 дн. с записями из 7" in screen.text
+    assert lines[0] == "<b>📊 7 дней, 22–28 октября</b>"
+    assert "ср ▰▰▰▰▰▰▰▰ 2 000</blockquote>" in lines
+    assert "пн ▰▰▰▰▱▱▱▱ 1 000" in lines
+    assert "В среднем за день с записями: ≈ 1 500 ккал" in screen.text
+    assert "5 000" not in screen.text and "—" not in screen.text
     assert _labels(screen.markup)[-1] == "✓ 7 дней"
 
 
@@ -197,7 +192,7 @@ def test_empty_week_has_no_average(Session):
     with Session() as db:
         _user(db)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    assert "За неделю записей нет." in screen.text
+    assert "За 7 дней записей нет." in screen.text
     assert "В среднем" not in screen.text
 
 
@@ -400,6 +395,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _labels(markup) == [
         "🕐 Часовой пояс",
         "🔢 Цифры сразу: выкл",
+        "🗓 Итог недели: вкл",
         "💊 Рутины",
         "ℹ️ Как это работает",
         "💸 Стоимость запросов: выкл",
@@ -407,6 +403,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _callbacks(markup) == [
         "set:tz",
         "set:num",
+        "set:week",
         "rt:open",
         "hw:open",
         "set:costs",
@@ -643,7 +640,7 @@ def test_stats_tab_edits_in_place(Session):
     asyncio.run(tg.stats_callback(update, SimpleNamespace()))
     query.answer.assert_awaited_once_with(None)
     (text,), kwargs = query.edit_message_text.await_args
-    assert text.startswith("<b>📊 7 дней</b>")
+    assert text.startswith("<b>📊 7 дней, ")
     assert kwargs["parse_mode"] == "HTML"
 
 
@@ -852,7 +849,7 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
 def test_week_title_spans_a_month_boundary():
     days = [(date(2026, 10, 29) + timedelta(days=i), []) for i in range(7)]
     assert st.week_screen(days, UTC).text.startswith(
-        "<b>📊 7 дней</b> · 29 окт – 4 ноя"
+        "<b>📊 7 дней, 29 октября – 4 ноября</b>"
     )
 
 
@@ -944,16 +941,13 @@ def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
         assert "ккал" not in closed.text
 
 
-def test_numbers_off_week_lists_logged_days_with_times_and_no_counts(Session):
+def test_numbers_off_week_has_no_counts_and_no_days(Session):
     with Session() as db:
         user = _user(db)
         _meal(db, user, NOW, 2000)
-        _meal(db, user, NOW - timedelta(hours=2), 300)
         _meal(db, user, NOW - timedelta(days=2), 1000)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    lines = screen.text.split("\n")
-    assert lines[2:] == ["пн 26.10 · 12:00", "ср 28.10 · 10:00, 12:00"]
-    for hidden in ("ккал", "▱", "—", "В среднем", "из 7", "запис"):
+    for hidden in ("ккал", "▱", "—", "В среднем", "из 7"):
         assert hidden not in screen.text  # an empty day is not a gap
     assert _callbacks(screen.markup)[0] == "st:wn"
 
@@ -962,7 +956,7 @@ def test_numbers_off_empty_week_says_so_without_a_miss(Session):
     with Session() as db:
         _user(db)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    assert screen.text.endswith("За неделю записей нет.")
+    assert screen.text.endswith("Карточка соберётся с первой записью.")
 
 
 @pytest.mark.parametrize("data", ["st:tx", "st:q", "st:wnn", "st:"])

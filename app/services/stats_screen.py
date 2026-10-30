@@ -5,6 +5,11 @@
     [💊 Прогулка] — up to three ticks of the user's routines, then [💊 Ещё N]
     [🔢 Цифры]
     [✓ Сегодня] [Вчера] [7 дней]
+    7 дней → <b>📊 7 дней, 24–30 октября</b> — different plants, the days of each
+    food group, ticked routines, at most one finding (``week_card``)
+
+Sunday's message is the same card for the calendar week, with its own button
+(``SUMMARY``) and no tabs; ``week_push`` sends it.
 
 The numbers are the saved meals' own, summed, and there is no goal (stage 5,
 G5-R03). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01), in a collapsed
@@ -29,7 +34,7 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import day_card, routines
+from app.services import day_card, routines, week_card
 from app.services.day_card import local_time
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
@@ -47,6 +52,11 @@ TODAY, YESTERDAY, WEEK = "t", "y", "w"
 OPEN = "n"  # appended to a tab: the numbers are open on it
 # Routine ticks: k:<id>:<day>:<1 tick, 0 untick>:<n or empty>; m:<day>:<n or empty>
 TICK, MORE_TICK, MORE = "k", "K", "m"
+SUMMARY = "i"  # i:<its Monday>[:n]: Sunday's message, on the week it was sent for
+SUMMARY_NOTE = (
+    "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
+)
+_LONG_AGO = datetime(2000, 1, 1, tzinfo=UTC)
 TICK_ROW = 3
 ADD = "add"  # the empty day's «🍽 Добавить приём пищи»; the conversation takes it
 ADD_DATA = CALLBACK_PREFIX + ADD
@@ -142,10 +152,6 @@ def _tabs(
     return InlineKeyboardMarkup(rows)
 
 
-def _when(meal: Meal, zone: ZoneInfo) -> str:
-    return local_time(meal.meal_time, zone).strftime("%H:%M") if meal.meal_time else "—"
-
-
 # --- screens ----------------------------------------------------------------
 
 
@@ -225,51 +231,101 @@ def day_screen(
     return Screen("\n".join(lines), _tabs(tab, opened, routine_rows), picture=picture)
 
 
+def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
+    """Only the days with records: an empty day is not a gap to look at."""
+    logged = [(day, meals) for day, meals in days if meals]
+    everything = [meal for _day, meals in logged for meal in meals]
+    average = _sum(everything, "calories") / len(logged)
+    rows = [
+        f"🔢 В среднем за день с записями: ≈ {_kcal(average)} · "
+        f"{_macros(everything, len(logged))}"
+    ]
+    totals = [_sum(meals, "calories") for _day, meals in logged]
+    top = max(totals) or 1.0
+    for (day, _meals), total in zip(logged, totals):
+        filled = max(1, round(BAR_WIDTH * total / top))
+        bar = "▰" * filled + "▱" * (BAR_WIDTH - filled)
+        amount = _kcal(total).removesuffix(" ккал")
+        rows.append(f"{_WEEKDAYS[day.weekday()]} {bar} {amount}")
+    return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
+
+
+def _summary_markup(monday: date, opened: bool | None) -> InlineKeyboardMarkup | None:
+    """No tabs: the summary keeps its own week, days after it was sent."""
+    if opened is None:
+        return None
+    flip = "" if opened else f":{OPEN}"
+    data = f"{CALLBACK_PREFIX}{SUMMARY}:{_day_code(monday)}{flip}"
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(toggle_label(opened), callback_data=data)]]
+    )
+
+
 def week_screen(
     days: list[tuple[date, list[Meal]]],
     zone: ZoneInfo,
     opened: bool | None = None,
+    earlier: list[Meal] = (),
+    routine_line: str | None = None,
+    ticked: tuple = (),
+    look: str = LOOK_DAY,
+    summary: date | None = None,
+    first: bool = False,
 ) -> Screen:
-    """``days`` oldest first, today last. Without the numbers it lists only the
-    days that have records, each with its meal times: an empty day is not shown
-    as a gap, and no count invites comparing one week's logging with another's."""
-    first, last = days[0][0], days[-1][0]
-    lines = [
-        f"<b>📊 {WEEK_DAYS} дней</b> · {first.day} {_MONTHS[first.month - 1]} – "
-        f"{last.day} {_MONTHS[last.month - 1]}",
-        "",
-    ]
-    if opened is False:
-        logged_days = [(day, meals) for day, meals in days if meals]
-        for day, meals in logged_days:
-            title = f"{_WEEKDAYS[day.weekday()]} {day.day:02d}.{day.month:02d}"
-            lines.append(f"{title} · {', '.join(_when(m, zone) for m in meals)}")
-        if not logged_days:
-            lines.append("За неделю записей нет.")
-        return Screen("\n".join(lines), _tabs(WEEK, opened))
-    totals = [_sum(meals, "calories") for _day, meals in days]
-    top = max(totals) or 1.0
-    for (day, meals), total in zip(days, totals):
-        title = f"{_WEEKDAYS[day.weekday()]} {day.day:02d}.{day.month:02d}"
-        if not meals:
-            lines.append(f"{title}  {'▱' * BAR_WIDTH}  —")
-            continue
-        filled = max(1, round(BAR_WIDTH * total / top))
-        bar = "▰" * filled + "▱" * (BAR_WIDTH - filled)
-        lines.append(f"{title}  {bar}  {_kcal(total)}")
-    logged = [meals for _day, meals in days if meals]
-    lines.append("")
-    if not logged:
-        lines.append("За неделю записей нет.")
+    """``days`` oldest first. The 7 days tab, or with ``summary`` (its Monday) the
+    calendar week as Sunday's message. No count of days with records and no empty
+    days anywhere: two records must not look worse than seven (G5-R07)."""
+    head = "Неделя" if summary else f"{WEEK_DAYS} дней"
+    when = week_card.period(days[0][0], days[-1][0], _MONTHS_FULL)
+    new_label = "Новое на этой неделе" if summary else f"Новое за {WEEK_DAYS} дней"
+    lines = [f"<b>📊 {head}, {when}</b>", ""]
+    ticks = [routine_line] if routine_line else []
+    picture = {
+        "view": "week",
+        "theme": look,
+        "period": when,
+        "title": head,
+        "routines": list(ticked),
+    }
+    if not any(meals for _day, meals in days):
+        lines.append(
+            f"🍽 За {WEEK_DAYS} дней записей нет. Карточка соберётся с первой записью."
+        )
+        if ticks:
+            lines += ["", *ticks]
+        picture |= {
+            "empty": True,
+            "emptyTitle": f"За {WEEK_DAYS} дней записей нет",
+            "emptyNote": "Карточка соберётся с первой записью.",
+        }
+        add = InlineKeyboardButton("🍽 Добавить приём пищи", callback_data=ADD_DATA)
+        markup = None if summary else _tabs(WEEK, None, ([add],))
+        return Screen("\n".join(lines), markup, picture=picture)
+    week = week_card.facts(days, list(earlier), zone)
+    if week_card.has_tags(week):
+        lines += week_card.lines(week)
     else:
-        everything = [meal for meals in logged for meal in meals]
-        lines += [
-            f"<b>🔥 В среднем: {_kcal(_sum(everything, 'calories') / len(logged))}"
-            "</b> в день",
-            _macros(everything, len(logged)),
-            f"<i>Среднее по {len(logged)} дн. с записями из {WEEK_DAYS}.</i>",
-        ]
-    return Screen("\n".join(lines), _tabs(WEEK, opened))
+        lines.append(week_card.NO_TAGS)
+        picture |= {
+            "emptyTitle": "Записи есть",
+            "emptyNote": "Группы в них пока не отмечены.",
+        }
+    lines += ticks
+    finding = week_card.finding_line(week, new_label, html.escape)
+    if finding:
+        lines.append(finding)
+    picture |= {
+        "plants": week.plants,
+        "plantsLabel": week_card.plants_label(week.plants),
+        "groups": [{"key": key, "days": count} for key, count in week.groups],
+        "win": week_card.finding_block(week, new_label),
+    }
+    if opened is not False:
+        lines += ["", _week_numbers(days)]
+    if first:
+        lines += ["", f"<i>{SUMMARY_NOTE}</i>"]
+    markup = _summary_markup(summary, opened) if summary else _tabs(WEEK, opened)
+    return Screen("\n".join(lines), markup, picture=picture)
 
 
 # --- routine ticks ----------------------------------------------------------
@@ -425,6 +481,72 @@ def _first_day_card(db, user: User | None) -> bool:
     return True
 
 
+def week_bounds_utc(first: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
+    """The seven local days from ``first`` as a UTC [start, end) range."""
+    last = first + timedelta(days=WEEK_DAYS - 1)
+    return _day_bounds(first, zone)[0], _day_bounds(last, zone)[1]
+
+
+def _week_view(
+    db,
+    user: User | None,
+    first: date,
+    zone: ZoneInfo,
+    opened: bool | None,
+    look: str,
+    summary: date | None = None,
+    note: bool = False,
+) -> Screen:
+    dates = [first + timedelta(days=shift) for shift in range(WEEK_DAYS)]
+    done, earlier = set(), []
+    if user is not None:
+        ticks = crud_routine_tick.between(db, user.id, dates[0], dates[-1])
+        done = {tick.routine_id for tick in ticks}
+        start = _day_bounds(first, zone)[0]
+        earlier = crud_meal.get_user_meals_between(db, user.id, _LONG_AGO, start)
+    return week_screen(
+        [(day, _meals_on(db, user, day, zone)) for day in dates],
+        zone,
+        opened,
+        earlier,
+        routines.ticked_line(user, done),
+        tuple(routines.ticked_names(user, done)),
+        look,
+        summary,
+        note,
+    )
+
+
+def summary_view(
+    db,
+    user: User,
+    monday: date,
+    now: datetime,
+    first: bool = False,
+    opened: bool = False,
+) -> Screen:
+    """Sunday's message; ``first`` adds the line saying how to turn it off."""
+    zone = user_zone(user)
+    shown = None if shows_numbers(user) else opened
+    look = _look(local_time(now, zone))
+    return _week_view(db, user, monday, zone, shown, look, monday, first)
+
+
+def _summary_callback(db, telegram_id: int, parts: list, now) -> Screen | None:
+    """The numbers button on Sunday's message; None when the data is not one."""
+    code = parts[1] if len(parts) > 1 else ""
+    keep = parts[2:]
+    try:
+        monday = datetime.strptime(code, "%Y%m%d").date()
+    except ValueError:
+        return None
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if user is None or monday.weekday() != 0 or keep not in ([], [OPEN]):
+        return None
+    moment = now or datetime.now(UTC)
+    return summary_view(db, user, monday, moment, opened=bool(keep))
+
+
 def open_view(
     db,
     telegram_id: int,
@@ -452,10 +574,8 @@ def open_view(
             look=look,
         )
     if tab == WEEK:
-        days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
-        return week_screen(
-            [(day, _meals_on(db, user, day, zone)) for day in days], zone, shown
-        )
+        first = today - timedelta(days=WEEK_DAYS - 1)
+        return _week_view(db, user, first, zone, shown, look)
     due, done = _day_ticks(db, user, today)
     meals = _meals_on(db, user, today, zone)
     return day_screen(
@@ -477,6 +597,10 @@ def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None
     parts = view.split(":")
     if parts[0] in (TICK, MORE_TICK, MORE) and len(parts) > 1:
         return _tick_view(db, telegram_id, parts, now)
+    if parts[0] == SUMMARY:
+        screen = _summary_callback(db, telegram_id, parts, now)
+        if screen is not None:
+            return screen
     if view == ADD:
         # Only reaches here mid-step: elsewhere the conversation takes this tap.
         return replace(

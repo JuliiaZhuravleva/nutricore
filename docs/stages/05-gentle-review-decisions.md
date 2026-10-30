@@ -123,6 +123,37 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - Known gap: the name step lives in memory like every conversation state, so a bot restart between «➕» and the typed
   name loses it. The name then goes unanswered, and tapping «➕» again recovers.
 
+## Slice D, the picture
+
+- A sidecar draws the card (`render/`): no network, no secrets, only the `render_jobs` volume shared. The caption is the
+  whole text twin, so a stopped sidecar costs the picture and nothing else.
+
+## Slice E, as built
+
+- The tab «7 дней» is the last seven days to today; Sunday's message is Monday to Sunday and titled «Неделя». The same
+  screen builds both, and the finding's words differ: «Новое за 7 дней», «Новое на этой неделе».
+- Plants are counted by the names of tagged foods whose group the meal still confirms. A group ticked by hand has no name
+  and adds no plant. Names match after case, «ё» and spaces are evened out, and nothing more: «гречка» and «гречневая
+  каша» count as two. Merging them would take a dictionary or a paid call, and the number is a plain count with no target.
+- The finding is one at most: «Снова с записями» when 7 or more days without records came before the period's first
+  record, else the first plant food no earlier meal named. With no earlier meals nothing is «new». The 7 days are the
+  project's choice. **Departs from the design:** «three steady mornings» is not built, since the card has no way to say
+  it that is not a count of days.
+- Meals with no tags: «Записи есть, группы в них пока не отмечены», with the numbers still a tap away.
+- The picture's finding drops «— впервые в записях» after a name over 20 characters; the words did not fit on the card.
+- **Sending.** Beat runs every 15 minutes, because time zones with :30 and :45 reach 22:00 between the hours. The window
+  is all of 22:00–23:59 on Sunday, so a run lost to a restart is made up. The week is marked in `week_push_last` before
+  the send, under a row lock, because two summaries are worse than one missed. Only a connection never made
+  (`ConnectError`, `ConnectTimeout`, `PoolTimeout`), a refusal or a failure before the send clears the mark for a retry.
+  Any other network error may have arrived after Telegram took the request, so the mark stays and no text follows. A
+  worker killed between the mark and the send loses that week, and a retry after 23:59 does not happen. Both accepted.
+- The summary goes only to whoever may open the screens: access mode and an active subscription, admins always. Its
+  button would answer 🔒 to anyone else.
+- A summary goes out only once its picture is drawn or the wait ends in text, with no loader in a quiet chat. The worker
+  got the `render_jobs` volume for this.
+- The summary's only button is «🔢 Цифры», with its own Monday in the data, so it keeps its week days later. No tabs: it is
+  a message, not the screen.
+
 ## Facts confirmed
 
 - Cooking time: steps stay within 15–20 minutes.

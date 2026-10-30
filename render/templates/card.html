@@ -213,34 +213,40 @@ body.pdf { background: #E9E4DA; }
   function week() {
     var c = el("div", "card");
     add(c, head(R.period, R.title));
-    if (R.empty) {
+    if (R.emptyTitle) {
       var calm = el("div", "calm"), t = el("div");
-      add(t, el("div", "ct", "За 7 дней записей нет"), el("div", "cs", "Карточка соберётся с первой записью — догонять ничего не придётся."));
+      add(t, el("div", "ct", R.emptyTitle));
+      if (R.emptyNote) add(t, el("div", "cs", R.emptyNote));
       add(calm, tile("plate", 72, 15), t); add(c, calm);
-      return c;
     }
-    var st = el("div", "stats");
-    var a = el("div", "stat"), at = el("div");
-    add(at, el("div", "big", String(R.plants)), el("div", "lbl", R.plantsLabel || "разных растений"));
-    add(a, tile("plants", 48), at);
-    add(st, a);
-    if (R.experiment) {
-      var e = el("div", "stat"), et = el("div");
-      add(et, el("div", "big", R.experiment.big), el("div", "lbl two", R.experiment.label));
-      add(e, tile("flask", 48), et); add(st, e);
+    if (R.plants || R.experiment) {
+      var st = el("div", "stats");
+      if (R.plants) {
+        var a = el("div", "stat"), at = el("div");
+        add(at, el("div", "big", String(R.plants)), el("div", "lbl", R.plantsLabel || "разных растений"));
+        add(a, tile("plants", 48), at);
+        add(st, a);
+      }
+      if (R.experiment) {
+        var e = el("div", "stat"), et = el("div");
+        add(et, el("div", "big", R.experiment.big), el("div", "lbl two", R.experiment.label));
+        add(e, tile("flask", 48), et); add(st, e);
+      }
+      add(c, st);
     }
-    add(c, st);
-    var gp = el("div", "panel");
-    add(gp, kick("chart", R.groupsTitle || "Дни, когда это было"));
-    var gg = el("div", "ggrid");
-    (R.groups || []).forEach(function (g) {
-      var t = el("div", "gtile"), n = el("div", "gn");
-      add(n, el("div", "", GROUPS[g.key].short));
-      add(t, tile(g.key, 38), n, el("span", "gd", g.days + " дн."));
-      gg.appendChild(t);
-    });
-    gp.style.paddingBottom = "16px";
-    add(gp, gg); add(c, gp);
+    if (R.groups && R.groups.length) {
+      var gp = el("div", "panel");
+      add(gp, kick("chart", R.groupsTitle || "Дни, когда это было"));
+      var gg = el("div", "ggrid");
+      R.groups.forEach(function (g) {
+        var t = el("div", "gtile"), n = el("div", "gn");
+        add(n, el("div", "", GROUPS[g.key].short));
+        add(t, tile(g.key, 38), n, el("span", "gd", g.days + " дн."));
+        gg.appendChild(t);
+      });
+      gp.style.paddingBottom = "16px";
+      add(gp, gg); add(c, gp);
+    }
     if (R.routines && R.routines.length) {
       var ch = el("div", "chips"), lab = el("span", "chiplabel", "Рутины");
       ch.appendChild(lab);
@@ -304,7 +310,7 @@ body.pdf { background: #E9E4DA; }
     if (R.theme === "evening") document.body.className = "evening";
     var views = { day: day, week: week, ladder: ladder, pdf: pdf, loading: loading };
     if (!views[R.view]) return fail("unknown view");
-    if (R.view === "day" && !R.title) return fail("no title");
+    if ((R.view === "day" || R.view === "week") && !R.title) return fail("no title");
     root.appendChild(views[R.view]());
     // Measure after Nunito is in: measured with the fallback font, a tall card came out clipped.
     document.fonts.ready.then(function () {

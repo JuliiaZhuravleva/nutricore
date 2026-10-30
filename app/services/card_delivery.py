@@ -17,9 +17,10 @@ import re
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from telegram import InaccessibleMessage, InputMediaPhoto
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, NetworkError, TelegramError
 
 from app.services.picture_renderer import PictureRenderer, Ticket
 
@@ -51,6 +52,15 @@ class _Live:
         self.message = message
         self.turn = 0  # the tap whose result may land
         self.lock = asyncio.Lock()  # an upload must not land after a newer edit
+
+
+def may_have_arrived(error: Exception) -> bool:
+    """Whether Telegram may have taken a send that failed. A broken connection can
+    come after it accepted the request; only one never made is certainly not sent."""
+    if not isinstance(error, NetworkError) or isinstance(error, BadRequest):
+        return False
+    never_made = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+    return not isinstance(error.__cause__, never_made)
 
 
 class CardDelivery:
@@ -87,6 +97,35 @@ class CardDelivery:
         if png is None:
             live = self._live(sent)
             self._finish_later(live, screen, ticket, self._claim(live))
+
+    async def push(self, bot, chat_id: int, screen) -> None:
+        """A message nobody tapped for: silent, and no loader in a quiet chat, so
+        the picture goes only once it is drawn, else the text. A photo that may
+        have arrived goes up with no text on top of it."""
+        ticket = self._ticket(screen)
+        png = await ticket.wait(self._slow_wait) if ticket else None
+        if png is not None:
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=png,
+                    caption=screen.text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=screen.markup,
+                    disable_notification=True,
+                )
+                return
+            except (TelegramError, OSError) as e:
+                if may_have_arrived(e):
+                    raise
+                logger.warning("card: the photo did not go, text instead: %s", e)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=screen.text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=screen.markup,
+            disable_notification=True,
+        )
 
     async def tap(self, query, screen) -> None:
         """The next screen after a tap on ``query.message``."""

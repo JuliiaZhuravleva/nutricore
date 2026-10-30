@@ -1,0 +1,50 @@
+{
+ "view": "week",
+ "theme": "day",
+ "period": "24–30 октября",
+ "title": "7 дней",
+ "plants": 23,
+ "plantsLabel": "разных растения",
+ "groups": [
+  {
+   "key": "legumes",
+   "days": 5
+  },
+  {
+   "key": "anchor",
+   "days": 6
+  },
+  {
+   "key": "veg",
+   "days": 7
+  },
+  {
+   "key": "fruit",
+   "days": 4
+  },
+  {
+   "key": "grain",
+   "days": 5
+  },
+  {
+   "key": "nuts",
+   "days": 3
+  },
+  {
+   "key": "calcium",
+   "days": 2
+  },
+  {
+   "key": "omega",
+   "days": 1
+  }
+ ],
+ "routines": [
+  "Витамин D",
+  "Прогулка"
+ ],
+ "win": {
+  "kick": "Новое за 7 дней",
+  "text": "Булгур — впервые в записях"
+ }
+}

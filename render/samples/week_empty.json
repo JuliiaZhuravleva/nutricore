@@ -1,0 +1,12 @@
+{
+ "view": "week",
+ "theme": "day",
+ "period": "24–30 октября",
+ "title": "7 дней",
+ "empty": true,
+ "emptyTitle": "За 7 дней записей нет",
+ "emptyNote": "Карточка соберётся с первой записью.",
+ "routines": [
+  "Витамин D"
+ ]
+}

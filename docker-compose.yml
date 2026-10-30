@@ -46,6 +46,7 @@ services:
     command: python -m celery -A celery_app worker --loglevel=info
     volumes:
       - .:/app
+      - render_jobs:/render
     env_file:
       - .env
     depends_on:
