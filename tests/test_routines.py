@@ -453,9 +453,11 @@ def test_a_card_left_open_overnight_ticks_nothing_and_shows_today(Session):
     stale = _data(_card(Session), "Прогулка")
     thursday = datetime(2026, 10, 29, 8, 0, tzinfo=UTC)
     card = _card(Session, thursday, stale)
-    assert card.toast == "Это карточка прошлого дня, вот сегодняшняя"
+    assert card.toast is None
     assert _ticks(Session) == []
-    assert card.text.startswith("<b>📊 Сегодня")
+    notice, rest = card.text.split("\n\n", 1)
+    assert notice == "<i>Это была карточка прошлого дня, вот сегодняшняя.</i>"
+    assert rest.startswith("<b>📊 Сегодня")
 
 
 def test_the_day_turns_by_the_users_zone_not_utc(Session):

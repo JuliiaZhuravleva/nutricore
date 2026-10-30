@@ -80,6 +80,24 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
   74 of 75 required tags, no extra ones; the miss is «anchor» on ready-made nuggets. The photo path uses the same
   rule and was not run. The owner's real meals are still to be run, through `--set`, outside the repo.
 
+## Slice D, as built (text card)
+
+- The text card is whole on its own: head with the full month, times of food, whole grains and protein anchors if they
+  were there, ticked routines, then the numbers in a collapsed quote. The picture comes on top of it and can fail
+  without taking anything away.
+- A meal's confirmed `food_groups` decide a line, not the analysis' items: a group the user took off hides its items, and
+  a group the user added with no item behind it shows the meal's own name. An untagged meal gives only its time.
+- A gap of 6 hours or more between two meals of one day gets words and no hours: «днём длинный перерыв». The threshold is
+  the project's choice; the evidence gives no exact one.
+- With no numbers open, the card does not name untagged food, as in the mock. The names are one tap away, in «🔢 Цифры».
+- Buttons, top to bottom: routine ticks, «🔢 Цифры», tabs. The tabs are always last, on the week too.
+- Empty today: the invitation and «🍽 Добавить приём пищи», which enters the keyboard button's flow. **Departs from the
+  mock:** routine ticks stay on an empty day, above that button, because slice C lets a routine be ticked with no food
+  logged. Mid-step, where the conversation does not take the tap, a toast says to finish the step first.
+- A card left open overnight shows today with a notice on top: «Это была карточка прошлого дня, вот сегодняшняя». **Departs
+  from the mock's** «вчерашняя»: the card may be older than yesterday. Malformed button data shows today with no notice.
+- The step, ✅/🔄/😴 and 🔋 belong to slice F, so the first-show line has no sentence about a step yet.
+
 ## Slice C, as built
 
 - Routines live in `User.settings["routines"]`; each tick is a row in `routine_ticks` (migration `a9b8c7d6e5f4`). A day

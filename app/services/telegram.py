@@ -258,9 +258,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_ACTION
 
 
-@subscription_required
-async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start the meal addition process."""
+async def _ask_meal_time(reply, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Start clean: drop any leftover draft from an abandoned previous entry so a
     # new meal never inherits stale nutrition/photos/time.
     context.user_data["current_meal"] = {}
@@ -268,11 +266,26 @@ async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Also drop the label: it outlived an abandoned entry and would have been
     # attached to the NEXT meal (which may well be a different one).
     context.user_data.pop("meal_type", None)
-    await update.message.reply_text(
-        "Когда был приём пищи?",
-        reply_markup=time_keyboard,
-    )
+    await reply("Когда был приём пищи?", reply_markup=time_keyboard)
     return ADDING_MEAL_TIME
+
+
+@subscription_required
+async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start the meal addition process."""
+    return await _ask_meal_time(update.message.reply_text, context)
+
+
+async def add_meal_from_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """«🍽 Добавить приём пищи» on an empty day card: the menu button's flow. The
+    card stays as it is, and the question comes as a new message: a reply keyboard
+    cannot arrive on an edit."""
+    query = update.callback_query
+    if not await check_subscription(update.effective_user.id):
+        await query.answer("🔒 Статистика доступна с подпиской", show_alert=True)
+        return None
+    await query.answer()
+    return await _ask_meal_time(update.effective_chat.send_message, context)
 
 
 @subscription_required
@@ -1907,6 +1920,9 @@ def create_bot_application() -> Application:
             MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
             MessageHandler(filters.Regex("^⚖️ Мой вес$"), show_weight),
             MessageHandler(filters.Regex("^⚙️ Настройки$"), show_settings),
+            CallbackQueryHandler(
+                add_meal_from_card, pattern=f"^{stats_screen.ADD_DATA}$"
+            ),
         ]
 
     routine_ask = CallbackQueryHandler(routine_ask_name, pattern=routines.ASK_PATTERN)

@@ -1,18 +1,18 @@
-"""📊 Статистика: what was eaten today, yesterday and over the last 7 days.
+"""📊 Статистика: the day card for today and yesterday, the last 7 days.
 
-    📊 Статистика → <b>📊 Сегодня, вт 28 окт</b> — the meals, then the totals
+    📊 Статистика → <b>📊 Сегодня, вт 28 октября</b> — the times of food, whole
+    grains and protein anchors if there were any (``day_card``), ticked routines
     [💊 Прогулка] — up to three ticks of the user's routines, then [💊 Ещё N]
-    [✓ Сегодня] [Вчера] [7 дней]
     [🔢 Цифры]
+    [✓ Сегодня] [Вчера] [7 дней]
 
 The numbers are the saved meals' own, summed, and there is no goal (stage 5,
-G5-R03). Only ticked routines are named in the text, on any day; an unticked one
-is a button today and nothing afterwards (G5-R08). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01): the screen
-lists what was eaten and when. Days are the user's calendar days (their ⚙️
-time zone), not UTC. Every tab
-edits the same message; the callback data carries the whole view, so a tap
-works after a restart too. Telegram-free apart from the keyboard, like
-``favorites``.
+G5-R03). Unless ⚙️ shows them, they wait behind «🔢 Цифры» (G5-R01), in a collapsed
+quote. Only ticked routines are named in the text, on any day; an unticked one is a
+button today and nothing afterwards (G5-R08). Days are the user's calendar days
+(their ⚙️ time zone), not UTC. Every tab edits the same message; the callback data
+carries the whole view, so a tap works after a restart too. Telegram-free apart
+from the keyboard, like ``favorites``.
 """
 
 from __future__ import annotations
@@ -29,10 +29,11 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
+from app.services import day_card, routines
+from app.services.day_card import local_time
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
 from app.services.numbers import shows_numbers, toggle_label
-from app.services import routines
 from app.services.settings_screen import user_zone
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,9 @@ OPEN = "n"  # appended to a tab: the numbers are open on it
 # Routine ticks: k:<id>:<day>:<1 tick, 0 untick>:<n or empty>; m:<day>:<n or empty>
 TICK, MORE_TICK, MORE = "k", "K", "m"
 TICK_ROW = 3
+ADD = "add"  # the empty day's «🍽 Добавить приём пищи»; the conversation takes it
+ADD_DATA = CALLBACK_PREFIX + ADD
+DAY_CARD_SEEN = "day_card_seen"  # in ``User.settings``: the one-line intro was shown
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
 
 _WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
@@ -54,13 +58,10 @@ _MONTHS = (
     "янв", "фев", "мар", "апр", "мая", "июн",
     "июл", "авг", "сен", "окт", "ноя", "дек",
 )  # fmt: skip
-
-
-def local_time(moment: datetime, zone: ZoneInfo) -> datetime:
-    # SQLite hands back naive datetimes; the column is written in UTC.
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(zone)
+_MONTHS_FULL = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)  # fmt: skip
 
 
 def _day_bounds(day: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
@@ -72,6 +73,10 @@ def _day_bounds(day: date, zone: ZoneInfo) -> tuple[datetime, datetime]:
 
 def day_title(day: date) -> str:
     return f"{_WEEKDAYS[day.weekday()]} {day.day} {_MONTHS[day.month - 1]}"
+
+
+def _card_title(day: date) -> str:
+    return f"{_WEEKDAYS[day.weekday()]} {day.day} {_MONTHS_FULL[day.month - 1]}"
 
 
 def _sum(meals: list[Meal], field: str) -> float:
@@ -114,16 +119,7 @@ def _tabs(
     numbers anyway (no button), else whether «🔢 Цифры» is open on this view. An
     open view stays open across the tabs."""
     keep = OPEN if opened else ""
-    rows = [
-        *above,
-        [
-            InlineKeyboardButton(
-                ("✓ " if code == current else "") + label,
-                callback_data=CALLBACK_PREFIX + code + keep,
-            )
-            for code, label in _TABS
-        ],
-    ]
+    rows = [*above]
     if opened is not None:
         flip = "" if opened else OPEN
         rows.append(
@@ -133,6 +129,15 @@ def _tabs(
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                ("✓ " if code == current else "") + label,
+                callback_data=CALLBACK_PREFIX + code + keep,
+            )
+            for code, label in _TABS
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -143,6 +148,20 @@ def _when(meal: Meal, zone: ZoneInfo) -> str:
 # --- screens ----------------------------------------------------------------
 
 
+def _numbers_block(meals: list[Meal], zone: ZoneInfo) -> str:
+    """The day in numbers, collapsed: only a tap away and never the first thing."""
+    rows = [f"🔢 За день: ≈ {_kcal(_sum(meals, 'calories'))} · {_macros(meals)}"]
+    for meal in meals:
+        when = (
+            day_card.plain_time(local_time(meal.meal_time, zone))
+            if meal.meal_time
+            else "—"
+        )
+        name = html.escape(_meal_name(meal))
+        rows.append(f"{when} {name} — ≈ {_kcal(_sum([meal], 'calories'))}")
+    return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
+
+
 def day_screen(
     meals: list[Meal],
     day: date,
@@ -151,32 +170,35 @@ def day_screen(
     opened: bool | None = None,
     routine_line: str | None = None,
     routine_rows: tuple = (),
+    first_time: bool = False,
 ) -> Screen:
     """``opened``: see ``_tabs``; the numbers show unless it is False."""
-    markup = _tabs(tab, opened, routine_rows)
-    ticks = ["", routine_line] if routine_line else []
-    numbers = opened is not False
     head = "Сегодня" if tab == TODAY else "Вчера"
-    lines = [f"<b>📊 {head}, {day_title(day)}</b>", ""]
+    lines = [f"<b>📊 {head}, {_card_title(day)}</b>", ""]
+    ticks = [routine_line] if routine_line else []
     if not meals:
-        lines.append(
-            "Записей нет. Еда попадает сюда после «✅ Сохранить» "
-            "или из ⭐ Избранного."
-        )
-        return Screen("\n".join(lines + ticks), markup)
-    for meal in meals:
-        when = _when(meal, zone)
-        label = f" · {meal.meal_type}" if meal.meal_type else ""
-        kcal = f" · {_kcal(_sum([meal], 'calories'))}" if numbers else ""
-        lines.append(f"{when}{label} · {html.escape(_meal_name(meal))}{kcal}")
+        # The log may be incomplete; the day was not a failure (US-D2).
+        above = routine_rows
+        if tab == TODAY:
+            lines.append(
+                "🍽 Похоже, не всё записано? Пришли фото или напиши, что было, — "
+                "карточка соберётся сама."
+            )
+            add = InlineKeyboardButton("🍽 Добавить приём пищи", callback_data=ADD_DATA)
+            above = (*routine_rows, [add])  # under the ticks: they never move
+        else:
+            lines.append("За этот день записей нет.")
+        # Nothing to count: no «🔢 Цифры» on an empty day.
+        if ticks:
+            lines += ["", *ticks]
+        return Screen("\n".join(lines), _tabs(tab, None, above))
+    if first_time:
+        lines += ["<i>Это карточка дня: что было, без оценок.</i>", ""]
+    lines += day_card.lines(day_card.facts(meals, zone, _meal_name), html.escape)
     lines += ticks
-    if numbers:
-        lines += [
-            "",
-            f"<b>🔥 Итого: {_kcal(_sum(meals, 'calories'))}</b>",
-            _macros(meals),
-        ]
-    return Screen("\n".join(lines), markup)
+    if opened is not False:
+        lines += ["", _numbers_block(meals, zone)]
+    return Screen("\n".join(lines), _tabs(tab, opened, routine_rows))
 
 
 def week_screen(
@@ -302,13 +324,20 @@ def _tick_view(db, telegram_id: int, parts: list, now: datetime | None) -> Scree
     user = db.query(User).filter(User.telegram_id == telegram_id).first()
     today = local_time(now or datetime.now(UTC), user_zone(user)).date()
 
-    def today_card(toast: str) -> Screen:
+    def today_card(toast: str | None) -> Screen:
         return replace(open_view(db, telegram_id, TODAY, now, opened), toast=toast)
+
+    def stale_card() -> Screen:
+        card = open_view(db, telegram_id, TODAY, now, opened)
+        notice = "<i>Это была карточка прошлого дня, вот сегодняшняя.</i>"
+        return replace(card, text=f"{notice}\n\n{card.text}")
 
     shape = 2 if verb == MORE else 4
     day = rest[0] if verb == MORE else rest[1] if len(rest) > 1 else None
-    if len(rest) != shape or day != _day_code(today):
-        return today_card("Это карточка прошлого дня, вот сегодняшняя")
+    if len(rest) != shape:
+        return today_card(None)  # not ours to explain: nothing happened on a day
+    if day != _day_code(today):
+        return stale_card()
     due, done = _day_ticks(db, user, today)
     if verb == MORE:
         return _more_screen(user, due, done, today, keep)
@@ -359,6 +388,15 @@ def _meals_on(db, user: User | None, day: date, zone: ZoneInfo) -> list[Meal]:
     return crud_meal.get_user_meals_between(db, user.id, start, end)
 
 
+def _first_day_card(db, user: User | None) -> bool:
+    """True once, the first time a user sees a card with food on it."""
+    if user is None or (user.settings or {}).get(DAY_CARD_SEEN):
+        return False
+    user.settings = {**(user.settings or {}), DAY_CARD_SEEN: True}
+    db.commit()
+    return True
+
+
 def open_view(
     db,
     telegram_id: int,
@@ -387,14 +425,16 @@ def open_view(
             [(day, _meals_on(db, user, day, zone)) for day in days], zone, shown
         )
     due, done = _day_ticks(db, user, today)
+    meals = _meals_on(db, user, today, zone)
     return day_screen(
-        _meals_on(db, user, today, zone),
+        meals,
         today,
         TODAY,
         zone,
         shown,
         routines.ticked_line(user, done),
         _routine_rows(due, done, today, OPEN if opened else ""),
+        first_time=bool(meals) and _first_day_card(db, user),
     )
 
 
@@ -403,6 +443,12 @@ def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None
     parts = view.split(":")
     if parts[0] in (TICK, MORE_TICK, MORE) and len(parts) > 1:
         return _tick_view(db, telegram_id, parts, now)
+    if view == ADD:
+        # Only reaches here mid-step: elsewhere the conversation takes this tap.
+        return replace(
+            open_view(db, telegram_id, TODAY, now),
+            toast="Сначала заверши текущий шаг или нажми /cancel",
+        )
     tab, opened = view[:1], view[1:] == OPEN
     if tab not in dict(_TABS) or view[1:] not in ("", OPEN):
         logger.warning("stats: unknown callback data %r", data)
