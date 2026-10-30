@@ -10,7 +10,12 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    ReplyKeyboardMarkup,
+)
 from telegram.error import BadRequest
 from telegram.ext import Application, ExtBot
 from telegram.request import BaseRequest
@@ -275,6 +280,28 @@ def test_a_caption_and_an_edit_are_drawn_a_toast_is_not():
     endpoint, toast = _sent(transport, 2)
     assert endpoint == "answerCallbackQuery" and toast["text"] == "✅ Готово"
     assert "entities" not in toast
+
+
+def test_a_swapped_card_keeps_the_drawn_marks_in_its_caption():
+    bot, transport = _on()
+    media = InputMediaPhoto("PHOTO_ID", caption="<b>🔥 фото</b>", parse_mode="HTML")
+
+    asyncio.run(bot.edit_message_media(media, chat_id=42, message_id=1))
+
+    endpoint, sent = _sent(transport)
+    assert endpoint == "editMessageMedia" and sent["media"]["media"] == "PHOTO_ID"
+    assert '<tg-emoji emoji-id="id-fire">' in sent["media"]["caption"]
+    assert media.caption == "<b>🔥 фото</b>"  # never modified: a refusal resends it
+
+
+def test_a_swapped_card_with_a_new_file_still_sends_the_file():
+    bot, transport = _on()
+    media = InputMediaPhoto(b"\x89PNG", caption="🔥 фото", parse_mode="HTML")
+
+    asyncio.run(bot.edit_message_media(media, chat_id=42, message_id=1))
+
+    sent = _sent(transport)[1]["media"]
+    assert sent["media"].startswith("attach://") and "tg-emoji" in sent["caption"]
 
 
 def test_at_most_a_hundred_marks_per_message():

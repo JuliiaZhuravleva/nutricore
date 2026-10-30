@@ -60,6 +60,7 @@ class Screen:
     text: str  # HTML
     markup: InlineKeyboardMarkup | None
     toast: str | None = None  # answerCallbackQuery text, seen only by the tapper
+    picture: dict | None = None  # the card for the renderer; ``text`` is its twin
 
 
 # --- naming and numbers -----------------------------------------------------

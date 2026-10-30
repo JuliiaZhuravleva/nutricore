@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # plain emoji, every message as before (app/services/custom_emoji.py).
     CUSTOM_EMOJI: Optional[str] = None
 
+    # The job directory shared with the picture renderer (render/watcher.py). No
+    # sidecar there: every card goes out as text.
+    RENDER_DIR: str = "/render"
+
     # Access control (OpenClaw-style modes). Mode: open | whitelist | closed.
     #   open      → everyone may use the bot
     #   whitelist → only admins + ALLOWED_TELEGRAM_IDS; others are dropped silently

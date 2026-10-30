@@ -139,6 +139,16 @@ def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
     )
 
 
+def marks(meals: list, zone: ZoneInfo) -> list:
+    """Each meal on the day's line: its plain time and where it falls, in hours."""
+    out = []
+    for meal in meals:
+        if meal.meal_time:
+            moment = local_time(meal.meal_time, zone)
+            out.append({"t": plain_time(moment), "h": moment.hour + moment.minute / 60})
+    return out
+
+
 def lines(day: DayFacts, escape: Callable) -> list:
     """The card's text; every name passes ``escape``."""
     out = []

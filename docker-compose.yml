@@ -69,12 +69,41 @@ services:
     networks:
       - bot-network
 
+  # Draws the picture cards (render/). It holds no secrets and has no network: only
+  # the job directory is shared with the bot. Stopped, the bot answers in text.
+  render:
+    build: ./render
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    cpus: 0.5
+    environment:
+      - RENDER_KEEP_DAYS=2
+    volumes:
+      - render_jobs:/render
+    healthcheck:
+      test: ["CMD", "python", "watcher.py", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   telegram_bot:
     build: .
     restart: unless-stopped
     command: python bot.py
     volumes:
       - .:/app
+      - render_jobs:/render
     env_file:
       - .env
     environment:
@@ -83,6 +112,7 @@ services:
     depends_on:
       - db
       - redis
+      - render
     networks:
       - bot-network
     logging:
@@ -93,6 +123,7 @@ services:
 
 volumes:
   postgres_data:
+  render_jobs:
 
 networks:
   bot-network:

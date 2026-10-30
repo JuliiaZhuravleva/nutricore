@@ -2,6 +2,7 @@ import base64
 import logging
 import warnings
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Dict
 
 import httpx
@@ -31,10 +32,9 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import ai_errors, custom_emoji, favorites
+from app.services import ai_errors, custom_emoji, explain_screen, favorites
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
-    explain_screen,
     meal_draft,
     routines,
     settings_screen,
@@ -44,6 +44,7 @@ from app.services import (
 from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
+from app.services.card_delivery import CardDelivery
 from app.services.consult_service import consult_service
 from app.services.loader import Loader
 from app.services.model_selection import (
@@ -54,6 +55,7 @@ from app.services.model_selection import (
 from app.services.model_watch import render_status, run_model_watch
 from app.services.numbers import shows_numbers_for
 from app.services.openai_service import ModelUnavailableError, get_openai_service
+from app.services.picture_renderer import PictureRenderer
 from app.services.product_lookup_service import (
     ResolutionResult,
     _parse_portion_grams,
@@ -1407,7 +1409,12 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return CHOOSING_ACTION
 
 
-async def _screen_callback(update: Update, handle, locked: str, what: str):
+_card_delivery = CardDelivery(PictureRenderer(Path(settings.RENDER_DIR)))
+
+
+async def _screen_callback(
+    update: Update, handle, locked: str, what: str, deliver=None
+):
     """A tap on a screen's inline button: ``handle(db, telegram_id, data)``
     gives the next screen, which replaces the message in place.
 
@@ -1427,6 +1434,9 @@ async def _screen_callback(update: Update, handle, locked: str, what: str):
         return
     await query.answer(screen.toast)
     if not screen.text:
+        return
+    if deliver is not None:
+        await deliver(query, screen)
         return
     try:
         await query.edit_message_text(
@@ -1455,6 +1465,7 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats_screen.handle_callback,
         "🔒 Статистика доступна с подпиской",
         "Stats",
+        deliver=_card_delivery.tap,
     )
 
 
@@ -1479,7 +1490,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Today's meals and totals, tabs for yesterday and 7 days (📊 Статистика)."""
     with SessionLocal() as db:
         screen = stats_screen.open_view(db, update.effective_user.id)
-    await _reply_screen(update, screen)
+    await _card_delivery.send(update.message, screen)
     return CHOOSING_ACTION
 
 
@@ -1620,9 +1631,7 @@ async def typed_routine_tick(update: Update, context: ContextTypes.DEFAULT_TYPE)
         name = stats_screen.tick_by_name(db, user.id, update.message.text)
     if name is None:
         return None
-    await update.message.reply_text(
-        f"✓ {name}", reply_markup=_day_card_button()
-    )
+    await update.message.reply_text(f"✓ {name}", reply_markup=_day_card_button())
     return CHOOSING_ACTION
 
 
@@ -2034,9 +2043,7 @@ def create_bot_application() -> Application:
         )
     )
     application.add_handler(
-        CallbackQueryHandler(
-            routines_callback, pattern=f"^{routines.CALLBACK_PREFIX}"
-        )
+        CallbackQueryHandler(routines_callback, pattern=f"^{routines.CALLBACK_PREFIX}")
     )
     application.add_handler(
         CallbackQueryHandler(

@@ -50,6 +50,7 @@ TICK, MORE_TICK, MORE = "k", "K", "m"
 TICK_ROW = 3
 ADD = "add"  # the empty day's «🍽 Добавить приём пищи»; the conversation takes it
 ADD_DATA = CALLBACK_PREFIX + ADD
+LOOK_DAY, LOOK_EVENING = "day", "evening"
 DAY_CARD_SEEN = "day_card_seen"  # in ``User.settings``: the one-line intro was shown
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
 
@@ -171,11 +172,20 @@ def day_screen(
     routine_line: str | None = None,
     routine_rows: tuple = (),
     first_time: bool = False,
+    ticked: tuple = (),
+    look: str = LOOK_DAY,
 ) -> Screen:
     """``opened``: see ``_tabs``; the numbers show unless it is False."""
     head = "Сегодня" if tab == TODAY else "Вчера"
     lines = [f"<b>📊 {head}, {_card_title(day)}</b>", ""]
     ticks = [routine_line] if routine_line else []
+    picture = {
+        "view": "day",
+        "theme": look,
+        "date": _card_title(day),
+        "title": head,
+        "routines": [{"name": name, "done": True} for name in ticked],
+    }
     if not meals:
         # The log may be incomplete; the day was not a failure (US-D2).
         above = routine_rows
@@ -184,21 +194,35 @@ def day_screen(
                 "🍽 Похоже, не всё записано? Пришли фото или напиши, что было, — "
                 "карточка соберётся сама."
             )
+            picture |= {
+                "emptyTitle": "Похоже, не всё записано?",
+                "emptyNote": "Пришли фото или напиши, что было, — "
+                "карточка соберётся сама.",
+            }
             add = InlineKeyboardButton("🍽 Добавить приём пищи", callback_data=ADD_DATA)
             above = (*routine_rows, [add])  # under the ticks: they never move
         else:
             lines.append("За этот день записей нет.")
+            picture["emptyTitle"] = "За этот день записей нет"
         # Nothing to count: no «🔢 Цифры» on an empty day.
         if ticks:
             lines += ["", *ticks]
-        return Screen("\n".join(lines), _tabs(tab, None, above))
+        picture["empty"] = True
+        return Screen("\n".join(lines), _tabs(tab, None, above), picture=picture)
     if first_time:
         lines += ["<i>Это карточка дня: что было, без оценок.</i>", ""]
-    lines += day_card.lines(day_card.facts(meals, zone, _meal_name), html.escape)
+    facts = day_card.facts(meals, zone, _meal_name)
+    lines += day_card.lines(facts, html.escape)
+    picture |= {
+        "meals": day_card.marks(meals, zone),
+        "gap": f"{facts.gap.capitalize()} длинный перерыв" if facts.gap else None,
+        "grain": facts.grain,
+        "anchor": facts.anchor,
+    }
     lines += ticks
     if opened is not False:
         lines += ["", _numbers_block(meals, zone)]
-    return Screen("\n".join(lines), _tabs(tab, opened, routine_rows))
+    return Screen("\n".join(lines), _tabs(tab, opened, routine_rows), picture=picture)
 
 
 def week_screen(
@@ -388,6 +412,10 @@ def _meals_on(db, user: User | None, day: date, zone: ZoneInfo) -> list[Meal]:
     return crud_meal.get_user_meals_between(db, user.id, start, end)
 
 
+def _look(moment: datetime) -> str:
+    return LOOK_EVENING if moment.hour >= 20 or moment.hour < 6 else LOOK_DAY
+
+
 def _first_day_card(db, user: User | None) -> bool:
     """True once, the first time a user sees a card with food on it."""
     if user is None or (user.settings or {}).get(DAY_CARD_SEEN):
@@ -406,7 +434,9 @@ def open_view(
 ):
     user = db.query(User).filter(User.telegram_id == telegram_id).first()
     zone = user_zone(user)
-    today = local_time(now or datetime.now(UTC), zone).date()
+    moment = local_time(now or datetime.now(UTC), zone)
+    today = moment.date()
+    look = _look(moment)
     shown = None if shows_numbers(user) else opened
     if tab == YESTERDAY:
         day = today - timedelta(days=1)
@@ -418,6 +448,8 @@ def open_view(
             zone,
             shown,
             routines.ticked_line(user, done),
+            ticked=tuple(routines.ticked_names(user, done)),
+            look=look,
         )
     if tab == WEEK:
         days = [today - timedelta(days=back) for back in range(WEEK_DAYS - 1, -1, -1)]
@@ -435,6 +467,8 @@ def open_view(
         routines.ticked_line(user, done),
         _routine_rows(due, done, today, OPEN if opened else ""),
         first_time=bool(meals) and _first_day_card(db, user),
+        ticked=tuple(routines.ticked_names(user, done)),
+        look=look,
     )
 
 

@@ -366,6 +366,15 @@ def test_a_tick_shows_on_the_card_and_a_second_tap_takes_it_back(Session):
     assert _ticks(Session) == []
 
 
+def test_a_tick_redraws_the_picture_and_names_only_what_is_ticked(Session):
+    _add(Session, "Прогулка")
+    assert _card(Session).picture["routines"] == []
+    card = _card(Session, data=_data(_card(Session), "Прогулка"))
+    assert card.picture["routines"] == [{"name": "Прогулка", "done": True}]
+    card = _card(Session, data=_data(card, "Прогулка"))
+    assert card.picture["routines"] == []
+
+
 def test_an_old_unticked_button_cannot_untick(Session):
     routine = _add(Session, "Прогулка")
     old = _data(_card(Session), "Прогулка")

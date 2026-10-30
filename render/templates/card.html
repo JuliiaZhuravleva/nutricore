@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<!--BASE-->
+<!--REPORT-->
+<style>
+@font-face { font-family: "Nunito"; src: url("fonts/Nunito.ttf") format("truetype"); font-weight: 200 1000; font-display: block; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  width: 540px; font-family: "Nunito", sans-serif; font-weight: 700; -webkit-font-smoothing: antialiased;
+  --bg: #F7F3EC; --surf: #EBE5DA; --card: #FFFFFF; --ink: #23262B; --ink2: #4B5057; --ink3: #6E737A; --line: #DCD4C6;
+  --paper: #FFFDF8; --edge: rgba(35, 38, 43, 0.11);
+  --warm: #F4E7D4; --warmedge: rgba(150, 105, 40, 0.22); --kick: #74490A; --dot: #23262B; --track: #DCD4C6;
+  background: var(--bg); color: var(--ink);
+}
+body.evening {
+  --bg: #1C1F25; --surf: #2A2E36; --card: #2E333C; --ink: #ECE8E0; --ink2: #A9ADB4; --ink3: #92969D; --line: #3B414B;
+  --paper: #E6E1D7; --edge: transparent; --warm: #3A342B; --warmedge: transparent; --kick: #E3B46A; --dot: #ECE8E0;
+  --track: #4A505A;
+}
+.card { width: 540px; padding: 28px; display: flex; flex-direction: column; gap: 14px; background: var(--bg); }
+.panel, .chip, .calm, .gtile, .stat, .step, .rung { box-shadow: inset 0 0 0 1.5px var(--edge); }
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.head .date { font-size: 17px; font-weight: 800; color: var(--ink2); }
+.head .title { font-size: 30px; font-weight: 900; line-height: 1.1; }
+.pill { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px 0 8px; border-radius: 20px; background: var(--surf);
+  font-size: 17px; font-weight: 800; white-space: nowrap; flex: none; box-shadow: inset 0 0 0 1.5px var(--edge); }
+.tile { display: inline-flex; flex: none; color: #23262B; }
+.tile .ico { width: 100%; height: 100%; display: block; }
+.panel { background: var(--card); border-radius: 20px; padding: 16px 20px; }
+.kicker { font-size: 15px; font-weight: 800; color: var(--ink2); display: flex; align-items: center; gap: 8px; text-transform: none; }
+.muted { color: var(--ink2); }
+.one { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.two { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
+
+/* rhythm: the day as a line from 6 to 24, a dot per meal, its time above */
+.rhythm { position: relative; height: 96px; margin: 6px 6px 0; }
+.rhythm .track { position: absolute; left: 0; right: 0; top: 60px; height: 6px; border-radius: 3px; background: var(--track); }
+.rhythm .night { position: absolute; top: 52px; height: 6px; border-radius: 3px; background: var(--line); opacity: .6; }
+.rhythm .dot { position: absolute; top: 54px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 4px var(--card); }
+.rhythm .tlabel { position: absolute; top: 26px; transform: translateX(-50%); font-size: 20px; font-weight: 900; white-space: nowrap; }
+.rhythm .tlabel.low { top: 0; }
+.rhythm .tick { position: absolute; top: 76px; transform: translateX(-50%); font-size: 14px; font-weight: 800; color: var(--ink3); }
+.gapline { font-size: 17px; color: var(--ink2); margin-top: 4px; }
+
+.rows { display: flex; flex-direction: column; gap: 12px; }
+.grow { display: flex; align-items: center; gap: 14px; }
+.grow .gname { font-size: 15px; font-weight: 800; color: var(--ink2); }
+.grow .gwhat { font-size: 21px; font-weight: 900; line-height: 1.15; overflow-wrap: anywhere; }
+.grow > div { min-width: 0; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chip { white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 6px; border-radius: 20px; background: var(--card); font-size: 17px; font-weight: 800; }
+.chip.off { background: transparent; color: var(--ink2); box-shadow: inset 0 0 0 1.5px var(--line); }
+.chip .ck { width: 18px; height: 18px; color: var(--ink); }
+.chiplabel { font-size: 15px; font-weight: 800; color: var(--ink2); margin-right: 2px; display: inline-flex; align-items: center; gap: 6px; }
+
+/* the one next step, sweet-home's «Начать с этого» block */
+.step { background: var(--warm); border-radius: 20px; padding: 14px; display: flex; gap: 16px; align-items: center; box-shadow: inset 0 0 0 1.5px var(--warmedge); }
+.step > .tile { position: relative; }
+.step .skick { font-size: 16px; font-weight: 800; color: var(--kick); display: flex; gap: 8px; align-items: center; }
+.step .stitle { font-size: 25px; font-weight: 900; line-height: 1.12; margin-top: 2px; }
+.step .ssub { font-size: 16px; font-weight: 800; color: var(--ink2); margin-top: 4px; }
+.step .badge { position: absolute; right: -8px; bottom: -8px; width: 34px; height: 34px; }
+.step.later { background: var(--surf); box-shadow: inset 0 0 0 1.5px var(--edge); }
+.step.later .stitle { font-size: 20px; }
+
+.calm { background: var(--surf); border-radius: 20px; padding: 22px 24px; display: flex; align-items: center; gap: 20px; }
+.calm .ct { font-size: 23px; font-weight: 900; line-height: 1.15; }
+.calm .cs { font-size: 17px; font-weight: 800; color: var(--ink2); margin-top: 4px; }
+
+/* week */
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.stat { background: var(--card); border-radius: 20px; padding: 16px 18px; display: flex; gap: 14px; align-items: center; min-height: 96px; }
+.stat .big { font-size: 34px; font-weight: 900; line-height: 1; }
+.stat .lbl { font-size: 16px; font-weight: 800; color: var(--ink2); line-height: 1.15; margin-top: 2px; }
+.ggrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.gtile { display: flex; align-items: center; gap: 10px; background: var(--card); border-radius: 16px; padding: 8px 12px 8px 8px; }
+.gtile .gn { font-size: 18px; font-weight: 900; line-height: 1.1; flex: 1; }
+.gtile .gd { font-size: 17px; font-weight: 900; color: var(--ink2); white-space: nowrap; }
+.dots { display: flex; gap: 3px; margin-top: 3px; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink); opacity: .85; }
+
+/* ladder */
+.ladder { display: flex; flex-direction: column; gap: 8px; }
+.rung { display: flex; align-items: center; gap: 14px; background: var(--card); border-radius: 16px; padding: 10px 14px; }
+.rung .n { width: 32px; height: 32px; border-radius: 50%; background: var(--surf); display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 900; flex: none; }
+.rung .rt { font-size: 19px; font-weight: 900; flex: 1; }
+.rung .rs { font-size: 15px; font-weight: 800; color: var(--ink2); }
+.rung.tried .n { background: var(--ink); color: var(--bg); }
+.rung.now { background: var(--warm); box-shadow: inset 0 0 0 2.5px var(--kick); }
+.rung.now .n { background: var(--kick); color: var(--bg); }
+.rung.later { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line); color: var(--ink2); }
+
+/* pdf page */
+body.pdf { background: #E9E4DA; }
+.page { width: 540px; padding: 34px 34px 28px; background: #FFFFFF; color: #23262B; display: flex; flex-direction: column; gap: 10px; min-height: 764px; }
+.page h1 { margin: 0; font-size: 24px; font-weight: 900; }
+.page .meta { white-space: pre-line; font-size: 13px; color: #4B5057; font-weight: 700; line-height: 1.4; }
+.page table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.page th { text-align: left; font-weight: 900; color: #4B5057; border-bottom: 1.5px solid #23262B; padding: 5px 4px; font-size: 11.5px; }
+.page td { border-bottom: 1px solid #E4DED3; padding: 5px 4px; vertical-align: top; font-weight: 700; }
+.page td.d { font-weight: 900; white-space: nowrap; }
+.page tr.empty td { color: #7A7F86; }
+.page .foot { margin-top: auto; font-size: 11px; color: #6E737A; display: flex; justify-content: space-between; border-top: 1px solid #E4DED3; padding-top: 8px; }
+.page .gtag { display: inline-flex; gap: 2px; vertical-align: -3px; }
+.error { color: #A9472F; font-size: 20px; padding: 20px; }
+</style>
+<script src="templates/icons.js"></script>
+</head><body>
+<div id="root"></div>
+<script>
+(function () {
+  var R = window.REPORT || {};
+  var root = document.getElementById("root");
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function add(p) { for (var i = 1; i < arguments.length; i++) if (arguments[i]) p.appendChild(arguments[i]); return p; }
+  function fail(why) { root.innerHTML = ""; root.appendChild(el("div", "error", why)); }
+  function head(date, title, pill) {
+    var h = el("div", "head"), l = el("div");
+    add(l, el("div", "date", date), el("div", "title", title));
+    add(h, l);
+    if (pill) { var p = el("span", "pill"); add(p, tile(pill.icon, 28), el("span", "", pill.text)); add(h, p); }
+    return h;
+  }
+  var MODES = { low: { icon: "lowbat", text: "Мало сил" }, simple: { icon: "sofa", text: "Минимум сил" } };
+
+  function rhythm(meals) {
+    var p = el("div", "panel");
+    add(p, kick("clock", "Когда была еда"));
+    var r = el("div", "rhythm");
+    add(r, el("div", "track"));
+    function x(h) { return Math.max(0, Math.min(100, (h - 6) / 18 * 100)); }
+    [6, 12, 18, 24].forEach(function (h) { var t = el("div", "tick", h + ":00"); t.style.left = x(h) + "%"; r.appendChild(t); });
+    // Two rows of times. A time with no room in either stays a dot: the caption lists them all.
+    var ROOM = 2.2, lastNear = -99, lastFar = -99;
+    meals.forEach(function (m) {
+      var d = el("div", "dot"); d.style.left = x(m.h) + "%"; r.appendChild(d);
+      var cls = null;
+      if (m.h - lastNear >= ROOM) { cls = "tlabel"; lastNear = m.h; }
+      else if (m.h - lastFar >= ROOM) { cls = "tlabel low"; lastFar = m.h; }
+      if (!cls) return;
+      var lab = el("div", cls, m.t); lab.style.left = Math.max(5, Math.min(95, x(m.h))) + "%";
+      r.appendChild(lab);
+    });
+    add(p, r);
+    return p;
+  }
+  function kick(icon, text) { var k = el("div", "kicker"); add(k, tile(icon, 26, 4), el("span", "", text)); k.style.marginBottom = "4px"; return k; }
+  function grow(g, what) {
+    var row = el("div", "grow"), t = el("div");
+    add(t, el("div", "gname", GROUPS[g].name), el("div", "gwhat two", what));
+    add(row, tile(g, 44), t);
+    return row;
+  }
+  function stepBlock(s, mode) {
+    if (s.state === "later") {
+      var q = el("div", "step later"), t0 = el("div");
+      add(t0, el("div", "stitle", "Шаг отложен"), el("div", "ssub", "Завтра будет новый."));
+      add(q, tile("later", 56), t0);
+      return q;
+    }
+    var b = el("div", "step"), t = el("div"), big = tile(s.icon, 96, 20);
+    if (s.state === "done") { var badge = el("span", "badge"); badge.innerHTML = svg("done"); big.appendChild(badge); }
+    var k = el("div", "skick");
+    add(k, el("span", "", s.state === "done" ? "✓ Готово" : s.kick || "Один шаг · " + s.min));
+    add(t, k, el("div", "stitle two", s.title), s.sub ? el("div", "ssub two", s.sub) : null);
+    add(b, big, t);
+    return b;
+  }
+  function day() {
+    var c = el("div", "card");
+    add(c, head(R.date, R.title, MODES[R.mode]));
+    if (R.empty) {
+      var calm = el("div", "calm"), t = el("div");
+      add(t, el("div", "ct", R.emptyTitle), R.emptyNote ? el("div", "cs", R.emptyNote) : null);
+      add(calm, tile("plate", 72, 15), t);
+      add(c, calm);
+    }
+    if (!R.empty && R.meals && R.meals.length) {
+      var rp = rhythm(R.meals);
+      if (R.gap) add(rp, el("div", "gapline", R.gap));
+      add(c, rp);
+    }
+    if (!R.empty && (R.grain || R.anchor)) {
+      var g = el("div", "panel rows");
+      if (R.grain) add(g, grow("grain", R.grain));
+      if (R.anchor) add(g, grow("anchor", R.anchor));
+      add(c, g);
+    }
+    if (R.routines && R.routines.length) {
+      var ch = el("div", "chips"), l = el("span", "chiplabel");
+      R.routines.forEach(function (x) {
+        if (!x.done && R.past) return;
+        var chip = el("span", "chip" + (x.done ? "" : " off"));
+        add(chip, tile("routine", 28), el("span", "", x.name));
+        if (x.done) { var ck = el("span", "ck"); ck.innerHTML = svg("check"); chip.appendChild(ck); }
+        ch.appendChild(chip);
+      });
+      if (ch.children.length) add(c, ch);
+    }
+    if (R.step) add(c, stepBlock(R.step, R.mode));
+    return c;
+  }
+  function loading() {
+    var c = el("div", "card"), calm = el("div", "calm"), t = el("div");
+    add(t, el("div", "ct", "Карточка рисуется"), el("div", "cs", "Всё то же самое уже есть в тексте ниже."));
+    add(calm, tile("clock", 72, 15), t);
+    add(c, calm);
+    return c;
+  }
+  function week() {
+    var c = el("div", "card");
+    add(c, head(R.period, R.title));
+    if (R.empty) {
+      var calm = el("div", "calm"), t = el("div");
+      add(t, el("div", "ct", "За 7 дней записей нет"), el("div", "cs", "Карточка соберётся с первой записью — догонять ничего не придётся."));
+      add(calm, tile("plate", 72, 15), t); add(c, calm);
+      return c;
+    }
+    var st = el("div", "stats");
+    var a = el("div", "stat"), at = el("div");
+    add(at, el("div", "big", String(R.plants)), el("div", "lbl", R.plantsLabel || "разных растений"));
+    add(a, tile("plants", 48), at);
+    add(st, a);
+    if (R.experiment) {
+      var e = el("div", "stat"), et = el("div");
+      add(et, el("div", "big", R.experiment.big), el("div", "lbl two", R.experiment.label));
+      add(e, tile("flask", 48), et); add(st, e);
+    }
+    add(c, st);
+    var gp = el("div", "panel");
+    add(gp, kick("chart", R.groupsTitle || "Дни, когда это было"));
+    var gg = el("div", "ggrid");
+    (R.groups || []).forEach(function (g) {
+      var t = el("div", "gtile"), n = el("div", "gn");
+      add(n, el("div", "", GROUPS[g.key].short));
+      add(t, tile(g.key, 38), n, el("span", "gd", g.days + " дн."));
+      gg.appendChild(t);
+    });
+    gp.style.paddingBottom = "16px";
+    add(gp, gg); add(c, gp);
+    if (R.routines && R.routines.length) {
+      var ch = el("div", "chips"), lab = el("span", "chiplabel", "Рутины");
+      ch.appendChild(lab);
+      R.routines.forEach(function (x) { var chip = el("span", "chip"); add(chip, tile("routine", 28), el("span", "", x)); var ck = el("span", "ck"); ck.innerHTML = svg("check"); chip.appendChild(ck); ch.appendChild(chip); });
+      add(c, ch);
+    }
+    if (R.win) {
+      var w = el("div", "calm"), wt = el("div");
+      w.style.padding = "16px 20px";
+      add(wt, el("div", "cs", R.win.kick), el("div", "ct two", R.win.text));
+      wt.firstChild.style.marginTop = "0";
+      var tl = tile("spark", 56);
+      add(w, tl, wt); add(c, w);
+    }
+    return c;
+  }
+  function ladder() {
+    var c = el("div", "card");
+    add(c, head(R.kick, R.title));
+    var l = el("div", "ladder");
+    R.rungs.forEach(function (r, i) {
+      var cls = i < R.now ? "tried" : i === R.now ? "now" : "later";
+      var row = el("div", "rung " + cls), t = el("div");
+      t.style.flex = "1";
+      add(t, el("div", "rt", r.t), el("div", "rs", r.s));
+      add(row, el("div", "n", i < R.now ? "✓" : String(i + 1)), t);
+      l.appendChild(row);
+    });
+    add(c, l);
+    if (R.fallback) {
+      var f = el("div", "calm"), ft = el("div"); f.style.padding = "14px 18px";
+      add(ft, el("div", "cs", R.fallback)); ft.firstChild.style.marginTop = "0";
+      var tl = tile("basket", 48);
+      add(f, tl, ft); add(c, f);
+    }
+    return c;
+  }
+  function pdf() {
+    document.body.className = "pdf";
+    var p = el("div", "page");
+    add(p, el("h1", "", R.title), el("div", "meta", R.meta));
+    var tb = el("table"), hr = el("tr");
+    R.cols.forEach(function (h) { hr.appendChild(el("th", "", h)); });
+    var th = el("thead"); th.appendChild(hr); tb.appendChild(th);
+    var body = el("tbody");
+    R.rows.forEach(function (r) {
+      var tr = el("tr", r.empty ? "empty" : "");
+      r.cells.forEach(function (v, i) {
+        var td = el("td", i === 0 ? "d" : "");
+        if (i === 2 && r.groups) { td.appendChild(document.createTextNode(v + " ")); var gt = el("span", "gtag"); r.groups.forEach(function (g) { gt.appendChild(tile(g, 16, 2)); }); td.appendChild(gt); }
+        else td.textContent = v;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    tb.appendChild(body); add(p, tb);
+    var f = el("div", "foot"); add(f, el("span", "", R.foot), el("span", "", R.pageno)); add(p, f);
+    return p;
+  }
+  try {
+    if (R.theme === "evening") document.body.className = "evening";
+    var views = { day: day, week: week, ladder: ladder, pdf: pdf, loading: loading };
+    if (!views[R.view]) return fail("unknown view");
+    if (R.view === "day" && !R.title) return fail("no title");
+    root.appendChild(views[R.view]());
+    // Measure after Nunito is in: measured with the fallback font, a tall card came out clipped.
+    document.fonts.ready.then(function () {
+      document.body.dataset.height = String(Math.ceil(root.getBoundingClientRect().height));
+      document.body.dataset.ready = "1";
+    });
+  } catch (err) { fail(String(err)); }
+})();
+</script>
+</body></html>

@@ -153,6 +153,12 @@ def ticked_line(user: User | None, ticked_ids: set) -> str | None:
     return " · ".join(dict.fromkeys(names)) or None
 
 
+def ticked_names(user: User | None, ticked_ids: set) -> list[str]:
+    """The names alone, for the picture: its chip draws the mark."""
+    names = [routine["name"] for routine in stored(user) if routine["id"] in ticked_ids]
+    return list(dict.fromkeys(names))
+
+
 def clean_name(text: str | None) -> str:
     return " ".join((text or "").split())
 

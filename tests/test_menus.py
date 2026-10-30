@@ -7,6 +7,8 @@ built application.
 """
 
 import asyncio
+import json
+import time
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,7 +26,9 @@ from app.services import settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services import weight_screen as wt
+from app.services.card_delivery import CardDelivery
 from app.services.numbers import SHOW_NUMBERS
+from app.services.picture_renderer import PictureRenderer
 
 # Wed 28 Oct 2026, 12:00 in Tbilisi (UTC+4).
 NOW = datetime(2026, 10, 28, 8, 0, tzinfo=UTC)
@@ -454,7 +458,7 @@ def test_an_unknown_settings_tap_changes_nothing(Session):
 
 def _query(data, telegram_id=42):
     query = SimpleNamespace(
-        data=data, answer=AsyncMock(), edit_message_text=AsyncMock()
+        data=data, answer=AsyncMock(), edit_message_text=AsyncMock(), message=None
     )
     update = SimpleNamespace(
         callback_query=query, effective_user=SimpleNamespace(id=telegram_id)
@@ -641,6 +645,62 @@ def test_stats_tab_edits_in_place(Session):
     (text,), kwargs = query.edit_message_text.await_args
     assert text.startswith("<b>📊 7 дней</b>")
     assert kwargs["parse_mode"] == "HTML"
+
+
+def _sidecar(tmp_path, monkeypatch):
+    for name in ("in", "out"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "heartbeat").write_text(str(int(time.time())))
+    delivery = CardDelivery(PictureRenderer(tmp_path), fast_wait=0.01)
+    monkeypatch.setattr(tg, "_card_delivery", delivery)
+    return tmp_path
+
+
+def test_with_the_sidecar_up_the_day_tab_turns_into_a_picture(
+    Session, tmp_path, monkeypatch
+):
+    root = _sidecar(tmp_path, monkeypatch)
+    with Session() as db:
+        _user(db)
+    update, query = _query("st:y")
+    message = SimpleNamespace(
+        photo=None,
+        chat=SimpleNamespace(id=42),
+        message_id=1,
+        reply_photo=AsyncMock(
+            return_value=SimpleNamespace(
+                photo=None, chat=SimpleNamespace(id=42), message_id=2
+            )
+        ),
+        delete=AsyncMock(),
+    )
+    query.message = message
+    asyncio.run(tg.stats_callback(update, SimpleNamespace()))
+    query.answer.assert_awaited_once_with(None)
+    query.edit_message_text.assert_not_awaited()
+    assert message.reply_photo.await_args.kwargs["caption"].startswith("<b>📊 Вчера")
+    message.delete.assert_awaited_once()
+    (job,) = (root / "in").glob("*.json")
+    assert json.loads(job.read_text())["title"] == "Вчера"
+
+
+def test_with_the_sidecar_up_the_menu_button_sends_a_picture(
+    Session, tmp_path, monkeypatch
+):
+    root = _sidecar(tmp_path, monkeypatch)
+    with Session() as db:
+        _user(db)
+    message, update = _update("📊 Статистика")
+    message.reply_photo = AsyncMock(
+        return_value=SimpleNamespace(
+            photo=None, chat=SimpleNamespace(id=42), message_id=2
+        )
+    )
+    asyncio.run(tg.show_statistics(update, SimpleNamespace(user_data={})))
+    (job,) = (root / "in").glob("*.json")
+    assert json.loads(job.read_text())["title"] == "Сегодня"
+    assert message.reply_photo.await_args.kwargs["caption"].startswith("<b>📊 Сегодня")
+    assert message.replies == []
 
 
 def test_weight_undo_tap_deletes_and_toasts(Session):
