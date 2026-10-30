@@ -36,6 +36,7 @@ unanswered and the stated default applies.
 | G5-R26 | Progress compares the person with their own past: only on the chosen step, only as a count of days, and it says so plainly when the count fell. Never with an ideal. G5-R09 stands: plants have no comparison (owner, 2026-10-30) | K |
 | G5-R27 | The person chooses the step from 2–3 options drawn from their records; until they do, the card has no step, only a button. Replaces G5-R10's daily step proposed by the bot. The swap and the energy modes stay (owner, 2026-10-30) | K |
 | G5-R29 | The chosen step stays from day to day until the person changes it, or two «😴 Не сейчас» in a row bring a smaller one. A count needs the same thing to be tried for days, and a new step every morning would undo the choice. Replaces the daily rotation (project's decision, slice K) | K |
+| G5-R30 | Food goes in first and is corrected after: a photo or a text is recorded at once, and the time, weight, description and the record itself can be changed later. Several photos can describe one meal, and a photo or text can add to a saved meal. The person does as little as possible | M (next) |
 | G5-R28 | The day card names what was eaten in plain words, chips included, with no verdict and no calorie line by default. It is the record (job 1), so it does not count towards rule 1's three observations. Food before 6:00 widens the day's line to start at 0:00; sleep is not called a gap, and a two-meal day gets no gap line, since the times already show it (shown to the owner on the proposal page, 2026-10-30) | J |
 
 ## Notes behind three answers
@@ -214,3 +215,20 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - Buttons «🪫 Сделать проще» and «🎯 Выбрать другое» appear with the count only when it did not rise. From Sunday's
   message they replace that message with the choice or today's card.
 - A daily step saved before this slice is not shown until a direction is chosen.
+
+## Slice G as built (project's decisions, within G5-R12, R13)
+
+- `app/services/food_lists.py`: ⚙️ → «🧺 Надёжная еда» and «✋ Не предлагать». Both lists are names in `User.settings`,
+  read by `next_step`. Callback data carries a hash of the name, never the name.
+- Seeding: ⭐ favourites, then meals written at least 3 times in 30 days, up to 12 names. «3 times» is the project's
+  guess, no study gives a number. It runs when a list or the hub opens, when the energy mode changes and when the step
+  is drawn in a lower mode, so nobody has to open the list for it to work. Ready food counts like any other, and a
+  repeat is never reported as a problem.
+- What is removed is remembered and not seeded again, until it is brought back or typed. A removal applies at once
+  with `↩️ Вернуть`; no question, no reason. A favourite removed later stays on the list until the person removes it.
+- `✋` splits a message on commas, semicolons, line breaks and « и », so «грибы и молоко» are two refusals. `🧺` keeps a
+  dish whole. The `✋` screen keeps waiting for text and `🧺 ➕` returns to the list. A bare number stays a weigh-in.
+- A dish on the list counts for a step when one of the step's foods is in it, endings aside (`next_step._relies_on`).
+  Both lower modes read it; the usual mode does not. A dish no step names has no effect on the choice: the step falls
+  back to the rest of its pool. `✋` beats `🧺`.
+- The `✋` screen says «в шагах», not «в шагах и экспериментах»: experiments are slice H, and the text changes with it.

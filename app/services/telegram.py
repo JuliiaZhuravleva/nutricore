@@ -33,7 +33,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import ai_errors, custom_emoji, explain_screen, favorites
+from app.services import ai_errors, custom_emoji, explain_screen, favorites, food_lists
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
     meal_draft,
@@ -77,6 +77,8 @@ logger = logging.getLogger(__name__)
 CONSULT_COOLDOWN_SECONDS = 3
 # How long «➕» or «✏️» waits for the typed routine name.
 ROUTINE_NAME_WAIT = timedelta(minutes=10)
+# The same for a food typed on the lists' screens.
+FOOD_NAME_WAIT = timedelta(minutes=10)
 _last_consult: Dict[int, datetime] = {}
 
 # Max inbound messages re-analyzed per /reprocess call — a cap on OpenAI spend
@@ -100,7 +102,8 @@ _credit_alerted: Dict[str, datetime] = {}
     DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
     ENTERING_WEIGHT,
     ENTERING_ROUTINE_NAME,
-) = range(10)
+    ENTERING_FOOD_NAME,
+) = range(11)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -1551,6 +1554,16 @@ async def routines_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def food_lists_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the food lists (``fl:…``)."""
+    await _screen_callback(
+        update,
+        food_lists.handle_callback,
+        "🔒 Списки еды доступны с подпиской",
+        "Food lists",
+    )
+
+
 async def explain_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A tap on «ℹ️ Как это работает» (``hw:…``)."""
     await _screen_callback(
@@ -1619,6 +1632,67 @@ async def process_routine_name(
         context.user_data["routine_asked_at"] = asked_at
         return ENTERING_ROUTINE_NAME
     context.user_data.pop("routine_rename", None)
+    return CHOOSING_ACTION
+
+
+async def food_ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """➕ or ✋ on the food lists: the next text message is a food. A tap that opens
+    no such step changes no state."""
+    asked = {}
+
+    def handle(db, telegram_id, data):
+        screen, asked["kind"], asked["wait"] = food_lists.ask_food(
+            db, telegram_id, data
+        )
+        return screen
+
+    await _screen_callback(
+        update, handle, "🔒 Списки еды доступны с подпиской", "Food lists"
+    )
+    if not asked.get("wait"):
+        return None
+    context.user_data["food_kind"] = asked["kind"]
+    context.user_data["food_asked_at"] = datetime.now(UTC)
+    return ENTERING_FOOD_NAME
+
+
+async def food_leave_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A list button instead of a food: the next text is not taken for one."""
+    context.user_data.pop("food_kind", None)
+    context.user_data.pop("food_asked_at", None)
+    await food_lists_callback(update, context)
+    return CHOOSING_ACTION
+
+
+async def food_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Any other inline tap, in its own handler group: the user has moved on."""
+    context.user_data.pop("food_asked_at", None)
+
+
+@subscription_required
+async def process_food_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The typed food. Text arriving after the user moved on is what it would be
+    anywhere else, never a silent entry on a list."""
+    asked_at = context.user_data.pop("food_asked_at", None)
+    kind = context.user_data.get("food_kind")
+    if (
+        asked_at is None
+        or kind is None
+        or datetime.now(UTC) - asked_at > FOOD_NAME_WAIT
+    ):
+        context.user_data.pop("food_kind", None)
+        if weight_screen.KG_PATTERN.match(update.message.text or ""):
+            return await process_weight(update, context)
+        return await typed_routine_tick(update, context) or CHOOSING_ACTION
+    with SessionLocal() as db:
+        screen, wait = food_lists.submit_food(
+            db, update.effective_user.id, kind, update.message.text
+        )
+    await _reply_screen(update, screen)
+    if wait:
+        context.user_data["food_asked_at"] = datetime.now(UTC)
+        return ENTERING_FOOD_NAME
+    context.user_data.pop("food_kind", None)
     return CHOOSING_ACTION
 
 
@@ -1939,6 +2013,7 @@ def create_bot_application() -> Application:
         ]
 
     routine_ask = CallbackQueryHandler(routine_ask_name, pattern=routines.ASK_PATTERN)
+    food_ask = CallbackQueryHandler(food_ask_name, pattern=food_lists.ASK_PATTERN)
     # Past the fallbacks' two reply-keyboard buttons, or it would swallow them.
     routine_tick = MessageHandler(
         filters.TEXT
@@ -1958,6 +2033,7 @@ def create_bot_application() -> Application:
             MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
             MessageHandler(filters.PHOTO, quick_meal_photo),
             routine_ask,
+            food_ask,
             routine_tick,
         ],
         states={
@@ -1966,11 +2042,23 @@ def create_bot_application() -> Application:
                 MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
                 MessageHandler(filters.PHOTO, quick_meal_photo),
                 routine_ask,
+                food_ask,
                 routine_tick,
+            ],
+            ENTERING_FOOD_NAME: [
+                *menu(),
+                routine_ask,
+                food_ask,
+                CallbackQueryHandler(
+                    food_leave_name, pattern=f"^{food_lists.CALLBACK_PREFIX}"
+                ),
+                MessageHandler(filters.PHOTO, quick_meal_photo),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_food_name),
             ],
             ENTERING_ROUTINE_NAME: [
                 *menu(),
                 routine_ask,
+                food_ask,
                 CallbackQueryHandler(
                     routine_leave_name, pattern=f"^{routines.CALLBACK_PREFIX}"
                 ),
@@ -1980,6 +2068,7 @@ def create_bot_application() -> Application:
             ENTERING_WEIGHT: [
                 *menu(),
                 routine_ask,
+                food_ask,
                 MessageHandler(filters.PHOTO, quick_meal_photo),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_weight),
             ],
@@ -2051,6 +2140,11 @@ def create_bot_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(
+            food_lists_callback, pattern=f"^{food_lists.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
             explain_callback, pattern=f"^{explain_screen.CALLBACK_PREFIX}"
         )
     )
@@ -2059,6 +2153,12 @@ def create_bot_application() -> Application:
             routine_left_by_tap, pattern=f"^(?!{routines.CALLBACK_PREFIX})"
         ),
         group=1,
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            food_left_by_tap, pattern=f"^(?!{food_lists.CALLBACK_PREFIX})"
+        ),
+        group=2,
     )
 
     # Draft buttons tapped outside the confirm step (after a save, a cancel or

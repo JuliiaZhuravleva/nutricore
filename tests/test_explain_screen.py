@@ -28,7 +28,7 @@ def test_the_settings_hub_opens_the_list_and_keeps_its_row_budget():
     rows = hub.markup.inline_keyboard
     button = next(b for b in _buttons(hub) if b.text == "ℹ️ Как это работает")
     assert button.callback_data == explain.OPEN
-    assert len(rows) <= 4 and all(len(row) <= 3 for row in rows)
+    assert len(rows) <= 5 and all(len(row) <= 3 for row in rows)
     assert explain.handle_callback(None, 42, button.callback_data).text.startswith(
         "<b>ℹ️ Как это работает</b>"
     )

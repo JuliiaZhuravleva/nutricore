@@ -2,7 +2,8 @@
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
     [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл]
-    [💊 Рутины] [ℹ️ Как это работает] [💸 Стоимость запросов: выкл]
+    [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать] [ℹ️ Как это работает]
+    [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -26,6 +27,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.config import settings
 from app.models.user import User
+from app.services import food_lists
 from app.services.explain_screen import OPEN as EXPLAIN_OPEN
 from app.services.favorites import Screen
 from app.services.numbers import SHOW_NUMBERS, shows_numbers
@@ -133,6 +135,8 @@ def screen(
     numbers: bool = False,
     routines: int = 0,
     week_push: bool = True,
+    reliable: int = 0,
+    never: int = 0,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -145,6 +149,8 @@ def screen(
         "🗓 Итог недели: "
         + ("воскресенье, 22:00, без звука." if week_push else "не присылаю."),
         f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
+        f"🧺 Надёжная еда: {reliable or 'пока нет'} · "
+        f"✋ Не предлагать: {never or 'пока нет'}",
         f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
         "под каждым разбором еды.",
     ]
@@ -156,6 +162,10 @@ def screen(
         [_btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB)],
         [
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
+            _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
+        ],
+        [
+            _btn("✋ Не предлагать", food_lists.NEVER_OPEN),
             _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
         ],
         [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
@@ -227,16 +237,22 @@ def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
 def open_view(
     db, telegram_id: int, notice: str | None = None, now: datetime | None = None
 ) -> Screen:
+    now = now or datetime.now(UTC)
     user = _user(db, telegram_id)
+    if user is not None:
+        food_lists.seed(db, user, now)
     on = bool(user and (user.settings or {}).get(SHOW_COSTS))
+    reliable, never = food_lists.counts(user)
     return screen(
         on,
         zone_name(user),
-        now or datetime.now(UTC),
+        now,
         notice,
         shows_numbers(user),
         len(active_routines(user)),
         week_push_on(user),
+        reliable,
+        never,
     )
 
 

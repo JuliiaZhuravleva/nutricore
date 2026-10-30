@@ -35,7 +35,14 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import day_card, next_step, routines, step_count, week_card
+from app.services import (
+    day_card,
+    food_lists,
+    next_step,
+    routines,
+    step_count,
+    week_card,
+)
 from app.services.day_card import local_time
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
@@ -695,6 +702,8 @@ def _save_settings(db, user: User, values: dict) -> None:
 
 
 def _step_view(db, user: User, today: date, zone: ZoneInfo) -> next_step.View:
+    if next_step.energy(user.settings or {}) != next_step.NORMAL:
+        food_lists.seed(db, user, _day_bounds(today, zone)[1])
     values = next_step.current(
         user.settings or {}, today, lambda: _group_days(db, user, today, zone)
     )
@@ -721,6 +730,8 @@ def _step_callback(
         return _group_days(db, user, today, zone)
 
     if verb == ENERGY:
+        # The modes below the usual one look here first, and the list may be unopened.
+        food_lists.seed(db, user, _day_bounds(today, zone)[1])
         values, toast = next_step.switch_energy(
             user.settings or {}, rest[0], today, days
         )

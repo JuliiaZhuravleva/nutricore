@@ -397,6 +397,8 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "🔢 Цифры сразу: выкл",
         "🗓 Итог недели: вкл",
         "💊 Рутины",
+        "🧺 Надёжная еда",
+        "✋ Не предлагать",
         "ℹ️ Как это работает",
         "💸 Стоимость запросов: выкл",
     ]
@@ -405,6 +407,8 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "set:num",
         "set:week",
         "rt:open",
+        "fl:rel",
+        "fl:nev",
         "hw:open",
         "set:costs",
     ]

@@ -14,7 +14,7 @@ that counter drives nothing else: a step not done is not counted or shown anywhe
 
 Pure, no Telegram and no database: these functions take ``User.settings`` and return
 a new dict. The screen is ``stats_screen``. ``NO_SUGGEST`` and ``RELIABLE`` are read
-here and filled by slice G.
+here and filled by ``food_lists``.
 """
 
 import re
@@ -210,6 +210,18 @@ def _refused(step: Step, settings: dict) -> bool:
     return any(_names(step, food) for food in _list(settings, NO_SUGGEST))
 
 
+def _relies_on(step: Step, dish: str) -> bool:
+    """A food of the step is in the dish, endings aside: «Овсянка с бананом» counts for
+    «банан», though nothing in the step says «овсянка». Short words are left out, so
+    «с» reaches nothing."""
+    words = [word for word in _words(dish) if len(word) >= 3]
+    return any(
+        word.startswith(food[: max(3, len(food) - 2)])
+        for food in step.foods
+        for word in words
+    )
+
+
 def _row(state: dict, key: str = "row") -> int:
     value = state.get(key)
     return value if isinstance(value, int) else 0
@@ -287,10 +299,10 @@ def _select(
         and (minutes is None or step.minutes == minutes)
         and not _refused(step, settings)
     ]
-    if mode == LOW:
+    if mode in (LOW, SIMPLE):
         reliable = _list(settings, RELIABLE)
         pool = [
-            step for step in pool if any(_names(step, food) for food in reliable)
+            step for step in pool if any(_relies_on(step, food) for food in reliable)
         ] or pool
     if not pool:
         return None
