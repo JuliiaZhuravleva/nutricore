@@ -198,13 +198,16 @@ def test_the_numbers_setting_opens_them_without_a_button(db):
     _meal(db, _at(9))
     card = _card(db)
     assert "🔢 За день" in card.text
-    assert _rows(card)[-2:] == [["🔋 Силы: обычно"], ["✓ Сегодня", "Вчера", "7 дней"]]
+    assert _rows(card)[-2:] == [
+        [st.STEP_FIRST_BUTTON],
+        ["✓ Сегодня", "Вчера", "7 дней"],
+    ]
 
 
 def test_tabs_are_the_last_row_under_ticks_and_numbers(db):
     _meal(db, _at(9))
     assert _rows(_card(db))[-1] == ["✓ Сегодня", "Вчера", "7 дней"]
-    assert _rows(_card(db))[-2] == ["🔢 Цифры", "🔋 Силы: обычно"]
+    assert _rows(_card(db))[-2] == ["🔢 Цифры"]
     assert _rows(_card(db, st.YESTERDAY)) == [["Сегодня", "✓ Вчера", "7 дней"]]
 
 

@@ -1,10 +1,12 @@
-"""One next step on today's card (stage 5, slice F, G5-R10, G5-R11, G5-R20).
+"""One next step on today's card (stage 5, slices F and K, G5-R11, G5-R20, G5-R27).
 
-Rules, no model and no learning: the evidence that an algorithm should optimise
+The person chooses a direction from 2–3 options; until then there is no step. Inside
+it, rules, no model and no learning: the evidence that an algorithm should optimise
 eating on its own is very low. The order is the research's: drop what the user
 never wants suggested, then one addition from the week's least-present group, then
 benefit × chance of doing it ÷ effort. A step only ever adds, to any food at all,
-ready-made included. Benefit and chance are the project's own rough marks.
+ready-made included. Benefit and chance are the project's own rough marks. The step
+stays from day to day until it is changed (G5-R29).
 
 The energy mode is the user's alone to switch and limits the step's size. Two
 «😴 Не сейчас» in a row make the next step smaller, without a word about it, and
@@ -22,6 +24,7 @@ from typing import Callable, Optional
 
 STATE = "next_step"  # in ``User.settings``: today's one step
 ENERGY = "energy"  # in ``User.settings``; absent means normal
+FOCUS = "focus"  # in ``User.settings``: the chosen direction, {"id": ..., ...}
 NO_SUGGEST = "no_suggest"  # foods never offered (G5-R13)
 RELIABLE = "reliable_foods"  # what the low mode reaches for first (G5-R12)
 
@@ -32,6 +35,11 @@ VERBS = (TAKE, UNDO, PUT_OFF, BRING_BACK, SWAP)
 _LIMITS = {NORMAL: 10, LOW: 2, SIMPLE: 1}  # minutes
 _SHRUNK = {10: 2, 2: 1, 1: 1}
 _SHRINK_AFTER = 2
+EARLY, PROTEIN, PLANTS, EXTRAS = "early", "protein", "plants", "extras"
+RECORDS = "records"  # chosen too: records only, no step
+RECORDS_BUTTON = "📋 Пока только записи"
+_OPTIONS_MAX = 3
+_NEARLY_DAILY = 6  # days of the week: this group needs no step to bring it
 
 # mode → (button, toast, the line on the card, or None)
 MODES = {
@@ -60,6 +68,7 @@ class Step:
     foods: tuple = ()  # the word starts «не предлагать» and reliable foods match
     benefit: int = 2
     chance: int = 2
+    cue: bool = False  # tied to a moment of the day, the «earlier» direction's
 
     @property
     def rank(self) -> float:
@@ -103,8 +112,53 @@ STEPS = (
          "", ("тофу", "соя"), 3, 2),
     Step("frozen", ("veg",), 10, "замороженные овощи на сковороду к готовому блюду",
          "", ("овощи",), 3, 2),
+    # A moment, not an hour: an hour says nothing about a day that starts late.
+    # Any food counts here, so these name none and ``groups`` is only their picture.
+    Step("wake_coffee", ("fruit",), 1, "когда встанешь, что-то готовое к кофе",
+         "Подойдёт любая еда.", cue=True),
+    Step("wake_home", ("grain",), 1, "когда встанешь, пара кусочков того, что дома",
+         "", cue=True),
+    Step("wake_first", ("nuts",), 2, "первым делом после сна — любой перекус",
+         "Из пачки тоже считается.", cue=True),
 )  # fmt: skip
 _BY_ID = {step.id: step for step in STEPS}
+
+
+@dataclass(frozen=True)
+class Focus:
+    """A direction the person can choose: its steps, and what its count counts."""
+
+    id: str
+    button: str
+    label: str  # the count's words on the week: «Овощи или фрукты: 4 дня»
+    groups: frozenset = frozenset()
+    cue: bool = False
+
+
+FOCUSES = {
+    focus.id: focus
+    for focus in (
+        Focus(EARLY, "🕐 Поесть один раз пораньше", "Еда до", cue=True),
+        Focus(
+            PROTEIN,
+            "🥫 Добавить готовое с белком",
+            "Белковая еда",
+            frozenset({"legumes", "anchor"}),
+        ),
+        Focus(
+            PLANTS,
+            "🥕 Добавить овощ или фрукт",
+            "Овощи или фрукты",
+            frozenset({"veg", "fruit"}),
+        ),
+        Focus(
+            EXTRAS,
+            "🌰 Добавить орехи или злаки",
+            "Орехи или цельные злаки",
+            frozenset({"nuts", "grain", "omega"}),
+        ),
+    )
+}
 
 
 @dataclass(frozen=True)
@@ -123,6 +177,11 @@ def energy(settings: dict) -> str:
 
 def next_energy(mode: str) -> str:
     return _CYCLE[mode]
+
+
+def lower_energy(mode: str) -> Optional[str]:
+    """One mode down, for «🪫 Сделать проще»; None at the lowest."""
+    return None if mode == SIMPLE else _CYCLE[mode]
 
 
 def _words(text: str) -> list:
@@ -161,15 +220,69 @@ def _limit(mode: str, row: int) -> int:
     return _SHRUNK[limit] if row >= _SHRINK_AFTER else limit
 
 
+def chosen(settings: dict) -> Optional[str]:
+    """The direction's id, ``RECORDS`` included; None when none was chosen."""
+    value = settings.get(FOCUS)
+    found = value.get("id") if isinstance(value, dict) else None
+    return (
+        found
+        if isinstance(found, str) and (found in FOCUSES or found == RECORDS)
+        else None
+    )
+
+
+def focus(settings: dict) -> Optional[Focus]:
+    return FOCUSES.get(chosen(settings))
+
+
+def _in_focus(step: Step, wanted: Optional[Focus]) -> bool:
+    if wanted is None or step.cue != wanted.cue:
+        return False
+    return wanted.cue or bool(wanted.groups.intersection(step.groups))
+
+
+def options(settings: dict, days: dict, early: bool) -> list:
+    """2–3 directions from the records, least present first. ``early``: first food
+    comes late in them, see ``step_count.early_clock``."""
+
+    def possible(wanted: Focus) -> bool:
+        return any(
+            _in_focus(step, wanted) and not _refused(step, settings) for step in STEPS
+        )
+
+    foods = [f for f in FOCUSES.values() if not f.cue and possible(f)]
+    # sorted() keeps the order of equals, so the same records give the same screen.
+    foods.sort(key=lambda f: max(days.get(group, 0) for group in f.groups))
+    rare = [
+        f
+        for f in foods
+        if max(days.get(group, 0) for group in f.groups) < _NEARLY_DAILY
+    ]
+    picks = rare if len(rare) >= 2 else foods
+    if early and possible(FOCUSES[EARLY]):
+        picks = [FOCUSES[EARLY], *picks]
+    return [f.id for f in picks[:_OPTIONS_MAX]]
+
+
+def choose(settings: dict, wanted: str, extra: Optional[dict] = None) -> dict:
+    """A new direction starts a new step; the one in use keeps its step as it is."""
+    if chosen(settings) == wanted:
+        return settings
+    values = {key: value for key, value in settings.items() if key != STATE}
+    return {**values, FOCUS: {"id": wanted, **(extra or {})}}
+
+
 def _select(
     settings: dict, days: dict, row: int, skip, minutes: Optional[int] = None
 ) -> Optional[Step]:
     mode = energy(settings)
     limit = _limit(mode, row)
+    wanted = focus(settings)
     pool = [
         step
         for step in STEPS
-        if step.minutes <= limit
+        if _in_focus(step, wanted)
+        and step.minutes <= limit
         and step.id not in skip
         and (minutes is None or step.minutes == minutes)
         and not _refused(step, settings)
@@ -224,37 +337,55 @@ def _pick(settings: dict, day: str, days: dict, row: int, last) -> dict:
     }
 
 
+def _still_fits(step: Step, settings: dict, row: int) -> bool:
+    return (
+        _in_focus(step, focus(settings))
+        and not _refused(step, settings)
+        and step.minutes <= _limit(energy(settings), row)
+    )
+
+
 def current(settings: dict, today: date, group_days: Callable[[], dict]) -> dict:
-    """``settings`` with today's step in it. The step stays put for the day: it is
-    chosen once, not again with every meal logged. ``group_days``: days per group
-    this week, asked for only when a step is chosen."""
+    """``settings`` with today's step in it. A step stays until it is changed, and is
+    chosen again only when it no longer fits or after two «😴 Не сейчас» in a row.
+    ``group_days``: days per group this week, asked for only when a step is chosen."""
+    if focus(settings) is None:
+        return settings
     state = _state(settings)
     day = today.isoformat()
     step = _BY_ID.get(state.get("step"))
+    row = _row(state)
     if state.get("day") == day:
         # Done or put off, it stays. Open, it must still be wanted and still fit the
         # mode: «Вернуть шаг» can bring it back after the mode went lower.
-        keep = step is not None and (
-            state.get("state") != OPEN
-            or (
-                not _refused(step, settings)
-                and step.minutes <= _limit(energy(settings), _row(state))
-            )
-        )
-        if keep:
+        if step is not None and (
+            state.get("state") != OPEN or _still_fits(step, settings, row)
+        ):
             return settings
         last = state.get("last")
     else:
+        if (
+            step is not None
+            and row < _SHRINK_AFTER
+            and _still_fits(step, settings, row)
+        ):
+            kept = {
+                **state,
+                "day": day,
+                "state": OPEN,
+                "seen": [step.id],
+                "before": row,
+            }
+            return {**settings, STATE: kept}
         last = state.get("step")
-    picked = _pick(settings, day, group_days(), _row(state), last)
+    picked = _pick(settings, day, group_days(), row, last)
     return {**settings, STATE: picked}
 
 
 def view(settings: dict) -> View:
     state = _state(settings)
-    return View(
-        _BY_ID.get(state.get("step")), state.get("state", OPEN), energy(settings)
-    )
+    step = _BY_ID.get(state.get("step")) if focus(settings) else None
+    return View(step, state.get("state", OPEN), energy(settings))
 
 
 def tap(
@@ -264,6 +395,8 @@ def tap(
     or a double tap changes nothing and just shows the card as it is."""
     settings = current(settings, today, group_days)
     state = _state(settings)
+    if focus(settings) is None:
+        return settings, None
     if state.get("step") != shown:
         return settings, "Шаг уже другой, вот нынешний"
     now, row = state.get("state"), _row(state)
@@ -313,7 +446,11 @@ def switch_energy(
     state = _state(settings)
     # No step yet today (the button can be an old card's): the next view with a meal
     # chooses one, as always.
-    if state.get("day") == today.isoformat() and state.get("state") == OPEN:
+    if (
+        focus(settings) is not None
+        and state.get("day") == today.isoformat()
+        and state.get("state") == OPEN
+    ):
         picked = _pick(
             settings, today.isoformat(), group_days(), _row(state), state.get("last")
         )
@@ -327,7 +464,7 @@ def lines(shown: View) -> list:
     if step is None:
         return []
     if shown.state == LATER:
-        return ["😴 Шаг отложен — завтра будет новый."]
+        return ["😴 Шаг отложен до завтра."]
     if shown.state == DONE:
         return [f"👣 {step.title[:1].upper()}{step.title[1:]} — ✓ готово."]
     head = (

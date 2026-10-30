@@ -167,7 +167,7 @@ The order below is the build order (G5-R16). Rough size is in "sessions" of focu
 - 2–3 options from the records; no step on the card until one is chosen; a day boundary that does not take
   sleep for a meal gap.
 - The count against the person's own past, in three states: moved, no clear movement, too few records (fewer than
-  4 days with records in either week; a heuristic, see the evidence doc).
+  4 days with records in either week; a heuristic, see the evidence doc). The step stays until changed (G5-R29).
 
 ### L. The week's one absence (G5-R25; ≈1 session)
 

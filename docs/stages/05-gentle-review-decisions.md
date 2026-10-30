@@ -35,6 +35,7 @@ unanswered and the stated default applies.
 | G5-R25 | The bot may name an absence, once a week and in one line, only when the user said the week is mostly recorded, and as a fact about the records: «В записях за неделю овощей не видно». Never on the day card, never about the person (owner, 2026-10-30, after [`hard-days-progress-evidence.md`](../researches/hard-days-progress-evidence.md)). Replaces the absolute «never say what was missing» of rule 2 | L |
 | G5-R26 | Progress compares the person with their own past: only on the chosen step, only as a count of days, and it says so plainly when the count fell. Never with an ideal. G5-R09 stands: plants have no comparison (owner, 2026-10-30) | K |
 | G5-R27 | The person chooses the step from 2–3 options drawn from their records; until they do, the card has no step, only a button. Replaces G5-R10's daily step proposed by the bot. The swap and the energy modes stay (owner, 2026-10-30) | K |
+| G5-R29 | The chosen step stays from day to day until the person changes it, or two «😴 Не сейчас» in a row bring a smaller one. A count needs the same thing to be tried for days, and a new step every morning would undo the choice. Replaces the daily rotation (project's decision, slice K) | K |
 | G5-R28 | The day card names what was eaten in plain words, chips included, with no verdict and no calorie line by default. It is the record (job 1), so it does not count towards rule 1's three observations. Food before 6:00 widens the day's line to start at 0:00; sleep is not called a gap, and a two-meal day gets no gap line, since the times already show it (shown to the owner on the proposal page, 2026-10-30) | J |
 
 ## Notes behind three answers
@@ -170,7 +171,7 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
   to switch it on. The 15–20 minute size is left for the ladder (slice H): normal mode offers up to 10 minutes, as the
   mock's toast says.
 - The step is chosen once a day, on the first view of today with a meal, and stays when more meals are logged. Yesterday's
-  step is not chosen again, so «завтра будет новый» holds. An empty day has no step and no energy button; yesterday and
+  step is not chosen again, so «завтра будет новый» holds (until slice K, see G5-R29). An empty day has no step and no energy button; yesterday and
   the week have neither.
 - The state lives in `User.settings["next_step"]`, the mode in `settings["energy"]`. The mode changes only by the user's
   tap and stays across days. Changing it chooses an open step again for the new size, and leaves a step done or put off.
@@ -195,3 +196,21 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - Cooking time: steps stay within 15–20 minutes.
 - At most one new food per week; one experiment at a time.
 - The week runs Monday to Sunday.
+
+## Slice K as built (project's decisions, within G5-R26, R27, R29)
+
+- Five answers on the choice screen: earlier, protein, plants, extras, «📋 Пока только записи». At most three directions,
+  least present first; one already there on 6 of 7 days drops out unless that leaves fewer than two. «Earlier» appears
+  only with 3+ days of records and a first food at 12:00 or later. Every existing step stays reachable through a
+  direction, so a fourth food direction («🌰») was added to the three in the mock.
+- «Earlier» steps name a moment («когда встанешь»), never an hour: an hour means nothing on a day that starts late. The
+  mock's «на завтра» and any night logic are out: a clock-based night would contradict the research.
+- The person's day runs from one `turn` to the next, `turn` being the middle of the longest stretch of hours with no food
+  over 14 days. Food at 4:00 closes the day before instead of opening a new one. The hour («Еда до 17:00», usual first
+  food minus two hours) and the turn are saved at the choice, so the count does not move with the habit.
+- The count comes from records only; «✅ Готово» does not feed it. It sits on the week tab and Sunday's message, in text
+  and picture, and never on the day card. Two weeks of zeros say nothing. Fewer than 4 days with records in either week
+  shows the count alone, no comparison. The month line appears only when the count rose.
+- Buttons «🪫 Сделать проще» and «🎯 Выбрать другое» appear with the count only when it did not rise. From Sunday's
+  message they replace that message with the choice or today's card.
+- A daily step saved before this slice is not shown until a direction is chosen.

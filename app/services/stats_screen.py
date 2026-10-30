@@ -35,7 +35,7 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import day_card, next_step, routines, week_card
+from app.services import day_card, next_step, routines, step_count, week_card
 from app.services.day_card import local_time
 from app.services.favorites import Screen, favorite_name
 from app.services.meal_draft import num
@@ -56,6 +56,11 @@ TICK, MORE_TICK, MORE = "k", "K", "m"
 SUMMARY = "i"  # i:<its Monday>[:n]: Sunday's message, on the week it was sent for
 # The next step: s:<verb>:<day>:<the step shown>:<n or empty>; e:<mode>:<n or empty>
 STEP, ENERGY = "s", "e"
+# Choosing the direction: c:<n or empty> opens the screen, c:<id>:<n or empty> chooses.
+CHOOSE = "c"
+STEP_FIRST_BUTTON = "🎯 Выбрать один шаг"
+STEP_OTHER_BUTTON = "🎯 Выбрать другое"
+_CHOICE_DAYS = 14  # records the «earlier» hour is taken from
 SUMMARY_NOTE = (
     "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
 )
@@ -75,6 +80,10 @@ _MONTHS = (
 _MONTHS_FULL = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)  # fmt: skip
+_MONTHS_IN = (
+    "январе", "феврале", "марте", "апреле", "мае", "июне",
+    "июле", "августе", "сентябре", "октябре", "ноябре", "декабре",
 )  # fmt: skip
 
 
@@ -222,12 +231,12 @@ def day_screen(
             lines += ["", *ticks]
         picture["empty"] = True
         return Screen("\n".join(lines), _tabs(tab, None, above), picture=picture)
-    mode_line = next_step.MODES[step.mode][2] if step else None
+    mode_line = next_step.MODES[step.mode][2] if step and step.step else None
     if mode_line:
         lines += [mode_line, ""]
         picture["mode"] = step.mode
     if first_time:
-        tail = " Шаг внизу — по желанию." if step and step.step else ""
+        tail = " Шаг внизу — по желанию." if step else ""
         lines += [f"<i>Это карточка дня: что было, без оценок.{tail}</i>", ""]
     facts = day_card.facts(meals, zone, _meal_name)
     lines += day_card.lines(facts, html.escape)
@@ -246,7 +255,8 @@ def day_screen(
             lines += ["", *told]
             picture["step"] = next_step.picture(step)
         routine_rows = (*_step_rows(step, day, opened), *routine_rows)
-        beside = (_energy_button(step.mode, opened),)
+        if step.step:
+            beside = (_energy_button(step.mode, opened),)
     if opened is not False:
         lines += ["", _numbers_block(meals, zone)]
     markup = _tabs(tab, opened, routine_rows, beside)
@@ -272,15 +282,16 @@ def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
     return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
 
 
-def _summary_markup(monday: date, opened: bool | None) -> InlineKeyboardMarkup | None:
+def _summary_markup(
+    monday: date, opened: bool | None, above: tuple = ()
+) -> InlineKeyboardMarkup | None:
     """No tabs: the summary keeps its own week, days after it was sent."""
     if opened is None:
-        return None
+        return InlineKeyboardMarkup(above) if above else None
     flip = "" if opened else f":{OPEN}"
     data = f"{CALLBACK_PREFIX}{SUMMARY}:{_day_code(monday)}{flip}"
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(toggle_label(opened), callback_data=data)]]
-    )
+    toggle = InlineKeyboardButton(toggle_label(opened), callback_data=data)
+    return InlineKeyboardMarkup([*above, [toggle]])
 
 
 def week_screen(
@@ -293,10 +304,14 @@ def week_screen(
     look: str = LOOK_DAY,
     summary: date | None = None,
     first: bool = False,
+    count: step_count.Count | None = None,
+    month: str = "",
+    count_rows: tuple = (),
 ) -> Screen:
     """``days`` oldest first. The 7 days tab, or with ``summary`` (its Monday) the
     calendar week as Sunday's message. No count of days with records and no empty
-    days anywhere: two records must not look worse than seven (G5-R07)."""
+    days anywhere: two records must not look worse than seven (G5-R07). ``count``: the
+    chosen step's days against the week before (G5-R26), the one comparison here."""
     head = "Неделя" if summary else f"{WEEK_DAYS} дней"
     when = week_card.period(days[0][0], days[-1][0], _MONTHS_FULL)
     new_label = "Новое на этой неделе" if summary else f"Новое за {WEEK_DAYS} дней"
@@ -336,6 +351,13 @@ def week_screen(
     finding = week_card.finding_line(week, new_label, html.escape)
     if finding:
         lines.append(finding)
+    counted = step_count.lines(count, month) if count else []
+    if counted:
+        lines += ["", *counted]
+        picture["count"] = {
+            "text": counted[0].removeprefix("🎯 "),
+            "note": counted[1] if len(counted) > 1 else None,
+        }
     picture |= {
         "plants": week.plants,
         "plantsLabel": week_card.plants_label(week.plants),
@@ -346,33 +368,45 @@ def week_screen(
         lines += ["", _week_numbers(days)]
     if first:
         lines += ["", f"<i>{SUMMARY_NOTE}</i>"]
-    markup = _summary_markup(summary, opened) if summary else _tabs(WEEK, opened)
+    rows = count_rows if counted else ()
+    markup = (
+        _summary_markup(summary, opened, rows) if summary else _tabs(WEEK, opened, rows)
+    )
     return Screen("\n".join(lines), markup, picture=picture)
 
 
 # --- the next step ----------------------------------------------------------
 
 
+def _choose_button(label: str, opened: bool | None) -> InlineKeyboardButton:
+    keep = OPEN if opened else ""
+    return InlineKeyboardButton(
+        label, callback_data=f"{CALLBACK_PREFIX}{CHOOSE}:{keep}"
+    )
+
+
 def _step_rows(step: next_step.View, day: date, opened: bool | None) -> list:
     if step.step is None:
-        return []
+        return [[_choose_button(STEP_FIRST_BUTTON, opened)]]
     keep = OPEN if opened else ""
+    other = _choose_button(STEP_OTHER_BUTTON, opened)
 
     def button(label: str, verb: str, **extra) -> InlineKeyboardButton:
         data = f"{CALLBACK_PREFIX}{STEP}:{verb}:{_day_code(day)}:{step.step.id}:{keep}"
         return InlineKeyboardButton(label, callback_data=data, **extra)
 
     if step.state == next_step.DONE:
-        return [[button("↩️ Отменить", next_step.UNDO)]]
+        return [[button("↩️ Отменить", next_step.UNDO), other]]
     if step.state == next_step.LATER:
-        return [[button("👣 Вернуть шаг", next_step.BRING_BACK)]]
+        return [[button("👣 Вернуть шаг", next_step.BRING_BACK), other]]
     return [
         [
             # PTB 21.9 predates ``style``: see meal_draft's «✅ Сохранить».
             button("✅ Готово", next_step.TAKE, api_kwargs={"style": "success"}),
             button("🔄 Другой шаг", next_step.SWAP),
             button("😴 Не сейчас", next_step.PUT_OFF),
-        ]
+        ],
+        [other],
     ]
 
 
@@ -561,6 +595,7 @@ def _week_view(
         done = {tick.routine_id for tick in ticks}
         start = _day_bounds(first, zone)[0]
         earlier = crud_meal.get_user_meals_between(db, user.id, _LONG_AGO, start)
+    count, month = _step_count(db, user, dates[0], dates[-1], zone)
     return week_screen(
         [(day, _meals_on(db, user, day, zone)) for day in dates],
         zone,
@@ -571,7 +606,48 @@ def _week_view(
         look,
         summary,
         note,
+        count,
+        month,
+        _count_rows(user, count, opened),
     )
+
+
+def _step_count(
+    db, user: User | None, first: date, last: date, zone: ZoneInfo
+) -> tuple[step_count.Count | None, str]:
+    """The chosen direction's days in ``first``..``last`` against the week before."""
+    wanted = next_step.chosen(user.settings or {}) if user else None
+    if wanted not in next_step.FOCUSES:
+        return None, ""
+    month_start = last.replace(day=1)
+    since = min(month_start, first - timedelta(days=WEEK_DAYS))
+    # A day past ``last``: its small hours can still belong to ``last``'s own day.
+    meals = crud_meal.get_user_meals_between(
+        db,
+        user.id,
+        _day_bounds(since, zone)[0],
+        _day_bounds(last + timedelta(days=1), zone)[1],
+    )
+    count = step_count.count(
+        meals, user.settings[next_step.FOCUS], zone, first, last, month_start
+    )
+    return count, _MONTHS_IN[last.month - 1]
+
+
+def _count_rows(
+    user: User | None, count: step_count.Count | None, opened: bool | None
+) -> tuple:
+    """Only when the count did not rise: then the choice is worth a button."""
+    if count is None or step_count.state(count) not in step_count.ASKS:
+        return ()
+    row = []
+    lower = next_step.lower_energy(next_step.energy(user.settings or {}))
+    if lower:
+        keep = OPEN if opened else ""
+        data = f"{CALLBACK_PREFIX}{ENERGY}:{lower}:{keep}"
+        row.append(InlineKeyboardButton("🪫 Сделать проще", callback_data=data))
+    row.append(_choose_button(STEP_OTHER_BUTTON, opened))
+    return (row,)
 
 
 def summary_view(
@@ -663,6 +739,74 @@ def _step_callback(
     return replace(open_view(db, telegram_id, TODAY, now, keep == OPEN), toast=toast)
 
 
+def _recent_clock(db, user: User, today: date, zone: ZoneInfo) -> dict | None:
+    start = _day_bounds(today - timedelta(days=_CHOICE_DAYS - 1), zone)[0]
+    end = _day_bounds(today, zone)[1]
+    meals = crud_meal.get_user_meals_between(db, user.id, start, end)
+    return step_count.early_clock(meals, zone)
+
+
+def _choice_screen(db, user: User, today: date, zone: ZoneInfo, opened: bool) -> Screen:
+    """Text alone, no picture: it is a question, there is nothing here to look at."""
+    settings = user.settings or {}
+    in_use = next_step.chosen(settings)
+    keep = OPEN if opened else ""
+    found = next_step.options(
+        settings,
+        _group_days(db, user, today, zone),
+        _recent_clock(db, user, today, zone) is not None,
+    )
+    if in_use in next_step.FOCUSES and in_use not in found:
+        found = [*found, in_use]
+    labels = [(key, next_step.FOCUSES[key].button) for key in found]
+    labels.append((next_step.RECORDS, next_step.RECORDS_BUTTON))
+    rows = [
+        [
+            InlineKeyboardButton(
+                ("✓ " if key == in_use else "") + label,
+                callback_data=f"{CALLBACK_PREFIX}{CHOOSE}:{key}:{keep}",
+            )
+        ]
+        for key, label in labels
+    ]
+    back = CALLBACK_PREFIX + TODAY + keep
+    rows.append([InlineKeyboardButton("⬅️ Сегодня", callback_data=back)])
+    head = "теперь" if in_use else "первым"
+    text = (
+        f"🎯 <b>Что попробовать {head}?</b>\n"
+        "Одно на выбор. Сменить можно в любой момент."
+    )
+    return Screen(text, InlineKeyboardMarkup(rows))
+
+
+def _choose_callback(
+    db, telegram_id: int, parts: list, now: datetime | None
+) -> Screen | None:
+    """The choice screen, or a choice made on it; None when the data is not one."""
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    rest = parts[1:]
+    if user is None or len(rest) not in (1, 2) or rest[-1] not in ("", OPEN):
+        return None
+    opened = rest[-1] == OPEN
+    zone = user_zone(user)
+    today = local_time(now or datetime.now(UTC), zone).date()
+    if len(rest) == 1:
+        return _choice_screen(db, user, today, zone, opened)
+    wanted = rest[0]
+    if wanted != next_step.RECORDS and wanted not in next_step.FOCUSES:
+        return None
+    settings = user.settings or {}
+    extra = None
+    if wanted == next_step.EARLY and next_step.chosen(settings) != wanted:
+        extra = _recent_clock(db, user, today, zone)
+        if extra is None:
+            # An old button: the records no longer give an hour.
+            return open_view(db, telegram_id, TODAY, now, opened)
+    _save_settings(db, user, next_step.choose(settings, wanted, extra))
+    toast = "📋 Только записи" if wanted == next_step.RECORDS else "🎯 Шаг выбран"
+    return replace(open_view(db, telegram_id, TODAY, now, opened), toast=toast)
+
+
 def open_view(
     db,
     telegram_id: int,
@@ -696,7 +840,7 @@ def open_view(
     meals = _meals_on(db, user, today, zone)
     step = _step_view(db, user, today, zone) if meals and user else None
     # The lowest mode keeps the keyboard to the step: ticks wait, typed names still work.
-    hide_ticks = bool(step) and step.mode == next_step.SIMPLE
+    hide_ticks = bool(step) and bool(step.step) and step.mode == next_step.SIMPLE
     return day_screen(
         meals,
         today,
@@ -719,6 +863,10 @@ def handle_callback(db, telegram_id: int, data: str, now: datetime | None = None
         return _tick_view(db, telegram_id, parts, now)
     if parts[0] == SUMMARY:
         screen = _summary_callback(db, telegram_id, parts, now)
+        if screen is not None:
+            return screen
+    if parts[0] == CHOOSE:
+        screen = _choose_callback(db, telegram_id, parts, now)
         if screen is not None:
             return screen
     if parts[0] in (STEP, ENERGY):

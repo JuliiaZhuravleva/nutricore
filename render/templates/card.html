@@ -159,7 +159,7 @@ body.pdf { background: #E9E4DA; }
   function stepBlock(s, mode) {
     if (s.state === "later") {
       var q = el("div", "step later"), t0 = el("div");
-      add(t0, el("div", "stitle", "Шаг отложен"), el("div", "ssub", "Завтра будет новый."));
+      add(t0, el("div", "stitle", "Шаг отложен"), el("div", "ssub", "До завтра."));
       add(q, tile("later", 56), t0);
       return q;
     }
@@ -256,6 +256,13 @@ body.pdf { background: #E9E4DA; }
       ch.appendChild(lab);
       R.routines.forEach(function (x) { var chip = el("span", "chip"); add(chip, tile("routine", 28), el("span", "", x)); var ck = el("span", "ck"); ck.innerHTML = svg("check"); chip.appendChild(ck); ch.appendChild(chip); });
       add(c, ch);
+    }
+    if (R.count) {
+      var n = el("div", "calm"), nt = el("div");
+      n.style.padding = "16px 20px";
+      add(nt, el("div", "ct two", R.count.text));
+      if (R.count.note) add(nt, el("div", "cs", R.count.note));
+      add(n, tile("chart", 56), nt); add(c, n);
     }
     if (R.win) {
       var w = el("div", "calm"), wt = el("div");

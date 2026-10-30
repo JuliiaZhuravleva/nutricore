@@ -22,6 +22,22 @@ NOW = datetime(2026, 10, 30, 11, 0, tzinfo=UTC)
 DAY = date(2026, 10, 30)
 
 
+ALL = ns.Focus(
+    "all",
+    "",
+    "",
+    frozenset(
+        {"legumes", "anchor", "grain", "veg", "fruit", "calcium", "omega", "nuts"}
+    ),
+)
+
+
+@pytest.fixture(autouse=True)
+def _every_direction(monkeypatch):
+    """How a step behaves inside a direction: here, one direction with every food."""
+    monkeypatch.setattr(ns, "focus", lambda settings: ALL)
+
+
 def _no_days():
     raise AssertionError("the step was chosen again")
 
@@ -129,7 +145,7 @@ def test_the_rank_is_benefit_times_chance_over_effort():
     assert ns.view(state).step.id == "hummus"  # legumes, the highest rank of them
 
 
-def test_the_step_stays_for_the_day_and_the_next_day_brings_a_new_one(db):
+def test_the_step_stays_for_the_day_and_the_next_day_too(db):
     _meal(db)
     first = _state_after_open(db)
     _meal(
@@ -139,7 +155,7 @@ def test_the_step_stays_for_the_day_and_the_next_day_brings_a_new_one(db):
     tomorrow = NOW + timedelta(days=1)
     _meal(db, day=31)
     _card(db, tomorrow)
-    assert _state(db)["step"] != first["step"]
+    assert _state(db)["step"] == first["step"]
     assert _state(db)["day"] == "2026-10-31"
 
 
@@ -155,7 +171,7 @@ def test_done_undoes_with_one_button_and_offers_nothing_new_that_day(db):
     done = _press(db, card, "✅ Готово")
     assert done.toast == "✓ Отмечено"
     assert f"👣 {title[:1].upper()}{title[1:]} — ✓ готово." in done.text
-    assert _rows(done)[0] == ["↩️ Отменить"]
+    assert _rows(done)[0] == ["↩️ Отменить", st.STEP_OTHER_BUTTON]
     assert "✓ готово" in _card(db).text
     back = _press(db, done, "↩️ Отменить")
     assert "Один шаг" in back.text and "готово" not in back.text
@@ -164,8 +180,8 @@ def test_done_undoes_with_one_button_and_offers_nothing_new_that_day(db):
 def test_not_now_is_neutral_and_comes_back_with_a_tap(db):
     _meal(db)
     later = _press(db, _card(db), "😴 Не сейчас")
-    assert "😴 Шаг отложен — завтра будет новый." in later.text
-    assert _rows(later)[0] == ["👣 Вернуть шаг"]
+    assert "😴 Шаг отложен до завтра." in later.text
+    assert _rows(later)[0] == ["👣 Вернуть шаг", st.STEP_OTHER_BUTTON]
     back = _press(db, later, "👣 Вернуть шаг")
     assert "Один шаг" in back.text
     assert _state(db)["row"] == 0
@@ -192,7 +208,7 @@ def test_two_not_nows_in_a_row_make_the_next_step_smaller_without_a_word(db):
 
 def test_two_not_nows_shrink_a_ten_minute_size_to_two_even_where_only_big_ones_fit():
     # All quick ones refused: unshrunk, ten minutes are on offer; shrunk, they are not.
-    refused = [s.foods[0] for s in ns.STEPS if s.minutes <= 2]
+    refused = [s.foods[0] for s in ns.STEPS if s.minutes <= 2 and not s.cue]
     fresh = ns.current({ns.NO_SUGGEST: refused}, DAY, lambda: {})
     assert ns.view(fresh).step is not None and ns.view(fresh).step.minutes > 2
     shrunk = ns.current(
@@ -250,7 +266,7 @@ def test_swap_keeps_the_size_and_says_so(db):
 
 def test_swap_goes_through_every_step_of_the_mode_and_then_again():
     settings = ns.current({ns.ENERGY: ns.SIMPLE}, DAY, lambda: {})
-    quick = {step.id for step in ns.STEPS if step.minutes <= 1}
+    quick = {step.id for step in ns.STEPS if step.minutes <= 1 and not step.cue}
     seen = set()
     for _ in range(len(quick) * 2 + 1):
         shown = settings[ns.STATE]["step"]
@@ -304,8 +320,7 @@ def test_nothing_left_means_no_step_and_the_card_still_works(db):
     db.commit()
     card = _card(db)
     assert "👣" not in card.text
-    assert _rows(card)[0] != ["✅ Готово", "🔄 Другой шаг", "😴 Не сейчас"]
-    assert any("Силы" in label for row in _rows(card) for label in row)
+    assert _rows(card)[0] == [st.STEP_FIRST_BUTTON]
 
 
 def test_a_food_refused_later_drops_an_open_step_but_not_one_done():
@@ -496,7 +511,7 @@ def test_every_step_only_adds_and_stays_within_its_size(step):
     assert step.title[0].islower()
     assert len(step.title) <= 55
     assert all(group in st.day_card.food_groups.GROUPS for group in step.groups)
-    assert step.foods
+    assert step.foods or step.cue
 
 
 def test_every_mode_has_something_to_offer_and_every_group_has_a_step():
