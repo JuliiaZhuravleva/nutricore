@@ -1,6 +1,7 @@
 """«ℹ️ Как это работает» (G5-R22): reached from settings, one screen per topic."""
 
 import re
+from datetime import UTC, datetime
 
 import pytest
 from telegram import CallbackQuery, Update, User
@@ -19,7 +20,7 @@ def _tap(data):
 
 
 def test_the_settings_hub_opens_the_list_and_keeps_its_row_budget():
-    hub = settings_screen.screen(False, "Asia/Tbilisi", settings_screen.datetime.now())
+    hub = settings_screen.screen(False, "Asia/Tbilisi", datetime.now(UTC))
     rows = hub.markup.inline_keyboard
     button = next(b for b in _buttons(hub) if b.text == "ℹ️ Как это работает")
     assert button.callback_data == explain.OPEN
@@ -33,9 +34,6 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
     screen = _tap(explain.OPEN)
     labels = [b.text for b in _buttons(screen)]
     assert labels == [t.label for t in explain.TOPICS.values()] + ["⬅️ Настройки"]
-    assert _buttons(screen)[-1].callback_data.startswith(
-        settings_screen.CALLBACK_PREFIX
-    )
     assert (
         _buttons(screen)[-1].callback_data == settings_screen.CALLBACK_PREFIX + "open"
     )
