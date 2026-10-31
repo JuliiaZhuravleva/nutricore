@@ -1,9 +1,10 @@
 import base64
 import logging
+import re
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import httpx
 from telegram import (
@@ -17,6 +18,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -36,6 +38,7 @@ from app.schemas.meal import MealCreate
 from app.services import ai_errors, custom_emoji, explain_screen, favorites, food_lists
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
+    meal_card,
     meal_draft,
     meal_items,
     routines,
@@ -122,6 +125,13 @@ main_keyboard = ReplyKeyboardMarkup(
         ["⚙️ Настройки"],
     ],
     resize_keyboard=True,
+)
+
+# What a reply keyboard sends: never the answer to a typed slot.
+_KEYBOARD_LABEL = re.compile(
+    "🍽 Добавить при[её]м пищи|⭐ Избранное|📊 Статистика|⚖️ Мой вес|⚙️ Настройки"
+    "|❓ О боте|💎 Получить подписку|📱 Связаться с админом|Отмена"
+    "|Сейчас|Завтрак|Обед|Ужин|Назад"
 )
 
 time_keyboard = ReplyKeyboardMarkup(
@@ -1247,7 +1257,7 @@ async def _reanalyze_with_correction(
 
 
 async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favorite):
-    """Save the draft as a meal; True if it was saved.
+    """Save the draft as a meal; its id if it was saved, else False.
 
     ``reply`` sends the outcome (a message's ``reply_text``): the typed "Да"
     and the «Сохранить» button end the same way.
@@ -1306,7 +1316,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
         if favorite:
             text += "\n" + _save_favorite(saved_meal_id, draft)
         await reply(text, reply_markup=main_keyboard)
-        return True
+        return saved_meal_id
     except Exception as e:
         logger.error(f"Error saving meal: {e}", exc_info=True)
         await reply(
@@ -1316,18 +1326,16 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
         return False
 
 
-def _day_card_button() -> InlineKeyboardMarkup:
-    """Under a saved draft: the day, where the new meal now shows."""
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "📊 Карточка дня",
-                    callback_data=stats_screen.CALLBACK_PREFIX + stats_screen.TODAY,
-                )
-            ]
-        ]
+def _day_card_button(meal_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    """Under a saved draft: the meal's own card, and the day, where it now shows."""
+    day = InlineKeyboardButton(
+        "📊 Карточка дня",
+        callback_data=stats_screen.CALLBACK_PREFIX + stats_screen.TODAY,
     )
+    if meal_id is None:
+        return InlineKeyboardMarkup([[day]])
+    meal = InlineKeyboardButton("🍽 Приём", callback_data=f"ml:o:{meal_id}:r")
+    return InlineKeyboardMarkup([[meal, day]])
 
 
 async def _edit_draft_message(
@@ -1429,7 +1437,10 @@ async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # another tap on Save writes it twice. «✅ Записано» has already gone out.
         try:
             await _edit_draft_message(
-                query, draft, footer="✅ Сохранено", settled_markup=_day_card_button()
+                query,
+                draft,
+                footer="✅ Сохранено",
+                settled_markup=_day_card_button(saved),
             )
         except TelegramError as e:
             logger.warning("Saved draft not redrawn: %s", type(e).__name__)
@@ -1482,6 +1493,80 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 _card_delivery = CardDelivery(PictureRenderer(Path(settings.RENDER_DIR)))
+
+
+async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The ``ml:`` verbs. The message id goes along: a typed answer retires its keyboard."""
+    message_id = getattr(update.callback_query.message, "message_id", None)
+
+    def handle(db, telegram_id: int, data: str):
+        return meal_card.handle_callback(db, telegram_id, data, message_id=message_id)
+
+    await _screen_callback(
+        update,
+        handle,
+        "🔒 Приёмы доступны с подпиской",
+        "Meal card",
+        deliver=_card_delivery.tap,
+    )
+
+
+def _is_plain_answer(text: Optional[str]) -> bool:
+    """Whether a text can answer a slot: a command or a keyboard's label never does."""
+    if not text or text.startswith("/"):
+        return False
+    return _KEYBOARD_LABEL.fullmatch(text) is None
+
+
+async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The answer to the card's typed slot, ahead of the conversation (group -1).
+
+    With no slot, or with anything that is not its answer, the message goes on down
+    the router: a wait never eats food. An answer goes out as a new message, under
+    which the old screen loses its keyboard.
+    """
+    message, user = update.message, update.effective_user
+    if message is None or user is None:
+        return
+    try:
+        with SessionLocal() as db:
+            if not meal_card.has_slot(db, user.id):
+                return
+        text = message.text if _is_plain_answer(message.text) else None
+        if text is not None and not await check_subscription(user.id):
+            text = None
+        with SessionLocal() as db:
+            typed = meal_card.take_typed(db, user.id, text)
+    except Exception as e:
+        logger.error("Meal slot failed: %s", e, exc_info=True)
+        await message.reply_text("Не получилось, попробуй ещё раз")
+        raise ApplicationHandlerStop
+    if typed is None:
+        return
+    if typed.message_id:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=message.chat_id,
+                message_id=typed.message_id,
+                reply_markup=None,
+            )
+        except TelegramError as e:
+            logger.info("Meal slot: the old keyboard stays: %s", e)
+    await message.reply_text(
+        typed.screen.text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=typed.screen.markup,
+    )
+    raise ApplicationHandlerStop
+
+
+async def meal_slot_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Any inline tap outside the card, in its own group: the person has moved on."""
+    try:
+        with SessionLocal() as db:
+            meal_card.leave_slot(db, update.effective_user.id)
+    except Exception as e:
+        logger.error("Meal slot not closed: %s", e, exc_info=True)
 
 
 async def _screen_callback(
@@ -2054,9 +2139,15 @@ def create_bot_application() -> Application:
     )
     application = Application.builder().bot(bot).post_init(_load_custom_emoji).build()
 
-    # Global access gate — runs before every other handler (group=-1) and drops
+    # Global access gate — runs before every other handler (group=-2) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.
-    application.add_handler(TypeHandler(Update, access_gate), group=-1)
+    application.add_handler(TypeHandler(Update, access_gate), group=-2)
+
+    # The card's typed slot answers before the conversation sees the text; with no
+    # slot it does nothing and the update goes on.
+    application.add_handler(
+        MessageHandler(filters.UpdateType.MESSAGE, meal_slot_text), group=-1
+    )
 
     # The confirm step's inline buttons are tracked per chat, not per message, on
     # purpose: the draft id in the callback data already tells the current
@@ -2218,6 +2309,11 @@ def create_bot_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(
+            meal_card_callback, pattern=f"^{meal_card.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
             routine_left_by_tap, pattern=f"^(?!{routines.CALLBACK_PREFIX})"
         ),
         group=1,
@@ -2227,6 +2323,12 @@ def create_bot_application() -> Application:
             food_left_by_tap, pattern=f"^(?!{food_lists.CALLBACK_PREFIX})"
         ),
         group=2,
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            meal_slot_left_by_tap, pattern=f"^(?!{meal_card.CALLBACK_PREFIX})"
+        ),
+        group=3,
     )
 
     # Draft buttons tapped outside the confirm step (after a save, a cancel or

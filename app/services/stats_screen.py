@@ -4,7 +4,8 @@
     grains and protein anchors if there were any (``day_card``), ticked routines
     [✅ Готово] [🔄 Другой шаг] [😴 Не сейчас] — today's one step (``next_step``)
     [💊 Прогулка] — up to three ticks of the user's routines, then [💊 Ещё N]
-    [🔢 Цифры] [🔋 Силы: обычно]
+    [🎯 Выбрать другое] [🔋 Силы: обычно]
+    [🔢 Цифры] [🍽 Приёмы]
     [✓ Сегодня] [Вчера] [7 дней]
     7 дней → <b>📊 7 дней, 24–30 октября</b> — different plants, the days of each
     food group, ticked routines, at most one finding (``week_card``)
@@ -75,6 +76,7 @@ _LONG_AGO = datetime(2000, 1, 1, tzinfo=UTC)
 TICK_ROW = 3
 ADD = "add"  # the empty day's «🍽 Добавить приём пищи»; the conversation takes it
 ADD_DATA = CALLBACK_PREFIX + ADD
+MEALS_BUTTON = "🍽 Приёмы"
 LOOK_DAY, LOOK_EVENING = "day", "evening"
 DAY_CARD_SEEN = "day_card_seen"  # in ``User.settings``: the one-line intro was shown
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
@@ -255,15 +257,18 @@ def day_screen(
         "foods": day_card.foods_label(facts),
     }
     lines += ticks
-    beside = ()
+    # The way to this day's meals: only ``meal_card`` reads this data.
+    beside = (
+        InlineKeyboardButton(
+            MEALS_BUTTON, callback_data=f"ml:dl:{_day_code(day)}:{tab}"
+        ),
+    )
     if step:
         told = next_step.lines(step)
         if told:
             lines += ["", *told]
             picture["step"] = next_step.picture(step)
         routine_rows = (*_step_rows(step, day, opened), *routine_rows)
-        if step.step:
-            beside = (_energy_button(step.mode, opened),)
     if opened is not False:
         lines += ["", _numbers_block(meals, zone)]
     markup = _tabs(tab, opened, routine_rows, beside)
@@ -402,10 +407,12 @@ def _step_rows(step: next_step.View, day: date, opened: bool | None) -> list:
         data = f"{CALLBACK_PREFIX}{STEP}:{verb}:{_day_code(day)}:{step.step.id}:{keep}"
         return InlineKeyboardButton(label, callback_data=data, **extra)
 
+    # Beside 🎯 where the row has room; the two states below hold two buttons already.
+    energy = _energy_button(step.mode, opened)
     if step.state == next_step.DONE:
-        return [[button("↩️ Отменить", next_step.UNDO), other]]
+        return [[button("↩️ Отменить", next_step.UNDO), other], [energy]]
     if step.state == next_step.LATER:
-        return [[button("👣 Вернуть шаг", next_step.BRING_BACK), other]]
+        return [[button("👣 Вернуть шаг", next_step.BRING_BACK), other], [energy]]
     return [
         [
             # PTB 21.9 predates ``style``: see meal_draft's «✅ Сохранить».
@@ -413,7 +420,7 @@ def _step_rows(step: next_step.View, day: date, opened: bool | None) -> list:
             button("🔄 Другой шаг", next_step.SWAP),
             button("😴 Не сейчас", next_step.PUT_OFF),
         ],
-        [other],
+        [other, energy],
     ]
 
 

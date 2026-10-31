@@ -358,8 +358,10 @@ def test_statistics_button_sends_today_with_tabs(Session):
     assert "🕐 " in message.replies[-1]
     assert "ккал" not in message.replies[-1]  # behind «🔢 Цифры» by default
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _callbacks(message.kwargs[-1]["reply_markup"])[-5:] == [
-        "st:c:", "st:tn", "st:t", "st:y", "st:w",
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-6:-4] == ["st:c:", "st:tn"]
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-4].startswith("ml:dl:")
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-3:] == [
+        "st:t", "st:y", "st:w",
     ]  # fmt: skip
 
 
@@ -848,6 +850,8 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
     assert by_callback[tg.favorites_callback].pattern.match("fav:p:0")
     assert by_callback[tg.settings_callback].pattern.match("set:costs")
     assert not by_callback[tg.settings_callback].pattern.match("st:w")
+    assert by_callback[tg.meal_card_callback].pattern.match("ml:o:1:r")
+    assert not by_callback[tg.meal_card_callback].pattern.match("meal:1:save")
 
 
 def test_week_title_spans_a_month_boundary():
@@ -928,7 +932,7 @@ def test_numbers_off_day_lists_meals_without_calories_and_offers_the_button(Sess
     for hidden in ("ккал", "За день", "Б 20", "омлет"):
         assert hidden not in screen.text
     assert _rows(screen.markup)[-2:] == [
-        ["🔢 Цифры"],
+        ["🔢 Цифры", "🍽 Приёмы"],
         ["✓ Сегодня", "Вчера", "7 дней"],
     ]
     assert "st:tn" in _callbacks(screen.markup)
@@ -941,10 +945,10 @@ def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
         opened = st.handle_callback(db, 42, "st:tn", NOW)
         assert "11:00 омлет — ≈ 250 ккал" in opened.text
         assert "🔢 За день: ≈ 250 ккал" in opened.text
-        assert _rows(opened.markup)[-2] == ["✓ 🔢 Цифры"]
-        assert _callbacks(opened.markup)[-5:] == [
-            "st:c:n", "st:t", "st:tn", "st:yn", "st:wn",
-        ]  # fmt: skip
+        assert _rows(opened.markup)[-2] == ["✓ 🔢 Цифры", "🍽 Приёмы"]
+        assert _callbacks(opened.markup)[-6:-4] == ["st:c:n", "st:t"]
+        assert _callbacks(opened.markup)[-4].startswith("ml:dl:")
+        assert _callbacks(opened.markup)[-3:] == ["st:tn", "st:yn", "st:wn"]
 
         closed = st.handle_callback(db, 42, "st:t", NOW)
         assert "ккал" not in closed.text
@@ -990,8 +994,9 @@ def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
         _meal(db, db.query(User).one(), NOW, 400)
         day = st.open_view(db, 42, st.TODAY, NOW)
     assert "400 ккал" in day.text
-    assert _rows(day.markup)[-2:] == [
+    assert _rows(day.markup)[-3:] == [
         [st.STEP_FIRST_BUTTON],
+        ["🍽 Приёмы"],
         ["✓ Сегодня", "Вчера", "7 дней"],
     ]  # no numbers button
 

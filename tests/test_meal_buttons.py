@@ -256,9 +256,9 @@ def test_save_button_saves_what_is_on_screen(Session, celery_delay):
     assert query.edit_message_text.call_args.args[0].endswith("✅ Сохранено")
     settled = query.edit_message_text.call_args.kwargs["reply_markup"]
     assert [[b.text for b in row] for row in settled.inline_keyboard] == [
-        ["📊 Карточка дня"]
+        ["🍽 Приём", "📊 Карточка дня"]
     ]
-    assert settled.inline_keyboard[0][0].callback_data == "st:t"
+    assert settled.inline_keyboard[0][1].callback_data == "st:t"
     assert "✅ Записано" in query.message.replies[-1]
     assert query.message.markups[-1] is tg.main_keyboard
     # TD-025: the call site still enqueues the personal-food save, and with a

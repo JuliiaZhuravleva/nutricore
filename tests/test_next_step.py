@@ -111,8 +111,9 @@ def test_the_card_offers_one_step_in_the_mocks_words_with_three_buttons(db):
         in card.text
     )
     assert _rows(card)[0] == ["✅ Готово", "🔄 Другой шаг", "😴 Не сейчас"]
-    assert _rows(card)[-2:] == [
-        ["🔢 Цифры", "🔋 Силы: обычно"],
+    assert _rows(card)[-3:] == [
+        ["🎯 Выбрать другое", "🔋 Силы: обычно"],
+        ["🔢 Цифры", "🍽 Приёмы"],
         ["✓ Сегодня", "Вчера", "7 дней"],
     ]
     assert card.markup.inline_keyboard[0][0].api_kwargs == {"style": "success"}
@@ -451,8 +452,9 @@ def test_the_setting_with_open_numbers_leaves_energy_alone_on_its_row(db):
     user = _user(db)
     user.settings = {**user.settings, SHOW_NUMBERS: True}
     db.commit()
-    assert _rows(_card(db))[-2:] == [
-        ["🔋 Силы: обычно"],
+    assert _rows(_card(db))[-3:] == [
+        ["🎯 Выбрать другое", "🔋 Силы: обычно"],
+        ["🍽 Приёмы"],
         ["✓ Сегодня", "Вчера", "7 дней"],
     ]
 

@@ -54,6 +54,32 @@ class CRUDFavoriteMeal:
         db.refresh(db_obj)
         return db_obj
 
+    def create_from_numbers(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        name: str,
+        numbers: dict,
+        nutrients: dict,
+        source_meal_id: int,
+    ) -> FavoriteMeal:
+        """One dish of a meal, at the portion that item holds."""
+        db_obj = FavoriteMeal(
+            user_id=user_id,
+            name=name,
+            calories=numbers["calories"],
+            proteins=numbers["proteins"],
+            fats=numbers["fats"],
+            carbohydrates=numbers["carbohydrates"],
+            nutrients=nutrients,
+            source_meal_id=source_meal_id,
+        )
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
     def mark_used(self, db: Session, fav: FavoriteMeal) -> None:
         fav.use_count = (fav.use_count or 0) + 1
         fav.last_used_at = datetime.now(UTC)
