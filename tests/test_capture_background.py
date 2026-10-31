@@ -335,7 +335,8 @@ def test_a_pending_voice_is_given_up_with_its_own_sentence_and_no_read(
     assert meal.reading_status == "failed"
     assert wire.edits()[0]["text"] == capture.M4D_FAILED
     assert reader.image == [] and reader.text == []
-    # What it failed on would pass by itself; a voice still has nothing to read it.
+    # What it failed on would pass by itself; with no local service nothing listens
+    # to a voice unasked, since the paid door is for a person who asked.
     assert _readings(db)[-1].status == capture.RETRY
     wire = _sweep_at({"minutes": 6}, {"hours": 2}, at=at)
     db.expire_all()
@@ -590,7 +591,7 @@ _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
         (lambda: ValueError("not json"), capture.FAILED),
         (lambda: json.JSONDecodeError("x", "y", 0), capture.FAILED),
         (lambda: BadRequest("file is too old"), capture.FAILED),
-        (lambda: capture.NoVoiceReader(), capture.FAILED),
+        (lambda: capture.voice.NotHeard(), capture.RETRY),
         (lambda: sdk_error(401, {"error": {"message": "x"}}), capture.FAILED),
         (lambda: RuntimeError("what is this"), capture.FAILED),
     ],
@@ -808,7 +809,7 @@ def test_a_dead_model_on_a_read_nobody_asked_for_sends_no_picker(db, owner, read
     assert _readings(db)[-1].status == capture.FAILED
 
 
-def test_a_voice_is_not_retried_with_no_reader(db, owner, reader, at):
+def test_a_voice_is_not_retried_with_no_local_service(db, owner, reader, at):
     send(_voice())
     meal = _one_meal(db)
     assert meal.reading_status == "failed"

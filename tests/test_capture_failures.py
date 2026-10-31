@@ -370,7 +370,7 @@ def test_again_on_someone_elses_meal_reads_nothing(db, reader):
     assert _one(db).reading_status == "failed"
 
 
-def test_again_on_a_voice_asks_no_model(db, reader):
+def test_again_on_a_voice_nobody_can_hear_asks_no_model(db, reader):
     send(_voice())
     meal = _one(db)
     wire = tap(f"ml:rr:{meal.id}:r", message_id=_line_id(db, meal))

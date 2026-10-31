@@ -26,7 +26,8 @@ class MealReading(Base, BaseClass):
     lost and never overwrites the person. ``error`` is the exception's class, never a
     body: logs and this column carry no transcript and no message text. ``status`` says
     what happens next: ``done``, ``no_food``, ``failed`` (no retry), ``retry`` (passes
-    by itself) or ``no_credit`` (passes after a top-up).
+    by itself) or ``no_credit`` (passes after a top-up); for a voice also ``heard`` (its
+    words, in ``output``, kept so nobody listens or pays twice) and ``no_speech``.
     """
 
     __tablename__ = "meal_readings"

@@ -92,6 +92,23 @@ def _hermetic_openai_model_override(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_voice(monkeypatch, tmp_path):
+    """A voice note in any test: its bytes go to this test's own folder, the local
+    service is not configured, and the paid door refuses before any network. A test
+    of the voice path sets its own fakes in ``tests/test_capture_voice.py``."""
+    from openai.resources.audio.transcriptions import AsyncTranscriptions
+
+    from app.core.config import settings
+
+    async def refused(self, **_kwargs):
+        raise RuntimeError("no paid transcription in a test")
+
+    monkeypatch.setattr(settings, "WHISPER_URL", "")
+    monkeypatch.setattr(settings, "AUDIO_DIR", str(tmp_path / "voice"))
+    monkeypatch.setattr(AsyncTranscriptions, "create", refused)
+
+
+@pytest.fixture(autouse=True)
 def celery_delay(monkeypatch):
     """TD-025: saving a meal enqueues the personal-food task with ``.delay``,
     which publishes to Redis synchronously. With no broker that publish blocks

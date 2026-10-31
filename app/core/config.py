@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     # The web_search call runs INSIDE the user's photo flow; the SDK default read
     # timeout is 600s, which would hang the reply. Ceiling it.
     OPENAI_WEB_SEARCH_TIMEOUT: float = 30.0
+    # Voice notes (M4). The shared local-whisper service; empty: every note goes to the
+    # paid model below. Both optional, like the two above.
+    WHISPER_URL: str = ""
+    OPENAI_TRANSCRIBE_MODEL: str = "gpt-4o-mini-transcribe"
+    # Where a voice note's bytes stay, relative to the working directory. Production
+    # keeps this folder on the host (docker-compose.prod.yml). Gitignored.
+    AUDIO_DIR: str = "data/voice"
     # The owner can switch OPENAI_MODEL at runtime (TD-005) to a model that does
     # not support the web_search tool; pin the search model separately when that
     # happens. None → use the currently selected model.

@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import re
+import time
 import warnings
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,7 @@ from app.services import (
     routines,
     settings_screen,
     stats_screen,
+    voice,
     weight_screen,
 )
 from app.services.access_control import access_gate, admin_required
@@ -426,11 +428,12 @@ async def _analyze_and_parse(
     on a malformed response (both handled by the callers).
     """
     svc = telegram_service.openai_service
-    coro = (
-        svc.analyze_food_image(payload)
-        if kind == "image"
-        else svc.analyze_food_entry(payload)
-    )
+    if kind == "image":
+        coro = svc.analyze_food_image(payload)
+    elif kind == "voice":
+        coro = svc.analyze_food_entry(payload, spoken=True)
+    else:
+        coro = svc.analyze_food_entry(payload)
     return await analyze_and_log(
         coro,
         kind=kind,
@@ -596,12 +599,62 @@ async def _reading(bot, job: capture.Read) -> tuple:
             telegram_id=job.telegram_id,
         )
         return nutrition, None
-    raise capture.NoVoiceReader()
+    words = await _voice_words(bot, job)
+    nutrition = await _analyze_and_parse(
+        kind="voice",
+        payload=words,
+        # What was said goes in no log: the row names the file.
+        input_ref=job.file_id,
+        telegram_id=job.telegram_id,
+    )
+    return nutrition, None
+
+
+async def _voice_bytes(bot, job: capture.Read) -> bytes:
+    """Kept first, before anyone listens; a read again takes the copy that is here."""
+    with SessionLocal() as db:
+        name = capture.audio_of(db, job.source_id)
+    audio = await voice.kept(name)
+    if audio is not None:
+        return audio
+    file = await bot.get_file(job.file_id)
+    audio = bytes(await file.download_as_bytearray())
+    name = await voice.keep(job.source_id, audio)
+    if name:
+        with SessionLocal() as db:
+            capture.audio_kept(db, job.source_id, name)
+    return audio
+
+
+async def _voice_words(bot, job: capture.Read) -> str:
+    """What the model is to read. Words heard once are not listened to or paid for
+    again. The log says who answered and how fast, and no word of it."""
+    with SessionLocal() as db:
+        transcript = meal_card.heard_of(db, job.meal_id)
+    if transcript is None:
+        audio = await _voice_bytes(bot, job)
+        started = time.monotonic()
+        heard = await voice.hear(
+            audio,
+            paid=telegram_service.openai_service.transcribe,
+            local_only=job.automatic,
+        )
+        took_s = round(time.monotonic() - started, 1)
+        transcript = heard.text
+        with SessionLocal() as db:
+            duration_s = capture.store_heard(db, job, heard, took_s)
+        logger.info(
+            "Voice heard: meal=%s backend=%s duration_s=%s took_s=%s",
+            job.meal_id,
+            heard.backend,
+            duration_s,
+            took_s,
+        )
+    with SessionLocal() as db:
+        return capture.spoken_words(db, job, transcript)
 
 
 def _model_of(job: capture.Read) -> Optional[str]:
-    if job.kind == capture.VOICE:
-        return None
     task = "vision" if job.kind == capture.IMAGE else "text"
     return telegram_service.openai_service.model_for(task)
 
@@ -622,6 +675,11 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     not). Nothing here logs a message body: only the class of what went wrong."""
     try:
         nutrition, resolution = await _reading(bot, job)
+    except voice.NoSpeech:
+        with SessionLocal() as db:
+            done = capture.read_no_speech(db, job)
+        await _show(bot, job, done.line)
+        return False, None
     except Exception as e:
         error = type(e).__name__
         logger.error("Meal %s not read: %s", job.meal_id, error)
@@ -869,7 +927,7 @@ async def _new_meal(
     if born.joined:
         await _album_grew(context.application, came, born)
         return
-    # The diagnostic row that /reprocess replays; a voice has nothing to replay yet.
+    # The diagnostic row that /reprocess replays; a voice has its meal for that.
     inbound_id = None
     if came.kind != "voice":
         image = came.kind != "text"
@@ -1655,8 +1713,8 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Read again what was not read (owner only — TD-009, TD-010).
 
     The replay after a model fix or a top-up. A meal still without a reading is read
-    through the live path, so the meal gets filled and its line says so; a voice has
-    no reader yet and never goes to the text model. What remains of the older
+    through the live path, so the meal gets filled and its line says so; a voice is
+    listened to there, and its empty row never goes to the text model. What remains of the older
     diagnostic rows, with no meal of their own, is re-analyzed and written back to its
     row; a row whose meal stands, or with nothing to read, leaves the queue unpaid.
     Capped at REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for

@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest, NetworkError
 
+from app.core.config import settings
 from app.crud.crud_inbound_message import crud_inbound_message
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
@@ -40,6 +41,7 @@ from app.services import (
     meal_card,
     meal_items,
     stats_screen,
+    voice,
     weight_screen,
 )
 from app.services.day_card import local_time
@@ -50,8 +52,11 @@ from app.services.meal_card import (  # noqa: F401 (the copy is read from here t
     IMAGE,
     M1_PENDING,
     M2_PENDING,
+    M3A_NO_FOOD,
     M4_PENDING,
+    M4C_VOICE_HINT,
     M4D_FAILED,
+    M4E_NO_SPEECH,
     M7_FAILED,
     M7A_FAILED,
     M7D_NO_FOOD,
@@ -84,7 +89,6 @@ logger = logging.getLogger(__name__)
 # --- the copy (section 5.5) ---------------------------------------------------------
 
 M1B_HINT = "На этом всё. Поправить можно кнопками или ответом на это сообщение."
-M3A_NO_FOOD = "Еды здесь не видно, в дневник не записано."
 M3B_QUESTION = "Вопросы здесь пока не разбираются, в дневник не записано."
 M4F_TOO_BIG = (
     "Файл больше 20 МБ, Telegram такие боту не передаёт. В дневник не записано."
@@ -144,6 +148,9 @@ LINE, WEIGHT, TICK, SILENT, NEW_MEAL = "line", "weight", "tick", "silent", "new_
 
 # The read that a meal's line waits for.
 _READING_KIND = {IMAGE: "vision", TEXT: "text", VOICE: "transcript"}
+NO_SPEECH = "no_speech"
+# Telegram's message limit, with room for the line above the quote and its escapes.
+HEARD_SHOWN_MAX = 2800
 
 # What a reading that did not end says about the next try, section 5.2.
 FAILED = "failed"  # the same answer again: a parse error, a dead file, a dead model
@@ -162,10 +169,6 @@ STUCK_AFTER = timedelta(minutes=5)
 # An album, M2: the read starts this long after the last photo, and shows this many.
 ALBUM_WAIT_SECONDS = 2  # ASSUMED, section 5.5
 ALBUM_MAX = 10
-
-
-class NoVoiceReader(Exception):
-    """A voice note is kept; nothing listens to it yet."""
 
 
 class DeadFile(Exception):
@@ -377,6 +380,15 @@ def _take_hint(db, user: User) -> bool:
     return True
 
 
+def _take_voice_hint(db, user: User) -> bool:
+    """M4c, once in a person's life with the bot, on a voice that was written."""
+    if (user.settings or {}).get("voice_hint_seen"):
+        return False
+    user.settings = {**(user.settings or {}), "voice_hint_seen": True}
+    db.commit()
+    return True
+
+
 def _record_text(
     db,
     meal: Meal,
@@ -385,6 +397,7 @@ def _record_text(
     hint: bool = False,
     note: Optional[str] = None,
     cost: Optional[str] = None,
+    voice_hint: bool = False,
 ) -> str:
     what = _what(db, meal)
     if what and shows_numbers(user) and meal.calories is not None:
@@ -395,7 +408,13 @@ def _record_text(
     first = f"{head}: {what}." if what else f"{head}."
     if note:
         first += f" {note}"
-    return "\n".join(line for line in (first, M1B_HINT if hint else None, cost) if line)
+    lines = (
+        first,
+        M1B_HINT if hint else None,
+        M4C_VOICE_HINT if voice_hint else None,
+        cost,
+    )
+    return "\n".join(line for line in lines if line)
 
 
 def _reading_markup(meal_id: int) -> InlineKeyboardMarkup:
@@ -855,6 +874,10 @@ def _on_reply(db, came: Incoming, user: User, meal: Meal) -> Optional[Route]:
     if text.rstrip().endswith("?") or _is_stop_word(text):
         return None
     correction = _correction(text)
+    if meal_card.waits_for_words(db, meal):
+        return (
+            None  # nothing stands there to change: these words are a meal of their own
+        )
     if meal.deleted_at is not None:
         time_only = bool(colon or said)
         return _reply_on_deleted(db, came, user, grams, correction, time_only)
@@ -902,7 +925,11 @@ def route_media(db, came: Incoming) -> Route:
     user = _user(db, came)
     if came.reply_to is not None:
         target = _replied_meal(db, came.chat_id, came.reply_to, user)
-        if target is not None and target.deleted_at is not None:
+        if (
+            target is not None
+            and target.deleted_at is not None
+            and not meal_card.waits_for_words(db, target)
+        ):
             return Route(NEW_MEAL, note=M5A_DELETED)
     return Route(NEW_MEAL)
 
@@ -1122,7 +1149,7 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
 
 def _v_write(t, data: str, mid: str, back: str) -> meal_card.Screen:
     """M7b: ✏️ Написать, on the same message."""
-    meal = meal_card._own_meal(t, int(mid), data)
+    meal = meal_card.own_or_waiting(t, int(mid), data)
     meal_card._open_slot(t, meal_card.MEAL_TEXT, back, meal_id=meal.id)
     row = meal_card._back_row(t, meal, back)
     return meal_card.Screen(
@@ -1133,7 +1160,10 @@ def _v_write(t, data: str, mid: str, back: str) -> meal_card.Screen:
 def _typed_meal_text(t, ask: dict, text: str) -> Optional[meal_card.Screen]:
     """M7c: the words are this meal's reading, and what it came with stays. Words that
     failed are no dish beside these, and /reprocess pays for nothing here any more."""
-    meal = meal_card._own_meal(t, ask["meal_id"], "slot")
+    meal = meal_card.own_or_waiting(t, ask["meal_id"], "slot")
+    gone_at = meal.deleted_at
+    meal.deleted_at = None  # a voice that waited for words: they came
+    t.db.flush()
     first = t.db.scalar(
         select(MealSource)
         .where(MealSource.meal_id == meal.id)
@@ -1145,6 +1175,8 @@ def _typed_meal_text(t, ask: dict, text: str) -> Optional[meal_card.Screen]:
     new = _is_new_name(t.db, t.user, text)
     change = meal_items.add_item(t.db, t.user.id, meal.id, name=text)
     if change.status != meal_items.DONE:
+        meal.deleted_at = gone_at
+        t.db.commit()
         return None if change.meal is not None else meal_card._stale_meal(t)
     meal.reading_status = "read"
     source = None
@@ -1211,10 +1243,27 @@ def _v_it_is_food(t, data: str, sid: str) -> meal_card.Screen:
     )
 
 
+def _v_heard(t, data: str, mid: str, want: str) -> meal_card.Screen:
+    """🎙 Текст, M4a and M4b: what was heard, in place. Not a state kept anywhere: the
+    button says which way, so a second tap on an old one lands on the same screen."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    heard = meal_card.heard_of(t.db, meal.id)
+    if heard is None or not crud_meal_item.live(t.db, meal.id):
+        return meal_card._v_line(t, data, mid)
+    opened = want == "1"
+    text = _record_text(t.db, meal, t.user)
+    if opened:
+        quoted = meal_card._esc(meal_card._cut(heard, HEARD_SHOWN_MAX))
+        text += f"\n<blockquote expandable>{quoted}</blockquote>"
+    markup = meal_card.line_markup(t.db, meal, heard_open=opened)
+    return meal_card.Screen(text, markup, meal_id=meal.id, view="line")
+
+
 meal_card.add_verbs(
     (re.compile(rf"ml:rr:{_SID}:{meal_card._BACK}"), _v_again),
     (re.compile(rf"ml:w:{_SID}:{meal_card._BACK}"), _v_write),
     (re.compile(rf"ml:nf:{_SID}"), _v_it_is_food),
+    (re.compile(rf"ml:vt:{_SID}:([01])"), _v_heard),
 )
 meal_card._TYPED[meal_card.MEAL_TEXT] = _typed_meal_text
 
@@ -1690,6 +1739,11 @@ class Done:
 
 def _no_food(db, job: Read, meal: Meal) -> Line:
     meal.reading_status = "no_food"
+    if job.kind == VOICE:
+        # Words with no food: no meal in the day, and the voice stays its source.
+        meal.deleted_at = _now()
+        db.commit()
+        return Line(*meal_card.silent_voice_view(M3A_NO_FOOD, meal.id), meal_id=meal.id)
     if job.kind != TEXT:
         db.commit()
         return _no_food_photo_line(meal.id)
@@ -1754,8 +1808,11 @@ def read_done(
         return _join_read(db, job, meal, user, target, learn)
     if not _claim_view(db, job):
         return Done(learn=learn)
-    hint = job.hint or _take_hint(db, user)
-    text = _record_text(db, meal, user, hint=hint, note=job.note, cost=cost)
+    voice_hint = job.kind == VOICE and _take_voice_hint(db, user)
+    hint = job.hint or (job.kind != VOICE and _take_hint(db, user))
+    text = _record_text(
+        db, meal, user, hint=hint, note=job.note, cost=cost, voice_hint=voice_hint
+    )
     if text == job.shown:
         return Done(learn=learn)
     line = Line(text, meal_card.line_markup(db, meal), meal_id=meal.id)
@@ -1813,10 +1870,75 @@ def failure_status(error: BaseException) -> str:
                 NetworkError,
                 httpx.TransportError,
                 asyncio.TimeoutError,
+                voice.NotHeard,
             ),
         ):
             return RETRY
     return FAILED
+
+
+def read_no_speech(db, job: Read) -> Done:
+    """M4e: silence. Out of the day until words come, the voice stays its source; what
+    the person did meanwhile outranks it, as it does a late answer."""
+    meal = db.get(Meal, job.meal_id)
+    _store_reading(db, job, status=NO_SPEECH)
+    if meal.deleted_at is not None:
+        return Done()
+    if meal.reading_status != "pending" or crud_meal_item.live(db, meal.id):
+        if meal.reading_status == "pending":
+            meal.reading_status = "read"
+            db.commit()
+        return Done()
+    meal.reading_status = NO_SPEECH
+    meal.deleted_at = _now()
+    db.commit()
+    line = Line(*meal_card.silent_voice_view(M4E_NO_SPEECH, meal.id), meal_id=meal.id)
+    return Done(line if _claim_view(db, job) else None)
+
+
+def audio_of(db, source_id: int) -> Optional[str]:
+    return db.scalar(select(MealSource.audio_path).where(MealSource.id == source_id))
+
+
+def audio_kept(db, source_id: int, name: str) -> None:
+    db.get(MealSource, source_id).audio_path = name
+    db.commit()
+
+
+def store_heard(db, job: Read, heard: voice.Heard, took_s: float) -> Optional[int]:
+    """The words, so that no later read listens or pays for them again. Returns how long
+    the note runs, for the log line of R35's measure."""
+    db.add(
+        MealReading(
+            meal_id=job.meal_id,
+            source_ids=list(job.source_ids) or [job.source_id],
+            kind=_READING_KIND[VOICE],
+            backend=heard.backend,
+            model=heard.model,
+            output={"transcript": heard.text, "took_s": took_s},
+            status=meal_card.HEARD,
+            created_at=_now(),
+        )
+    )
+    db.commit()
+    return db.scalar(
+        select(MealSource.duration_s).where(MealSource.id == job.source_id)
+    )
+
+
+def spoken_words(db, job: Read, transcript: str) -> str:
+    """What the model reads of a note. A time said in it is the meal's, as in typed
+    words, unless the person has set one meanwhile. A caption says its part too."""
+    meal = db.get(Meal, job.meal_id)
+    source = db.get(MealSource, job.source_id)
+    user = db.get(User, meal.user_id)
+    said = _said(transcript, TEXT, source.sent_at, source.forward_date, user)
+    if said and meal.time_source == "sent" and said.moment <= _now():
+        for column, value in _time_columns(source.sent_at, None, said).items():
+            setattr(meal, column, value)
+        db.commit()
+    words = (said.rest if said else transcript) or ""
+    return " ".join(part for part in (job.text, words) if part)
 
 
 def read_failed(
@@ -1971,7 +2093,7 @@ def row_fate(db, row: InboundMessage) -> tuple:
 
 
 def unread_meals(db, limit: int) -> list:
-    """Ids of the meals still without a reading; a voice has nothing to read it yet."""
+    """Ids of the meals still without a reading."""
     stmt = (
         select(Meal.id)
         .join(MealSource, MealSource.meal_id == Meal.id)
@@ -1979,7 +2101,6 @@ def unread_meals(db, limit: int) -> list:
             Meal.reading_status.in_(("pending", "failed")),
             Meal.deleted_at.is_(None),
             Meal.is_draft.is_(False),
-            MealSource.kind != "voice",
         )
         .distinct()
         .order_by(Meal.id)
@@ -2001,7 +2122,7 @@ def balance_out(db) -> bool:
             or_(
                 MealReading.status == NO_CREDIT,
                 and_(
-                    MealReading.kind.in_(("vision", "text")),
+                    MealReading.kind.in_(("vision", "text", "transcript")),
                     MealReading.status.in_(("done", "no_food")),
                 ),
             )
@@ -2013,18 +2134,23 @@ def balance_out(db) -> bool:
 
 
 def _may_read_by_itself(db, meal: Meal) -> bool:
-    """A voice has no reader yet, the cap holds, and dishes in the meal are the
-    person's: a read would be paid for and could not apply."""
+    """The cap holds, and dishes in the meal are the person's: a read would be paid for
+    and could not apply. A voice is listened to by itself only locally (5.2), so with
+    no local service only one already heard goes on."""
     if meal.deleted_at is not None or meal.is_draft:
         return False
     if (meal.read_attempts or 0) >= len(RETRY_AFTER):
         return False
-    voice = db.scalar(
+    has_voice = db.scalar(
         select(MealSource.id)
         .where(MealSource.meal_id == meal.id, MealSource.kind == "voice")
         .limit(1)
     )
-    if voice is not None:
+    if (
+        has_voice is not None
+        and not settings.WHISPER_URL
+        and meal_card.heard_of(db, meal.id) is None
+    ):
         return False
     return not crud_meal_item.live(db, meal.id)
 

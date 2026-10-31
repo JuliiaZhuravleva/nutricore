@@ -116,6 +116,9 @@ services:
     command: python bot.py          # POLLING (run_polling) — no public URL needed
     volumes:
       - render_jobs:/render
+      # Voice notes' bytes: on the host, for the reason Postgres is (see the top).
+      # Gitignored and out of the image (.dockerignore).
+      - ./data/voice:/app/data/voice
     env_file:
       - .env
     environment:

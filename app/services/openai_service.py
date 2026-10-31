@@ -7,6 +7,7 @@ import openai
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.services import voice
 from app.services.ai_call_log_service import record_ai_call
 from app.services.model_registry import (
     OPENROUTER_PROVIDER_PREFS,
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 _FALLBACK_CANDIDATE = "openai:gpt-6-luna"
 # The registry is a short curated list; this only guards the keyboard if it grows.
 _MAX_CANDIDATES = 10
+# A voice note's paid door (M4): the person is waiting on the line, and M4d is ready.
+TRANSCRIBE_TIMEOUT_S = 30.0
 
 
 class ModelUnavailableError(Exception):
@@ -139,6 +142,8 @@ class OpenAIService:
         # fresh with_options() copy per call would also be untestable, since the
         # copy is a different object from the one a test can patch.
         self.web_search_client = self.client.with_options(max_retries=0)
+        # A voice note's paid door gets one try too: M4d says the rest.
+        self.transcribe_client = self.client.with_options(max_retries=0)
         # Honour a persisted runtime model override (TD-005 self-heal, TD-007):
         # every instance — the bot singleton, the pipeline, or a per-request API
         # service — picks up the owner's in-chat model switch, not just the
@@ -272,8 +277,27 @@ class OpenAIService:
         then replacing its model replaces the default for every such task."""
         return not (self.task_models.get(task) or settings.model_ref_for(task))
 
-    async def analyze_food_entry(self, text: str) -> Dict:
-        """Analyze food entry text and extract nutritional information."""
+    async def transcribe(self, audio: bytes, filename: str) -> voice.Heard:
+        """The paid door of a voice note: one honest try, in its own short time. Blank
+        words are silence. The caller keeps the words: nothing of them is logged."""
+        model = settings.OPENAI_TRANSCRIBE_MODEL
+        response = await self.transcribe_client.audio.transcriptions.create(
+            file=(filename, audio),
+            model=model,
+            language="ru",
+            prompt=voice.FOOD_PROMPT,
+            response_format="json",
+            timeout=TRANSCRIBE_TIMEOUT_S,
+        )
+        meter_usage(model, getattr(response, "usage", None))
+        text = (response.text or "").strip()
+        if not text:
+            raise voice.NoSpeech()
+        return voice.Heard(text, voice.PAID, model)
+
+    async def analyze_food_entry(self, text: str, *, spoken: bool = False) -> Dict:
+        """Analyze food entry text and extract nutritional information. ``spoken``:
+        the words of a voice note, where a person takes things back aloud."""
         system_prompt = (
             """You are a nutrition expert assistant. Analyze food entries and extract nutritional information.
         Return data in the following JSON format:
@@ -299,6 +323,8 @@ class OpenAIService:
             + "\n\n        "
             + _FOOD_GROUPS_RULE
         )
+        if spoken:
+            system_prompt += "\n\n        " + voice.LAST_CORRECTION_RULE
 
         user_prompt = (
             f"Analyze this food entry and extract nutritional information: {text}"

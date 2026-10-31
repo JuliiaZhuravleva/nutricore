@@ -55,6 +55,8 @@ NUTRITION = {
 class Wire(BaseRequest):
     """Telegram at the other end: answers every call and keeps it."""
 
+    file_bytes = b"jpeg-bytes"  # what a download gets
+
     def __init__(self):
         super().__init__()
         self.calls: list = []
@@ -75,7 +77,7 @@ class Wire(BaseRequest):
         if method == "GET" or "/file/" in url:
             if self.fail_download:
                 return 500, b"{}"
-            return 200, b"jpeg-bytes"
+            return 200, self.file_bytes
         name = unquote(url.rsplit("/", 1)[-1])
         params = dict(request_data.parameters) if request_data else {}
         self.calls.append((name, params))
@@ -1269,7 +1271,7 @@ def test_reprocess_never_sends_a_voice_rows_blank_to_the_text_model(db, owner, r
     assert reader.text == []
 
 
-def test_a_voice_has_no_reader_yet_and_does_not_hang_on_the_loader(db, owner, reader):
+def test_a_voice_nobody_could_hear_does_not_hang_on_the_loader(db, owner, reader):
     wire = send(_voice())
     meal = _meals(db)[0]
     source = _sources(db)[0]

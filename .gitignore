@@ -75,3 +75,6 @@ regr.json
 # Orchestrator draft scratch (pm-run.json etc. — may hold raw payloads, TD-021)
 docs/.draft/
 render/fonts/
+
+# Voice notes' bytes (AUDIO_DIR)
+/data/

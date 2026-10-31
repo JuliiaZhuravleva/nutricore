@@ -71,6 +71,7 @@ _INT_MAX = 2**31 - 1  # what an id column holds; a bigger one is not a row
 
 # The read a meal's line waits for, and what its line says when it does not end well.
 IMAGE, TEXT, VOICE = "image", "text", "voice"
+HEARD = "heard"  # meal_readings.status of a voice's words, before any model read them
 M1_PENDING = "Фото в дневнике, читаю…"
 M2_PENDING = "{count} фото в дневнике, читаю…"
 M4_PENDING = "Голосовое в дневнике, слушаю…"
@@ -85,6 +86,13 @@ M7A_FAILED = (
     "Текст сохранён, разобрать еду сейчас не вышло.\n"
     "В дневнике запись с этим текстом."
 )
+M3A_NO_FOOD = "Еды здесь не видно, в дневник не записано."
+M4C_VOICE_HINT = (
+    "Голосовые пока в пробном режиме, но запись уже в дневнике. Что услышано, видно по "
+    "кнопке «🎙 Текст». Если сервис проекта не отвечает, голосовое уходит во внешний "
+    "сервис."
+)
+M4E_NO_SPEECH = "В голосовом не слышно речи, в дневник не записано."
 M7D_NO_FOOD = "Фото сохранено, еды на нём не видно.\nВ дневнике запись с этим фото."
 M7E_DEAD_FILE = (
     "Фото {when} больше недоступно в Telegram. "
@@ -461,6 +469,12 @@ def no_food_view(meal_id: int) -> tuple:
     return M7D_NO_FOOD, InlineKeyboardMarkup([row])
 
 
+def silent_voice_view(text: str, meal_id: int) -> tuple:
+    """M4e, and a voice with no food in its words: only the words are offered."""
+    markup = InlineKeyboardMarkup([[_button(WRITE, f"ml:w:{meal_id}:r")]])
+    return text, markup
+
+
 def dead_file_view(meal: Meal, zone) -> tuple:
     """M7e. Reading again cannot help, so only the words are offered."""
     markup = InlineKeyboardMarkup([[_button(WRITE, f"ml:w:{meal.id}:r")]])
@@ -496,7 +510,11 @@ def _read_kind(db, meal: Meal) -> str:
 
 def _trouble_view(t: _Tap, meal: Meal) -> tuple:
     """What a line says of a meal whose read failed, or found nothing."""
+    if meal.reading_status == "no_speech":
+        return silent_voice_view(M4E_NO_SPEECH, meal.id)
     if meal.reading_status == "no_food":
+        if _read_kind(t.db, meal) == VOICE:
+            return silent_voice_view(M3A_NO_FOOD, meal.id)
         return no_food_view(meal.id)
     error = t.db.scalar(
         select(MealReading.error)
@@ -787,6 +805,21 @@ def _own_meal(t: _Tap, meal_id: int, data: str) -> Meal:
     return meal
 
 
+def waits_for_words(db, meal: Meal) -> bool:
+    """A voice nothing could be written from: out of the day, and not deleted by
+    anyone. Its line still offers ✏️ Написать."""
+    if meal.deleted_at is None:
+        return False
+    if meal.reading_status == "no_speech":
+        return True
+    return meal.reading_status == "no_food" and _read_kind(db, meal) == VOICE
+
+
+def own_or_waiting(t: _Tap, meal_id: int, data: str) -> Meal:
+    meal = _own_row(t, meal_id, data)
+    return meal if waits_for_words(t.db, meal) else _own_meal(t, meal_id, data)
+
+
 def _own_item(t: _Tap, item_id: int, back: str, data: str) -> tuple:
     item = _row(t.db, MealItem, item_id)
     if item is None:
@@ -1022,25 +1055,37 @@ def _replace(
 # --- verbs ------------------------------------------------------------------
 
 
-def line_markup(db, meal: Meal) -> InlineKeyboardMarkup:
-    """Under the record line: the fix goes straight to the dish when there is one."""
+def heard_of(db, meal_id: int) -> Optional[str]:
+    """What was heard in this meal's voice note, if anything was."""
+    output = db.scalar(
+        select(MealReading.output)
+        .where(MealReading.meal_id == meal_id, MealReading.status == HEARD)
+        .order_by(MealReading.id.desc())
+        .limit(1)
+    )
+    return output.get("transcript") if output else None
+
+
+def line_markup(db, meal: Meal, *, heard_open: bool = False) -> InlineKeyboardMarkup:
+    """Under the record line: the fix goes straight to the dish when there is one, and
+    a voice note can show what was heard."""
     items = crud_meal_item.live(db, meal.id)
     fix = f"ml:i:{items[0].id}:r" if len(items) == 1 else f"ml:o:{meal.id}:r"
-    return InlineKeyboardMarkup(
-        [
-            [
-                _button("✏️ Исправить", fix),
-                _button("🕐 Время", f"ml:t:{meal.id}:r"),
-            ]
-        ]
-    )
+    row = [
+        _button("✏️ Исправить", fix),
+        _button("🕐 Время", f"ml:t:{meal.id}:r"),
+    ]
+    if heard_of(db, meal.id) is not None:
+        label, want = ("✓ 🎙 Текст", 0) if heard_open else ("🎙 Текст", 1)
+        row.insert(0, _button(label, f"ml:vt:{meal.id}:{want}"))
+    return InlineKeyboardMarkup([row])
 
 
 def _v_line(t: _Tap, data: str, mid: str) -> Screen:
-    meal = _own_meal(t, int(mid), data)
+    meal = own_or_waiting(t, int(mid), data)
     status = meal.reading_status
     if not crud_meal_item.live(t.db, meal.id):
-        if status in ("failed", "no_food"):
+        if status in ("failed", "no_food", "no_speech"):
             text, markup = _trouble_view(t, meal)
             return Screen(text, markup, meal_id=meal.id, view="line")
         kind = _read_kind(t.db, meal)
