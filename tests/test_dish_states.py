@@ -294,6 +294,22 @@ def test_a_name_is_held_by_any_row_the_unique_key_sees(db, owner, stranger):
     assert held(db, owner.id, "каша") is None
 
 
+def test_a_name_only_the_database_folds_together_is_held_and_found(db, owner):
+    """Python lowers Σ at a word's end to ς, Postgres to σ: its key refuses the second."""
+    held = _dish(db, owner, "ασ")
+    typed = "ΑΣ"
+    # The control: with SQLite's own lower() neither side folds them, so nothing is held.
+    assert crud_personal_food.holder_of_name(db, owner.id, typed) is None
+    assert crud_personal_food.find_by_name(db, owner.id, typed) is None
+    raw = db.connection().connection.driver_connection
+    raw.create_function("lower", 1, lambda value: value.lower().replace("ς", "σ"))
+    assert crud_personal_food.holder_of_name(db, owner.id, typed).id == held.id
+    assert (
+        crud_personal_food.holder_of_name(db, owner.id, typed, without=held.id) is None
+    )
+    assert crud_personal_food.find_by_name(db, owner.id, typed).id == held.id
+
+
 def test_an_alias_holds_no_place_in_the_key(db, owner):
     _dish(db, owner, "Омлет", aliases=["Яичница"])
     assert crud_personal_food.holder_of_name(db, owner.id, "яичница") is None

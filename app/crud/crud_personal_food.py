@@ -22,7 +22,7 @@ import datetime
 import logging
 from typing import List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -114,7 +114,28 @@ class CRUDPersonalFood:
     def find_by_name(
         self, db: Session, user_id: int, name: str
     ) -> Optional[PersonalFood]:
-        return self.names_of(db, user_id).get(_key(name))
+        found = self.names_of(db, user_id).get(_key(name))
+        if found is not None:
+            return found
+        held = self._held_in_the_key(db, user_id, name)
+        return self.live_of(db, held) if held is not None else None
+
+    def _held_in_the_key(
+        self, db: Session, user_id: int, name: str, without: Optional[int] = None
+    ) -> Optional[PersonalFood]:
+        """The row the database's own lower() folds this name onto. Python and Postgres
+        lower a few letters apart (Σ, İ), and the unique key is the one that decides."""
+        stmt = (
+            select(PersonalFood)
+            .where(
+                PersonalFood.user_id == user_id,
+                func.lower(PersonalFood.canonical_name) == func.lower(name.strip()),
+            )
+            .order_by(PersonalFood.id)
+        )
+        if without is not None:
+            stmt = stmt.where(PersonalFood.id != without)
+        return db.scalars(stmt).first()
 
     def rename(self, db: Session, dish: PersonalFood, name: str) -> None:
         """The old name becomes an alias. Only flushes, and checks nothing: a taken
@@ -346,13 +367,13 @@ class CRUDPersonalFood:
 
         A rename onto a hidden or merged row's name is an IntegrityError on Postgres,
         while SQLite has no such key and would let it through. An alias holds no place
-        in the key. Compared in Python, as ``names_of``.
+        in the key. Compared in Python, as ``names_of``, then as the key does.
         """
         stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
         for food in db.execute(stmt).scalars().all():
             if food.id != without and _key(food.canonical_name) == _key(name):
                 return food
-        return None
+        return self._held_in_the_key(db, user_id, name, without)
 
     def get_by_barcode(
         self,
