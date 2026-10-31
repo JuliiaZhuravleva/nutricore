@@ -92,6 +92,7 @@ _ITEM_FIELDS = (
 )
 _MEAL_FIELDS = (*FIELDS, "numbers_basis", "plate_totals", "description")
 _MEAL_JSON = ("nutrients", "ai_analysis")
+_TIME_FIELDS = ("time_precision", "time_source", "time_phrase")
 
 
 @dataclass
@@ -945,6 +946,67 @@ def remove_item(db: Session, user_id: int, item_id: int) -> Change:
 # --- undo -------------------------------------------------------------------
 
 
+def _utc(moment: datetime) -> datetime:
+    # SQLite hands back naive datetimes; the column is written in UTC.
+    return (
+        moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+    )
+
+
+def _time_state(meal: Meal) -> dict:
+    """A time event's own state, apart from ``_meal_state``: a change of the dishes
+    does not stop the undo of a time, and a change of the time does not stop theirs."""
+    return {
+        "time": {
+            "meal_time": _utc(meal.meal_time).isoformat(),
+            **{key: getattr(meal, key) for key in _TIME_FIELDS},
+        }
+    }
+
+
+def _to_the_minute(moment: datetime) -> datetime:
+    return _utc(moment).replace(second=0, microsecond=0)
+
+
+def set_time(
+    db: Session, user_id: int, meal_id: int, moment: datetime, precision: str
+) -> Change:
+    """When the meal was eaten. ``sent_at`` stays: it is when the message came.
+
+    The same minute at the same precision writes nothing: a person reads minutes.
+    """
+    meal = _own_meal(db, user_id, meal_id)
+    if meal is None:
+        return Change(STALE)
+    if (
+        _to_the_minute(meal.meal_time) == _to_the_minute(moment)
+        and meal.time_precision == precision
+    ):
+        return Change(SAME, meal)
+
+    def write() -> Change:
+        before = _time_state(meal)
+        meal.meal_time = moment.astimezone(UTC)
+        meal.time_precision = precision
+        meal.time_source = "edited"
+        meal.time_phrase = None
+        meal.rev = (meal.rev or 0) + 1
+        meal.updated_at = datetime.now(UTC)
+        db.flush()
+        event = crud_record_event.add(
+            db,
+            user_id=user_id,
+            kind="time",
+            meal_id=meal.id,
+            before=before,
+            after=_time_state(meal),
+        )
+        db.commit()
+        return Change(DONE, meal, event)
+
+    return _rolled_back(db, write)
+
+
 def _undo_kind(kind: str) -> str:
     return {"delete": "restore", "restore": "delete"}.get(kind, kind)
 
@@ -966,8 +1028,34 @@ def _put_back(db: Session, meal: Meal, event: RecordEvent) -> None:
             item.removed_at = now if state["removed"] else None
 
 
+def _undo_time(db: Session, meal: Meal, event: RecordEvent) -> Change:
+    def write() -> Change:
+        state = event.before["time"]
+        meal.meal_time = datetime.fromisoformat(state["meal_time"])
+        for key in _TIME_FIELDS:
+            setattr(meal, key, state[key])
+        meal.rev = (meal.rev or 0) + 1
+        meal.updated_at = datetime.now(UTC)
+        db.flush()
+        back = crud_record_event.add(
+            db,
+            user_id=event.user_id,
+            kind=event.kind,
+            meal_id=meal.id,
+            before=event.after,
+            after=_time_state(meal),
+            undoes_event_id=event.id,
+        )
+        db.commit()
+        return Change(DONE, meal, back)
+
+    return _rolled_back(db, write)
+
+
 def _still_holds(db: Session, meal: Meal, event: RecordEvent) -> bool:
     wrote = event.after or {}
+    if "time" in wrote:
+        return meal.deleted_at is None and _time_state(meal) == wrote
     if set(wrote) != {"meal", "items"}:
         return False
     items = [crud_meal_item.get(db, int(key)) for key in wrote["items"]]
@@ -988,6 +1076,8 @@ def undo(db: Session, user_id: int, event_id: int) -> Change:
         return Change(STALE)
     if not _still_holds(db, meal, event):
         return Change(REFUSED, meal)
+    if "time" in event.after:
+        return _undo_time(db, meal, event)
 
     def write() -> Change:
         _put_back(db, meal, event)

@@ -20,6 +20,7 @@ NIGHT_ENDS = 6  # the day's line starts here, and food before it is the night's
 DAY_GROUPS = ("grain", "anchor")
 MAX_NAMES = 4
 NAME_MAX = 32
+APPROX, DAY_ONLY = "approx", "day_only"  # ``Meal.time_precision``; the rest is exact
 
 
 def local_time(moment: datetime, zone: ZoneInfo) -> datetime:
@@ -40,6 +41,20 @@ class DayFacts:
 
 def plain_time(moment: datetime) -> str:
     return f"{moment.hour}:{moment.minute:02d}"
+
+
+def has_clock(meal: Meal) -> bool:
+    """Whether the meal holds a time at all. ``day_only`` holds a day: its 12:00 is
+    where it sorts, and no reader may take that for a clock."""
+    return bool(meal.meal_time) and meal.time_precision != DAY_ONLY
+
+
+def clock(meal: Meal, zone: ZoneInfo) -> str:
+    """«13:20», «≈ 13:20», «без времени»: one way to say it, everywhere."""
+    if meal.time_precision == DAY_ONLY:
+        return "без времени"
+    shown = plain_time(local_time(meal.meal_time, zone))
+    return f"≈ {shown}" if meal.time_precision == APPROX else shown
 
 
 def _part_of_day(hour: float) -> str:
@@ -113,7 +128,7 @@ def _group_line(meals: list, group: str, zone: ZoneInfo, name_of: Callable):
     for meal in meals:
         part = (
             _part_of_day(_hour(local_time(meal.meal_time, zone)))
-            if meal.meal_time
+            if has_clock(meal)
             else ""
         )
         for name in _foods_in(meal, group, name_of):
@@ -164,10 +179,10 @@ def _foods_line(meals: list, name_of: Callable) -> Optional[str]:
 
 def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
     """``meals`` in time order, as the CRUD returns them."""
-    moments = [local_time(m.meal_time, zone) for m in meals if m.meal_time]
+    timed = [m for m in meals if has_clock(m)]
     return DayFacts(
-        times=tuple(plain_time(moment) for moment in moments),
-        gap=_long_gap(moments),
+        times=tuple(clock(m, zone) for m in timed),
+        gap=_long_gap([local_time(m.meal_time, zone) for m in timed]),
         grain=_group_line(meals, "grain", zone, name_of),
         anchor=_group_line(meals, "anchor", zone, name_of),
         foods=_foods_line(meals, name_of),
@@ -175,12 +190,13 @@ def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
 
 
 def marks(meals: list, zone: ZoneInfo) -> list:
-    """Each meal on the day's line: its plain time and where it falls, in hours."""
+    """Each meal on the day's line: its time as said and where it falls, in hours.
+    A meal without a time has no place on a line of hours."""
     out = []
     for meal in meals:
-        if meal.meal_time:
+        if has_clock(meal):
             moment = local_time(meal.meal_time, zone)
-            out.append({"t": plain_time(moment), "h": moment.hour + moment.minute / 60})
+            out.append({"t": clock(meal, zone), "h": moment.hour + moment.minute / 60})
     return out
 
 

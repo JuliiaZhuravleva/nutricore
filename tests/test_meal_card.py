@@ -189,7 +189,7 @@ def test_n1_is_the_spec_card(db, owner):
     ]
     assert _data(screen) == [
         [f"ml:i:{rice.id}:r", f"ml:i:{chicken.id}:r", f"ml:i:{veg.id}:r"],
-        [f"ml:pk:{meal.id}:a:r:0", f"ml:t:{meal.id}:r", f"ml:d:{meal.id}:r"],
+        [f"ml:pk:{meal.id}:a:r:0", f"ml:t:{meal.id}:c", f"ml:d:{meal.id}:r"],
         [f"ml:n:{meal.id}:1:r", f"ml:mo:{meal.id}:r"],
         [f"ml:r:{meal.id}"],
     ]
@@ -760,13 +760,21 @@ def _slot_handler(application):
 
 def _text_update(text=None, photo=None):
     message = SimpleNamespace(
-        text=text, photo=photo, chat_id=42, replies=[], markups=[], modes=[]
+        text=text,
+        photo=photo,
+        chat_id=42,
+        replies=[],
+        markups=[],
+        modes=[],
+        sent_ids=[],
     )
 
     async def reply_text(body, *args, **kwargs):
         message.replies.append(body)
         message.markups.append(kwargs.get("reply_markup"))
         message.modes.append(kwargs.get("parse_mode"))
+        message.sent_ids.append(900 + len(message.sent_ids))
+        return SimpleNamespace(message_id=message.sent_ids[-1])
 
     message.reply_text = reply_text
     update = SimpleNamespace(
@@ -1346,6 +1354,8 @@ def _all_verbs(meal_id, item_id, food_id, event_id):
         f"ml:fi:{item_id}:1:r",
         f"ml:pk:{item_id}:r:r:0",
         f"ml:pr:{item_id}:{food_id}:r",
+        f"ml:t:{meal_id}:r",
+        f"ml:ts:{meal_id}:1700000000:e:r",
     ]
 
 
@@ -1656,6 +1666,7 @@ def _every_screen(db, owner):
             f"ml:g:{item.id}:{origin}",
             f"ml:pk:{many.id}:a:{origin}:0",
             f"ml:pk:{item.id}:r:{origin}:0",
+            f"ml:t:{one.id}:{origin}",
         ):
             screens.append(_tap(db, data))
     for origin in ("t", "y", "w"):

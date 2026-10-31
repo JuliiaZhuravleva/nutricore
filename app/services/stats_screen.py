@@ -182,11 +182,7 @@ def _numbers_block(meals: list[Meal], zone: ZoneInfo) -> str:
     """The day in numbers, collapsed: only a tap away and never the first thing."""
     rows = [f"🔢 За день: ≈ {_kcal(_sum(meals, 'calories'))} · {_macros(meals)}"]
     for meal in meals:
-        when = (
-            day_card.plain_time(local_time(meal.meal_time, zone))
-            if meal.meal_time
-            else "—"
-        )
+        when = day_card.clock(meal, zone) if meal.meal_time else "—"
         name = html.escape(_meal_name(meal))
         rows.append(f"{when} {name} — ≈ {_kcal(_sum([meal], 'calories'))}")
     return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"

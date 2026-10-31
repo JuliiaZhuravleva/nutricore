@@ -1552,11 +1552,16 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except TelegramError as e:
             logger.info("Meal slot: the old keyboard stays: %s", e)
-    await message.reply_text(
+    sent = await message.reply_text(
         typed.screen.text,
         parse_mode=ParseMode.HTML,
         reply_markup=typed.screen.markup,
     )
+    try:
+        with SessionLocal() as db:
+            meal_card.slot_sent(db, user.id, sent.message_id)
+    except Exception as e:
+        logger.error("Meal slot: the answer's id was not kept: %s", e, exc_info=True)
     raise ApplicationHandlerStop
 
 

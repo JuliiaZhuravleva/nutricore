@@ -19,7 +19,9 @@ import html
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
+from datetime import time as clock_time
+from datetime import timedelta
 from typing import Callable, Optional
 
 from sqlalchemy import select
@@ -33,6 +35,8 @@ from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import favorites, food_groups, meal_items, next_step, stats_screen
+from app.services.day_card import APPROX, DAY_ONLY
+from app.services.day_card import clock as _clock
 from app.services.day_card import local_time, plain_time
 from app.services.favorites import Screen
 from app.services.meal_draft import num
@@ -46,6 +50,11 @@ NOP = "ml:nop"
 ASK = "ask"  # in ``User.settings``: the one typed slot
 ASK_TTL = timedelta(minutes=10)
 GRAMS, DISH_ADD, DISH_REPLACE = "grams", "dish_add", "dish_replace"
+TIME = "time"
+EXACT = "exact"
+# A card opened on the bot's line: its time screen goes back to the card, while the
+# line's own 🕐, whose data is also ``r``, goes back to the line.
+FROM_CARD = "c"
 GRAMS_MIN, GRAMS_MAX = 1.0, 5000.0
 NAMES_MAX = 300
 LINE_NAME_MAX = 80
@@ -68,6 +77,8 @@ HOW = (
 )
 UNDO_LABEL = "↩️ Вернуть"
 NOTHING_SAME = "<i>Уже так</i>"
+TIME_FUTURE = "<i>Это время ещё не наступило. Напиши другое.</i>"
+_PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY}
 
 _EXACT = frozenset({"barcode", "label", "user"})
 _QUANTITY = {"h": 0.5, "1": 1.0, "2": 2.0}
@@ -90,6 +101,7 @@ _DAY_BACK = {
     stats_screen.WEEK: "⬅️ Назад: 7 дней",
 }
 _GRAMS_TEXT = re.compile(r"\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*[гГ]?\s*")
+_TIME_TEXT = re.compile(r"\s*(вчера\s+)?(\d{1,2})[:.](\d{2})\s*", re.IGNORECASE)
 
 
 @dataclass
@@ -156,13 +168,6 @@ def _names(names: list) -> str:
 
 def meal_day(meal: Meal, user: Optional[User]) -> date:
     return local_time(meal.meal_time, user_zone(user)).date()
-
-
-def _clock(meal: Meal, zone) -> str:
-    if meal.time_precision == "day_only":
-        return "без времени"
-    shown = plain_time(local_time(meal.meal_time, zone))
-    return f"≈ {shown}" if meal.time_precision == "approx" else shown
 
 
 def _when(meal: Meal, zone) -> str:
@@ -419,7 +424,7 @@ def _card(
     shown = shows_numbers(t.user)
     open_now = shown or opened
     tools = [
-        _button("🕐 Время", f"ml:t:{meal.id}:{back}"),
+        _button("🕐 Время", f"ml:t:{meal.id}:{FROM_CARD if back == 'r' else back}"),
         _button("🗑 Удалить", f"ml:d:{meal.id}:{back}"),
     ]
     add = _button("➕ Блюдо", f"ml:pk:{meal.id}:a:{back}:0")
@@ -677,6 +682,28 @@ def parse_grams(text: Optional[str]) -> Optional[float]:
     return grams if GRAMS_MIN <= grams <= GRAMS_MAX else None
 
 
+def parse_time(text: Optional[str]) -> Optional[tuple]:
+    """(yesterday?, clock) from «13:20», «13.20», «вчера 23:10»; anything else is not
+    an answer."""
+    match = _TIME_TEXT.fullmatch(text or "")
+    if match is None:
+        return None
+    hour, minute = int(match.group(2)), int(match.group(3))
+    if hour > 23 or minute > 59:
+        return None
+    return bool(match.group(1)), clock_time(hour, minute)
+
+
+def slot_sent(db, telegram_id: int, message_id: int) -> None:
+    """The answer holds the live keyboard now, so the next answer retires that one."""
+    user = _user(db, telegram_id)
+    ask = (user.settings or {}).get(ASK) if user else None
+    if ask is None:
+        return
+    user.settings = {**user.settings, ASK: {**ask, "message_id": message_id}}
+    db.commit()
+
+
 def _expired(ask: dict, now: datetime) -> bool:
     try:
         asked = datetime.fromisoformat(ask["at"])
@@ -692,9 +719,10 @@ def take_typed(
 ) -> Optional[Typed]:
     """The answer to the open slot, or None: the message goes on down the router.
 
-    A wait never eats food. Grams take only what parses, a name takes any text, and
-    whatever the outcome the slot is closed. ``text`` is None for anything that is not
-    an answer to any kind: a photo, a command, a menu button.
+    A wait never eats food. Grams and a time take only what parses, a name takes any
+    text, and whatever the outcome the slot is closed, until the time screen, which
+    goes on offering to type, opens it again. ``text`` is None for anything that is
+    not an answer to any kind: a photo, a command, a menu button.
     """
     now = now or datetime.now(UTC)
     user = _user(db, telegram_id)
@@ -1106,7 +1134,10 @@ def _v_star_meal(t: _Tap, data: str, mid: str, want: str, back: str) -> Screen:
 def _after_undo(
     t: _Tap, meal: Meal, event: RecordEvent, back: str, **shown: object
 ) -> Screen:
-    """Grams came from the dish's screen, so the way back stays there."""
+    """Grams came from the dish's screen and a time from its own, so the way back
+    stays there."""
+    if event.kind == TIME:
+        return _time_screen(t, meal, back, **shown)
     if event.kind == "grams":
         before = event.before["items"]
         for key, state in (event.after or {}).get("items", {}).items():
@@ -1135,9 +1166,15 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
     meal = _row(t.db, Meal, event.meal_id)
     if meal is None:
         return _unknown(t, data)
+    if back == FROM_CARD and event.kind != TIME:
+        back = "r"
     if done is not None:
         # A second tap: the state is what the first left.
-        return _stale_meal(t) if meal.deleted_at else _card(t, meal, back)
+        if meal.deleted_at:
+            return _stale_meal(t)
+        return (
+            _time_screen(t, meal, back) if event.kind == TIME else _card(t, meal, back)
+        )
     change = meal_items.undo(t.db, t.user.id, event.id)
     if change.status == meal_items.REFUSED:
         if meal.deleted_at:
@@ -1148,6 +1185,148 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
     if meal.deleted_at:
         return _removed_screen(t, meal, change.event.id, back)
     return _after_undo(t, meal, event, back, notice=UNDONE, undo=change.event.id)
+
+
+# --- when it was eaten ------------------------------------------------------
+
+
+def _time_back(meal: Meal, back: str) -> list:
+    if back == "r":
+        return [_button("⬅️ К ответу бота", f"ml:r:{meal.id}")]
+    return _to_card(meal.id, "r" if back == FROM_CARD else back)
+
+
+def _noon(day: date, zone) -> datetime:
+    return datetime.combine(day, clock_time(12), tzinfo=zone)
+
+
+def _yesterday_of(t: _Tap) -> date:
+    """Counted from today, never from the meal: the label and the write share this."""
+    return local_time(t.now, t.zone).date() - timedelta(days=1)
+
+
+def _time_chip(meal: Meal, label: str, moment: datetime, kind: str, back: str):
+    return _button(label, f"ml:ts:{meal.id}:{int(moment.timestamp())}:{kind}:{back}")
+
+
+def _time_screen(
+    t: _Tap,
+    meal: Meal,
+    back: str,
+    *,
+    notice: Optional[str] = None,
+    undo: Optional[int] = None,
+) -> Screen:
+    """N5. The text offers typing, so whichever way it is drawn the slot is open."""
+    _open_slot(t, TIME, back, meal_id=meal.id)
+    zone = t.zone
+    moment = local_time(meal.meal_time, zone)
+    day = _yesterday_of(t)
+    label = f"Вчера, {day.day} {stats_screen._MONTHS[day.month - 1]}"
+    yesterday = _time_chip(
+        meal,
+        label,
+        moment.replace(year=day.year, month=day.month, day=day.day),
+        "a",
+        back,
+    )
+    undo_row = [_undo_button(undo, back)] if undo else []
+    if meal.time_precision == DAY_ONLY:
+        rows = [[yesterday, *undo_row]]
+    else:
+        rows = [
+            [
+                _time_chip(meal, "−15 мин", moment - timedelta(minutes=15), "e", back),
+                _time_chip(meal, "−1 ч", moment - timedelta(hours=1), "e", back),
+                yesterday,
+            ],
+            [
+                _time_chip(meal, "Не помню", _noon(moment.date(), zone), "d", back),
+                *undo_row,
+            ],
+        ]
+    rows.append(_time_back(meal, back))
+    text = "\n".join(
+        [
+            "<b>🕐 Время приёма</b>",
+            f"Записано на: {_when(meal, zone)}.",
+            "Другое время можно написать, например 12:40 или вчера 23:10.",
+        ]
+    )
+    return _with_notice(Screen(text, InlineKeyboardMarkup(rows)), notice)
+
+
+def _time_notice(t: _Tap, meal: Meal, was: date) -> str:
+    zone = t.zone
+    day = meal_day(meal, t.user)
+    if meal.time_precision == DAY_ONLY:
+        title = stats_screen._card_title(day)
+        return f"<i>✓ Время не указано. Приём остаётся в {title}, без времени.</i>"
+    word = "Время примерное" if meal.time_precision == APPROX else "Время"
+    if day != was:
+        return f"<i>✓ {word}: {_when(meal, zone)}. Приём теперь в этом дне.</i>"
+    return f"<i>✓ {word}: {_clock(meal, zone)}</i>"
+
+
+def _apply_time(
+    t: _Tap, meal: Meal, moment: datetime, precision: str, back: str
+) -> Optional[Screen]:
+    """The screen after the write, or None when the meal is already there. The noon
+    of ``day_only`` claims no clock, so only a real time can be ahead of now."""
+    if precision != DAY_ONLY and moment > t.now:
+        return _time_screen(t, meal, back, notice=TIME_FUTURE)
+    was = meal_day(meal, t.user)
+    change = meal_items.set_time(t.db, t.user.id, meal.id, moment, precision)
+    if change.status == meal_items.SAME:
+        return None
+    if change.status != meal_items.DONE:
+        return _stale_meal(t)
+    return _time_screen(
+        t, meal, back, notice=_time_notice(t, meal, was), undo=change.event.id
+    )
+
+
+def _typed_time(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
+    parsed = parse_time(text)
+    if parsed is None:
+        return None
+    yesterday, clock = parsed
+    back = ask.get("back") or "r"
+    meal = _own_meal(t, ask["meal_id"], "slot")
+    day = _yesterday_of(t) if yesterday else meal_day(meal, t.user)
+    moment = datetime.combine(day, clock, tzinfo=t.zone)
+    screen = _apply_time(t, meal, moment, EXACT, back)
+    return screen or _time_screen(t, meal, back, notice=NOTHING_SAME)
+
+
+_TYPED[TIME] = _typed_time
+
+
+def _v_time(t: _Tap, data: str, mid: str, back: str) -> Screen:
+    return _time_screen(t, _own_meal(t, int(mid), data), back)
+
+
+def _v_time_set(
+    t: _Tap, data: str, mid: str, stamp: str, kind: str, back: str
+) -> Screen:
+    meal = _own_meal(t, int(mid), data)
+    precision = _PRECISION_OF[kind]
+    if precision == DAY_ONLY:
+        # The meal's present day, not the button's: it may have moved since it was drawn.
+        moment = meal.meal_time
+        if meal.time_precision != DAY_ONLY:
+            moment = _noon(meal_day(meal, t.user), t.zone)
+    else:
+        try:
+            moment = datetime.fromtimestamp(int(stamp), UTC)
+        except (ValueError, OverflowError, OSError):
+            return _unknown(t, data)
+    screen = _apply_time(t, meal, moment, precision, back)
+    if screen is not None:
+        return screen
+    # The tap closed the slot, and the screen on show goes on offering to type.
+    _open_slot(t, TIME, back, meal_id=meal.id)
+    return Screen("", None, toast=meal_items.SAME_TOAST)
 
 
 # --- the day's meals --------------------------------------------------------
@@ -1238,6 +1417,7 @@ def _v_day(t: _Tap, data: str, code: str, origin: str, page: Optional[str]) -> S
 
 _ID = r"(\d{1,18})"
 _BACK = r"(r|t|y|w|h\d{1,18})"
+_BACK_TIME = r"(r|c|t|y|w|h\d{1,18})"
 _VERBS: tuple = (
     (re.compile(rf"ml:r:{_ID}"), _v_line),
     (re.compile(rf"ml:o:{_ID}:{_BACK}"), _v_open),
@@ -1250,7 +1430,9 @@ _VERBS: tuple = (
     (re.compile(rf"ml:g:{_ID}:{_BACK}"), _v_grams),
     (re.compile(rf"ml:x:{_ID}:{_BACK}"), _v_remove),
     (re.compile(rf"ml:d:{_ID}:{_BACK}"), _v_delete),
-    (re.compile(rf"ml:u:{_ID}:{_BACK}"), _v_undo),
+    (re.compile(rf"ml:u:{_ID}:{_BACK_TIME}"), _v_undo),
+    (re.compile(rf"ml:t:{_ID}:{_BACK_TIME}"), _v_time),
+    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d):{_BACK_TIME}"), _v_time_set),
     (re.compile(rf"ml:pk:{_ID}:(a|r):{_BACK}:(\d{{1,2}})"), _v_pick),
     (re.compile(rf"ml:pa:{_ID}:{_ID}:{_BACK}"), _v_pick_add),
     (re.compile(rf"ml:pr:{_ID}:{_ID}:{_BACK}"), _v_pick_replace),

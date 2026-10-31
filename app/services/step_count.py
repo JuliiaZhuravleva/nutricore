@@ -17,7 +17,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from app.services import next_step
-from app.services.day_card import local_time
+from app.services.day_card import APPROX, DAY_ONLY, has_clock, local_time
 from app.services.week_card import _confirmed
 
 UP, SAME, DOWN, FEW = "up", "same", "down", "few"
@@ -49,7 +49,8 @@ def days_word(count: int) -> str:
 
 
 def _moments(meals: list, zone: ZoneInfo) -> list:
-    return sorted(local_time(m.meal_time, zone) for m in meals if m.meal_time)
+    """The times the records hold. A meal with only a day has none to give."""
+    return sorted(local_time(m.meal_time, zone) for m in meals if has_clock(m))
 
 
 def _turn(moments: list) -> Optional[int]:
@@ -87,8 +88,10 @@ def _first_foods(moments: list, turn: int) -> dict:
 
 def early_clock(meals: list, zone: ZoneInfo) -> Optional[dict]:
     """{"hour", "turn"} when first food comes late in the records: the hour is about
-    two earlier than usual. None for too few days, or a first food that is not late."""
-    moments = _moments(meals, zone)
+    two earlier than usual. None for too few days, or a first food that is not late.
+    Only a time the person is sure of may set an hour for them."""
+    sure = [m for m in meals if m.time_precision not in (APPROX, DAY_ONLY)]
+    moments = _moments(sure, zone)
     turn = _turn(moments)
     if turn is None:
         return None
@@ -133,7 +136,9 @@ def count_days(
 
 
 def _logged(meals: list, zone: ZoneInfo, first: date, last: date) -> int:
-    return len({m.date() for m in _moments(meals, zone) if first <= m.date() <= last})
+    # By the day, so a meal without a time still makes its day a recorded one.
+    days = {local_time(m.meal_time, zone).date() for m in meals if m.meal_time}
+    return sum(1 for day in days if first <= day <= last)
 
 
 def count(
