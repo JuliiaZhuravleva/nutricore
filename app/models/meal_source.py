@@ -5,9 +5,10 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
-    UniqueConstraint,
+    text,
 )
 
 from app.db.base import Base
@@ -31,9 +32,16 @@ class MealSource(Base, BaseClass):
 
     __tablename__ = "meal_sources"
     __table_args__ = (
-        # A replayed update finds its row here: one message makes one meal.
-        UniqueConstraint(
-            "chat_id", "message_id", "kind", name="uq_meal_sources_message"
+        # A replayed update finds its row here: one message makes one meal. An edited
+        # message keeps a new row beside it, pointing back with ``supersedes_id``.
+        Index(
+            "uq_meal_sources_message",
+            "chat_id",
+            "message_id",
+            "kind",
+            unique=True,
+            sqlite_where=text("supersedes_id IS NULL"),
+            postgresql_where=text("supersedes_id IS NULL"),
         ),
     )
 

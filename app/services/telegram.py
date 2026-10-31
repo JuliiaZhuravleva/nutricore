@@ -1075,6 +1075,27 @@ async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(f"✓ {route.tick}", reply_markup=_day_card_button())
 
 
+async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """M11, ahead of everything else (group -1): an edit is never a new message, so no
+    conversation, slot or menu label sees it. No read and no payment here."""
+    message, user = update.edited_message, update.effective_user
+    if message is None or user is None or message.chat.type != "private":
+        raise ApplicationHandlerStop
+    came = capture.incoming(message, user)
+    if came.kind is None or not await check_subscription(user.id):
+        raise ApplicationHandlerStop
+    try:
+        with SessionLocal() as db:
+            line = capture.edited(db, came)
+    except Exception as e:
+        # A database error's text holds the row: the words.
+        logger.error("Edited message not kept: %s", type(e).__name__)
+        raise ApplicationHandlerStop
+    if line is not None:
+        _map_line(line, await _send_line(message, line), line.view)
+    raise ApplicationHandlerStop
+
+
 def _day_card_button() -> InlineKeyboardMarkup:
     """Under a ticked routine: the day, where it now shows."""
     day = InlineKeyboardButton(
@@ -1111,6 +1132,26 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 _card_delivery = CardDelivery(PictureRenderer(Path(settings.RENDER_DIR)))
 
 
+async def _send_files(context, chat_id: int, screen):
+    """M13's photos, as they came and silently, before the tap is answered: what
+    Telegram says of them is the toast."""
+    if not screen.files:
+        return screen
+    bot = context.bot
+    try:
+        for kind, file_id in screen.files:
+            send = bot.send_document if kind == "document_photo" else bot.send_photo
+            await send(chat_id, file_id, disable_notification=True)
+    except BadRequest as e:
+        logger.info("Kept photo not sent again: %s", type(e).__name__)
+        return replace(screen, toast=capture.M13_PHOTO_GONE_TOAST)
+    except TelegramError as e:
+        # The file may well be there: only Telegram's refusal says it is not.
+        logger.warning("Kept photo not sent: %s", type(e).__name__)
+        return replace(screen, toast="Не получилось, попробуй ещё раз")
+    return screen
+
+
 async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The ``ml:`` verbs. The message id goes along: a typed answer retires its
     keyboard, and a line that became a screen is no longer the read's to edit."""
@@ -1139,6 +1180,7 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "🔒 Приёмы доступны с подпиской",
             "Meal card",
             deliver=_card_delivery.tap,
+            before_answer=lambda screen: _send_files(context, chat_id, screen),
         )
     finally:
         # After the delivery: an answer that came at once would be written over.
@@ -1153,6 +1195,8 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _take_lines_back(context.bot, chat_id, shown[0].gone)
     if shown[0].retouch:
         await _retouch(context.bot, chat_id, shown[0].retouch)
+    if shown[0].retouch_too:
+        await _retouch(context.bot, chat_id, shown[0].retouch_too)
     if shown[0].fill:
         task = context.application.create_task(
             _fill_typed_dish(shown[0].fill, update.effective_user.id)
@@ -1257,7 +1301,7 @@ async def meal_slot_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def _screen_callback(
-    update: Update, handle, locked: str, what: str, deliver=None
+    update: Update, handle, locked: str, what: str, deliver=None, before_answer=None
 ):
     """A tap on a screen's inline button: ``handle(db, telegram_id, data)``
     gives the next screen, which replaces the message in place.
@@ -1283,6 +1327,8 @@ async def _screen_callback(
         )
         await query.answer("Не получилось, попробуй ещё раз", show_alert=True)
         return
+    if before_answer is not None:
+        screen = await before_answer(screen)
     await query.answer(screen.toast)
     if not screen.text:
         return
@@ -1856,6 +1902,10 @@ async def _load_custom_emoji(application: Application) -> None:
         )
 
 
+# What the bot asks Telegram for, polling and webhook alike: an edit comes only if asked.
+ALLOWED_UPDATES = ["message", "edited_message", "callback_query"]
+
+
 def create_bot_application() -> Application:
     """Create and configure the bot application."""
     # httpx/httpcore log the full request URL at INFO, and the Telegram Bot API
@@ -1890,6 +1940,9 @@ def create_bot_application() -> Application:
     # slot it does nothing and the update goes on.
     application.add_handler(
         MessageHandler(filters.UpdateType.MESSAGE, meal_slot_text), group=-1
+    )
+    application.add_handler(
+        MessageHandler(filters.UpdateType.EDITED_MESSAGE, capture_edited), group=-1
     )
 
     # A callback handler inside a conversation tracked per chat, not per message, on

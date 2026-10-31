@@ -10,6 +10,7 @@ import importlib.util
 import io
 import pathlib
 
+import pytest
 import sqlalchemy as sa
 
 from alembic.migration import MigrationContext
@@ -60,6 +61,56 @@ def test_it_stands_on_the_current_head():
     module = _migration()
     assert module.down_revision == "d4e5f6a7b8c9"
     assert module.revision == "e5f6a7b8c9d0"
+
+
+def _edits_migration():
+    path = _PATH.parent / "f6a7b8c9d0e1_meal_sources_edits_beside_originals.py"
+    spec = importlib.util.spec_from_file_location("edits_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _insert_source(conn, row_id: int, supersedes=None) -> None:
+    conn.execute(
+        sa.text(
+            "INSERT INTO meal_sources (id, user_id, chat_id, message_id, kind, "
+            "sent_at, supersedes_id) "
+            "VALUES (:id, 1, 42, 7, 'text', '2026-10-26', :supersedes)"
+        ),
+        {"id": row_id, "supersedes": supersedes},
+    )
+
+
+def test_an_edit_stands_beside_the_original_and_a_replay_is_still_refused():
+    """M11 against «a replayed update cannot make a second meal»: both hold."""
+    engine = sa.create_engine("sqlite://")
+    with engine.connect() as conn:
+        _schema_before(conn)
+        _run(conn, "upgrade")
+        conn.execute(sa.text("CREATE TABLE users (id INTEGER PRIMARY KEY)"))
+        conn.commit()
+        _insert_source(conn, 1)
+        # Known-positive: under the key the slice began with, an edit's row is refused.
+        with pytest.raises(sa.exc.IntegrityError):
+            with conn.begin_nested():
+                _insert_source(conn, 2, supersedes=1)
+        edits = _edits_migration()
+        assert edits.down_revision == "e5f6a7b8c9d0"
+        with Operations.context(MigrationContext.configure(conn)):
+            edits.upgrade()
+        _insert_source(conn, 2, supersedes=1)
+        with pytest.raises(sa.exc.IntegrityError):
+            with conn.begin_nested():
+                _insert_source(conn, 3)
+
+        with Operations.context(MigrationContext.configure(conn)):
+            edits.downgrade()
+        kept = conn.execute(sa.text("SELECT id FROM meal_sources")).scalars().all()
+        assert kept == [1]
+        with pytest.raises(sa.exc.IntegrityError):
+            with conn.begin_nested():
+                _insert_source(conn, 4, supersedes=1)
 
 
 def test_the_upgrade_gives_what_the_models_declare_and_an_old_meal_counts_as_read():

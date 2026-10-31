@@ -367,12 +367,18 @@ def _write_reading(
     numbers_source: Optional[str] = None,
     grams_by_user: bool = False,
     source_id: Optional[int] = None,
+    shared: bool = False,
+    first: int = 0,
 ) -> None:
-    """The meal's basis and its items, from what was read. Commits nothing."""
+    """The meal's basis and its items, from what was read. Commits nothing.
+
+    ``shared``: the numbers read hold more than ``names``, so even a single name is a
+    line of the plate and not the plate itself. ``first``: the position they start at.
+    """
     wanted = names if names is not None else _names(meal_in)
     totals = _meal_totals(meal)
     read = any(value is not None for value in totals.values())
-    one_dish = len(wanted) == 1
+    one_dish = len(wanted) == 1 and not shared
     if not read:
         meal.numbers_basis = "none"
     elif one_dish:
@@ -385,7 +391,7 @@ def _write_reading(
 
     signals = meal_in.resolution_signals or {}
     barcode = (signals.get("barcode_raw") or None) if one_dish else None
-    for position, name in enumerate(wanted):
+    for position, name in enumerate(wanted, first):
         dish = _dish_for(
             db, user_id, name, barcode=barcode, source=meal_in.resolution_source
         )
@@ -479,6 +485,157 @@ def apply_read(
         db.commit()
         db.refresh(meal)
         return True
+
+    return _rolled_back(db, write)
+
+
+def _taken_out(db: Session, meal: Meal, live: list) -> set:
+    """The names the person took out or replaced: a reading does not bring them back."""
+    names = set()
+    for event in db.scalars(
+        select(RecordEvent).where(
+            RecordEvent.meal_id == meal.id,
+            RecordEvent.kind.in_(("remove", "replace")),
+        )
+    ):
+        for key, state in ((event.after or {}).get("items") or {}).items():
+            item = db.get(MealItem, int(key))
+            if state.get("removed") and item is not None and item.removed_at:
+                names.add(item.name.casefold())
+    return names - {item.name.casefold() for item in live}
+
+
+def _plate_after_read(
+    meal: Meal, kept_named: list, parts_plate: dict
+) -> Optional[dict]:
+    """What the reading holds beyond the lines the person kept, plus what the meals
+    joined here brought. The kept line counts once, at the person's own number."""
+    read = (meal.plate_totals or {}) if meal.numbers_basis == "plate" else {}
+    plate = {}
+    for key in FIELDS:
+        value = read.get(key)
+        if value is not None:
+            taken = sum(getattr(i, f"base_{key}") or 0 for i in kept_named)
+            value = max(round(value - taken, 2), 0)
+        extra = parts_plate.get(key)
+        plate[key] = (
+            None if value is None and extra is None else (value or 0) + (extra or 0)
+        )
+    return plate if any(value is not None for value in plate.values()) else None
+
+
+def reread(
+    db: Session,
+    meal: Meal,
+    rev: int,
+    meal_in: MealCreate,
+    *,
+    source_id: Optional[int] = None,
+) -> Optional[Change]:
+    """🔁 Прочитать заново: only what this meal's own read gave goes. What the person
+    typed stays, a dish they took out stays out, and a meal joined here is not this
+    reading's business. None, with nothing written, if the meal moved since the tap.
+    """
+    if (meal.rev or 0) != rev or meal.deleted_at is not None:
+        return None
+
+    def write() -> Change:
+        live = crud_meal_item.live(db, meal.id)
+        before = _meal_state(meal, live)
+        tags = _tagged(meal)
+        known = _groups_by_item(meal, live)
+        chosen = (
+            food_groups.ordered(tags.get("food_groups") or [])
+            if tags.get("food_groups_by_user")
+            else None
+        )
+        kept = [i for i in live if i.by_user or i.origin_meal_id != meal.id]
+        going = [i for i in live if i not in kept]
+        now = datetime.now(UTC)
+        for item in going:
+            item.removed_at = now
+        joined = parts(db, meal)
+        parts_plate = _summed(
+            [
+                {key: (p.meal.plate_totals or {}).get(key) for key in FIELDS}
+                for p in joined
+                if p.meal.numbers_basis == "plate"
+            ]
+        )
+        has_kept_names = {i.name.casefold(): i for i in kept}
+        out = _taken_out(db, meal, live)
+        names = _names(meal_in.model_copy(update={"description": None})) or _names(
+            meal_in
+        )
+        wanted = [
+            name
+            for name in names
+            if name.casefold() not in has_kept_names and name.casefold() not in out
+        ]
+        matched = [
+            has_kept_names[name.casefold()]
+            for name in names
+            if name.casefold() in has_kept_names
+        ]
+        whole = not kept and not joined and len(wanted) == len(names)
+        meal.plate_totals = None
+        for key in _READ_FIELDS:
+            setattr(meal, key, getattr(meal_in, key))
+        first = max((i.position for i in kept), default=-1) + 1
+        _write_reading(
+            db,
+            meal,
+            meal_in,
+            meal.user_id,
+            names=wanted,
+            source_id=source_id,
+            shared=not whole,
+            first=first,
+        )
+        db.flush()
+        now_live = crud_meal_item.live(db, meal.id)
+        made = [item for item in now_live if item not in live]
+        if not whole:
+            plate = _plate_after_read(meal, matched, parts_plate) if wanted else None
+            if not wanted and any(v is not None for v in parts_plate.values()):
+                plate = parts_plate
+            meal.plate_totals = plate
+            if plate:
+                meal.numbers_basis = "plate"
+            else:
+                meal.numbers_basis = (
+                    "items" if any(_has_numbers(i) for i in now_live) else "none"
+                )
+            rows = _tag_rows(meal)
+            found = {
+                **known,
+                **{i.id: rows.get(i.name.casefold(), []) for i in made},
+            }
+            _recompute(meal, now_live)
+            _rewrite_fields(db, meal, now_live, found)
+        if chosen is not None:
+            meal.ai_analysis = food_groups.stamp(
+                meal.ai_analysis or {}, chosen, by_user=True
+            )
+            meal.nutrients = food_groups.stamp(
+                meal.nutrients or {}, chosen, by_user=True
+            )
+        meal.reading_status = "read"
+        meal.rev = rev + 1
+        meal.updated_at = now
+        db.flush()
+        event = crud_record_event.add(
+            db,
+            user_id=meal.user_id,
+            kind="reread",
+            meal_id=meal.id,
+            source_id=source_id,
+            before=before,
+            after=_meal_state(meal, [*live, *made]),
+        )
+        db.commit()
+        db.refresh(meal)
+        return Change(DONE, meal, event, made)
 
     return _rolled_back(db, write)
 
@@ -748,11 +905,13 @@ def _changed(
     food_id: Optional[int] = None,
     numbers_changed: bool = True,
     groups: Optional[dict] = None,
+    note: Optional[Callable[[], dict]] = None,
 ) -> Change:
     """Apply ``mutate`` and everything that follows from it, in one transaction.
 
     ``mutate`` gets the live items and returns the items it made. ``groups``: of the
-    items that came from elsewhere with their own tags.
+    items that came from elsewhere with their own tags. ``note``: what else the event
+    has to remember, called once the change is flushed.
     """
 
     def write() -> Change:
@@ -779,7 +938,7 @@ def _changed(
             meal_id=meal.id,
             food_id=food_id,
             before=before,
-            after=_meal_state(meal, [*live, *made]),
+            after={**_meal_state(meal, [*live, *made]), **(note() if note else {})},
         )
         db.commit()
         return Change(DONE, meal, event, made, numbers_changed)
@@ -1009,6 +1168,7 @@ def join(
         return Change(STALE)
     moving = crud_meal_item.live(db, other.id)
     tags = _groups_by_item(other, moving)
+    remembered = {}
 
     def mutate(live: list) -> list:
         lines = [] if live else _open_legacy(db, into)
@@ -1025,22 +1185,231 @@ def join(
         other.deleted_at = datetime.now(UTC)
         other.rev = (other.rev or 0) + 1
         other.updated_at = datetime.now(UTC)
+        # A meal joined to this one before now answers to the survivor: flat, so every
+        # component of a meal is one step from it.
+        for earlier in db.scalars(select(Meal).where(Meal.merged_into_id == other.id)):
+            earlier.merged_into_id = into.id
+        sources = []
         for source in db.scalars(
             select(MealSource).where(MealSource.meal_id == other.id)
         ):
             source.meal_id = into.id
+            sources.append(source.id)
+        messages, was_line = [], []
         for row in db.scalars(
             select(MealMessage).where(MealMessage.meal_id == other.id)
         ):
             row.meal_id = into.id
+            messages.append(row.id)
             if row.view in ("pending", "line"):
+                was_line.append(row.id)
                 row.view = "other"  # a line of what it was, not of this meal
+        remembered.update(
+            {
+                "from": other.id,
+                "sources": sources,
+                "messages": messages,
+                "lines": was_line,
+                "items": {
+                    str(i.id): _untouched(i)
+                    for i in moving
+                    if i.origin_meal_id == other.id
+                },
+            }
+        )
         return [*lines, *moving]
 
-    change = _changed(db, into, "join", mutate, groups=tags)
+    change = _changed(
+        db,
+        into,
+        "join",
+        mutate,
+        groups=tags,
+        note=lambda: {"join": remembered},
+    )
     if change.status == DONE:
         change.items = moving
     return change
+
+
+def _untouched(item: MealItem) -> list:
+    """What says a dish is as it was when it was joined."""
+    return [item.name, item.factor, item.grams]
+
+
+@dataclass
+class Part:
+    """A meal joined into another: what comes back with ➖ Отделить."""
+
+    meal: Meal
+    sources: list  # as they came, first to last; the edits of them stay out
+    messages: list  # ids of its ``meal_messages`` rows
+    lines: list  # those of them that were the meal's own line
+    items: dict  # what its dishes were when it was joined
+
+
+def parts(db: Session, meal: Meal) -> list:
+    """The meals joined into this one that have a way back, first joined first.
+
+    A meal that was itself a survivor moved its parts' sources along with its own, so
+    a part claims only what no earlier join claimed. Merged rows with no join behind
+    them (an album taken back together) are not parts.
+    """
+    merged = {
+        row.id: row
+        for row in db.scalars(select(Meal).where(Meal.merged_into_id == meal.id))
+    }
+    if not merged:
+        return []
+    latest = {}
+    for event in db.scalars(
+        select(RecordEvent)
+        .where(RecordEvent.user_id == meal.user_id, RecordEvent.kind == "join")
+        .order_by(RecordEvent.id)
+    ):
+        note = (event.after or {}).get("join")
+        if note and note["from"] in merged:
+            latest[note["from"]] = (event.id, note)
+    found, sources_seen, messages_seen = [], set(), set()
+    for _event_id, note in sorted(latest.values(), key=lambda pair: pair[0]):
+        ids = [i for i in note["sources"] if i not in sources_seen]
+        sources_seen.update(ids)
+        rows = [db.get(MealSource, i) for i in ids]
+        sources = [
+            row
+            for row in rows
+            if row is not None and row.meal_id == meal.id and not row.supersedes_id
+        ]
+        messages = [i for i in note["messages"] if i not in messages_seen]
+        messages_seen.update(messages)
+        if sources:
+            found.append(
+                Part(
+                    merged[note["from"]],
+                    sources,
+                    messages,
+                    list(note["lines"]),
+                    note.get("items") or {},
+                )
+            )
+    return found
+
+
+def part_of(db: Session, meal: Meal, source_id: int) -> Optional[Part]:
+    for part in parts(db, meal):
+        if any(source.id == source_id for source in part.sources):
+            return part
+    return None
+
+
+def _less(plate: Optional[dict], other: Optional[dict]) -> Optional[dict]:
+    """A plate with what another brought taken off it; None when nothing is left."""
+    left = {}
+    for key in FIELDS:
+        mine, theirs = (plate or {}).get(key), (other or {}).get(key)
+        left[key] = mine if mine is None else round(mine - (theirs or 0), 2)
+    if all(value is None or abs(value) < 0.005 for value in left.values()):
+        return None
+    return left
+
+
+def separate(db: Session, user_id: int, survivor: Meal, part: Part) -> Change:
+    """➖ Отделить: the part is its own meal again, with its own time and sources. The
+    fixes typed while it was joined stay with its dishes."""
+    other = part.meal
+    moving = [
+        item
+        for item in crud_meal_item.live(db, survivor.id)
+        if item.origin_meal_id == other.id
+    ]
+    as_it_was = len(moving) == len(part.items) and all(
+        part.items.get(str(item.id)) == _untouched(item) for item in moving
+    )
+    tags = _groups_by_item(survivor, moving)
+
+    def mutate(_live: list) -> list:
+        now = datetime.now(UTC)
+        for position, item in enumerate(moving):
+            item.meal_id = other.id
+            item.position = position
+        message_ids = set()
+        for source in part.sources:
+            message_ids.add((source.chat_id, source.message_id))
+        for source in db.scalars(
+            select(MealSource).where(MealSource.meal_id == survivor.id)
+        ):
+            if (source.chat_id, source.message_id) in message_ids:
+                source.meal_id = other.id
+        for row_id in part.messages:
+            row = db.get(MealMessage, row_id)
+            if row is None or row.meal_id != survivor.id:
+                continue
+            row.meal_id = other.id
+            if row_id in part.lines:
+                row.view = "line"
+        if other.numbers_basis == "plate" and survivor.numbers_basis == "plate":
+            left = _less(survivor.plate_totals, other.plate_totals)
+            survivor.plate_totals = left
+            if left is None:
+                rest = [i for i in _live if i not in moving and _has_numbers(i)]
+                survivor.numbers_basis = "items" if rest else "none"
+                if not rest:
+                    for key in FIELDS:
+                        setattr(survivor, key, None)
+        other.deleted_at = None
+        other.merged_into_id = None
+        other.rev = (other.rev or 0) + 1
+        other.updated_at = now
+        _recompute(other, moving)
+        if moving and not as_it_was:
+            _rewrite_fields(db, other, moving, tags)
+        return []
+
+    change = _changed(db, survivor, "split", mutate, note=lambda: {"joined": other.id})
+    if change.status == DONE:
+        change.items = moving
+        change.meals = [other]
+    return change
+
+
+def set_groups(db: Session, user_id: int, meal_id: int, key: str) -> Change:
+    """M14: one group on or off, the person's word from here on. A meal of one dish
+    teaches the dish, as the draft's choice always did."""
+    meal = _own_meal(db, user_id, meal_id)
+    if meal is None:
+        return Change(STALE)
+
+    def write() -> Change:
+        live = crud_meal_item.live(db, meal.id)
+        before = _meal_state(meal, live)
+        tags = _tagged(meal)
+        chosen = set(tags.get("food_groups") or [])
+        chosen ^= {key}
+        groups = food_groups.ordered(chosen)
+        analysis = dict(meal.ai_analysis) if isinstance(meal.ai_analysis, dict) else {}
+        nutrients = dict(meal.nutrients) if isinstance(meal.nutrients, dict) else {}
+        rows = analysis.get("food_items") or nutrients.get("food_items") or []
+        if len(live) == 1:
+            rows = [{"name": live[0].name, "groups": groups}]
+        if rows:
+            analysis["food_items"] = nutrients["food_items"] = rows
+        meal.ai_analysis = food_groups.stamp(analysis, groups, by_user=True)
+        meal.nutrients = food_groups.stamp(nutrients, groups, by_user=True)
+        meal.rev = (meal.rev or 0) + 1
+        meal.updated_at = datetime.now(UTC)
+        db.flush()
+        event = crud_record_event.add(
+            db,
+            user_id=user_id,
+            kind="groups",
+            meal_id=meal.id,
+            before=before,
+            after=_meal_state(meal, live),
+        )
+        db.commit()
+        return Change(DONE, meal, event)
+
+    return _rolled_back(db, write)
 
 
 def album_sources(db: Session, meal_id: int) -> list:
@@ -1049,7 +1418,7 @@ def album_sources(db: Session, meal_id: int) -> list:
     sources = list(
         db.scalars(
             select(MealSource)
-            .where(MealSource.meal_id == meal_id)
+            .where(MealSource.meal_id == meal_id, MealSource.supersedes_id.is_(None))
             .order_by(MealSource.id)
         )
     )
@@ -1279,6 +1648,9 @@ def replace_item(
             by_user=True,
             **columns,
         )
+        # The new line is the old one's: ➖ Отделить takes it where the old would go.
+        new.origin_meal_id = item.origin_meal_id
+        new.source_id = item.source_id
         item.removed_at = datetime.now(UTC)
         item.replaced_by_item_id = new.id
         _used(db, dish, meal, one_dish=False)
@@ -1325,7 +1697,8 @@ def fill_numbers(
         meal.updated_at = datetime.now(UTC)
         db.flush()
         written = [crud_meal_item.get(db, int(key)) for key in event.after["items"]]
-        event.after = _meal_state(meal, written)
+        # What else the event remembers (a join's way back) stays.
+        event.after = {**event.after, **_meal_state(meal, written)}
         db.commit()
         return True
 

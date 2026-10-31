@@ -1316,13 +1316,21 @@ def test_n7_is_the_spec_screen(db, owner):
     meal = _meal(db, owner, ["рис", "курица", "овощи"])
     screen = _tap(db, f"ml:mo:{meal.id}:r")
     assert screen.text == f"<b>🍽 Ещё: приём {WHEN}</b>\nрис, курица и овощи"
-    assert _rows(screen) == [["⭐ Весь приём"], ["⬅️ К приёму"]]
+    assert _rows(screen) == [
+        ["⭐ Весь приём"],
+        ["📋 Прислано", "🏷 Группы"],
+        ["⬅️ К приёму"],
+    ]
     assert _data(screen)[0] == [f"ml:fm:{meal.id}:1:r"]
+    assert _data(screen)[1] == [f"ml:src:{meal.id}:r", f"ml:gr:{meal.id}:r"]
 
 
 def test_n7_star_only_with_two_dishes(db, owner):
     meal, _item = _one(db, owner)
-    assert _rows(_tap(db, f"ml:mo:{meal.id}:r")) == [["⬅️ К приёму"]]
+    assert _rows(_tap(db, f"ml:mo:{meal.id}:r")) == [
+        ["📋 Прислано", "🏷 Группы"],
+        ["⬅️ К приёму"],
+    ]
 
 
 def test_whole_meal_star_marks_and_undoes(db, owner):

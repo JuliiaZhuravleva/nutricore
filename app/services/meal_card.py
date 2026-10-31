@@ -790,6 +790,10 @@ def _stale_meal(t: _Tap) -> Screen:
     return _today(t, STALE_MEAL)
 
 
+STALE_MERGED = "<i>Этот приём объединён с приёмом {when}.</i>"
+MERGES_MAX = 16
+
+
 def _own_row(t: _Tap, meal_id: int, data: str) -> Meal:
     """This person's meal, also when deleted."""
     meal = _row(t.db, Meal, meal_id)
@@ -798,10 +802,30 @@ def _own_row(t: _Tap, meal_id: int, data: str) -> Meal:
     return meal
 
 
+def survivor_of(db, meal: Meal) -> Optional[Meal]:
+    """The live meal this one was joined into, however many joins ago."""
+    for _ in range(MERGES_MAX):
+        if meal is None or meal.merged_into_id is None:
+            break
+        meal = db.get(Meal, meal.merged_into_id)
+    if meal is None or meal.merged_into_id is not None or meal.deleted_at is not None:
+        return None
+    return meal
+
+
+def _back_of(data: str) -> str:
+    back = data.rsplit(":", 1)[-1]
+    return back if re.fullmatch(_BACK, back) else "r"
+
+
 def _own_meal(t: _Tap, meal_id: int, data: str) -> Meal:
     meal = _own_row(t, meal_id, data)
     if meal.deleted_at is not None:
-        raise _Answer(_stale_meal(t))
+        survivor = survivor_of(t.db, meal)
+        if survivor is None:
+            raise _Answer(_stale_meal(t))
+        notice = STALE_MERGED.format(when=_when(survivor, t.zone))
+        raise _Answer(_card(t, survivor, _back_of(data), notice=notice))
     return meal
 
 
@@ -1054,6 +1078,14 @@ def _replace(
 
 # --- verbs ------------------------------------------------------------------
 
+JOIN_ROW_WINDOW = timedelta(minutes=90)
+JOIN_LIST_WINDOW = timedelta(hours=24)
+JOIN_LIST_MAX = 8
+GROUPS_TEXT = (
+    "<b>🏷 Группы в этой записи</b>\n"
+    "Можно отметить, что было на тарелке. Это видно только на карточках дня и недели."
+)
+
 
 def heard_of(db, meal_id: int) -> Optional[str]:
     """What was heard in this meal's voice note, if anything was."""
@@ -1066,9 +1098,95 @@ def heard_of(db, meal_id: int) -> Optional[str]:
     return output.get("transcript") if output else None
 
 
-def line_markup(db, meal: Meal, *, heard_open: bool = False) -> InlineKeyboardMarkup:
-    """Under the record line: the fix goes straight to the dish when there is one, and
-    a voice note can show what was heard."""
+def has_source(db, meal: Meal) -> bool:
+    return (
+        db.scalar(
+            select(MealSource.id)
+            .where(MealSource.meal_id == meal.id, MealSource.supersedes_id.is_(None))
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _moment(meal: Meal) -> tuple:
+    moment = meal.meal_time
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC), meal.id)
+
+
+def in_order(one: Meal, other: Meal) -> tuple:
+    """(earlier, later): the earlier one survives a join, whichever way it was asked."""
+    return (one, other) if _moment(one) <= _moment(other) else (other, one)
+
+
+def may_join(db, one: Meal, other: Meal) -> bool:
+    """➖ Отделить takes a source: a later meal with none could never come back."""
+    return has_source(db, in_order(one, other)[1])
+
+
+def _short_when(meal: Meal, zone) -> str:
+    day = local_time(meal.meal_time, zone).date()
+    return f"{stats_screen.day_title(day)}, {_clock(meal, zone)}"
+
+
+def join_button(db, earlier: Meal, later: Meal, back: str) -> InlineKeyboardButton:
+    zone = user_zone(db.get(User, earlier.user_id))
+    return _button(
+        f"🔗 Объединить с {_short_when(earlier, zone)}",
+        f"ml:j:{earlier.id}:{later.id}:{back}",
+    )
+
+
+def _sent_moment(meal: Meal) -> datetime:
+    moment = meal.sent_at or meal.created_at
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def join_row(db, meal: Meal) -> Optional[list]:
+    """M1c: the meal before this one was sent a moment ago. It joins nothing by itself."""
+    previous = db.scalar(
+        select(Meal)
+        .where(
+            Meal.user_id == meal.user_id,
+            Meal.id < meal.id,
+            Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
+        )
+        .order_by(Meal.id.desc())
+        .limit(1)
+    )
+    if previous is None or not may_join(db, previous, meal):
+        return None
+    if abs(_sent_moment(meal) - _sent_moment(previous)) >= JOIN_ROW_WINDOW:
+        return None
+    earlier, later = in_order(previous, meal)
+    return [join_button(db, earlier, later, "r")]
+
+
+def join_candidates(db, meal: Meal) -> list:
+    """M8b: the meals around this one, nearest first, then in the order of the day."""
+    around = db.scalars(
+        select(Meal).where(
+            Meal.user_id == meal.user_id,
+            Meal.id != meal.id,
+            Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
+            Meal.meal_time.between(
+                meal.meal_time - JOIN_LIST_WINDOW, meal.meal_time + JOIN_LIST_WINDOW
+            ),
+        )
+    )
+    mine = _moment(meal)[0]
+    found = [other for other in around if may_join(db, meal, other)]
+    found.sort(key=lambda other: abs(_moment(other)[0] - mine))
+    return sorted(found[:JOIN_LIST_MAX], key=_moment)
+
+
+def line_markup(
+    db, meal: Meal, *, heard_open: bool = False, joinable: bool = True
+) -> InlineKeyboardMarkup:
+    """Under the record line: the fix goes straight to the dish when there is one, a
+    voice note can show what was heard, and a meal soon after another can join it."""
     items = crud_meal_item.live(db, meal.id)
     fix = f"ml:i:{items[0].id}:r" if len(items) == 1 else f"ml:o:{meal.id}:r"
     row = [
@@ -1078,7 +1196,8 @@ def line_markup(db, meal: Meal, *, heard_open: bool = False) -> InlineKeyboardMa
     if heard_of(db, meal.id) is not None:
         label, want = ("✓ 🎙 Текст", 0) if heard_open else ("🎙 Текст", 1)
         row.insert(0, _button(label, f"ml:vt:{meal.id}:{want}"))
-    return InlineKeyboardMarkup([row])
+    join = join_row(db, meal) if joinable else None
+    return InlineKeyboardMarkup([row, join] if join else [row])
 
 
 def _v_line(t: _Tap, data: str, mid: str) -> Screen:
@@ -1121,12 +1240,64 @@ def _more(t: _Tap, meal: Meal, back: str, *, toast: Optional[str] = None) -> Scr
         if _meal_favourite(t.db, meal) is not None:
             lines.append("Весь приём в избранном.")
         rows.append([_meal_star(t.db, meal, back)])
+    together = meal_items.parts(t.db, meal)
+    joining = None
+    if together:
+        latest = together[-1].sources[0].id
+        joining = _button("➖ Отделить", f"ml:z:{latest}:{back}")
+    elif join_candidates(t.db, meal):
+        joining = _button("🔗 Объединить", f"ml:jl:{meal.id}:{back}")
+    if joining is not None and rows:
+        rows[0].append(joining)
+    elif joining is not None:
+        rows.append([joining])
+    rows.append(
+        [
+            _button("📋 Прислано", f"ml:src:{meal.id}:{back}"),
+            _button("🏷 Группы", f"ml:gr:{meal.id}:{back}"),
+        ]
+    )
     rows.append(_to_card(meal.id, back))
-    return Screen("\n".join(lines), InlineKeyboardMarkup(rows), toast=toast)
+    return Screen(
+        "\n".join(lines),
+        InlineKeyboardMarkup(rows),
+        toast=toast,
+        meal_id=meal.id,
+        view="card",
+    )
 
 
 def _v_more(t: _Tap, data: str, mid: str, back: str) -> Screen:
     return _more(t, _own_meal(t, int(mid), data), back)
+
+
+def _groups_screen(t: _Tap, meal: Meal, back: str) -> Screen:
+    """M14. Opening it writes nothing."""
+    on = set(meal_items._tagged(meal).get("food_groups") or [])
+    buttons = [
+        _button(
+            f"{'✓ ' if key in on else ''}{mark} {label}",
+            f"ml:gt:{meal.id}:{key}:{back}",
+        )
+        for key, (mark, label, _word) in food_groups.GROUPS.items()
+    ]
+    rows = [buttons[start : start + 3] for start in range(0, len(buttons), 3)]
+    rows.append(_to_card(meal.id, back))
+    return Screen(GROUPS_TEXT, InlineKeyboardMarkup(rows), meal_id=meal.id, view="card")
+
+
+def _v_groups(t: _Tap, data: str, mid: str, back: str) -> Screen:
+    return _groups_screen(t, _own_meal(t, int(mid), data), back)
+
+
+def _v_group(t: _Tap, data: str, mid: str, key: str, back: str) -> Screen:
+    meal = _own_meal(t, int(mid), data)
+    if key not in food_groups.GROUPS:
+        return _unknown(t, data)
+    change = meal_items.set_groups(t.db, t.user.id, meal.id, key)
+    if change.status != meal_items.DONE:
+        return _stale_meal(t)
+    return _groups_screen(t, change.meal, back)
 
 
 def _v_dish(t: _Tap, data: str, iid: str, back: str) -> Screen:
@@ -1783,6 +1954,8 @@ _VERBS: tuple = (
     (re.compile(rf"ml:o:{_ID}:{_BACK}"), _v_open),
     (re.compile(rf"ml:op:{_ID}:(\d{{1,2}}):{_BACK}"), _v_page),
     (re.compile(rf"ml:mo:{_ID}:{_BACK}"), _v_more),
+    (re.compile(rf"ml:gr:{_ID}:{_BACK}"), _v_groups),
+    (re.compile(rf"ml:gt:{_ID}:([a-z_]{{1,16}}):{_BACK}"), _v_group),
     (re.compile(rf"ml:n:{_ID}:([01]):{_BACK}"), _v_numbers),
     (re.compile(rf"ml:i:{_ID}:{_BACK}"), _v_dish),
     (re.compile(rf"ml:ni:{_ID}:([01]):{_BACK}"), _v_dish_numbers),

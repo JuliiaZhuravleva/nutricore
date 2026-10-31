@@ -68,6 +68,8 @@ class Screen:
     read: object | None = None  # a read to start once this screen is on the message
     split: object | None = None  # an album split: each photo's line and read to start
     gone: tuple = ()  # message ids of lines the change took back
+    files: tuple = ()  # (kind, file_id) to send again, silently, before the answer
+    retouch_too: object | None = None  # a second line the change reached
 
 
 # --- naming and numbers -----------------------------------------------------

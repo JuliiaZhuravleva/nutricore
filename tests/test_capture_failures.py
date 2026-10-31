@@ -570,8 +570,19 @@ def test_a_late_read_does_not_undo_written_words(db, reader):
     assert done.line is None
     db.expire_all()
     assert _one(db).reading_status == "read"
-    # Known positive: the same failure on a meal still pending does say so.
+    # Waiting again over the written words is a read over a record: the record stands.
+    meal = _one(db)
     meal.reading_status = "pending"
+    db.commit()
+    with tg.SessionLocal() as session:
+        capture.read_failed(session, job, "ValueError")
+    db.expire_all()
+    assert _one(db).reading_status == "read"
+    # Known positive: the same failure with nothing written does say so.
+    meal = _one(db)
+    meal.reading_status = "pending"
+    for item in crud_meal_item.live(db, meal.id):
+        item.removed_at = datetime.now(UTC)
     db.commit()
     with tg.SessionLocal() as session:
         capture.read_failed(session, job, "ValueError")
