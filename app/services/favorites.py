@@ -61,6 +61,10 @@ class Screen:
     markup: InlineKeyboardMarkup | None
     toast: str | None = None  # answerCallbackQuery text, seen only by the tapper
     picture: dict | None = None  # the card for the renderer; ``text`` is its twin
+    meal_id: int | None = None  # a reply to this message means this meal
+    view: str | None = None  # how the message maps: meal_messages.view, or no meal
+    fill: object | None = None  # a new name's numbers, in the background
+    retouch: object | None = None  # the meal's original line, edited silently
 
 
 # --- naming and numbers -----------------------------------------------------

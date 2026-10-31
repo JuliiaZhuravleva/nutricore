@@ -546,6 +546,23 @@ async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
         logger.warning("Meal line not edited: %s", type(e).__name__)
 
 
+async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> None:
+    """The original line, to the meal's new list. Silent, and best effort: it may be
+    too old to edit, and the person was answered anyway."""
+    if retouch is None:
+        return
+    try:
+        await bot.edit_message_text(
+            retouch.text,
+            chat_id=chat_id,
+            message_id=retouch.message_id,
+            parse_mode=ParseMode.HTML,
+            reply_markup=retouch.markup,
+        )
+    except TelegramError as e:
+        logger.warning("Original line not edited: %s", type(e).__name__)
+
+
 async def _reading(bot, job: capture.Read) -> tuple:
     """(nutrition, resolution) of the meal's source."""
     if job.kind == capture.IMAGE:
@@ -611,6 +628,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     if done.learn:
         _schedule_personal_food_save(**done.learn)
     await _show(bot, job, done.line)
+    await _retouch(bot, job.chat_id, done.retouch)
     return True, None
 
 
@@ -769,12 +787,13 @@ async def _new_meal(
     context: ContextTypes.DEFAULT_TYPE,
     came: capture.Incoming,
     note: Optional[str],
+    words: Optional[str] = None,
 ) -> None:
     """Row 10: the record first, then the line, then the read."""
     message = update.message
     try:
         with SessionLocal() as db:
-            born = capture.born(db, came, note=note)
+            born = capture.born(db, came, note=note, words=words)
     except Exception as e:
         logger.error("Meal not written: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
@@ -852,17 +871,18 @@ async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if came.kind == "text":
                 route = capture.route_text(db, came)
             else:
-                route = capture.Route(capture.NEW_MEAL)
+                route = capture.route_media(db, came)
     except Exception as e:
         logger.error("Router failed: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
         return
 
     if route.action == capture.NEW_MEAL:
-        await _new_meal(update, context, came, route.note)
+        await _new_meal(update, context, came, route.note, route.words)
     elif route.action == capture.LINE:
         line = route.line
-        _map_line(line, await _send_line(message, line), "line")
+        _map_line(line, await _send_line(message, line), line.view)
+        await _retouch(context.bot, came.chat_id, line.retouch)
         if line.fill:
             task = context.application.create_task(_fill_typed_dish(line.fill, user.id))
             _keep_task(task)
@@ -913,11 +933,14 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard, and a line that became a screen is no longer the read's to edit."""
     message = update.callback_query.message
     message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+    shown = []
 
     def handle(db, telegram_id: int, data: str):
         screen = meal_card.handle_callback(db, telegram_id, data, message_id=message_id)
         if screen.text:
-            capture.tapped(db, getattr(message, "chat_id", None), message_id)
+            capture.tapped(db, chat_id, message_id, screen)
+        shown.append(screen)
         return screen
 
     await _screen_callback(
@@ -927,6 +950,15 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Meal card",
         deliver=_card_delivery.tap,
     )
+    if not shown:
+        return
+    if shown[0].retouch:
+        await _retouch(context.bot, chat_id, shown[0].retouch)
+    if shown[0].fill:
+        task = context.application.create_task(
+            _fill_typed_dish(shown[0].fill, update.effective_user.id)
+        )
+        _keep_task(task)
 
 
 def _is_plain_answer(text: Optional[str]) -> bool:
@@ -1068,10 +1100,20 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A statistics tab (``st:…``)."""
+    """A statistics tab (``st:…``). The message shows no one meal from here on."""
+    message = update.callback_query.message
+
+    def handle(db, telegram_id: int, data: str):
+        capture.left_meal(
+            db,
+            getattr(message, "chat_id", None),
+            getattr(message, "message_id", None),
+        )
+        return stats_screen.handle_callback(db, telegram_id, data)
+
     await _screen_callback(
         update,
-        stats_screen.handle_callback,
+        handle,
         "🔒 Статистика доступна с подпиской",
         "Stats",
         deliver=_card_delivery.tap,

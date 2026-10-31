@@ -775,7 +775,10 @@ def test_row_8_more_food_within_three_hours_joins_the_last_meal(
 ):
     meal = _meal_now(db, owner, minutes_ago=60)
     wire = send(text("ещё сыр"))
-    assert len(_meals(db)) == 1
+    # Born as its own row, merged: one meal to every reader.
+    merged = [m for m in _meals(db) if m.id != meal.id]
+    assert [m.merged_into_id for m in merged] == [meal.id]
+    assert merged[0].deleted_at is not None
     assert _item_names(db, meal) == ["суп", "сыр"]
     assert wire.seen()[0].endswith(": сыр.")
     assert wire.seen()[0].startswith("Добавлено к приёму пн 26 октября, ")
@@ -889,7 +892,8 @@ def test_row_4_words_in_reply_join_that_meal_whatever_its_age(db, owner, reader,
     meal = _meal_now(db, owner, minutes_ago=2000)
     wire = send(text("оливковое масло", reply_to_message=_mapped(db, meal)))
     assert _item_names(db, meal) == ["суп", "оливковое масло"]
-    assert len(_meals(db)) == 1
+    merged = [m for m in _meals(db) if m.id != meal.id]
+    assert [m.merged_into_id for m in merged] == [meal.id]
     assert wire.seen()[0].endswith(": оливковое масло.")
 
 

@@ -66,6 +66,8 @@ CHIPS_ROW = 3
 DAY_CHIPS = 9
 _INT_MAX = 2**31 - 1  # what an id column holds; a bigger one is not a row
 
+FORWARD_WORDS = "(время пересланного сообщения)"
+NO_MEAL = "none"  # Screen.view: this message no longer answers for any meal
 STALE_MEAL = "<i>Этого приёма уже нет, вот сегодняшний день.</i>"
 STALE_DISH = "<i>Этого блюда в приёме уже нет.</i>"
 STALE_PICK = "<i>Этого блюда уже нет в списке.</i>"
@@ -141,6 +143,15 @@ class _Tap:
         return next_step.energy(settings) == next_step.SIMPLE
 
 
+@dataclass(frozen=True)
+class Retouch:
+    """The meal's original line, to be edited silently to its new list. Best effort."""
+
+    message_id: int
+    text: str
+    markup: Optional[InlineKeyboardMarkup]
+
+
 class _Answer(Exception):
     """The screen a stale, foreign or missing row answers with."""
 
@@ -193,6 +204,15 @@ def meal_day(meal: Meal, user: Optional[User]) -> date:
 def _when(meal: Meal, zone) -> str:
     day = local_time(meal.meal_time, zone).date()
     return f"{stats_screen._card_title(day)}, {_clock(meal, zone)}"
+
+
+def line_head(meal: Meal, zone, plain: str = "Записано") -> str:
+    """M1e, M1f, M1g: a time the person did not just send is said aloud."""
+    if meal.time_source == "forward":
+        return f"Записано на {_when(meal, zone)} {FORWARD_WORDS}"
+    if meal.time_source == "said":
+        return f"Записано на {_when(meal, zone)}"
+    return plain
 
 
 def _sent_line(meal: Meal, zone) -> Optional[str]:
@@ -506,7 +526,7 @@ def _card(
         if block:
             lines.append(block)
     rows.append(_back_row(t, meal, back))
-    screen = Screen("\n".join(lines), InlineKeyboardMarkup(rows))
+    screen = Screen("\n".join(lines), InlineKeyboardMarkup(rows), meal_id=meal.id)
     return _with_notice(screen, notice)
 
 
@@ -636,7 +656,7 @@ def _today(t: _Tap, notice: Optional[str] = None) -> Screen:
     card = stats_screen.open_view(
         t.db, t.telegram_id, stats_screen.TODAY, t.now, opened=False
     )
-    return _with_notice(card, notice)
+    return replace(_with_notice(card, notice), view=NO_MEAL)
 
 
 def _unknown(t: _Tap, data: str) -> Screen:
@@ -910,8 +930,9 @@ def line_markup(db, meal: Meal) -> InlineKeyboardMarkup:
 def _v_line(t: _Tap, data: str, mid: str) -> Screen:
     meal = _own_meal(t, int(mid), data)
     what = _what(t.db, meal)
-    text = f"Записано: {what}." if what else "Записано."
-    return Screen(text, line_markup(t.db, meal))
+    head = line_head(meal, t.zone)
+    text = f"{head}: {what}." if what else f"{head}."
+    return Screen(text, line_markup(t.db, meal), meal_id=meal.id, view="line")
 
 
 def _v_open(t: _Tap, data: str, mid: str, back: str) -> Screen:
@@ -1572,7 +1593,7 @@ def _day_list(t: _Tap, day: date, origin: str, page: int = 0) -> Screen:
         )
     rows.append(walk)
     rows.append([_button(_DAY_BACK[origin], stats_screen.CALLBACK_PREFIX + origin)])
-    return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
+    return Screen("\n".join(lines), InlineKeyboardMarkup(rows), view=NO_MEAL)
 
 
 def _v_day(t: _Tap, data: str, code: str, origin: str, page: Optional[str]) -> Screen:
@@ -1610,6 +1631,12 @@ _VERBS: tuple = (
     (re.compile(rf"ml:fm:{_ID}:([01]):{_BACK}"), _v_star_meal),
     (re.compile(r"ml:dl:(\d{8}):(t|y|w)(?::(\d{1,2}))?"), _v_day),
 )
+
+
+def add_verbs(*verbs: tuple) -> None:
+    """The verbs of a service that sits above this one: the capture's chooser."""
+    global _VERBS
+    _VERBS = (*_VERBS, *verbs)
 
 
 def is_known_shape(data: str) -> bool:

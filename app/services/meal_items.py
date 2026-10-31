@@ -31,6 +31,8 @@ from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_record_event import crud_record_event
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
+from app.models.meal_message import MealMessage
+from app.models.meal_source import MealSource
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
@@ -724,10 +726,12 @@ def _changed(
     *,
     food_id: Optional[int] = None,
     numbers_changed: bool = True,
+    groups: Optional[dict] = None,
 ) -> Change:
     """Apply ``mutate`` and everything that follows from it, in one transaction.
 
-    ``mutate`` gets the live items and returns the items it made.
+    ``mutate`` gets the live items and returns the items it made. ``groups``: of the
+    items that came from elsewhere with their own tags.
     """
 
     def write() -> Change:
@@ -741,6 +745,7 @@ def _changed(
             # A legacy meal's own line: the old tags stay under the old name.
             if not live and item.numbers_source == "plate_share":
                 known.update(_groups_by_item(meal, [item]))
+        known.update(groups or {})
         _recompute(meal, now_live)
         _rewrite_fields(db, meal, now_live, known)
         meal.rev = (meal.rev or 0) + 1
@@ -951,6 +956,69 @@ def add_item(
 
     change = _changed(db, meal, "add", mutate, food_id=dish.id)
     change.items = [made["item"]]
+    return change
+
+
+def _plate_of(into: Meal, other: Meal) -> dict:
+    """Two plates' totals: known values add up, a field nobody knows stays None."""
+    if into.numbers_basis == "plate":
+        mine = into.plate_totals or {}
+    else:
+        # Items count on top of a plate, so a meal on items brings none. Totals with
+        # no basis at all are this meal's whole plate.
+        mine = _meal_totals(into) if into.numbers_basis == "none" else {}
+    theirs = other.plate_totals or {}
+    return _summed([{key: side.get(key) for key in FIELDS} for side in (mine, theirs)])
+
+
+def join(
+    db: Session,
+    user_id: int,
+    into_id: int,
+    from_id: int,
+    *,
+    source_id: Optional[int] = None,
+) -> Change:
+    """A meal into another. Its items, sources and messages move, and its row stays
+    with its own time, merged and out of every reader, so it can be separated again.
+    """
+    into = _own_meal(db, user_id, into_id)
+    other = _own_meal(db, user_id, from_id)
+    if into is None or other is None or into.id == other.id:
+        return Change(STALE)
+    moving = crud_meal_item.live(db, other.id)
+    tags = _groups_by_item(other, moving)
+
+    def mutate(live: list) -> list:
+        lines = [] if live else _open_legacy(db, into)
+        first = max((i.position for i in [*live, *lines]), default=-1) + 1
+        for offset, item in enumerate(moving):
+            item.meal_id = into.id
+            item.position = first + offset
+            if item.source_id is None:
+                item.source_id = source_id
+        if other.numbers_basis == "plate":
+            into.plate_totals = _plate_of(into, other)
+            into.numbers_basis = "plate"
+        other.merged_into_id = into.id
+        other.deleted_at = datetime.now(UTC)
+        other.rev = (other.rev or 0) + 1
+        other.updated_at = datetime.now(UTC)
+        for source in db.scalars(
+            select(MealSource).where(MealSource.meal_id == other.id)
+        ):
+            source.meal_id = into.id
+        for row in db.scalars(
+            select(MealMessage).where(MealMessage.meal_id == other.id)
+        ):
+            row.meal_id = into.id
+            if row.view in ("pending", "line"):
+                row.view = "other"  # a line of what it was, not of this meal
+        return [*lines, *moving]
+
+    change = _changed(db, into, "join", mutate, groups=tags)
+    if change.status == DONE:
+        change.items = moving
     return change
 
 
@@ -1218,6 +1286,9 @@ def _still_holds(db: Session, meal: Meal, event: RecordEvent) -> bool:
     return all(items) and _meal_state(meal, items) == wrote
 
 
+_NO_UNDO = ("join", "split")  # ➖ Отделить and 🔗 Объединить are their ways back
+
+
 def undo(db: Session, user_id: int, event_id: int) -> Change:
     """Back to what the event found. Writes an event, so it can be undone in turn.
 
@@ -1230,7 +1301,7 @@ def undo(db: Session, user_id: int, event_id: int) -> Change:
     meal = crud_meal.get_any(db, event.meal_id)
     if meal is None:
         return Change(STALE)
-    if not _still_holds(db, meal, event):
+    if event.kind in _NO_UNDO or not _still_holds(db, meal, event):
         return Change(REFUSED, meal)
     if "time" in event.after:
         return _undo_time(db, meal, event)
