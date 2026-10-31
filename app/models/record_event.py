@@ -20,6 +20,7 @@ EVENT_KINDS = (
     "restore",
     "rename",
     "numbers",
+    "portion",
     "food_merge",
     "food_hide",
     "reread",

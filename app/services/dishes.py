@@ -67,6 +67,7 @@ _DIGITS = re.compile(r"\d{1,5}(?:[.,]\d{1,2})?")
 
 DISH_NAME = "dish_name"
 DISH_NUMBERS = "dish_numbers"
+DISH_PORTION = "dish_portion"
 DISH_FIND = "dish_find"
 MERGE_FIND = "merge_find"
 
@@ -96,7 +97,8 @@ _NUMBER_COLUMNS = (
     "per_100g_carbs",
 )
 _NUMBER_STATE = ("numbers_by_user", "numbers_quality", "numbers_basis")
-_UNDOABLE = ("rename", "numbers", "food_merge", "food_hide")
+_PORTION_STATE = ("usual_grams", "usual_grams_by_user")
+_UNDOABLE = ("rename", "numbers", "portion", "food_merge", "food_hide")
 
 
 # --- words ------------------------------------------------------------------
@@ -549,6 +551,10 @@ def _v_more(t: _Tap, data: str, fid: str, back: str) -> Screen:
             _button("✏️ Название", f"dh:rn:{dish.id}{tail}"),
             _button("🔗 Объединить", f"dh:jl:{dish.id}:0{tail}"),
         ],
+        [
+            _button("⚖️ Порция", f"dh:pg:{dish.id}{tail}"),
+            _button("🏷 Группы", f"dh:gr:{dish.id}{tail}"),
+        ],
         [_button("🗑 Из списков", f"dh:x:{dish.id}{tail}")],
         _to_dish(dish.id, back),
     ]
@@ -674,22 +680,16 @@ def _log(t: _Tap, dish: PersonalFood) -> Meal:
         meal.resolution_source = FAVORITE_SOURCE
         t.db.commit()
         return meal
+    fields = meal_items.star_meal_fields(t.db, dish, fav)
+    grams = fields.pop("grams")
     meal = meal_items.save_meal(
         t.db,
         MealCreate(
             description=dish.canonical_name,
             meal_time=t.now,
-            calories=fav.calories,
-            proteins=fav.proteins,
-            fats=fav.fats,
-            carbohydrates=fav.carbohydrates,
-            nutrients=fav.nutrients,
-            ai_analysis=food_groups.carried(fav.nutrients),
+            **fields,
             resolution_source=FAVORITE_SOURCE,
-            resolution_signals={
-                "favorite_id": fav.id,
-                "portion_grams": fav.usual_grams,
-            },
+            resolution_signals={"favorite_id": fav.id, "portion_grams": grams},
         ),
         t.user.id,
         names=[dish.canonical_name],
@@ -856,6 +856,110 @@ def _typed_numbers(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
     )
     t.db.commit()
     return _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event.id, opened=True)
+
+
+# --- O14a the usual portion -------------------------------------------------
+
+
+def _v_portion(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
+    back = back or DEFAULT_BACK
+    dish = _shown_in_lists(t, fid, data, back)
+    _open_slot(t, DISH_PORTION, back, food_id=dish.id)
+    return _screen(
+        [
+            f"<b>⚖️ Порция: {_esc(dish.canonical_name)}</b>",
+            "Напиши граммы числом, например 200.",
+        ],
+        [_to_dish(dish.id, back)],
+    )
+
+
+def _portion_state(dish: PersonalFood) -> dict:
+    return {column: getattr(dish, column) for column in _PORTION_STATE}
+
+
+def _set_portion_state(dish: PersonalFood, state: dict) -> None:
+    for column in _PORTION_STATE:
+        setattr(dish, column, state[column])
+
+
+def _typed_portion(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
+    grams = meal_card.parse_grams(text)
+    if grams is None:
+        return None  # a wait never eats food
+    back = ask.get("back") or DEFAULT_BACK
+    fid = str(ask.get("food_id"))
+    dish = _shown_in_lists(t, fid, f"dh:pg:{fid}", back)
+    before = _portion_state(dish)
+    after = {"usual_grams": grams, "usual_grams_by_user": True}
+    if before == after:
+        return _card(t, dish, back, notice=meal_card.NOTHING_SAME)
+    _set_portion_state(dish, after)
+    event = crud_record_event.add(
+        t.db,
+        user_id=t.user.id,
+        kind="portion",
+        food_id=dish.id,
+        before=before,
+        after=after,
+    )
+    t.db.commit()
+    return _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event.id)
+
+
+# --- O14b the groups --------------------------------------------------------
+
+
+def _groups_screen(t: _Tap, dish: PersonalFood, back: str) -> Screen:
+    """Opening it writes nothing. As on a meal's M14, the same tap again is the way
+    back, so there is no ↩️."""
+    on = meal_items._groups_of_dish(t.db, dish.id, dish.canonical_name) or []
+    tail = _tail(back)
+    buttons = [
+        _button(
+            f"{'✓ ' if key in on else ''}{mark} {label}",
+            f"dh:gt:{dish.id}:{key}:{0 if key in on else 1}{tail}",
+        )
+        for key, (mark, label, _word) in food_groups.GROUPS.items()
+    ]
+    rows = [buttons[i : i + CHIPS_ROW] for i in range(0, len(buttons), CHIPS_ROW)]
+    return _screen(
+        [
+            f"<b>🏷 Группы: {_esc(dish.canonical_name)}</b>",
+            "Это видно только на карточках дня и недели.",
+            "Для будущих приёмов. Прошлые остаются как были.",
+        ],
+        [*rows, _to_dish(dish.id, back)],
+    )
+
+
+def _v_groups(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
+    back = back or DEFAULT_BACK
+    return _groups_screen(t, _shown_in_lists(t, fid, data, back), back)
+
+
+def _v_group(
+    t: _Tap, data: str, fid: str, key: str, want: str, back: Optional[str]
+) -> Screen:
+    back = back or DEFAULT_BACK
+    if key not in food_groups.GROUPS:
+        return _unknown(t, data)
+    dish = _shown_in_lists(t, fid, data, back)
+    on = set(meal_items._groups_of_dish(t.db, dish.id, dish.canonical_name) or [])
+    if (want == "1") == (key in on):
+        return Screen("", None, toast=meal_items.SAME_TOAST)
+    before = dish.food_groups
+    dish.food_groups = food_groups.ordered(on ^ {key})
+    crud_record_event.add(
+        t.db,
+        user_id=t.user.id,
+        kind="groups",
+        food_id=dish.id,
+        before={"food_groups": before},
+        after={"food_groups": dish.food_groups},
+    )
+    t.db.commit()
+    return _groups_screen(t, dish, back)
 
 
 # --- O7 merging -------------------------------------------------------------
@@ -1188,6 +1292,24 @@ def _undo_numbers(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) ->
     return _card(t, dish, back, notice=UNDONE, undo=new.id)
 
 
+def _undo_portion(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Screen:
+    before, after = event.before or {}, event.after or {}
+    if _portion_state(dish) != after:
+        return _refused(t, dish, back)
+    _set_portion_state(dish, before)
+    new = crud_record_event.add(
+        t.db,
+        user_id=t.user.id,
+        kind="portion",
+        food_id=dish.id,
+        before=after,
+        after=before,
+        undoes_event_id=event.id,
+    )
+    t.db.commit()
+    return _card(t, dish, back, notice=UNDONE, undo=new.id)
+
+
 def _v_undo(t: _Tap, data: str, eid: str, back: Optional[str]) -> Screen:
     back = back or DEFAULT_BACK
     event = None if int(eid) > _INT_MAX else t.db.get(RecordEvent, int(eid))
@@ -1211,6 +1333,8 @@ def _v_undo(t: _Tap, data: str, eid: str, back: Optional[str]) -> Screen:
         return _undo_rename(t, dish, event, back)
     if event.kind == "numbers":
         return _undo_numbers(t, dish, event, back)
+    if event.kind == "portion":
+        return _undo_portion(t, dish, event, back)
     if event.kind == "food_merge":
         if (event.after or {}).get("merged_into") is not None:
             return _unmerge(t, dish, event, back)
@@ -1235,6 +1359,9 @@ _VERBS: tuple = (
     (re.compile(rf"dh:mo:{_ID}:{_B}"), _v_more),
     (re.compile(rf"dh:rn:{_ID}{_OPT}"), _v_rename),
     (re.compile(rf"dh:nm:{_ID}{_OPT}"), _v_edit_numbers),
+    (re.compile(rf"dh:pg:{_ID}{_OPT}"), _v_portion),
+    (re.compile(rf"dh:gr:{_ID}{_OPT}"), _v_groups),
+    (re.compile(rf"dh:gt:{_ID}:([a-z0-9]{{1,8}}):([01]){_OPT}"), _v_group),
     (re.compile(rf"dh:n:{_ID}:([01]){_OPT}"), _v_numbers),
     (re.compile(rf"dh:h:{_ID}:{_PAGE}{_OPT}"), _v_history),
     (re.compile(rf"dh:fv:{_ID}:([01]){_OPT}"), _v_star),
@@ -1248,6 +1375,7 @@ _VERBS: tuple = (
 
 meal_card._TYPED[DISH_NAME] = _typed_name
 meal_card._TYPED[DISH_NUMBERS] = _typed_numbers
+meal_card._TYPED[DISH_PORTION] = _typed_portion
 meal_card._TYPED[DISH_FIND] = _typed_find
 meal_card._TYPED[MERGE_FIND] = _typed_merge_find
 

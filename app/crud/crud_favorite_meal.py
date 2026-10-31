@@ -55,6 +55,13 @@ class CRUDFavoriteMeal:
         db.flush()
         return dish
 
+    def dish_if_any(self, db: Session, fav: FavoriteMeal) -> PersonalFood | None:
+        """As ``dish_of``, with no row made and no link written: for a mere look."""
+        dish = db.get(PersonalFood, fav.personal_food_id or 0)
+        if dish is not None:
+            return crud_personal_food.live_of(db, dish)
+        return crud_personal_food.find_by_name(db, fav.user_id, fav.name)
+
     def active_of_dish(self, db: Session, dish_id: int) -> FavoriteMeal | None:
         """The not-removed favourite of this dish, the most recently used of them."""
         recency = func.coalesce(FavoriteMeal.last_used_at, FavoriteMeal.created_at)

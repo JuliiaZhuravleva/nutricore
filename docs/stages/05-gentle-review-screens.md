@@ -69,6 +69,7 @@ Decisions that bend a written story are marked **Decision**. Section 9 lists the
 | `ml:dl:<day>:<b>`, `ml:da:<day>:<b>` | day's meals, add to that day |
 | `dh:l:<pg>`, `dh:f`, `dh:o:<fid>:<b>`, `dh:mo:<fid>:<b>` | dishes, find, dish card, the card's `Ещё ›` |
 | `dh:rn:<fid>`, `dh:nm:<fid>`, `dh:n:<fid>:<0\|1>`, `dh:h:<fid>:<pg>` | rename, edit numbers, numbers, when it was |
+| `dh:pg:<fid>`, `dh:gr:<fid>`, `dh:gt:<fid>:<group>:<0\|1>` | usual portion, groups, one group on or off |
 | `dh:fv:<fid>:<0\|1>`, `dh:log:<fid>`, `dh:x:<fid>`, `dh:u:<eid>` | ⭐, log, hide, undo |
 | `dh:jl:<fid>:<pg>`, `dh:jf:<fid>`, `dh:j:<fid>:<fid>` | merge: picker, find, do it |
 | `fav:p:<pg>`, `fav:l:<id>:n`, `fav:o:<id>:<pg>`, `fav:u:<mid>`, `fav:g:<id>`, `fav:r:<id>:<pg>`, `fav:b:<id>:<pg>`, `fav:x` | shipped verbs; `fav:l` now fires from the list, `fav:g` is new |
@@ -77,7 +78,7 @@ Decisions that bend a written story are marked **Decision**. Section 9 lists the
 
 `User.settings["ask"] = {kind, meal_id, item_id, food_id, day, message_id, at}`. It lives in the database, so a restart between tap and text cannot turn an answer into a meal. TTL 10 minutes, the same as today's waits. Any other inline tap closes it (one leave handler, like `routine_left_by_tap`).
 
-Kinds: `grams`, `time`, `dish_add`, `dish_replace`, `meal_text`, `day_add`, `dish_name`, `dish_numbers`, `dish_find`, `merge_find`, `portion`.
+Kinds: `grams`, `time`, `dish_add`, `dish_replace`, `meal_text`, `day_add`, `dish_name`, `dish_numbers`, `dish_portion`, `dish_find`, `merge_find`, `portion`.
 
 **A wait never eats food.** A kind that expects a number or a clock takes only what parses. Anything else closes the slot and continues down the router. Kinds that expect a name take any text, because the person just asked to type one. No new conversation state is added.
 
@@ -170,7 +171,7 @@ One hand-written additive migration per slice, first on `down_revision = "a9b8c7
 
 Index `(user_id, meal_time)` (H8 in the data map: none exists today).
 
-**`record_events` (new).** `user_id, meal_id, food_id, kind, before JSON, after JSON, source_id, undoes_event_id`, timestamps. Kinds: `qty, grams, replace, add, remove, time, join, split, delete, restore, rename, numbers, food_merge, food_hide, reread, write, groups`.
+**`record_events` (new).** `user_id, meal_id, food_id, kind, before JSON, after JSON, source_id, undoes_event_id`, timestamps. Kinds: `qty, grams, replace, add, remove, time, join, split, delete, restore, rename, numbers, portion, food_merge, food_hide, reread, write, groups`.
 
 **`personal_foods`, new columns.** `usual_grams`, `usual_grams_by_user`, `numbers_basis` (`per_100|per_portion|none`, backfill `per_100`), `numbers_quality` (`unverified|barcode|label|user`, backfill `unverified`, `barcode` where a barcode exists), `numbers_by_user` (default false). `upsert` must skip macros when `numbers_by_user`, because today it overwrites them (VERIFIED in the data map).
 
@@ -212,6 +213,8 @@ Index `(user_id, meal_time)` (H8 in the data map: none exists today).
 ### 3.3 Slice O
 
 **`personal_foods`, new columns.** `aliases` JSON, `hidden_at`, `merged_into_id`. Hidden and merged rows are filtered in both the barcode and the ANN lookup, and in every list. Rename to a taken name is caught in Python (SQLite `lower()` is ASCII only, and Postgres raises IntegrityError).
+
+**`personal_foods.food_groups`** JSON, nullable (section 9, item 85). NULL: nobody gave a word, and the dish carries what its last tagged meal had. A list, an empty one too, is the person's word. No backfill.
 
 **`favorite_meals`, new columns.** `personal_food_id`, `usual_grams`. Backfill: find or create a dish by name and leave its numbers alone. The favourite keeps its own numbers as a portion (`per_portion`), and nothing is converted to per-100 g by a guess. A favourite log's undo becomes a soft delete, so a deletion has one meaning.
 
@@ -1905,6 +1908,7 @@ Changed in `stats_screen` only. The numbers row becomes `🔢 Цифры`, `🍽
 
 ```kb
 ✏️ Название => dh:rn:<fid> | 🔗 Объединить => dh:jl:<fid>:0
+⚖️ Порция => dh:pg:<fid> | 🏷 Группы => dh:gr:<fid>
 🗑 Из списков => dh:x:<fid>
 ⬅️ К блюду => dh:o:<fid>:<b>
 ```
@@ -1912,6 +1916,40 @@ Changed in `stats_screen` only. The numbers row becomes `🔢 Цифры`, `🍽
 - **Trigger:** `Ещё ›` on `O3`.
 - **Reads:** dish. **Writes:** nothing on open. **Back:** `⬅️ К блюду`. **Stale:** as `O3`.
 - **Hard day:** not reachable at `минимум сил`.
+
+**`O14a`** Usual portion, ask `dish_portion`. The text is `O11a`'s. Grams as `N3`: 1 to 5000 with an optional unit. Anything else closes the slot and goes down the router.
+
+```tg
+<b>⚖️ Порция: омлет с сыром</b>
+Напиши граммы числом, например 200.
+```
+
+```kb
+⬅️ К блюду => dh:o:<fid>:<b>
+```
+
+- **Writes:** `usual_grams`, `usual_grams_by_user`, event `portion`. Past meals stay. Back to `O3` with `O5`'s notice and `↩️ Вернуть`, guarded as `O5`'s. The same grams again: `<i>Уже так</i>` and no event.
+- **Reach:** the next meal at these grams, by the dish's numbers per 100 g, else by its last weighed numbers scaled. Numbers with no weight stay as they are.
+
+**`O14b`** Groups. The labels and ticks are `M14`'s, and the same tap again is the way back, so no `↩️`. Opening writes nothing and shows what the dish last carried.
+
+```tg
+<b>🏷 Группы: омлет с сыром</b>
+Это видно только на карточках дня и недели.
+Для будущих приёмов. Прошлые остаются как были.
+```
+
+```kb
+🫘 Бобовые => dh:gt:<fid>:legumes:1 | ✓ ⚓ Опора => dh:gt:<fid>:anchor:0 | 🥦 Овощи => dh:gt:<fid>:veg:1
+🍎 Фрукты => dh:gt:<fid>:fruit:1 | 🌾 Злаки => dh:gt:<fid>:grain:1 | 🥜 Орехи => dh:gt:<fid>:nuts:1
+✓ 🥛 Кальций => dh:gt:<fid>:calcium:0 | 🌰 Омега-3 => dh:gt:<fid>:omega:1
+⬅️ К блюду => dh:o:<fid>:<b>
+```
+
+- **Writes:** `food_groups`, event `groups` with `food_id`. The button carries the target, so a second tap is a toast `Уже так`. Past meals stay.
+- **Reach:** every meal logged by the dish's name or button, ⭐ included. `M14` on a one-dish meal moves that one group in a word the dish already has, and gives no word to a dish without one.
+
+**A ⭐ follows its dish.** It logs the portion it holds until a person corrects the dish (`O5`, `O14a`, `O14b`). Then the correction goes over the copy, and the copy stays as it was (US-O4).
 
 ## 7. Tap counts (US-O6)
 
@@ -2064,6 +2102,8 @@ Each default is taken, and the build goes on with it.
 82. **`O1` chips carry no food, `O1h` `фото сохранено`.** Lines of what, chips of when, by rule; all four found the right meal (item 23).
 83. **`N5c` and `N5d` mixed up, `O6` pager against 12, `O13a` which day comes first.** One reader each, or a sample.
 84. **Repeats with no new evidence:** `➖ Отделить` has no undo (32, 52), `M1d`, `M1h2` 3000 ккал (31: numbers are opt-in, 2.6), `O9` accidental log (33, see 69), rice with no amount (34), `O2` no count (35), `M14`, `O13` shipped labels (39), «Приём» (40), `Черновик`, `M10` notice above the title (41, 2.5), `PMID` (42), pager (58), `M9b` (58), `M8b` (59), `M1g` (60), `🗑 Удалить` beside `🗑 Из приёма` (55), `🎙 Текст`, ticks (27, 54), `Ещё ›` hides join (22), mock look and glare (43), `N6a` and picture placeholders (63).
+85. **A dish's own portion and groups (`O14a`, `O14b`).** The build brief for slice O asked to edit both on a dish, while `O14` and US-O3 offered neither: a portion only on a favourite (`O11a`), groups only on a meal (`M14`). So `Обычная порция` on `O3` had no writer. Decided: one more row on `O14`, a nullable column, an event kind, words reused from `O11a`, `M14` and `O5`. To drop it, remove the row; meals already logged keep what they got. A dish's portion and a ⭐'s own `O11a` are not yet one number: that is for the favourites step.
+86. **Typed numbers with no weight anywhere.** Per 100 g cannot become a portion without grams, so such a dish keeps logging its last numbers or none until `O14a` gets grams. No guess of 100 g.
 
 **Stories.** Slices N and O are unchanged. Where a decision bends them, this file says why. Slice M was added before slice N.
 
@@ -2121,6 +2161,7 @@ Order: migration with favourite backfill → day list and tabs → dishes → di
 - Rename: a taken name offers merge, no IntegrityError; run this once on Postgres, because SQLite passes without the unique index (H7). Cyrillic case in Python.
 - Hide: gone from lists, picker, barcode and ANN; eating it again unhides.
 - Numbers: `numbers_by_user` survives; future items use new numbers; past ones do not.
+- Portion and groups: future meals carry them, a ⭐'s too; past meals keep every column; an empty list is a word; `numbers_by_user`, the portion and the word survive the learning task, with a control on an uncorrected row.
 - Counts: live items plus equal legacy descriptions; `Было 12 раз или больше`; hidden at `минимум сил` on `O2h` and `O3h`; no `🕘 Когда было` with no meals.
 - Favourites: backfill keeps every row and its numbers (`per_portion`); a tap logs at now with one item; undo is soft; double tap within 3 s; empty copy names a real button.
 - Layout as in N.

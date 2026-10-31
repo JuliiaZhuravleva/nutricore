@@ -30,6 +30,7 @@ from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import NAME_MAX, crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_record_event import crud_record_event
+from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
 from app.models.meal_message import MealMessage
@@ -304,12 +305,82 @@ def dish_portion(db: Session, dish: PersonalFood) -> Portion:
     portion.
     """
     own = _own_portion(db, dish)
-    if own.numbers is not None and any(v is not None for v in own.numbers.values()):
+    has_own = own.numbers is not None and any(
+        value is not None for value in own.numbers.values()
+    )
+    # Typed numbers with no weight of their own may still find one on the ⭐.
+    if has_own and not (dish.numbers_by_user and own.grams is None):
         return own
     fav = crud_favorite_meal.active_of_dish(db, dish.id)
     if fav is None or all(getattr(fav, key) is None for key in FIELDS):
         return own
-    return Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
+    return star_portion(db, dish, fav)
+
+
+def _at_typed_grams(dish: PersonalFood, portion: Portion) -> Portion:
+    """A typed usual portion, with numbers scaled by it. Numbers with no weight stay as
+    they are: grams alone cannot say what they were for."""
+    typed = dish.usual_grams if dish.usual_grams_by_user else None
+    if not typed:
+        return portion
+    if portion.grams and portion.numbers:
+        return Portion(_scaled(portion.numbers, typed / portion.grams), typed)
+    return Portion(portion.numbers, typed)
+
+
+def star_portion(db: Session, dish: PersonalFood, fav: FavoriteMeal) -> Portion:
+    """What a ⭐ logs: the portion it holds, until a person corrects its dish.
+
+    One correction lives in one place (US-O4), so the favourite's copy stays and typed
+    numbers go over it, at the portion's grams. No weight anywhere: the copy serves.
+    """
+    held = Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
+    portion = _at_typed_grams(dish, held)
+    per_100 = _per_100(dish)
+    if dish.numbers_by_user and per_100:
+        grams = portion.grams or _own_portion(db, dish).grams
+        if grams:
+            return Portion(_scaled(per_100, grams / 100.0), grams)
+    return portion
+
+
+def star_meal_fields(db: Session, dish: PersonalFood | None, fav: FavoriteMeal) -> dict:
+    """A ⭐'s fields of ``MealCreate``. Its own row stays as it is. No dish yet (a row
+    an old container wrote): nobody corrected anything, so the copy serves."""
+    portion = (
+        star_portion(db, dish, fav)
+        if dish is not None
+        else Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
+    )
+    numbers = portion.numbers or {}
+    nutrients = (
+        dict(fav.nutrients) if isinstance(fav.nutrients, dict) else fav.nutrients
+    )
+    if isinstance(nutrients, dict) and any(
+        numbers.get(key) != getattr(fav, key) for key in FIELDS
+    ):
+        nutrients.update({_NUTRIENT_KEYS[key]: numbers.get(key) for key in FIELDS})
+    tags = food_groups.carried(fav.nutrients)
+    if dish is not None and dish.food_groups is not None:
+        tags = _word_tags(fav.name, dish.food_groups)
+        nutrients = {**(nutrients or {}), **tags}
+    return {
+        **{key: numbers.get(key) for key in FIELDS},
+        "nutrients": nutrients,
+        "ai_analysis": tags,
+        "grams": portion.grams,
+    }
+
+
+def _word_tags(name: str, groups: list) -> dict:
+    """A meal's tags from a dish's word. Not the meal's own choice: an edit of the meal
+    still counts what its items carry."""
+    chosen = food_groups.ordered(groups)
+    return {
+        "food_items": [{"name": name, "groups": chosen}],
+        "food_groups": chosen,
+        "food_groups_by_user": False,
+    }
 
 
 def _own_portion(db: Session, dish: PersonalFood) -> Portion:
@@ -335,9 +406,10 @@ def _own_portion(db: Session, dish: PersonalFood) -> Portion:
     if per_100 and grams:
         return Portion(_scaled(per_100, grams / 100.0), grams)
     if last is not None:
-        return Portion(_shown(last), _item_grams(last))
+        return _at_typed_grams(dish, Portion(_shown(last), _item_grams(last)))
     if source_has_numbers:
-        return Portion(_meal_totals(source), grams)
+        weighed = _source_grams(source) if dish.usual_grams_by_user else grams
+        return _at_typed_grams(dish, Portion(_meal_totals(source), weighed))
     return Portion()
 
 
@@ -716,7 +788,10 @@ def exact_match(db: Session, user_id: int, text: Optional[str]) -> list:
 
 
 def _groups_of_dish(db: Session, dish_id: int, name: str) -> Optional[list]:
-    """The groups the dish carried the last time a meal tagged it, for free."""
+    """The person's word on the dish, else what the last meal tagging it carried."""
+    dish = db.get(PersonalFood, dish_id)
+    if dish is not None and dish.food_groups is not None:
+        return food_groups.ordered(dish.food_groups)
     stmt = (
         select(MealItem)
         .join(Meal, Meal.id == MealItem.meal_id)
@@ -1426,6 +1501,17 @@ def separate(db: Session, user_id: int, survivor: Meal, part: Part) -> Change:
     return change
 
 
+def _teach_word(db: Session, item: MealItem, key: str, on: bool) -> None:
+    """A dish with a word hears this one group too, and the rest of its word stands.
+    Without a word it has no need: it reads its last tagged meal, and this is that
+    meal."""
+    dish = db.get(PersonalFood, item.personal_food_id or 0)
+    if dish is None or dish.food_groups is None:
+        return
+    held = set(dish.food_groups)
+    dish.food_groups = food_groups.ordered(held | {key} if on else held - {key})
+
+
 def set_groups(db: Session, user_id: int, meal_id: int, key: str) -> Change:
     """M14: one group on or off, the person's word from here on. A meal of one dish
     teaches the dish, as the draft's choice always did."""
@@ -1445,6 +1531,7 @@ def set_groups(db: Session, user_id: int, meal_id: int, key: str) -> Change:
         rows = analysis.get("food_items") or nutrients.get("food_items") or []
         if len(live) == 1:
             rows = [{"name": live[0].name, "groups": groups}]
+            _teach_word(db, live[0], key, key in groups)
         if rows:
             analysis["food_items"] = nutrients["food_items"] = rows
         meal.ai_analysis = food_groups.stamp(analysis, groups, by_user=True)

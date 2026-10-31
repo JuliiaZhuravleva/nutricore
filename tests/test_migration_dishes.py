@@ -126,15 +126,16 @@ def conn():
     engine.dispose()
 
 
-def test_it_is_the_one_head_on_the_edits_migration():
+def test_it_stands_on_the_edits_migration_and_one_head_follows():
     module = _migration()
     assert module.revision == "a7b8c9d0e1f2"
     assert module.down_revision == "f6a7b8c9d0e1"
     chain = _chain()
-    assert _heads(chain) == ["a7b8c9d0e1f2"]
+    assert _heads(chain) == ["b8c9d0e1f2a3"]
+    assert chain["b8c9d0e1f2a3"][0] == ("a7b8c9d0e1f2",)
     # Known-positive: the check would have seen the old head as a head without it.
-    del chain["a7b8c9d0e1f2"]
-    assert _heads(chain) == ["f6a7b8c9d0e1"]
+    del chain["b8c9d0e1f2a3"]
+    assert _heads(chain) == ["a7b8c9d0e1f2"]
 
 
 def test_the_upgrade_gives_what_the_models_declare(conn):

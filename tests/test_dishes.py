@@ -1446,6 +1446,7 @@ def test_o14_exact_screen(db, owner):
     )
     assert _labels(shown) == [
         ["✏️ Название", "🔗 Объединить"],
+        ["⚖️ Порция", "🏷 Группы"],
         ["🗑 Из списков"],
         ["⬅️ К блюду"],
     ]
@@ -1460,6 +1461,7 @@ def test_the_table_shapes_hold_when_the_origin_is_the_default_list(db, owner):
     shown = _shown(f"dh:mo:{dish.id}:l0")
     assert _data(shown) == [
         [f"dh:rn:{dish.id}", f"dh:jl:{dish.id}:0"],
+        [f"dh:pg:{dish.id}", f"dh:gr:{dish.id}"],
         [f"dh:x:{dish.id}"],
         [f"dh:o:{dish.id}:l0"],
     ]

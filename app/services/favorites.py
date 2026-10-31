@@ -34,7 +34,7 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import food_groups, meal_items
+from app.services import meal_items
 from app.services.numbers import shows_numbers, toggle_label
 
 logger = logging.getLogger(__name__)
@@ -241,18 +241,18 @@ def _active(db, user_id: int | None, fav_id: int) -> FavoriteMeal | None:
 
 
 def _log(db, user_id: int, fav: FavoriteMeal, slot: str) -> Meal:
+    # What a person corrected on the dish goes over the favourite's copy.
+    dish = crud_favorite_meal.dish_if_any(db, fav)
+    fields = meal_items.star_meal_fields(db, dish, fav)
+    grams = fields.pop("grams")
+    signals = {"favorite_id": fav.id, **({"portion_grams": grams} if grams else {})}
     meal_in = MealCreate(
         description=fav.name,
         meal_time=datetime.now(UTC),
         meal_type=SLOTS[slot],
-        calories=fav.calories,
-        proteins=fav.proteins,
-        fats=fav.fats,
-        carbohydrates=fav.carbohydrates,
-        nutrients=fav.nutrients,
-        ai_analysis=food_groups.carried(fav.nutrients),
+        **fields,
         resolution_source=FAVORITE_SOURCE,
-        resolution_signals={"favorite_id": fav.id},
+        resolution_signals=signals,
     )
     # A favourite is one dish, whatever its plate held. Its numbers stay with it: the
     # dish in the base gets a link, and none of them.

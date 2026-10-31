@@ -157,6 +157,9 @@ class PersonalFood(Base, BaseClass):
     # The names it had before a rename. Typing one finds this dish. Reassign a new
     # list to change it: an in-place change to a JSON column is not saved.
     aliases = Column(JSON, nullable=True)
+    # The groups a person gave it: NULL says nobody did, and an empty list says none.
+    # none_as_null: no word is SQL NULL, not the JSON word null. Reassign to change it.
+    food_groups = Column(JSON(none_as_null=True), nullable=True)
     # Hidden and merged rows leave the lists, the barcode and the ANN lookup, and keep
     # their name in the unique key, so anything writing by name has to find them.
     hidden_at = Column(DateTime(timezone=True), nullable=True)
