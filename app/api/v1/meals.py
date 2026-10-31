@@ -1,15 +1,19 @@
+import logging
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import require_export_token
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
 from app.db.session import get_db
 from app.schemas.meal import Meal, MealCreate, MealsExport, MealUpdate
 from app.services import meal_items
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -46,10 +50,17 @@ def export_meals(
     updated_since: Optional[datetime] = None,
     db: Session = Depends(get_db),
 ):
-    """Read-only meals export for the my-health vault (token-guarded; single-user
-    instance → all meals; ``since`` for incremental pulls on ``meal_time``;
-    ``updated_since`` for what changed, deleted meals included, with ``deleted_at``)."""
-    meals = crud_meal.get_for_export(db, since=since, updated_since=updated_since)
+    """Read-only meals export for the my-health vault (token-guarded). Only the
+    owner's meals, the people in ``settings.admin_ids``: the consumer drops
+    ``user_id``, so anyone else's food would count as the owner's. No owner configured
+    → nothing. ``since`` for incremental pulls on ``meal_time``; ``updated_since`` for
+    what changed, deleted meals included, with ``deleted_at``."""
+    owners = settings.admin_ids
+    if not owners:
+        logger.warning("Meals export: no owner configured, returning nothing")
+    meals = crud_meal.get_for_export(
+        db, owner_telegram_ids=owners, since=since, updated_since=updated_since
+    )
     return MealsExport(meals=meals)
 
 

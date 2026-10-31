@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import delete, select
@@ -5,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
+from app.models.user import User
 from app.schemas.meal import MealCreate, MealUpdate
 
 
@@ -40,10 +42,13 @@ class CRUDMeal:
         self,
         db: Session,
         *,
+        owner_telegram_ids: Collection[int],
         since: datetime | None = None,
         updated_since: datetime | None = None,
     ) -> list[Meal]:
-        """All meals in meal_time order (optionally only those at/after ``since``).
+        """These people's meals in meal_time order (optionally only those at/after
+        ``since``). No one named, no meals: the argument has no default, so a caller
+        cannot forget it and pull everyone's food.
 
         Ordered so a downstream incremental pull can page by time; no ``limit`` —
         the consumer dedups idempotently on the stable meal id.
@@ -51,7 +56,14 @@ class CRUDMeal:
         ``updated_since`` asks what changed, so it is the one pull that holds deleted
         meals: their ``deleted_at`` is how a consumer holding the row learns of it.
         """
-        stmt = select(Meal).where(Meal.is_draft.is_(False)).order_by(Meal.meal_time)
+        if not owner_telegram_ids:
+            return []
+        owners = select(User.id).where(User.telegram_id.in_(owner_telegram_ids))
+        stmt = (
+            select(Meal)
+            .where(Meal.is_draft.is_(False), Meal.user_id.in_(owners))
+            .order_by(Meal.meal_time)
+        )
         if updated_since is None:
             stmt = stmt.where(Meal.deleted_at.is_(None))
         else:

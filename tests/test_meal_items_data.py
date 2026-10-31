@@ -209,9 +209,13 @@ def test_get_hides_a_deleted_meal_and_get_any_finds_it(db_session, user):
     "read",
     [
         lambda db, user: crud_meal.get_multi(db),
-        lambda db, user: crud_meal.get_for_export(db),
         lambda db, user: crud_meal.get_for_export(
-            db, since=datetime(2026, 1, 1, tzinfo=UTC)
+            db, owner_telegram_ids=[user.telegram_id]
+        ),
+        lambda db, user: crud_meal.get_for_export(
+            db,
+            owner_telegram_ids=[user.telegram_id],
+            since=datetime(2026, 1, 1, tzinfo=UTC),
         ),
         lambda db, user: crud_meal.get_user_meals(db, user.id),
         lambda db, user: crud_meal.get_user_meals_between(
@@ -560,7 +564,11 @@ def test_rest_delete_is_soft_and_the_export_learns_of_it(db_session, user):
     kept = crud_meal.get_any(db_session, meal.id)
     assert kept is not None and kept.calories == 300.0
     assert crud_meal_item.live(db_session, meal.id)  # the items stay, for the undo
-    pull = crud_meal.get_for_export(db_session, updated_since=NOW - timedelta(days=1))
+    pull = crud_meal.get_for_export(
+        db_session,
+        owner_telegram_ids=[user.telegram_id],
+        updated_since=NOW - timedelta(days=1),
+    )
     assert meal.id in [row.id for row in pull]
     kinds = db_session.scalars(
         select(RecordEvent.kind).where(RecordEvent.meal_id == meal.id)

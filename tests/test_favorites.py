@@ -283,9 +283,13 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         assert db.get(Meal, meal.id).deleted_at is not None
         kinds = [e.kind for e in db.query(RecordEvent).filter_by(meal_id=meal.id)]
         assert kinds == ["delete"]
-        pull = crud_meal.get_for_export(db, updated_since=datetime(2020, 1, 1))
+        pull = crud_meal.get_for_export(
+            db, owner_telegram_ids=[42], updated_since=datetime(2020, 1, 1)
+        )
         assert meal.id in [row.id for row in pull]
-        assert meal.id not in [row.id for row in crud_meal.get_for_export(db)]
+        assert meal.id not in [
+            row.id for row in crud_meal.get_for_export(db, owner_telegram_ids=[42])
+        ]
         # A second tap on the same old button: a notice, not an error.
         again = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert "уже отменена" in again.text

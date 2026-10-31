@@ -1339,7 +1339,9 @@ def test_a_draft_meal_is_in_no_reader(db, owner):
         meal.id
     ]
     assert [m.id for m in crud_meal.get_multi(db)] == [meal.id]
-    assert [m.id for m in crud_meal.get_for_export(db)] == [meal.id]
+    assert [m.id for m in crud_meal.get_for_export(db, owner_telegram_ids=[OWNER])] == [
+        meal.id
+    ]
 
 
 def test_retagging_skips_a_meal_not_yet_read_and_a_draft(db, owner):

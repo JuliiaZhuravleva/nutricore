@@ -440,6 +440,7 @@ CURSOR = datetime(2026, 6, 1, tzinfo=UTC)
 def client(db_session, monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", _API_TOKEN)
     monkeypatch.setattr(settings, "EXPORT_API_TOKEN", _EXPORT_TOKEN)
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "4242")
     app.dependency_overrides[get_db] = lambda: db_session
     yield TestClient(app, base_url="http://localhost")
     app.dependency_overrides.clear()

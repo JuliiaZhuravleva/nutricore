@@ -431,7 +431,10 @@ def test_record_tells_an_incremental_pull_the_meal_is_there(
     after = db.get(Meal, meal.id).updated_at
     assert after is not None and (before is None or after >= before)
     assert meal.id in [
-        row.id for row in crud_meal.get_for_export(db, updated_since=after)
+        row.id
+        for row in crud_meal.get_for_export(
+            db, owner_telegram_ids=[owner.telegram_id], updated_since=after
+        )
     ]
 
 
@@ -488,7 +491,7 @@ def test_a_draft_is_in_no_reader_a_person_sees(db, owner, reader, drafting):
     assert crud_meal.get_user_meals(db, owner.id) == []
     assert crud_meal.get_user_meals_between(db, owner.id, *day) == []
     assert crud_meal.get_multi(db) == []
-    assert crud_meal.get_for_export(db) == []
+    assert crud_meal.get_for_export(db, owner_telegram_ids=[owner.telegram_id]) == []
     assert food_groups_retag.pending(db) == []
     assert "Рис" not in _day_card(db)
     # Known-positive: the same row, once written, is read by them all.
@@ -498,7 +501,7 @@ def test_a_draft_is_in_no_reader_a_person_sees(db, owner, reader, drafting):
     assert crud_meal.get_user_meals(db, owner.id)
     assert crud_meal.get_user_meals_between(db, owner.id, *day)
     assert crud_meal.get_multi(db)
-    assert crud_meal.get_for_export(db)
+    assert crud_meal.get_for_export(db, owner_telegram_ids=[owner.telegram_id])
     assert "Рис" in _day_card(db)
 
 
