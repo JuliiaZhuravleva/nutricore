@@ -112,6 +112,8 @@ class Change:
     event: Optional[RecordEvent] = None
     items: list = field(default_factory=list)  # what the change made
     numbers_changed: bool = True
+    meals: list = field(default_factory=list)  # the meals an album split made
+    gone: list = field(default_factory=list)  # message ids of lines taken back
 
 
 # --- names and dishes -------------------------------------------------------
@@ -440,21 +442,40 @@ def apply_read(
     meal_in: MealCreate,
     *,
     source_id: Optional[int] = None,
+    replacing: bool = False,
 ) -> bool:
     """A reading onto the meal born before it. False, and nothing written, if the
     meal has changed since: what the person did outranks a late answer.
 
     No event: the person changed nothing, and there is no earlier state to return to.
+    ``replacing``: a re-read, over the items of the read before. That one has a state
+    to return to, so it writes a ``reread`` event.
     """
     if (meal.rev or 0) != rev or meal.deleted_at is not None:
         return False
 
     def write() -> bool:
+        old = crud_meal_item.live(db, meal.id) if replacing else []
+        before = _meal_state(meal, old)
+        for item in old:
+            item.removed_at = datetime.now(UTC)
+        if replacing:
+            meal.plate_totals = None
         for key in _READ_FIELDS:
             setattr(meal, key, getattr(meal_in, key))
         _write_reading(db, meal, meal_in, meal.user_id, source_id=source_id)
         meal.reading_status = "read"
         meal.rev = rev + 1
+        if replacing:
+            db.flush()
+            crud_record_event.add(
+                db,
+                user_id=meal.user_id,
+                kind="reread",
+                meal_id=meal.id,
+                before=before,
+                after=_meal_state(meal, [*old, *crud_meal_item.live(db, meal.id)]),
+            )
         db.commit()
         db.refresh(meal)
         return True
@@ -1022,6 +1043,195 @@ def join(
     return change
 
 
+def album_sources(db: Session, meal_id: int) -> list:
+    """The photos of the album the meal was born from, in order of arrival. Empty for
+    a meal born from anything else."""
+    sources = list(
+        db.scalars(
+            select(MealSource)
+            .where(MealSource.meal_id == meal_id)
+            .order_by(MealSource.id)
+        )
+    )
+    group = sources[0].media_group_id if sources else None
+    if not group:
+        return []
+    return [s for s in sources if s.media_group_id == group and s.kind == "photo"]
+
+
+def split_album(db: Session, user_id: int, meal_id: int) -> Change:
+    """M2b: each photo its own meal, unread, at the album's time. The first stays in
+    this row; ``undo`` puts all of it back."""
+    meal = _own_meal(db, user_id, meal_id)
+    if meal is None:
+        return Change(STALE)
+    first, *others = album_sources(db, meal_id) or [None]
+    if not others:
+        return Change(SAME, meal)
+
+    def write() -> Change:
+        live = crud_meal_item.live(db, meal.id)
+        lines = list(
+            db.scalars(
+                select(MealMessage).where(
+                    MealMessage.meal_id == meal.id,
+                    MealMessage.view.in_(("pending", "line")),
+                )
+            )
+        )
+        before = {
+            **_meal_state(meal, live),
+            "album": {
+                "photos": meal.photos,
+                "reading_status": meal.reading_status,
+                "resolution_source": meal.resolution_source,
+                "resolution_signals": meal.resolution_signals,
+                "lines": [row.id for row in lines],
+            },
+        }
+        now = datetime.now(UTC)
+        for item in live:
+            item.removed_at = now
+        for row in lines:
+            row.view = "other"  # the line of what it was, not of this meal
+        for key in _READ_FIELDS:
+            setattr(meal, key, None)
+        meal.plate_totals = None
+        meal.numbers_basis = "none"
+        meal.photos = [first.file_id]
+        meal.reading_status = "pending"
+        meal.rev = (meal.rev or 0) + 1
+        meal.updated_at = now
+        made = []
+        for source in others:
+            new = crud_meal.build(
+                MealCreate(
+                    meal_time=meal.meal_time,
+                    sent_at=source.sent_at,
+                    photos=[source.file_id],
+                    numbers_basis="none",
+                    time_precision=meal.time_precision,
+                    time_source=meal.time_source,
+                    time_phrase=meal.time_phrase,
+                ),
+                user_id,
+            )
+            new.reading_status = "pending"
+            db.add(new)
+            db.flush()
+            source.meal_id = new.id
+            row = db.scalar(
+                select(MealMessage).where(
+                    MealMessage.chat_id == source.chat_id,
+                    MealMessage.message_id == source.message_id,
+                )
+            )
+            if row is not None:
+                row.meal_id = new.id
+            made.append(new)
+        db.flush()
+        event = crud_record_event.add(
+            db,
+            user_id=user_id,
+            kind="split",
+            meal_id=meal.id,
+            before=before,
+            after={
+                **_meal_state(meal, live),
+                "album": {"meals": [new.id for new in made]},
+            },
+        )
+        db.commit()
+        return Change(DONE, meal, event, meals=made)
+
+    return _rolled_back(db, write)
+
+
+def split_holds(db: Session, event: RecordEvent) -> bool:
+    """Whether the meals still are what the album's split made of them. A read writes
+    no event, so what is read since goes back with the rest; what the person did stays.
+    """
+    ids = [event.meal_id, *event.after["album"]["meals"]]
+    meals = [crud_meal.get_any(db, meal_id) for meal_id in ids]
+    if not all(meals) or any(meal.deleted_at is not None for meal in meals):
+        return False
+    later = db.scalar(
+        select(RecordEvent.id)
+        .where(RecordEvent.meal_id.in_(ids), RecordEvent.id > event.id)
+        .limit(1)
+    )
+    return later is None
+
+
+def _undo_album(db: Session, meal: Meal, event: RecordEvent) -> Change:
+    if not split_holds(db, event):
+        return Change(REFUSED, meal)
+    album = event.before["album"]
+
+    def write() -> Change:
+        now = datetime.now(UTC)
+        gone = []
+
+        def take_back(row: MealMessage) -> None:
+            gone.append(row.message_id)
+            row.view = "other"
+
+        for item in crud_meal_item.live(db, meal.id):
+            if str(item.id) not in event.after["items"]:
+                item.removed_at = now  # read since the split
+        _put_back(db, meal, event)
+        for key in ("photos", "reading_status"):
+            setattr(meal, key, album[key])
+        meal.resolution_source = album["resolution_source"]
+        meal.resolution_signals = album["resolution_signals"]
+        meal.rev = (meal.rev or 0) + 1
+        meal.updated_at = now
+        for row in db.scalars(
+            select(MealMessage).where(
+                MealMessage.meal_id == meal.id,
+                MealMessage.view.in_(("pending", "line")),
+            )
+        ):
+            take_back(row)
+        for row_id in album["lines"]:
+            row = db.get(MealMessage, row_id)
+            if row is not None and row.meal_id == meal.id:
+                row.view = "line"
+        for other_id in event.after["album"]["meals"]:
+            other = crud_meal.get_any(db, other_id)
+            for source in db.scalars(
+                select(MealSource).where(MealSource.meal_id == other.id)
+            ):
+                source.meal_id = meal.id
+            for row in db.scalars(
+                select(MealMessage).where(MealMessage.meal_id == other.id)
+            ):
+                if row.view in ("pending", "line"):
+                    take_back(row)
+                row.meal_id = meal.id
+            for item in crud_meal_item.live(db, other.id):
+                item.removed_at = now
+            other.merged_into_id = meal.id
+            other.deleted_at = now
+            other.rev = (other.rev or 0) + 1
+            other.updated_at = now
+        db.flush()
+        items = [crud_meal_item.get(db, int(key)) for key in event.after["items"]]
+        back = crud_record_event.add(
+            db,
+            user_id=event.user_id,
+            kind=event.kind,
+            meal_id=meal.id,
+            before=event.after,
+            after=_meal_state(meal, items),
+            undoes_event_id=event.id,
+        )
+        db.commit()
+        return Change(DONE, meal, back, gone=gone)
+
+    return _rolled_back(db, write)
+
+
 def replace_item(
     db: Session,
     user_id: int,
@@ -1301,6 +1511,8 @@ def undo(db: Session, user_id: int, event_id: int) -> Change:
     meal = crud_meal.get_any(db, event.meal_id)
     if meal is None:
         return Change(STALE)
+    if "album" in (event.after or {}):
+        return _undo_album(db, meal, event)
     if event.kind in _NO_UNDO or not _still_holds(db, meal, event):
         return Change(REFUSED, meal)
     if "time" in event.after:

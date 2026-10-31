@@ -1330,6 +1330,7 @@ async def resolve_meal_nutrition(
     telegram_id: Optional[int] = None,
     input_ref: Optional[str] = None,
     caption: Optional[str] = None,
+    more_images: tuple = (),
 ) -> ResolutionResult:
     """Entry point for A4.  Returns the best-confidence result available.
 
@@ -1352,15 +1353,20 @@ async def resolve_meal_nutrition(
         The user's own note about the photo (Telegram caption / replayed
         ``inbound_messages.content``).  Reaches the vision call, which is where it
         can correct the food list and the eaten portion.
+    more_images:
+        The rest of an album. All of it is one vision call, and only that: one
+        product found in one photo must not stand for the whole table.
     """
+    album = {"more_images": tuple(more_images)} if more_images else {}
     with SessionLocal() as db:
         signals = await _extract_signals(
             image_data_url,
             telegram_id=telegram_id,
             input_ref=input_ref,
             caption=caption,
+            **album,
         )
-        pipeline = _build_pipeline()
+        pipeline = [VisionFallbackStrategy()] if album else _build_pipeline()
         tried: List[str] = []
         # Per-strategy outcome, so a strategy that BROKE is distinguishable from
         # one that simply found nothing. ``strategy_tried`` is kept unchanged for
@@ -1424,6 +1430,7 @@ async def _extract_signals(
     telegram_id: Optional[int],
     input_ref: Optional[str],
     caption: Optional[str] = None,
+    more_images: tuple = (),
 ) -> ImageSignals:
     """Run barcode extraction and vision analysis concurrently.
 
@@ -1437,21 +1444,14 @@ async def _extract_signals(
     # Shared process-wide singleton — same instance the bot uses, so a runtime
     # model switch (TD-005) is honoured here too. No import of the handler layer.
     svc = get_openai_service()
+    album = {"more_images": more_images} if more_images else {}
 
-    barcode_coro = analyze_and_log(
-        svc.extract_barcode_from_image(image_data_url),
-        kind="barcode_extraction",
-        input_ref=input_ref,
-        telegram_id=telegram_id,
-        model=svc.model_for("barcode"),
-        parse=lambda raw: {"barcode": raw},
-    )
     vision_coro = analyze_and_log(
         # The caption goes to the VISION call only: it is what turns "a plate of
         # fries" into "1/3 of a plate of fries with ranch sauce". The barcode
         # reader gets the image alone — a different job, and user prose would only
         # add noise to digit reading.
-        svc.analyze_food_image(image_data_url, caption=caption),
+        svc.analyze_food_image(image_data_url, caption=caption, **album),
         kind="image",
         input_ref=input_ref,
         telegram_id=telegram_id,
@@ -1459,9 +1459,21 @@ async def _extract_signals(
         parse=parse_nutrition,
     )
 
-    barcode_log_result, vision_result = await asyncio.gather(
-        barcode_coro, vision_coro, return_exceptions=True
-    )
+    if album:
+        barcode_log_result = None
+        (vision_result,) = await asyncio.gather(vision_coro, return_exceptions=True)
+    else:
+        barcode_coro = analyze_and_log(
+            svc.extract_barcode_from_image(image_data_url),
+            kind="barcode_extraction",
+            input_ref=input_ref,
+            telegram_id=telegram_id,
+            model=svc.model_for("barcode"),
+            parse=lambda raw: {"barcode": raw},
+        )
+        barcode_log_result, vision_result = await asyncio.gather(
+            barcode_coro, vision_coro, return_exceptions=True
+        )
 
     # --- Barcode -------------------------------------------------------
     if isinstance(barcode_log_result, Exception):

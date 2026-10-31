@@ -66,6 +66,8 @@ class Screen:
     fill: object | None = None  # a new name's numbers, in the background
     retouch: object | None = None  # the meal's original line, edited silently
     read: object | None = None  # a read to start once this screen is on the message
+    split: object | None = None  # an album split: each photo's line and read to start
+    gone: tuple = ()  # message ids of lines the change took back
 
 
 # --- naming and numbers -----------------------------------------------------

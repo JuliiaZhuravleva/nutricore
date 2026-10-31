@@ -105,6 +105,7 @@ READS_AT_ONCE = 3
 _meal_reads: set = set()
 # The meals a task is reading now, with their diagnostic row. A sweep leaves these be.
 _live_reads: Dict[int, Optional[int]] = {}
+_read_holders: Dict[int, asyncio.Task] = {}  # which task holds a meal in _live_reads
 
 SWEEP_EVERY_SECONDS = 300
 REPLAY_LIMIT = REPROCESS_BATCH_LIMIT  # one start's pending reads; the rest wait
@@ -568,15 +569,23 @@ async def _reading(bot, job: capture.Read) -> tuple:
     """(nutrition, resolution) of the meal's source."""
     if job.kind == capture.IMAGE:
         # Sent to the model as a data URL: Telegram's file URL embeds the bot token.
-        try:
-            payload = await _download_image(bot, job.file_id)
-        except BadRequest as e:
-            raise capture.DeadFile() from e
+        payloads, refused = [], None
+        for file_id in job.file_ids or (job.file_id,):
+            try:
+                payloads.append(await _download_image(bot, file_id))
+            except BadRequest as e:
+                # One photo of an album gone: the others are still the meal.
+                refused = e
+                logger.warning("Meal photo gone: %s", type(e).__name__)
+        if not payloads:
+            raise capture.DeadFile() from refused
+        album = {"more_images": tuple(payloads[1:])} if payloads[1:] else {}
         resolution = await resolve_meal_nutrition(
-            payload,
+            payloads[0],
             telegram_id=job.telegram_id,
             input_ref=job.file_id,
             caption=job.text,
+            **album,
         )
         return resolution.nutrition, resolution
     if job.kind == capture.TEXT:
@@ -648,25 +657,57 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     return True, None
 
 
+async def _album_settles(job: capture.Read) -> None:
+    """Until the album's last photo is old enough. Outside the gate: a wait holds no
+    other meal's read back. Nothing waits for a photo that came alone."""
+    if job.kind != capture.IMAGE:
+        return
+    while True:
+        with SessionLocal() as db:
+            left = capture.album_wait(db, job.meal_id)
+        if left <= 0:
+            return
+        await asyncio.sleep(left)
+
+
+async def _album_went_on(bot, job: capture.Read) -> Optional[capture.Read]:
+    """A photo came during the read: the next read, with the line back on the count.
+    None: the meal is no longer held, in one step with the look at the rows, so that
+    the next photo starts a read of its own."""
+    with SessionLocal() as db:
+        again = capture.album_after(db, job)
+        line = capture.album_line(db, job.meal_id) if again else None
+    if again is None:
+        _live_reads.pop(job.meal_id, None)
+        return None
+    await _retouch(bot, job.chat_id, line)
+    return again
+
+
 async def _read_meal(application: Application, job: capture.Read) -> None:
     """The background read. At most ``READS_AT_ONCE``, each with its own meter."""
     gate = application.bot_data.setdefault(
         "meal_reads_gate", asyncio.Semaphore(READS_AT_ONCE)
     )
     try:
-        async with gate:
-            if job.automatic:
+        while job is not None:
+            await _album_settles(job)
+            async with gate:
                 with SessionLocal() as db:
-                    refused = capture.automatic_start(db, job)
-                if refused is not None:
-                    await _show(application.bot, job, refused.line)
-                    return
-            with metering() as meter:
-                _, dead = await _read_one(application.bot, job, meter)
-        # The picker is a push, and a read nobody asked for pushes nothing: the next
-        # live meal asks.
-        if dead is not None and not job.automatic:
-            await _offer_model_choice(application, job, dead)
+                    job = capture.read_as_of_now(db, job)
+                if job.automatic:
+                    with SessionLocal() as db:
+                        refused = capture.automatic_start(db, job)
+                    if refused is not None:
+                        await _show(application.bot, job, refused.line)
+                        return
+                with metering() as meter:
+                    _, dead = await _read_one(application.bot, job, meter)
+            # The picker is a push, and a read nobody asked for pushes nothing: the
+            # next live meal asks.
+            if dead is not None and not job.automatic:
+                await _offer_model_choice(application, job, dead)
+            job = await _album_went_on(application.bot, job)
     except Exception as e:
         # The record stands; the sweep gives the line its failure.
         logger.error("Meal %s read crashed: %s", job.meal_id, type(e).__name__)
@@ -678,12 +719,21 @@ def _keep_task(task) -> None:
     task.add_done_callback(_meal_reads.discard)
 
 
-def _start_read(application: Application, job: capture.Read) -> None:
+def _start_read(application: Application, job: capture.Read) -> asyncio.Task:
     # Live from now, not from when the task first runs: nothing awaits in between.
     _live_reads[job.meal_id] = job.inbound_id
     task = application.create_task(_read_meal(application, job))
     _keep_task(task)
-    task.add_done_callback(lambda _: _live_reads.pop(job.meal_id, None))
+    _read_holders[job.meal_id] = task
+
+    def let_go(ended) -> None:
+        # Not a later read's hold: an album's read lets go before its task is over.
+        if _read_holders.get(job.meal_id) is ended:
+            del _read_holders[job.meal_id]
+            _live_reads.pop(job.meal_id, None)
+
+    task.add_done_callback(let_go)
+    return task
 
 
 def _pending_at_start() -> list:
@@ -817,7 +867,7 @@ async def _new_meal(
     if born is None:
         return
     if born.joined:
-        await _album_grew(context.bot, came, born)
+        await _album_grew(context.application, came, born)
         return
     # The diagnostic row that /reprocess replays; a voice has nothing to replay yet.
     inbound_id = None
@@ -843,20 +893,79 @@ async def _new_meal(
     _start_read(context.application, job)
 
 
-async def _album_grew(bot, came: capture.Incoming, born: capture.Born) -> None:
-    """Another photo of an album: on the same line, with no second line and no read."""
+async def _album_grew(
+    application: Application, came: capture.Incoming, born: capture.Born
+) -> None:
+    """Another photo of an album, on the same line. A read still to come takes it in
+    by itself; after one that ended, this is the straggler's own."""
     with SessionLocal() as db:
-        line_id = capture.album_line_id(db, born.meal_id)
-    if line_id is None:
-        return
-    try:
-        await bot.edit_message_text(
-            capture.M2_PENDING.format(count=born.joined),
-            chat_id=came.chat_id,
-            message_id=line_id,
+        again = None
+        if born.meal_id not in _live_reads:
+            again = capture.album_again(db, born.meal_id)
+        line = capture.album_line(db, born.meal_id)
+    if again is not None:
+        # Before the await: the next photo must find this read.
+        _live_reads[again.meal_id] = again.inbound_id
+    await _retouch(application.bot, came.chat_id, line)
+    if again is not None:
+        _start_read(application, again)
+
+
+async def _read_split(
+    application: Application,
+    chat_id: int,
+    tapped: Optional[int],
+    split: capture.Split,
+) -> None:
+    """M2b done: each photo gets a line of its own under it, and a read of its own."""
+    tasks = []
+    for message_id, job in split.jobs:
+        line = capture.Line(capture.M1_PENDING, meal_id=job.meal_id)
+        sent = None
+        try:
+            sent = await application.bot.send_message(
+                chat_id,
+                line.text,
+                disable_notification=True,
+                reply_parameters=ReplyParameters(
+                    message_id=message_id, allow_sending_without_reply=True
+                ),
+            )
+        except TelegramError as e:
+            logger.warning("Meal line not sent: %s", type(e).__name__)
+        _map_line(line, sent, "pending")
+        line_id = sent.message_id if sent else None
+        job = replace(job, line_id=line_id, shown=line.text)
+        tasks.append(_start_read(application, job))
+    if tapped is not None:
+        _keep_task(
+            application.create_task(
+                _split_settles(application, chat_id, tapped, split, tasks)
+            )
         )
-    except TelegramError as e:
-        logger.warning("Album line not edited: %s", type(e).__name__)
+
+
+async def _split_settles(
+    application: Application,
+    chat_id: int,
+    tapped: int,
+    split: capture.Split,
+    tasks: list,
+) -> None:
+    await asyncio.gather(*tasks, return_exceptions=True)
+    with SessionLocal() as db:
+        retouch = capture.split_settled(db, split.event_id, tapped)
+    await _retouch(application.bot, chat_id, retouch)
+
+
+async def _take_lines_back(bot, chat_id: int, message_ids: tuple) -> None:
+    """The lines of the meals a way back removed. Best effort: too old to delete, a
+    line stays, and it maps to the meal that holds its photo now."""
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id, message_id)
+        except TelegramError as e:
+            logger.warning("Meal line not removed: %s", type(e).__name__)
 
 
 async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -959,6 +1068,9 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if screen.read:
             # Held from now: an old meal gone pending and held by no task looks stuck.
             _live_reads[screen.read.meal_id] = screen.read.inbound_id
+        if screen.split:
+            for _message_id, job in screen.split.jobs:
+                _live_reads[job.meal_id] = job.inbound_id
         shown.append(screen)
         return screen
 
@@ -975,8 +1087,12 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if shown and shown[0].read:
             job = replace(shown[0].read, tap=update.callback_query.id)
             _start_read(context.application, job)
+        if shown and shown[0].split:
+            await _read_split(context.application, chat_id, message_id, shown[0].split)
     if not shown:
         return
+    if shown[0].gone:
+        await _take_lines_back(context.bot, chat_id, shown[0].gone)
     if shown[0].retouch:
         await _retouch(context.bot, chat_id, shown[0].retouch)
     if shown[0].fill:

@@ -337,7 +337,7 @@ class OpenAIService:
         return response.choices[0].message.content
 
     async def analyze_food_image(
-        self, image_url: str, *, caption: str | None = None
+        self, image_url: str, *, caption: str | None = None, more_images: tuple = ()
     ) -> Dict:
         """Analyze food image using the configured vision-capable model.
 
@@ -346,6 +346,8 @@ class OpenAIService:
         pixels cannot: a brand name, a sauce hidden under the food, and above all
         HOW MUCH was actually eaten ("1/3 порции").  Keyword-only and defaulting
         to None so every existing positional call site is unaffected.
+
+        ``more_images``: the rest of an album, in the order sent. One meal, one call.
         """
         system_prompt = (
             """You are a nutrition expert assistant. Analyze food images and extract nutritional information.
@@ -405,7 +407,18 @@ class OpenAIService:
                     ),
                 }
             )
-        user_content.append({"type": "image_url", "image_url": {"url": image_url}})
+        if more_images:
+            user_content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        "These photos show one meal, in the order they were sent. "
+                        "Count each food once, even if it is in several photos."
+                    ),
+                }
+            )
+        for url in (image_url, *more_images):
+            user_content.append({"type": "image_url", "image_url": {"url": url}})
 
         response = await self._create(
             task="vision",

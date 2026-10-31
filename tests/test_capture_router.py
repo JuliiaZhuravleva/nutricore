@@ -168,8 +168,11 @@ def reader(monkeypatch):
             raise state.error
         return dict(state.answer)
 
-    async def resolve(payload, *, telegram_id, input_ref, caption=None):
-        state.image.append({"payload": payload, "caption": caption, "ref": input_ref})
+    async def resolve(payload, *, telegram_id, input_ref, caption=None, more_images=()):
+        call = {"payload": payload, "caption": caption, "ref": input_ref}
+        if more_images:
+            call["more"] = more_images
+        state.image.append(call)
         if state.gate is not None:
             await state.gate.wait()
         if state.error is not None:
@@ -1373,7 +1376,12 @@ def test_a_tap_on_the_pending_line_keeps_the_late_read_off_it(db, owner, reader)
     assert reading.status == "done"
 
 
-def test_album_photos_share_one_meal_one_line_and_one_read(db, owner, reader):
+def test_album_photos_share_one_meal_one_line_and_one_read(
+    db, owner, reader, monkeypatch
+):
+    from app.services import capture
+
+    monkeypatch.setattr(capture, "ALBUM_WAIT_SECONDS", 0.05)
     first, second = photo(media_group_id="a1"), photo(media_group_id="a1")
     reader.gate = None
 

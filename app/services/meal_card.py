@@ -72,6 +72,7 @@ _INT_MAX = 2**31 - 1  # what an id column holds; a bigger one is not a row
 # The read a meal's line waits for, and what its line says when it does not end well.
 IMAGE, TEXT, VOICE = "image", "text", "voice"
 M1_PENDING = "Фото в дневнике, читаю…"
+M2_PENDING = "{count} фото в дневнике, читаю…"
 M4_PENDING = "Голосовое в дневнике, слушаю…"
 M4D_FAILED = (
     "Голосовое сохранено, разобрать сейчас не вышло.\n"
@@ -470,6 +471,14 @@ def kind_of_read(source_kind: str) -> str:
     if source_kind == "text":
         return TEXT
     return VOICE if source_kind == "voice" else IMAGE
+
+
+def pending_text(kind: str, meal: Meal) -> str:
+    """M1, M2, M4: what a line says while the read is out."""
+    if kind != IMAGE:
+        return M4_PENDING
+    photos = len(meal.photos or [])
+    return M2_PENDING.format(count=photos) if photos > 1 else M1_PENDING
 
 
 def _read_kind(db, meal: Meal) -> str:
@@ -1037,8 +1046,9 @@ def _v_line(t: _Tap, data: str, mid: str) -> Screen:
         kind = _read_kind(t.db, meal)
         if status == "pending" and kind != TEXT:
             # Still the read's line: the answer lands here.
-            text = M1_PENDING if kind == IMAGE else M4_PENDING
-            return Screen(text, None, meal_id=meal.id, view="pending")
+            return Screen(
+                pending_text(kind, meal), None, meal_id=meal.id, view="pending"
+            )
     what = _what(t.db, meal)
     head = line_head(meal, t.zone)
     text = f"{head}: {what}." if what else f"{head}."
@@ -1482,7 +1492,10 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
         return _unknown(t, data)
     if meal.deleted_at:
         return _removed_screen(t, meal, change.event.id, back)
-    return _after_undo(t, meal, event, back, notice=UNDONE, undo=change.event.id)
+    # An album's split has no way back from its way back: M2b can be asked again.
+    undo = None if event.kind == "split" else change.event.id
+    screen = _after_undo(t, meal, event, back, notice=UNDONE, undo=undo)
+    return replace(screen, gone=tuple(change.gone))
 
 
 # --- when it was eaten ------------------------------------------------------

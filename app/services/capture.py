@@ -31,6 +31,7 @@ from app.models.meal import Meal
 from app.models.meal_message import MealMessage
 from app.models.meal_reading import MealReading
 from app.models.meal_source import MealSource
+from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import (
@@ -48,6 +49,7 @@ from app.services.meal_card import (  # noqa: F401 (the copy is read from here t
     DELETE,
     IMAGE,
     M1_PENDING,
+    M2_PENDING,
     M4_PENDING,
     M4D_FAILED,
     M7_FAILED,
@@ -81,7 +83,6 @@ logger = logging.getLogger(__name__)
 
 # --- the copy (section 5.5) ---------------------------------------------------------
 
-M2_PENDING = "{count} фото в дневнике, читаю…"
 M1B_HINT = "На этом всё. Поправить можно кнопками или ответом на это сообщение."
 M3A_NO_FOOD = "Еды здесь не видно, в дневник не записано."
 M3B_QUESTION = "Вопросы здесь пока не разбираются, в дневник не записано."
@@ -111,11 +112,17 @@ M9B_STALE = "Это кнопка старого меню, в дневник не
 AGAIN_TOAST = "Читаю"
 AGAIN_FAILED_TOAST = "Пока не вышло, запись сохранена"
 M7B_ASK = "<b>✏️ Что было?</b>\nНапиши одним сообщением."
+M2B_SPLIT = (
+    "<b>➖ Разделить {count} фото на отдельные приёмы?</b>\n"
+    "Каждое фото будет распознано заново, отдельно от других. "
+    "Вернуть как было можно кнопкой «↩️ Вернуть»."
+)
 
 FIX = "✏️ Исправить"
 TIME = "🕐 Время"
 UNDO = "↩️ Вернуть"
 SPLIT = "➖ Отделить"
+SPLIT_ALBUM = "➖ Разделить"
 IT_IS_FOOD = "🍽 Это еда"
 WHOLE_MEAL = "🍽 Весь приём"
 SEPARATE = "➕ Отдельный приём"
@@ -151,6 +158,10 @@ RETRY_AFTER = (timedelta(minutes=5), timedelta(hours=1), timedelta(hours=6))
 RETRY_WINDOW = timedelta(hours=24)
 RETRIES_PER_SWEEP = 5
 STUCK_AFTER = timedelta(minutes=5)
+
+# An album, M2: the read starts this long after the last photo, and shows this many.
+ALBUM_WAIT_SECONDS = 2  # ASSUMED, section 5.5
+ALBUM_MAX = 10
 
 
 class NoVoiceReader(Exception):
@@ -242,6 +253,7 @@ def _user(db, came: Incoming) -> User:
 
 def _source(came: Incoming, user: User, meal_id: Optional[int]) -> MealSource:
     return MealSource(
+        created_at=datetime.now(UTC),  # to the instant: an album's wait counts from it
         user_id=user.id,
         meal_id=meal_id,
         origin_meal_id=meal_id,
@@ -1097,7 +1109,7 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
         first = _record_text(t.db, meal, t.user)
         markup = _reading_markup(meal.id)
     else:
-        first, markup = (M1_PENDING if job.kind == IMAGE else M4_PENDING), None
+        first, markup = meal_card.pending_text(job.kind, meal), None
     return meal_card.Screen(
         first,
         markup,
@@ -1230,6 +1242,18 @@ class Read:
     inbound_id: Optional[int] = None
     again: bool = False  # 🔁 Ещё раз: a file gone by now is said to be gone
     tap: Optional[str] = None  # the callback query it answers, if it fails
+    file_ids: tuple = ()  # an album: what the model is shown, in order of arrival
+    source_ids: tuple = ()
+    replaces: bool = False  # a straggler's re-read, over a reading that stands
+    alone: bool = False  # a photo split off its album: never read with it again
+
+
+@dataclass(frozen=True)
+class Split:
+    """M2b done: the way back, and each photo's message with its read."""
+
+    event_id: int
+    jobs: tuple
 
 
 @dataclass
@@ -1244,25 +1268,42 @@ class Born:
     job: Optional[Read] = None
 
 
-def _join_album(db, came: Incoming, user: User) -> Optional[Born]:
-    """Found by the database, not memory. The album's read comes with its own step."""
+def _join_album(
+    db, came: Incoming, user: User, said: Optional[SaidTime]
+) -> Optional[Born]:
+    """Found by the database, not memory. An album split in meals, or one that is gone,
+    has no meal to join: the photo is its own."""
     if not came.media_group_id or came.kind != "photo":
         return None
-    first = db.scalar(
-        select(MealSource)
-        .where(
-            MealSource.user_id == user.id,
-            MealSource.media_group_id == came.media_group_id,
-            MealSource.meal_id.is_not(None),
+    meals = list(
+        db.scalars(
+            select(Meal)
+            .join(MealSource, MealSource.meal_id == Meal.id)
+            .where(
+                MealSource.user_id == user.id,
+                MealSource.media_group_id == came.media_group_id,
+                Meal.deleted_at.is_(None),
+            )
+            .distinct()
         )
-        .limit(1)
     )
-    if first is None:
+    if len(meals) != 1:
         return None
-    meal = db.get(Meal, first.meal_id)
+    meal = meals[0]
     meal.photos = [*(meal.photos or []), came.file_id]
+    if said and meal.time_source == "sent":  # any caption counts; a hand's time stays
+        for key, value in _time_columns(came.sent_at, None, said).items():
+            setattr(meal, key, value)
     source = _source(came, user, meal.id)
     db.add(source)
+    db.add(
+        MealMessage(
+            chat_id=came.chat_id,
+            message_id=came.message_id,
+            meal_id=meal.id,
+            view="source",
+        )
+    )
     db.commit()
     return Born(meal.id, source.id, meal.rev or 0, joined=len(meal.photos))
 
@@ -1351,7 +1392,7 @@ def born(
     said = _said(told, came.kind, came.sent_at, came.forward_date, user)
     told = said.rest if said else told
     try:
-        joined = _join_album(db, came, user)
+        joined = _join_album(db, came, user, said)
         if joined is not None:
             return joined
         if came.kind == "text":
@@ -1412,13 +1453,176 @@ def born(
     return Born(meal.id, source.id, meal.rev or 0, first=first, job=job)
 
 
-def album_line_id(db, meal_id: int) -> Optional[int]:
-    """The line of a meal still being read, to count the album's photos on."""
-    return db.scalar(
-        select(MealMessage.message_id).where(
-            MealMessage.meal_id == meal_id, MealMessage.view == "pending"
-        )
+# --- an album, M2 and M2a --------------------------------------------------------------
+
+
+def _standing_line(db, meal: Meal) -> Line:
+    user = db.get(User, meal.user_id)
+    text = _record_text(db, meal, user)
+    return Line(text, meal_card.line_markup(db, meal), meal_id=meal.id)
+
+
+def album_line(db, meal_id: int) -> Optional[Retouch]:
+    """What the album's line says now: the count while it is read, else its record."""
+    line, meal = _line_of(db, meal_id), db.get(Meal, meal_id)
+    if line is None or meal is None:
+        return None
+    if line.view == "pending":
+        text = M2_PENDING.format(count=len(meal.photos or []))
+        return Retouch(line.message_id, text, None)
+    standing = _standing_line(db, meal)
+    return Retouch(line.message_id, standing.text, standing.markup)
+
+
+def album_wait(db, meal_id: int) -> float:
+    """Seconds until the read may start: from the last photo of an album, by the rows.
+    The wall clock on purpose: the same one that stamped ``created_at``."""
+    last = db.scalar(
+        select(MealSource.created_at)
+        .where(MealSource.meal_id == meal_id, MealSource.media_group_id.is_not(None))
+        .order_by(MealSource.id.desc())
+        .limit(1)
     )
+    if last is None:
+        return 0
+    passed = (datetime.now(UTC) - _aware(last)).total_seconds()
+    return max(ALBUM_WAIT_SECONDS - passed, 0)
+
+
+def read_as_of_now(db, job: Read) -> Read:
+    """Right before the call: the album as it stands. Up to ten photos, every caption."""
+    if job.kind != IMAGE:
+        return job
+    sources = meal_items.album_sources(db, job.meal_id)
+    if len(sources) < 2:
+        return job
+    user = db.get(User, db.get(Meal, job.meal_id).user_id)
+    told = []
+    for source in sources:
+        said = _said(
+            source.text, source.kind, source.sent_at, source.forward_date, user
+        )
+        words = said.rest if said else source.text
+        if words:
+            told.append(words)
+    shown = sources[:ALBUM_MAX]
+    return replace(
+        job,
+        file_ids=tuple(source.file_id for source in shown),
+        source_ids=tuple(source.id for source in shown),
+        text="\n".join(told) or None,
+    )
+
+
+def _touched(db, meal_id: int) -> bool:
+    """Whether the person changed what is in this meal. A time is no matter of a read,
+    and a split that was taken back left nothing."""
+    return (
+        db.scalar(
+            select(RecordEvent.id)
+            .where(
+                RecordEvent.meal_id == meal_id,
+                RecordEvent.kind.not_in(("time", "reread", "split")),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def album_again(db, meal_id: int) -> Optional[Read]:
+    """A straggler's read of the whole album. None: past the limit, or the person has
+    been here, and their record stands. The photo is kept either way."""
+    meal = db.get(Meal, meal_id)
+    if meal is None or meal.deleted_at is not None:
+        return None
+    if len(meal_items.album_sources(db, meal_id)) > ALBUM_MAX:
+        return None
+    if _touched(db, meal_id):
+        return None
+    had_items = bool(crud_meal_item.live(db, meal_id))
+    job = read_again(db, meal_id)
+    return replace(job, replaces=had_items) if job else None
+
+
+def album_after(db, job: Read) -> Optional[Read]:
+    """The read that has just ended missed a photo that came during it."""
+    if job.kind != IMAGE or job.alone:
+        return None
+    shown = meal_items.album_sources(db, job.meal_id)[:ALBUM_MAX]
+    read = job.source_ids or (job.source_id,)
+    if all(source.id in read for source in shown):
+        return None
+    return album_again(db, job.meal_id)
+
+
+def split_settled(db, event_id: int, message_id: int) -> Optional[Retouch]:
+    """The reads of a split ended: the tapped message stops saying «читаю», and keeps
+    the way back while there is one. Nothing if the way back was taken: that screen
+    stands."""
+    event = db.get(RecordEvent, event_id)
+    meal = db.get(Meal, event.meal_id) if event else None
+    undone = db.scalar(
+        select(RecordEvent.id).where(RecordEvent.undoes_event_id == event_id).limit(1)
+    )
+    if meal is None or meal.deleted_at is not None or undone is not None:
+        return None
+    markup = None
+    if meal_items.split_holds(db, event):
+        markup = _undo_markup(meal.id, event.id)
+    return Retouch(message_id, _standing_line(db, meal).text, markup)
+
+
+def _v_split_ask(t, data: str, mid: str, back: str) -> meal_card.Screen:
+    """M2b. A question, so it reads nothing."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    count = len(meal_items.album_sources(t.db, meal.id))
+    if not count:
+        return meal_card._unknown(t, data)
+    if count == 1:
+        return meal_card._card(t, meal, back)
+    markup = InlineKeyboardMarkup(
+        [
+            [_button(SPLIT_ALBUM, f"ml:za:{meal.id}")],
+            meal_card._to_card(meal.id, back),
+        ]
+    )
+    return meal_card.Screen(
+        M2B_SPLIT.format(count=count), markup, meal_id=meal.id, view="card"
+    )
+
+
+def _v_split_do(t, data: str, mid: str) -> meal_card.Screen:
+    """➖ Разделить. A second tap pays for nothing, and a read already out is not split
+    from under itself."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    sources = meal_items.album_sources(t.db, meal.id)
+    if not sources:
+        return meal_card._unknown(t, data)
+    if len(sources) == 1:
+        return meal_card.Screen("", None, toast=meal_items.SAME_TOAST)
+    if meal.reading_status == "pending":
+        return meal_card.Screen("", None, toast=AGAIN_TOAST)
+    change = meal_items.split_album(t.db, t.user.id, meal.id)
+    if change.status != meal_items.DONE:
+        return meal_card._stale_meal(t)
+    jobs = []
+    for source in sources:
+        job = _job_of(t.db, t.db.get(Meal, source.meal_id))
+        jobs.append((source.message_id, replace(job, alone=True)))
+    return meal_card.Screen(
+        M2_PENDING.format(count=len(sources)),
+        InlineKeyboardMarkup([[meal_card._undo_button(change.event.id, "r")]]),
+        meal_id=meal.id,
+        view="other",  # not this meal's line: that one is sent now
+        split=Split(change.event.id, tuple(jobs)),
+    )
+
+
+meal_card.add_verbs(
+    (re.compile(rf"ml:zq:{_SID}:{meal_card._BACK}"), _v_split_ask),
+    (re.compile(rf"ml:za:{_SID}"), _v_split_do),
+)
 
 
 # --- the read comes back --------------------------------------------------------------
@@ -1437,7 +1641,7 @@ def _store_reading(
     db.add(
         MealReading(
             meal_id=job.meal_id,
-            source_ids=[job.source_id],
+            source_ids=list(job.source_ids) or [job.source_id],
             kind=_READING_KIND[job.kind],
             model=model,
             output=output,
@@ -1514,9 +1718,17 @@ def read_done(
         if meal.reading_status == "pending":
             meal.reading_status = "read"
             db.commit()
+        if job.replaces and meal.deleted_at is None and _claim_view(db, job):
+            return Done(_standing_line(db, meal))
         return Done()
 
     names = meal_items.names_read(meal_in)
+    if not names and job.replaces:
+        # The last photo has no food: what the others showed stands.
+        _store_reading(db, job, status="no_food", output=nutrition, model=model)
+        meal.reading_status = "read"
+        db.commit()
+        return Done(_standing_line(db, meal) if _claim_view(db, job) else None)
     if not names:
         _store_reading(
             db, job, status="no_food", output=nutrition, applied=True, model=model
@@ -1524,7 +1736,9 @@ def read_done(
         line = _no_food(db, job, meal)
         return Done(line if _claim_view(db, job) else None)
 
-    meal_items.apply_read(db, meal, job.rev, meal_in, source_id=job.source_id)
+    meal_items.apply_read(
+        db, meal, job.rev, meal_in, source_id=job.source_id, replacing=job.replaces
+    )
     _store_reading(db, job, status="done", output=nutrition, applied=True, model=model)
     user = db.get(User, meal.user_id)
     learn = {
@@ -1618,6 +1832,17 @@ def read_failed(
     failure is kept and says nothing."""
     meal = db.get(Meal, job.meal_id)
     waited = meal.reading_status == "pending"
+    if (
+        waited
+        and len(meal_items.album_sources(db, meal.id)) > 1
+        and crud_meal_item.live(db, meal.id)
+    ):
+        # A straggler's re-read: the reading before it stands. From the rows, so a
+        # sweep after a restart finds it too.
+        meal.reading_status = "read"
+        db.commit()
+        _store_reading(db, job, status=status, error=error, model=model)
+        return Done(_standing_line(db, meal) if _claim_view(db, job) else None)
     if waited:
         meal.reading_status = "failed"
         db.commit()
@@ -1643,7 +1868,10 @@ def _line_of(db, meal_id: int) -> Optional[MealMessage]:
     to the meal too, and a screen opened on it is the person's."""
     line = db.scalar(
         select(MealMessage)
-        .where(MealMessage.meal_id == meal_id, MealMessage.view != "source")
+        .where(
+            MealMessage.meal_id == meal_id,
+            MealMessage.view.not_in(("source", "other")),
+        )
         .order_by(MealMessage.id)
         .limit(1)
     )
