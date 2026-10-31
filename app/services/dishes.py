@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 CALLBACK_PREFIX = "dh:"
 NOP = "dh:nop"
 PAGE = 4
+FOUND_MORE = "Показаны {shown} из {found}. Напиши точнее."
 HISTORY_PAGE = 9
 CHIPS_ROW = 3
 ROW_LABEL_MAX = 34
@@ -395,8 +396,9 @@ def _card(
                     f"dh:n:{fid}:{0 if open_now else 1}{tail}",
                 )
             )
-        third = [_button("Ещё ›", f"dh:mo:{fid}:{back}")]
-        if open_now:
+        # A hidden dish's rare verbs only answer with this card, so none is offered.
+        third = [] if dish.hidden_at else [_button("Ещё ›", f"dh:mo:{fid}:{back}")]
+        if open_now and not dish.hidden_at:
             edit = _button("✏️ Править цифры", f"dh:nm:{fid}{tail}")
             if len(second) < 2:
                 second.append(edit)
@@ -409,6 +411,7 @@ def _card(
             rows.append(third)
             if undo_row:
                 rows.append(undo_row)
+        rows = [row for row in rows if row]
     rows.append(_back_row(back))
     screen = _screen(lines, rows, toast=toast)
     return _with_notice(screen, notice)
@@ -518,6 +521,14 @@ def _missed(t: _Tap, ask: dict, text: str, rows: list) -> Screen:
     return _screen([FIND_TITLE, f"По «{said}» ничего не нашлось. Напиши иначе."], rows)
 
 
+def _more_found(t: _Tap, ask: dict, found: list) -> list:
+    """Lines under a search cut to its rows. The slot stays: a narrower word is next."""
+    if len(found) <= PAGE:
+        return []
+    _open_slot(t, ask["kind"], ask.get("back"), food_id=ask.get("food_id"))
+    return [FOUND_MORE.format(shown=PAGE, found=len(found))]
+
+
 def _typed_find(t: _Tap, ask: dict, text: str) -> Screen:
     found = _found(t, text)
     back = [[_button(ALL, "dh:l:0")]]
@@ -525,7 +536,8 @@ def _typed_find(t: _Tap, ask: dict, text: str) -> Screen:
         return _missed(t, ask, text, back)
     said = _esc(" ".join(text.split()))
     rows = _dish_rows(t, found[:PAGE], _eaten(t), DEFAULT_BACK)
-    return _screen([TITLE, f"Нашлось по «{said}»:"], [*rows, *back])
+    lines = [TITLE, f"Нашлось по «{said}»:", *_more_found(t, ask, found)]
+    return _screen(lines, [*rows, *back])
 
 
 # --- the card and its small verbs -------------------------------------------
@@ -691,7 +703,9 @@ def _v_log(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
         _to_dish(dish.id, back),
     ]
     return Screen(
-        favorites.logged_line(dish.canonical_name, meal, dish, shows_numbers(t.user)),
+        favorites.logged_line(
+            t.db, dish.canonical_name, meal, dish, shows_numbers(t.user)
+        ),
         InlineKeyboardMarkup(rows),
         toast=LOG_TOAST,
         meal_id=meal.id,
@@ -1043,7 +1057,7 @@ def _typed_merge_find(t: _Tap, ask: dict, text: str) -> Screen:
         return _missed(t, ask, text, [_to_dish(dish.id, back)])
     said = _esc(" ".join(text.split()))
     return _screen(
-        [_merge_title(dish), f"Нашлось по «{said}»:"],
+        [_merge_title(dish), f"Нашлось по «{said}»:", *_more_found(t, ask, found)],
         [*_target_rows(dish, found[:PAGE], back), _to_dish(dish.id, back)],
     )
 
@@ -1078,6 +1092,7 @@ def _merge(
         before={
             "merged_into": None,
             "target_hidden": meal_card._stamp(target_hidden) if target_hidden else None,
+            "target_used": target.times_used,
         },
         after={
             "merged_into": target.id,
@@ -1147,8 +1162,14 @@ def _unmerge(t: _Tap, source: PersonalFood, event: RecordEvent, back: str) -> Sc
         fav = t.db.get(FavoriteMeal, fav_id)
         if fav is not None:
             fav.removed_at = None
-    hidden = (event.before or {}).get("target_hidden")
-    if hidden and target.hidden_at is None:
+    before = event.before or {}
+    hidden = before.get("target_hidden")
+    # A dish eaten or starred since the merge was asked for again, so it stays.
+    in_use = (
+        before.get("target_used") != target.times_used
+        or crud_favorite_meal.active_of_dish(t.db, target.id) is not None
+    )
+    if hidden and target.hidden_at is None and not in_use:
         target.hidden_at = datetime.fromtimestamp(hidden, UTC)
     source.merged_into_id = None
     new = crud_record_event.add(

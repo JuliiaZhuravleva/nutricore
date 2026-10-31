@@ -27,6 +27,7 @@ from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_favorite_meal import crud_favorite_meal
+from app.crud.crud_meal_item import crud_meal_item
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
@@ -119,9 +120,9 @@ def _num(value) -> str | None:
         return None
 
 
-def _kcal(value, dish: PersonalFood | None) -> str:
+def _kcal(value, dish: PersonalFood | None, grams: float | None) -> str:
     """A number nobody checked says so."""
-    sure = dish is not None and dish.numbers_quality in meal_items._VERIFIED
+    sure = dish is not None and meal_items.numbers_checked(dish, grams)
     return f"{'' if sure else '≈ '}{round(float(value))} ккал"
 
 
@@ -138,10 +139,10 @@ def _numbers(db, fav: FavoriteMeal, dish: PersonalFood | None) -> tuple[dict, fl
     return portion.numbers or {}, portion.grams
 
 
-def _macros(numbers: dict, dish: PersonalFood | None) -> str:
+def _macros(numbers: dict, dish: PersonalFood | None, grams: float | None) -> str:
     if numbers.get("calories") is None:
         return _NOT_COUNTED
-    parts = [f"🔥 {_kcal(numbers['calories'], dish)}"]
+    parts = [f"🔥 {_kcal(numbers['calories'], dish, grams)}"]
     for label, key in (("Б", "proteins"), ("Ж", "fats"), ("У", "carbohydrates")):
         shown = _num(numbers.get(key))
         if shown is not None:
@@ -149,11 +150,15 @@ def _macros(numbers: dict, dish: PersonalFood | None) -> str:
     return " · ".join(parts)
 
 
-def logged_line(name: str, meal: Meal, dish: PersonalFood | None, numbers: bool) -> str:
+def logged_line(
+    db, name: str, meal: Meal, dish: PersonalFood | None, numbers: bool
+) -> str:
     """O10; with the numbers on, as a fresh line says them."""
     tail = ""
     if numbers and meal.calories is not None:
-        tail = f" · {_kcal(meal.calories, dish)}"
+        items = crud_meal_item.live(db, meal.id)
+        grams = items[0].base_grams if items else None
+        tail = f" · {_kcal(meal.calories, dish, grams)}"
     return f"Записано: {_card()._esc(name)}{tail}."
 
 
@@ -179,10 +184,11 @@ def _row_label(db, fav: FavoriteMeal, numbers: bool) -> str:
     card = _card()
     dish = crud_favorite_meal.dish_if_any(db, fav)
     name = card._capital(dish.canonical_name if dish is not None else fav.name)
-    calories = _numbers(db, fav, dish)[0].get("calories")
+    held, grams = _numbers(db, fav, dish)
+    calories = held.get("calories")
     if not numbers or calories is None:
         return card._cut(name, PAIR_LABEL_MAX)
-    tail = f" · {_kcal(calories, dish)}"
+    tail = f" · {_kcal(calories, dish, grams)}"
     return card._cut(name, ROW_LABEL_MAX - len(tail)) + tail
 
 
@@ -249,7 +255,7 @@ def item_screen(
     if portion:
         lines.append(portion)
     if shown:
-        lines.append(_macros(numbers, dish))
+        lines.append(_macros(numbers, dish, grams))
     text = "\n".join(lines)
     middle = [_btn("⚖️ Порция", "g", fav.id)]
     if not numbers_on:
@@ -390,7 +396,7 @@ def _v_log(t, data: str, fid: str, chip: str) -> Screen:
         _to_list(),
     ]
     return Screen(
-        logged_line(name, meal, dish, shows_numbers(t.user)),
+        logged_line(t.db, name, meal, dish, shows_numbers(t.user)),
         InlineKeyboardMarkup(rows),
         toast=LOG_TOAST,
         meal_id=meal.id,
@@ -454,6 +460,7 @@ def _v_restore(t, data: str, fid: str, page: str) -> Screen:
         return item_screen(t, fav, int(page))
     if dish is not None:
         dish.hidden_at = None
+        fav.personal_food_id = dish.id  # it may have merged while this was off
     crud_favorite_meal.set_removed(t.db, fav, False)
     return item_screen(t, fav, int(page), notice=_card().UNDONE)
 

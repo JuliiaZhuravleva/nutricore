@@ -260,6 +260,8 @@ def line_head(meal: Meal, zone, plain: str = "Записано") -> str:
         return f"Записано на {_when(meal, zone)} {FORWARD_WORDS}"
     if meal.time_source == "said":
         return f"Записано на {_when(meal, zone)}"
+    if meal.time_source == "edited" and meal.time_precision == DAY_ONLY:
+        return f"Записано на {_when(meal, zone)}"  # O1b: a day, chosen on another day
     return plain
 
 
@@ -434,9 +436,7 @@ def _dish_tag(db, item: MealItem, meal: Meal) -> Optional[str]:
             if item.personal_food_id
             else None
         )
-        sure = dish is not None and (
-            dish.numbers_by_user or dish.numbers_quality in meal_items._VERIFIED
-        )
+        sure = dish is not None and meal_items.numbers_checked(dish, item.base_grams)
         tag = meal_items.TAG_DISH if sure else meal_items.TAG_DISH_UNVERIFIED
     elif source == "model":
         read = meal.photos and not _typed_later(db, item)

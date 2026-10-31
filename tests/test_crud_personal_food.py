@@ -364,7 +364,7 @@ class _CapturingSession:
 
     def execute(self, stmt, params=None):
         self.stmt, self.params = stmt, params
-        return SimpleNamespace(first=lambda: None)
+        return SimpleNamespace(all=lambda: [])
 
     def rollback(self):  # pragma: no cover - only used by the failure test
         self.rolled_back = True

@@ -219,6 +219,13 @@ def _per_100(dish: PersonalFood) -> Optional[dict]:
     }
 
 
+def numbers_checked(dish: PersonalFood, grams: Optional[float]) -> bool:
+    """Whether a portion of this dish is what its checked numbers say. They are per
+    100 g, so with no weight the portion is a copy of an older one (item 86)."""
+    checked = dish.numbers_by_user or dish.numbers_quality in _VERIFIED
+    return bool(checked and grams)
+
+
 def _scaled(numbers: dict, factor: float) -> dict:
     return {
         key: None if value is None else round(value * factor, 2)
@@ -830,7 +837,7 @@ def save_exact(
         known = [portion.numbers for portion in portions if portion.numbers]
         totals = _summed(known)
         unverified = any(
-            portion.numbers and dish.numbers_quality not in _VERIFIED
+            portion.numbers and not numbers_checked(dish, portion.grams)
             for dish, portion in zip(dishes, portions)
         )
         groups = [
@@ -1973,6 +1980,7 @@ def _put_back(db: Session, meal: Meal, event: RecordEvent) -> None:
             continue
         for key in _ITEM_FIELDS:
             setattr(item, key, state[key])
+        item.personal_food_id = _live_dish_id(db, state["personal_food_id"])
         if state["removed"] != wrote["removed"]:
             item.removed_at = now if state["removed"] else None
 
@@ -2001,6 +2009,28 @@ def _undo_time(db: Session, meal: Meal, event: RecordEvent) -> Change:
     return _rolled_back(db, write)
 
 
+def _live_dish_id(db: Session, food_id: Optional[int]) -> Optional[int]:
+    """Where a merged dish went: an undo neither stops at a merge nor goes back to the
+    merged row."""
+    dish = db.get(PersonalFood, food_id) if food_id else None
+    return crud_personal_food.live_of(db, dish).id if dish is not None else food_id
+
+
+def _past_merges(db: Session, state: dict) -> dict:
+    """A state with its links past any merge. A merge moves an item's link and nothing
+    else: the record is what it was, so it does not count as a change since."""
+    return {
+        **state,
+        "items": {
+            key: {
+                **item,
+                "personal_food_id": _live_dish_id(db, item["personal_food_id"]),
+            }
+            for key, item in state["items"].items()
+        },
+    }
+
+
 def _still_holds(db: Session, meal: Meal, event: RecordEvent) -> bool:
     wrote = event.after or {}
     if "time" in wrote:
@@ -2008,7 +2038,9 @@ def _still_holds(db: Session, meal: Meal, event: RecordEvent) -> bool:
     if set(wrote) != {"meal", "items"}:
         return False
     items = [crud_meal_item.get(db, int(key)) for key in wrote["items"]]
-    return all(items) and _meal_state(meal, items) == wrote
+    if not all(items):
+        return False
+    return _past_merges(db, _meal_state(meal, items)) == _past_merges(db, wrote)
 
 
 _NO_UNDO = ("join", "split")  # ➖ Отделить and 🔗 Объединить are their ways back

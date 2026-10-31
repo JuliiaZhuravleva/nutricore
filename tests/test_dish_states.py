@@ -176,7 +176,7 @@ class _CapturingSession:
 
     def execute(self, stmt, params=None):
         self.stmt = stmt
-        return SimpleNamespace(first=lambda: None)
+        return SimpleNamespace(all=lambda: [])
 
 
 def test_the_ann_statement_filters_inside_the_query_for_the_next_best_match():
@@ -187,8 +187,8 @@ def test_the_ann_statement_filters_inside_the_query_for_the_next_best_match():
     sql = " ".join(str(session.stmt.compile(dialect=postgresql.dialect())).split())
     where = sql.split("WHERE", 1)[1].split("ORDER BY", 1)[0]
     assert "pf.user_id" in where  # known-positive: this is the clause that scopes
-    assert "pf.hidden_at IS NULL" in where
-    assert "pf.merged_into_id IS NULL" in where
+    # A merged row's words still count: the Python past the query answers with its dish.
+    assert "pf.hidden_at IS NULL OR pf.merged_into_id IS NOT NULL" in where
 
 
 # --- the learning write-back ------------------------------------------------------

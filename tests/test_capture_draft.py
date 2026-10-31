@@ -855,7 +855,8 @@ def test_m12_is_not_sent_while_it_would_be_false(db, owner, reader, unseen):
     db.commit()
     assert _rollouts(send(text("рис"))) == []
     db.expire_all()
-    assert db.get(User, owner.id).settings["rollout_seen"] is True
+    # It waits for drafts to go off: tests/test_dish_base_edges.py walks that.
+    assert "rollout_seen" not in db.get(User, owner.id).settings
 
 
 def test_m12_says_the_dishes_are_in_the_menu_and_they_are():

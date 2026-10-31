@@ -93,9 +93,14 @@ class CRUDPersonalFood:
         This is the writing side, so it is not a list: a hidden dish answers, because
         typing its name brings it back and a new row would break the unique key. A
         merged name answers with the dish it went into. A dish's own name beats
-        another's old name.
+        another's old name, and an old name two dishes held goes to the newer of them:
+        with no order Postgres would decide, and could change its mind.
         """
-        stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
+        stmt = (
+            select(PersonalFood)
+            .where(PersonalFood.user_id == user_id)
+            .order_by(PersonalFood.id)
+        )
         rows = db.execute(stmt).scalars().all()
         by_id = {food.id: food for food in rows}
         names = {}
@@ -222,7 +227,9 @@ class CRUDPersonalFood:
                 existing.meal_id = meal_id
             if resolution_source is not None:
                 existing.resolution_source = resolution_source
-            if barcode is not None:
+            if barcode is not None and not self._merged_holds_barcode(
+                db, existing, barcode
+            ):
                 existing.barcode = barcode
             if brand is not None:
                 existing.brand = brand
@@ -366,18 +373,36 @@ class CRUDPersonalFood:
         the same barcode can legitimately land on two rows (same product confirmed
         under two different vision-read names). Return the most-used row rather than
         raising MultipleResultsFound (F6).
+
+        A merged row's barcode answers with the dish it went into: the product is still
+        that product, and a miss would send the scan to the outside base, whose name
+        overwrites the dish or starts a new one. A hidden dish serves nothing.
         """
         stmt = (
             select(PersonalFood)
-            .where(
-                PersonalFood.user_id == user_id,
-                PersonalFood.barcode == barcode,
-                PersonalFood.hidden_at.is_(None),
-                PersonalFood.merged_into_id.is_(None),
-            )
+            .where(PersonalFood.user_id == user_id, PersonalFood.barcode == barcode)
             .order_by(PersonalFood.times_used.desc(), PersonalFood.id.desc())
         )
-        return db.execute(stmt).scalars().first()
+        rows = db.execute(stmt).scalars().all()
+        rows = sorted(rows, key=lambda food: food.merged_into_id is not None)  # stable
+        for food in rows:
+            dish = self.live_of(db, food)
+            if dish.hidden_at is None and dish.merged_into_id is None:
+                return dish
+        return None
+
+    def _merged_holds_barcode(
+        self, db: Session, dish: PersonalFood, barcode: str
+    ) -> bool:
+        """A scan of a merged row's barcode, written back: its dish keeps its own."""
+        stmt = select(PersonalFood).where(
+            PersonalFood.user_id == dish.user_id,
+            PersonalFood.barcode == barcode,
+            PersonalFood.merged_into_id.is_not(None),
+        )
+        return any(
+            self.live_of(db, food).id == dish.id for food in db.scalars(stmt).all()
+        )
 
     def get_embeddings_for_food(
         self,
@@ -443,14 +468,13 @@ class CRUDPersonalFood:
             FROM personal_food_embeddings pfe
             JOIN personal_foods pf ON pf.id = pfe.personal_food_id
             WHERE pf.user_id = :user_id
-              AND pf.hidden_at IS NULL
-              AND pf.merged_into_id IS NULL
+              AND (pf.hidden_at IS NULL OR pf.merged_into_id IS NOT NULL)
             ORDER BY cosine_distance
-            LIMIT 1
+            LIMIT 20
             """
         )
         try:
-            row = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).first()
+            rows = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).all()
         except Exception as exc:
             # A SYSTEMIC failure (pgvector missing, embedding-dimension mismatch,
             # dropped connection, a SQL bug) — NOT a routine no-match, which is the
@@ -486,17 +510,19 @@ class CRUDPersonalFood:
                 f"ANN query failed for user_id={user_id}: {exc.__class__.__name__}"
             ) from exc
 
-        if row is None:
-            return None
-
-        distance = float(row.cosine_distance)
-        if distance > threshold:
-            return None
-
-        pf = db.get(PersonalFood, row.personal_food_id)
-        if pf is None:
-            return None
-        return pf, distance
+        # A merged row's words answer with the dish it went into. Whether that one is
+        # hidden takes the chain, so it is asked here, and the next nearest gets a turn.
+        for row in rows:
+            distance = float(row.cosine_distance)
+            if distance > threshold:
+                return None
+            pf = db.get(PersonalFood, row.personal_food_id)
+            if pf is None:
+                continue
+            dish = self.live_of(db, pf)
+            if dish.hidden_at is None and dish.merged_into_id is None:
+                return dish, distance
+        return None
 
 
 crud_personal_food = CRUDPersonalFood()

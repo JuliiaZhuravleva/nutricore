@@ -121,7 +121,7 @@ def test_o9_says_an_estimate_with_numbers_on_and_a_checked_number_without(db, ow
     label = _labels(_shown("fav:p:0"))[0][0]
     assert label == "Омлет с сыром · ≈ 360 ккал"
 
-    _starred(db, owner, "творог", numbers_quality="barcode", calories=200.0)
+    _starred(db, owner, "творог", grams=150, numbers_quality="barcode", calories=200.0)
     labels = [row[0] for row in _labels(_shown("fav:p:0"))]
     assert "Творог · 200 ккал" in labels
     assert "Омлет с сыром · ≈ 360 ккал" in labels

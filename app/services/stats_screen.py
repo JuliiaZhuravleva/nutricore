@@ -157,6 +157,12 @@ def _meal_name(meal: Meal) -> str:
     return name
 
 
+def _meals_button(day, tab: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        MEALS_BUTTON, callback_data=f"ml:dl:{_day_code(day)}:{tab}"
+    )
+
+
 def _tabs(
     current: str, opened: bool | None = None, above: tuple = (), beside: tuple = ()
 ) -> InlineKeyboardMarkup:
@@ -268,7 +274,11 @@ def day_screen(
         if ticks:
             lines += ["", *ticks]
         picture["empty"] = True
-        return Screen("\n".join(lines), _tabs(tab, None, above), picture=picture)
+        # A past day's list takes a meal for that day (O1a). Today's add is above.
+        beside = () if tab == TODAY else (_meals_button(day, tab),)
+        return Screen(
+            "\n".join(lines), _tabs(tab, None, above, beside), picture=picture
+        )
     mode_line = next_step.MODES[step.mode][2] if step and step.step else None
     if mode_line:
         lines += [mode_line, ""]
@@ -288,11 +298,7 @@ def day_screen(
     }
     lines += ticks
     # The way to this day's meals: only ``meal_card`` reads this data.
-    beside = (
-        InlineKeyboardButton(
-            MEALS_BUTTON, callback_data=f"ml:dl:{_day_code(day)}:{tab}"
-        ),
-    )
+    beside = (_meals_button(day, tab),)
     if step:
         told = next_step.lines(step)
         if told:

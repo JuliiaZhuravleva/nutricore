@@ -2874,7 +2874,7 @@ def take_rollout(db, telegram_id: int) -> Optional[str]:
     and marked before it is sent so two fast messages cannot both get it. Only for who
     has a meal from before the capture: such a meal has no source of its own, a
     deleted one counts, and a newcomer has nothing to be told. With drafts on the
-    sentence would be false."""
+    sentence would be false, so it waits for the first capture with them off."""
     user = db.scalar(select(User).where(User.telegram_id == telegram_id))
     if user is None or (user.settings or {}).get(ROLLOUT_SEEN):
         return None
@@ -2884,9 +2884,11 @@ def take_rollout(db, telegram_id: int) -> Optional[str]:
         .where(Meal.user_id == user.id, MealSource.id.is_(None))
         .limit(1)
     )
+    if earlier is not None and draft_on(user):
+        return None
     user.settings = {**(user.settings or {}), ROLLOUT_SEEN: True}
     db.commit()
-    return M12_ROLLOUT if earlier is not None and not draft_on(user) else None
+    return M12_ROLLOUT if earlier is not None else None
 
 
 def rollout_again(db, telegram_id: int) -> None:

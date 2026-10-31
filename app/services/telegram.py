@@ -1507,6 +1507,8 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         said = (message.chat_id, message.message_id, message.date)
         with SessionLocal() as db:
             typed = meal_card.take_typed(db, user.id, text, said=said)
+    except ApplicationHandlerStop:
+        raise  # the meal is written: this is the way out, not a failure
     except Exception as e:
         # A database error's text holds the row: the words typed.
         logger.error(
