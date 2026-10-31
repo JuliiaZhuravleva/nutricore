@@ -107,12 +107,14 @@ def counts(user: User | None) -> tuple[int, int]:
 
 def _written(db, meals: list) -> list:
     """Each meal's names, once per meal: its live dishes, or the description of a
-    meal that has none. A blank one names nothing."""
+    meal that has none. A blank one names nothing, and neither do words nobody read:
+    a failed text is not a dish until someone says so."""
     dishes = crud_meal_item.live_names(db, [meal.id for meal in meals])
     written = []
     for meal in meals:
         once = {}
-        for name in dishes.get(meal.id) or [meal.description or ""]:
+        words = [meal.description or ""] if meal.reading_status == "read" else []
+        for name in dishes.get(meal.id) or words:
             name = _clean(name)
             if name:
                 once.setdefault(_key(name), name)

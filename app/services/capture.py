@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from telegram import InlineKeyboardMarkup
 from telegram.error import BadRequest, NetworkError
 
+from app.crud.crud_inbound_message import crud_inbound_message
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
@@ -41,13 +42,31 @@ from app.services import (
     weight_screen,
 )
 from app.services.day_card import local_time
-from app.services.meal_card import (
+from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
+    AGAIN,
+    DEAD_FILE,
+    DELETE,
+    IMAGE,
+    M1_PENDING,
+    M4_PENDING,
+    M4D_FAILED,
+    M7_FAILED,
+    M7A_FAILED,
+    M7D_NO_FOOD,
+    M7E_DEAD_FILE,
+    TEXT,
+    VOICE,
+    WRITE,
+    WRITE_OTHER,
     Retouch,
     _button,
     _cut,
     _names,
     _what,
     _when,
+)
+from app.services.meal_card import kind_of_read as _kind_of_read
+from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
     line_head,
 )
 from app.services.meal_draft import num
@@ -62,16 +81,10 @@ logger = logging.getLogger(__name__)
 
 # --- the copy (section 5.5) ---------------------------------------------------------
 
-M1_PENDING = "Фото в дневнике, читаю…"
 M2_PENDING = "{count} фото в дневнике, читаю…"
 M1B_HINT = "На этом всё. Поправить можно кнопками или ответом на это сообщение."
 M3A_NO_FOOD = "Еды здесь не видно, в дневник не записано."
 M3B_QUESTION = "Вопросы здесь пока не разбираются, в дневник не записано."
-M4_PENDING = "Голосовое в дневнике, слушаю…"
-M4D_FAILED = (
-    "Голосовое сохранено, разобрать сейчас не вышло.\n"
-    "В дневнике запись с этим голосовым."
-)
 M4F_TOO_BIG = (
     "Файл больше 20 МБ, Telegram такие боту не передаёт. В дневник не записано."
 )
@@ -82,14 +95,7 @@ M5F_NO_MEAL = (
     "Время можно указать ответом на нужную запись."
 )
 M6A_NOT_ASKED = "Можно не отвечать, ничего не изменится."
-M7_FAILED = (
-    "Фото сохранено, распознать еду сейчас не вышло.\nВ дневнике запись с этим фото."
-)
-M7A_FAILED = (
-    "Текст сохранён, разобрать еду сейчас не вышло.\n"
-    "В дневнике запись с этим текстом."
-)
-M7D_NO_FOOD = "Фото сохранено, еды на нём не видно.\nВ дневнике запись с этим фото."
+M7_NOTE = "Фото хранится при этой записи."
 M7F_REFUSED = "Записать сейчас не вышло, сервер не отвечает. Пришли ещё раз."
 M9_UNREADABLE = (
     "Такое пока не читается, в дневник не записано. "
@@ -102,11 +108,11 @@ M9A_NEW_MEAL = (
 )
 M9B_STALE = "Это кнопка старого меню, в дневник не записано. Новое меню внизу."
 
+AGAIN_TOAST = "Читаю"
+AGAIN_FAILED_TOAST = "Пока не вышло, запись сохранена"
+M7B_ASK = "<b>✏️ Что было?</b>\nНапиши одним сообщением."
+
 FIX = "✏️ Исправить"
-WRITE = "✏️ Написать"
-WRITE_OTHER = "✏️ Написать иначе"
-AGAIN = "🔁 Ещё раз"
-DELETE = "🗑 Удалить"
 TIME = "🕐 Время"
 UNDO = "↩️ Вернуть"
 SPLIT = "➖ Отделить"
@@ -130,7 +136,6 @@ _CLOCK_IN = re.compile(r"(\s*(?:вчера\s+)?)в\s+", re.IGNORECASE)
 LINE, WEIGHT, TICK, SILENT, NEW_MEAL = "line", "weight", "tick", "silent", "new_meal"
 
 # The read that a meal's line waits for.
-IMAGE, TEXT, VOICE = "image", "text", "voice"
 _READING_KIND = {IMAGE: "vision", TEXT: "text", VOICE: "transcript"}
 
 # What a reading that did not end says about the next try, section 5.2.
@@ -140,7 +145,8 @@ NO_CREDIT = "no_credit"  # passes only after a top-up
 NO_LIVE_READ = "NoLiveRead"  # no task holds this meal, the process went down in it
 NO_BALANCE = "NoBalance"  # not asked: the last answer said the balance is out
 
-# The reads nobody asked for. ``read_attempts`` counts them, and is the index here.
+# The reads nobody asked for. ``read_attempts`` counts them and a person's 🔁 Ещё раз
+# (M7 writes it), and is the index here: who just tried by hand waits the longer step.
 RETRY_AFTER = (timedelta(minutes=5), timedelta(hours=1), timedelta(hours=6))
 RETRY_WINDOW = timedelta(hours=24)
 RETRIES_PER_SWEEP = 5
@@ -149,6 +155,10 @@ STUCK_AFTER = timedelta(minutes=5)
 
 class NoVoiceReader(Exception):
     """A voice note is kept; nothing listens to it yet."""
+
+
+class DeadFile(Exception):
+    """Telegram refused this file id: no read of it will pass (M7e)."""
 
 
 def _now() -> datetime:
@@ -404,19 +414,13 @@ def _it_is_food(source_id: int) -> InlineKeyboardMarkup:
 
 
 def _failed_line(kind: str, meal_id: int) -> Line:
-    write = WRITE_OTHER if kind == TEXT else WRITE
-    text = {IMAGE: M7_FAILED, TEXT: M7A_FAILED, VOICE: M4D_FAILED}[kind]
-    markup = InlineKeyboardMarkup(
-        [[_button(AGAIN, f"ml:rr:{meal_id}:r"), _button(write, f"ml:w:{meal_id}:r")]]
-    )
+    text, markup = meal_card.failed_view(kind, meal_id)
     return Line(text, markup, meal_id=meal_id)
 
 
 def _no_food_photo_line(meal_id: int) -> Line:
-    markup = InlineKeyboardMarkup(
-        [[_button(WRITE, f"ml:w:{meal_id}:r"), _button(DELETE, f"ml:d:{meal_id}:r")]]
-    )
-    return Line(M7D_NO_FOOD, markup, meal_id=meal_id)
+    text, markup = meal_card.no_food_view(meal_id)
+    return Line(text, markup, meal_id=meal_id)
 
 
 # --- rows 4, 7, 8: changes to a meal that is there ------------------------------------
@@ -1069,6 +1073,140 @@ meal_card.add_verbs(
 )
 
 
+# --- M7: the read did not end well ----------------------------------------------------
+
+
+def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
+    """🔁 Ещё раз. A read already out is paid for, so a second tap asks nothing; the
+    message tapped is the one the answer lands on, whichever screen it was."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    if meal.reading_status == "pending":
+        return meal_card.Screen("", None, toast=AGAIN_TOAST)
+    has_words = meal.reading_status == "read" and not meal_card._unread(meal, [])
+    if crud_meal_item.live(t.db, meal.id) or has_words:
+        return meal_card._v_line(t, data, mid)
+    job = read_again(t.db, meal.id)
+    if job is None:
+        return meal_card.Screen("", None, toast=AGAIN_FAILED_TOAST)
+    meal.read_attempts = (meal.read_attempts or 0) + 1
+    other = _line_of(t.db, meal.id)
+    if other is not None and other.message_id != t.message_id:
+        other.view = "line"
+    t.db.commit()
+    if job.kind == TEXT:
+        first = _record_text(t.db, meal, t.user)
+        markup = _reading_markup(meal.id)
+    else:
+        first, markup = (M1_PENDING if job.kind == IMAGE else M4_PENDING), None
+    return meal_card.Screen(
+        first,
+        markup,
+        toast=AGAIN_TOAST,
+        meal_id=meal.id,
+        view="pending",
+        read=replace(job, line_id=t.message_id, shown=first, again=True),
+    )
+
+
+def _v_write(t, data: str, mid: str, back: str) -> meal_card.Screen:
+    """M7b: ✏️ Написать, on the same message."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    meal_card._open_slot(t, meal_card.MEAL_TEXT, back, meal_id=meal.id)
+    row = meal_card._back_row(t, meal, back)
+    return meal_card.Screen(
+        M7B_ASK, InlineKeyboardMarkup([row]), meal_id=meal.id, view="card"
+    )
+
+
+def _typed_meal_text(t, ask: dict, text: str) -> Optional[meal_card.Screen]:
+    """M7c: the words are this meal's reading, and what it came with stays. Words that
+    failed are no dish beside these, and /reprocess pays for nothing here any more."""
+    meal = meal_card._own_meal(t, ask["meal_id"], "slot")
+    first = t.db.scalar(
+        select(MealSource)
+        .where(MealSource.meal_id == meal.id)
+        .order_by(MealSource.id)
+        .limit(1)
+    )
+    if not crud_meal_item.live(t.db, meal.id):
+        meal.description = None
+    new = _is_new_name(t.db, t.user, text)
+    change = meal_items.add_item(t.db, t.user.id, meal.id, name=text)
+    if change.status != meal_items.DONE:
+        return None if change.meal is not None else meal_card._stale_meal(t)
+    meal.reading_status = "read"
+    source = None
+    if t.said:
+        chat_id, message_id, sent_at = t.said
+        source = MealSource(
+            user_id=t.user.id,
+            meal_id=meal.id,
+            origin_meal_id=meal.id,
+            kind="text",
+            chat_id=chat_id,
+            message_id=message_id,
+            sent_at=sent_at,
+            text=text,
+        )
+        t.db.add(source)
+        t.db.flush()
+    t.db.add(
+        MealReading(
+            meal_id=meal.id,
+            source_ids=[source.id] if source else [],
+            kind=_READING_KIND[TEXT],
+            output={"foods": [item.name for item in change.items]},
+            status="done",
+            applied=True,
+            created_at=_now(),
+        )
+    )
+    t.db.commit()
+    if source is not None:
+        map_message(t.db, source.chat_id, source.message_id, meal.id, "source")
+    if first is not None:
+        row = _inbound_of(t.db, t.user.telegram_id, first)
+        if row is not None:
+            crud_inbound_message.mark_analyzed(t.db, row, {"meal": meal.id})
+    t.fill = _fill_of(change, new)
+    return meal_card.Screen(
+        _record_text(t.db, meal, t.user, note=M7_NOTE if meal.photos else None),
+        meal_card.line_markup(t.db, meal),
+        meal_id=meal.id,
+        view="line",
+    )
+
+
+def _v_it_is_food(t, data: str, sid: str) -> meal_card.Screen:
+    """🍽 Это еда under M3a: the words at the time they came. The model has said what
+    it thinks of them, so nobody asks it again, only for the numbers of a new name."""
+    source = _own_source(t, sid, data)
+    if source.meal_id is not None:
+        return meal_card._v_line(t, data, str(source.meal_id))
+    said = _said(source.text, source.kind, source.sent_at, source.forward_date, t.user)
+    name = (said.rest if said else source.text) or ""
+    if not name.strip():
+        return meal_card._unknown(t, data)
+    new = _is_new_name(t.db, t.user, name)
+    meal = _born_row(t.db, source, t.user, said)
+    changes = _with_dishes(t.db, t.user, meal, [{"name": name}])
+    return meal_card.Screen(
+        _record_text(t.db, meal, t.user),
+        meal_card.line_markup(t.db, meal),
+        meal_id=meal.id,
+        view="line",
+        fill=_fill_of(changes[0], new),
+    )
+
+
+meal_card.add_verbs(
+    (re.compile(rf"ml:rr:{_SID}:{meal_card._BACK}"), _v_again),
+    (re.compile(rf"ml:w:{_SID}:{meal_card._BACK}"), _v_write),
+    (re.compile(rf"ml:nf:{_SID}"), _v_it_is_food),
+)
+meal_card._TYPED[meal_card.MEAL_TEXT] = _typed_meal_text
+
+
 # --- row 10: the meal is born ---------------------------------------------------------
 
 
@@ -1090,6 +1228,8 @@ class Read:
     hint: bool = False  # the line carries M1b: the edit keeps it
     note: Optional[str] = None
     inbound_id: Optional[int] = None
+    again: bool = False  # 🔁 Ещё раз: a file gone by now is said to be gone
+    tap: Optional[str] = None  # the callback query it answers, if it fails
 
 
 @dataclass
@@ -1102,12 +1242,6 @@ class Born:
     names: Optional[list] = None  # an exact name's dishes
     first: Optional[Line] = None
     job: Optional[Read] = None
-
-
-def _kind_of_read(source_kind: str) -> str:
-    if source_kind == "text":
-        return TEXT
-    return VOICE if source_kind == "voice" else IMAGE
 
 
 def _join_album(db, came: Incoming, user: User) -> Optional[Born]:
@@ -1479,12 +1613,22 @@ def read_failed(
     status: str = FAILED,
     model: Optional[str] = None,
 ) -> Done:
-    """``error`` is the exception's class: a body or a transcript never goes there."""
+    """``error`` is the exception's class: a body or a transcript never goes there.
+    A meal no longer waiting was answered meanwhile, by the words typed to it: a late
+    failure is kept and says nothing."""
     meal = db.get(Meal, job.meal_id)
-    meal.reading_status = "failed"
-    db.commit()
+    waited = meal.reading_status == "pending"
+    if waited:
+        meal.reading_status = "failed"
+        db.commit()
     _store_reading(db, job, status=status, error=error, model=model)
+    if not waited:
+        return Done()
     line = _failed_line(job.kind, meal.id)
+    if job.again and error == DEAD_FILE:
+        zone = user_zone(db.get(User, meal.user_id))
+        text, markup = meal_card.dead_file_view(meal, zone)
+        line = Line(text, markup, meal_id=meal.id)
     if not _claim_view(db, job) or line.text == job.shown:
         # A retry that failed again: the line says it already.
         return Done()
@@ -1566,6 +1710,36 @@ def _inbound_of(db, telegram_id: int, source: MealSource) -> Optional[int]:
     else:
         stmt = stmt.where(InboundMessage.content == source.text)
     return db.scalar(stmt.order_by(InboundMessage.id.desc()).limit(1))
+
+
+REPLAY, WAITS, SETTLED = "replay", "waits", "settled"
+
+
+def row_fate(db, row: InboundMessage) -> tuple:
+    """What /reprocess does with a diagnostic row: (fate, what to write on it).
+
+    A row has a model's time only if nothing else answers for it. Nothing to read is
+    no read, a meal that stands was paid for, and a meal still unread is read through
+    the live path, in its own turn. Only an old row with no meal is replayed.
+    """
+    if row.kind != "image" and (row.kind == "voice" or not (row.content or "").strip()):
+        return SETTLED, {"skipped": "nothing to read"}
+    user = db.scalar(select(User).where(User.telegram_id == row.telegram_id))
+    if user is None:
+        return REPLAY, None
+    stmt = select(MealSource).where(MealSource.user_id == user.id)
+    if row.photo_file_id:
+        stmt = stmt.where(MealSource.file_id == row.photo_file_id)
+    else:
+        stmt = stmt.where(MealSource.text == row.content)
+    source = db.scalar(stmt.order_by(MealSource.id.desc()).limit(1))
+    if source is None:
+        return REPLAY, None
+    meal = db.get(Meal, source.meal_id) if source.meal_id else None
+    unread = meal is not None and meal.reading_status in ("pending", "failed")
+    if unread and meal.deleted_at is None:
+        return WAITS, None
+    return SETTLED, {"meal": source.meal_id}
 
 
 def unread_meals(db, limit: int) -> list:

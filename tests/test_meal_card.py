@@ -430,7 +430,11 @@ def test_n1d_unread_says_it_is_in_the_diary_with_what(db, owner):
             "В дневнике запись с этим фото.",
         ]
     )
-    assert _rows(screen) == [["🕐 Время", "🗑 Удалить"], ["⬅️ К ответу бота"]]
+    assert _rows(screen) == [
+        ["🔁 Ещё раз", "✏️ Написать"],
+        ["🕐 Время", "🗑 Удалить"],
+        ["⬅️ К ответу бота"],
+    ]
 
 
 def test_n1h_keeps_the_rows_that_stay_and_hides_row_three(db, owner):
@@ -764,6 +768,8 @@ def _text_update(text=None, photo=None):
         text=text,
         photo=photo,
         chat_id=42,
+        message_id=800,
+        date=None,
         replies=[],
         markups=[],
         modes=[],

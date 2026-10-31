@@ -65,6 +65,7 @@ class Screen:
     view: str | None = None  # how the message maps: meal_messages.view, or no meal
     fill: object | None = None  # a new name's numbers, in the background
     retouch: object | None = None  # the meal's original line, edited silently
+    read: object | None = None  # a read to start once this screen is on the message
 
 
 # --- naming and numbers -----------------------------------------------------

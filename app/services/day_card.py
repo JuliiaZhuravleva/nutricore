@@ -98,6 +98,9 @@ def tags(meal: Meal) -> dict:
     return {}
 
 
+UNREAD = ("pending", "failed", "no_food")  # meals.reading_status
+
+
 def _foods_in(meal: Meal, group: str, name_of: Callable) -> list:
     """The foods behind a group the meal confirmed. A group ticked by hand has no
     item behind it, so the meal's own name stands in; one unticked by hand hides
@@ -160,11 +163,14 @@ def _item_names(meal: Meal) -> list:
 
 def _foods_line(meals: list, name_of: Callable) -> Optional[str]:
     """What no group line named, each food once, past ``MAX_NAMES`` a count. A meal
-    whose own name stands in a group line (ticked by hand) has been named already."""
+    whose own name stands in a group line (ticked by hand) has been named already, and
+    a meal nothing was read from names no food: no «Блюдо», no words that failed."""
     named, foods = set(), []
     for meal in meals:
         grouped = [x for g in DAY_GROUPS for x in _foods_in(meal, g, name_of)]
         items = _item_names(meal)
+        if not items and meal.reading_status in UNREAD:
+            continue
         if name_of(meal) in grouped and name_of(meal) not in items:
             continue
         named.update(name.casefold() for name in grouped)

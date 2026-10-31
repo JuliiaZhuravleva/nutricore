@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -567,7 +568,10 @@ async def _reading(bot, job: capture.Read) -> tuple:
     """(nutrition, resolution) of the meal's source."""
     if job.kind == capture.IMAGE:
         # Sent to the model as a data URL: Telegram's file URL embeds the bot token.
-        payload = await _download_image(bot, job.file_id)
+        try:
+            payload = await _download_image(bot, job.file_id)
+        except BadRequest as e:
+            raise capture.DeadFile() from e
         resolution = await resolve_meal_nutrition(
             payload,
             telegram_id=job.telegram_id,
@@ -593,6 +597,17 @@ def _model_of(job: capture.Read) -> Optional[str]:
     return telegram_service.openai_service.model_for(task)
 
 
+async def _say_not_yet(bot, job: capture.Read) -> None:
+    """The toast of a 🔁 that failed. Best effort: that query was answered with «Читаю»
+    and Telegram may refuse a second answer; the line back on M7 is what says it."""
+    if job.tap is None:
+        return
+    try:
+        await bot.answer_callback_query(job.tap, capture.AGAIN_FAILED_TOAST)
+    except TelegramError as e:
+        logger.info("Second toast refused: %s", type(e).__name__)
+
+
 async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     """One read of a meal, and its line. (read, the dead model's error if that is why
     not). Nothing here logs a message body: only the class of what went wrong."""
@@ -611,6 +626,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
                 model=_model_of(job),
             )
         await _show(bot, job, done.line)
+        await _say_not_yet(bot, job)
         refusal = ai_errors.out_of_credit(e)
         if refusal is not None:
             await _credit_alert(bot, refusal, job)
@@ -940,16 +956,25 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         screen = meal_card.handle_callback(db, telegram_id, data, message_id=message_id)
         if screen.text:
             capture.tapped(db, chat_id, message_id, screen)
+        if screen.read:
+            # Held from now: an old meal gone pending and held by no task looks stuck.
+            _live_reads[screen.read.meal_id] = screen.read.inbound_id
         shown.append(screen)
         return screen
 
-    await _screen_callback(
-        update,
-        handle,
-        "🔒 Приёмы доступны с подпиской",
-        "Meal card",
-        deliver=_card_delivery.tap,
-    )
+    try:
+        await _screen_callback(
+            update,
+            handle,
+            "🔒 Приёмы доступны с подпиской",
+            "Meal card",
+            deliver=_card_delivery.tap,
+        )
+    finally:
+        # After the delivery: an answer that came at once would be written over.
+        if shown and shown[0].read:
+            job = replace(shown[0].read, tap=update.callback_query.id)
+            _start_read(context.application, job)
     if not shown:
         return
     if shown[0].retouch:
@@ -1007,10 +1032,16 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = message.text if _is_plain_answer(message.text) else None
         if text is not None and not await check_subscription(user.id):
             text = None
+        said = (message.chat_id, message.message_id, message.date)
         with SessionLocal() as db:
-            typed = meal_card.take_typed(db, user.id, text)
+            typed = meal_card.take_typed(db, user.id, text, said=said)
     except Exception as e:
-        logger.error("Meal slot failed: %s", e, exc_info=True)
+        # A database error's text holds the row: the words typed.
+        logger.error(
+            "Meal slot failed: %s",
+            type(e).__name__,
+            exc_info=not isinstance(e, SQLAlchemyError),
+        )
         await message.reply_text("Не получилось, попробуй ещё раз")
         raise ApplicationHandlerStop
     if typed is None:
@@ -1032,6 +1063,7 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with SessionLocal() as db:
             meal_card.slot_sent(db, user.id, sent.message_id)
+            capture.tapped(db, message.chat_id, sent.message_id, typed.screen)
     except Exception as e:
         logger.error("Meal slot: the answer's id was not kept: %s", e, exc_info=True)
     if typed.fill:
@@ -1067,7 +1099,14 @@ async def _screen_callback(
         with SessionLocal() as db:
             screen = handle(db, update.effective_user.id, query.data or "")
     except Exception as e:
-        logger.error("%s callback %r failed: %s", what, query.data, e, exc_info=True)
+        # A database error's text holds the row, and a meal's row holds its words.
+        logger.error(
+            "%s callback %r failed: %s",
+            what,
+            query.data,
+            type(e).__name__,
+            exc_info=not isinstance(e, SQLAlchemyError),
+        )
         await query.answer("Не получилось, попробуй ещё раз", show_alert=True)
         return
     await query.answer(screen.toast)
@@ -1503,7 +1542,8 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     through the live path, so the meal gets filled and its line says so; a voice has
     no reader yet and never goes to the text model. What remains of the older
     diagnostic rows, with no meal of their own, is re-analyzed and written back to its
-    row. Capped at REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for
+    row; a row whose meal stands, or with nothing to read, leaves the queue unpaid.
+    Capped at REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for
     more. If the model is still unavailable it stops early and says so.
     """
     try:
@@ -1523,7 +1563,21 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     # A meal's own diagnostic row is its meal's, and is not paid for twice.
     taken = {job.inbound_id for job in jobs} | set(_live_reads.values())
-    rows = [row for row in rows if row.id not in taken][:room]
+    rows = [row for row in rows if row.id not in taken]
+    replayed = []
+    try:
+        with SessionLocal() as db:
+            for row in rows:
+                fate, written = capture.row_fate(db, row)
+                if fate == capture.REPLAY:
+                    replayed.append(row)
+                elif fate == capture.SETTLED:
+                    inbound_msg.mark_analyzed(row.id, written)
+    except Exception as e:
+        logger.error("reprocess: could not sort the queue: %s", type(e).__name__)
+        await update.message.reply_text("Не удалось получить список сообщений.")
+        return
+    rows = replayed[:room]
 
     if not jobs and not rows:
         await update.message.reply_text("Нет сообщений для повторной обработки. 👍")
@@ -1585,8 +1639,8 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(stopped(e))
             return
         except Exception as e:
-            logger.error("reprocess: message %s failed: %s", row.id, e, exc_info=True)
-            inbound_msg.mark_failed(row.id, str(e))
+            logger.error("reprocess: message %s failed: %s", row.id, type(e).__name__)
+            inbound_msg.mark_failed(row.id, type(e).__name__)
             failed += 1
             continue
         # Only count success once the status actually persisted — mark_analyzed is

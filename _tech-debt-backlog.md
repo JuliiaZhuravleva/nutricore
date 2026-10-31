@@ -88,9 +88,10 @@ Medium / Low / без приоритета, открытые. Не читать 
   bytes to a **host bind-mount under `/Users/claw/data/...`** on the mini (survives the disposable
   Colima VM), with a path config + a compose volume. (2) **Delete-on-request** — a `/forget`-style
   command to purge a user's inbound rows (+photos) on demand; low value while single-owner, but the
-  retention purge is currently the only deletion path. (3) **Reprocess → meal** — `/reprocess` only
-  re-analyzes and fills `ai_analysis`; it does not create a `meals` row (keeps the confirm step). A
-  future "replay straight into a confirmed meal" is possible but needs a `meal_time` decision.
+  retention purge is currently the only deletion path. (3) ~~**Reprocess → meal**~~ — done in stage 5:
+  `/reprocess` reads a meal still unread through the live path and fills it; a row whose meal stands,
+  or with nothing to read, leaves the queue unpaid. An old row with no meal is still only re-analyzed
+  onto its row: it may have been re-sent since, and a meal out of it could be a double.
   - **Priority:** Low · **Source:** TD-009 scope decision 2026-07-06 · **Created:** 2026-07-06
 
 - [ ] **TD-011**: photo-product-lookup accuracy residuals (accepted during the /review-deep fix pass;

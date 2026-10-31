@@ -32,6 +32,8 @@ from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
+from app.models.meal_reading import MealReading
+from app.models.meal_source import MealSource
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
@@ -52,6 +54,7 @@ ASK = "ask"  # in ``User.settings``: the one typed slot
 ASK_TTL = timedelta(minutes=10)
 GRAMS, DISH_ADD, DISH_REPLACE = "grams", "dish_add", "dish_replace"
 TIME = "time"
+MEAL_TEXT = "meal_text"  # M7b: the words are this meal's reading
 EXACT = "exact"
 # A card opened on the bot's line: its time screen goes back to the card, while the
 # line's own 🕐, whose data is also ``r``, goes back to the line.
@@ -65,6 +68,33 @@ PICK_PAGE = 4
 CHIPS_ROW = 3
 DAY_CHIPS = 9
 _INT_MAX = 2**31 - 1  # what an id column holds; a bigger one is not a row
+
+# The read a meal's line waits for, and what its line says when it does not end well.
+IMAGE, TEXT, VOICE = "image", "text", "voice"
+M1_PENDING = "Фото в дневнике, читаю…"
+M4_PENDING = "Голосовое в дневнике, слушаю…"
+M4D_FAILED = (
+    "Голосовое сохранено, разобрать сейчас не вышло.\n"
+    "В дневнике запись с этим голосовым."
+)
+M7_FAILED = (
+    "Фото сохранено, распознать еду сейчас не вышло.\nВ дневнике запись с этим фото."
+)
+M7A_FAILED = (
+    "Текст сохранён, разобрать еду сейчас не вышло.\n"
+    "В дневнике запись с этим текстом."
+)
+M7D_NO_FOOD = "Фото сохранено, еды на нём не видно.\nВ дневнике запись с этим фото."
+M7E_DEAD_FILE = (
+    "Фото {when} больше недоступно в Telegram. "
+    "Запись в дневнике осталась, можно написать, что было."
+)
+WRITE = "✏️ Написать"
+WRITE_OTHER = "✏️ Написать иначе"
+AGAIN = "🔁 Ещё раз"
+DELETE = "🗑 Удалить"
+_FAILED_COPY = {IMAGE: M7_FAILED, TEXT: M7A_FAILED, VOICE: M4D_FAILED}
+DEAD_FILE = "DeadFile"  # meal_readings.error: Telegram no longer has this photo
 
 FORWARD_WORDS = "(время пересланного сообщения)"
 NO_MEAL = "none"  # Screen.view: this message no longer answers for any meal
@@ -132,6 +162,7 @@ class _Tap:
     now: datetime
     message_id: Optional[int] = None
     fill: Optional[Fill] = None
+    said: Optional[tuple] = None  # (chat, message, date) of a typed answer
 
     @property
     def zone(self):
@@ -407,6 +438,68 @@ def _back_row(t: _Tap, meal: Meal, back: str) -> list:
     return [_button("⬅️ Приёмы дня", f"ml:dl:{day}:{back}")]
 
 
+def again_row(kind: str, meal_id: int, back: str = "r") -> list:
+    write = WRITE_OTHER if kind == TEXT else WRITE
+    return [
+        _button(AGAIN, f"ml:rr:{meal_id}:{back}"),
+        _button(write, f"ml:w:{meal_id}:{back}"),
+    ]
+
+
+def failed_view(kind: str, meal_id: int) -> tuple:
+    """M7, M7a, M4d: (text, markup)."""
+    return _FAILED_COPY[kind], InlineKeyboardMarkup([again_row(kind, meal_id)])
+
+
+def no_food_view(meal_id: int) -> tuple:
+    """M7d."""
+    row = [
+        _button(WRITE, f"ml:w:{meal_id}:r"),
+        _button(DELETE, f"ml:d:{meal_id}:r"),
+    ]
+    return M7D_NO_FOOD, InlineKeyboardMarkup([row])
+
+
+def dead_file_view(meal: Meal, zone) -> tuple:
+    """M7e. Reading again cannot help, so only the words are offered."""
+    markup = InlineKeyboardMarkup([[_button(WRITE, f"ml:w:{meal.id}:r")]])
+    return M7E_DEAD_FILE.format(when=_when(meal, zone)), markup
+
+
+def kind_of_read(source_kind: str) -> str:
+    if source_kind == "text":
+        return TEXT
+    return VOICE if source_kind == "voice" else IMAGE
+
+
+def _read_kind(db, meal: Meal) -> str:
+    """Of the message the meal was born from; a row with no source, by what it holds."""
+    kind = db.scalar(
+        select(MealSource.kind)
+        .where(MealSource.meal_id == meal.id)
+        .order_by(MealSource.id)
+        .limit(1)
+    )
+    if kind:
+        return kind_of_read(kind)
+    return IMAGE if meal.photos else TEXT
+
+
+def _trouble_view(t: _Tap, meal: Meal) -> tuple:
+    """What a line says of a meal whose read failed, or found nothing."""
+    if meal.reading_status == "no_food":
+        return no_food_view(meal.id)
+    error = t.db.scalar(
+        select(MealReading.error)
+        .where(MealReading.meal_id == meal.id)
+        .order_by(MealReading.id.desc())
+        .limit(1)
+    )
+    if error == DEAD_FILE:
+        return dead_file_view(meal, t.zone)
+    return failed_view(_read_kind(t.db, meal), meal.id)
+
+
 def _to_card(meal_id: int, back: str) -> list:
     return [_button("⬅️ К приёму", f"ml:o:{meal_id}:{back}")]
 
@@ -502,11 +595,13 @@ def _card(
             "Фото сохранено, распознать еду пока не вышло.",
             "В дневнике запись с этим фото.",
         ]
-        rows = [tools]
+        rows = [again_row(IMAGE, meal.id, back), tools]
         if undo_button:
             rows.append([undo_button])
     elif not items:
         rows = _legacy_card(t, meal, back, lines, add, tools, numbers, undo_button)
+        if meal.reading_status == "failed":
+            rows.insert(0, again_row(_read_kind(t.db, meal), meal.id, back))
     else:
         lines += map(_dish_line, items)
         if not t.simple:
@@ -785,21 +880,26 @@ def _expired(ask: dict, now: datetime) -> bool:
 
 
 def take_typed(
-    db, telegram_id: int, text: Optional[str], now: Optional[datetime] = None
+    db,
+    telegram_id: int,
+    text: Optional[str],
+    now: Optional[datetime] = None,
+    said: Optional[tuple] = None,
 ) -> Optional[Typed]:
     """The answer to the open slot, or None: the message goes on down the router.
 
     A wait never eats food. Grams and a time take only what parses, a name takes any
     text, and whatever the outcome the slot is closed, until the time screen, which
     goes on offering to type, opens it again. ``text`` is None for anything that is
-    not an answer to any kind: a photo, a command, a menu button.
+    not an answer to any kind: a photo, a command, a menu button. ``said``: the
+    message itself, (chat, message, date), for an answer that is kept as a source.
     """
     now = now or datetime.now(UTC)
     user = _user(db, telegram_id)
     ask = _close_slot(db, user)
     if ask is None or text is None or _expired(ask, now):
         return None
-    t = _Tap(db, user, telegram_id, now)
+    t = _Tap(db, user, telegram_id, now, said=said)
     typed = _TYPED.get(ask.get("kind"))
     if typed is None:
         return None
@@ -929,10 +1029,21 @@ def line_markup(db, meal: Meal) -> InlineKeyboardMarkup:
 
 def _v_line(t: _Tap, data: str, mid: str) -> Screen:
     meal = _own_meal(t, int(mid), data)
+    status = meal.reading_status
+    if not crud_meal_item.live(t.db, meal.id):
+        if status in ("failed", "no_food"):
+            text, markup = _trouble_view(t, meal)
+            return Screen(text, markup, meal_id=meal.id, view="line")
+        kind = _read_kind(t.db, meal)
+        if status == "pending" and kind != TEXT:
+            # Still the read's line: the answer lands here.
+            text = M1_PENDING if kind == IMAGE else M4_PENDING
+            return Screen(text, None, meal_id=meal.id, view="pending")
     what = _what(t.db, meal)
     head = line_head(meal, t.zone)
     text = f"{head}: {what}." if what else f"{head}."
-    return Screen(text, line_markup(t.db, meal), meal_id=meal.id, view="line")
+    view = "pending" if status == "pending" else "line"
+    return Screen(text, line_markup(t.db, meal), meal_id=meal.id, view=view)
 
 
 def _v_open(t: _Tap, data: str, mid: str, back: str) -> Screen:
