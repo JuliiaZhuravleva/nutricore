@@ -1416,7 +1416,7 @@ def test_favourite_undo_still_works_with_items(db, owner):
         db, 42, f"{favorites.CALLBACK_PREFIX}u:{meal.id}"
     )
 
-    assert "Отменено" in screen.text
+    assert screen.text == "↩️ Запись отменена: сырники."
     # Soft, as every delete (3.3); the items stay for the way back.
     assert crud_meal.get(db, meal.id) is None
     assert _only_meal(db).deleted_at is not None

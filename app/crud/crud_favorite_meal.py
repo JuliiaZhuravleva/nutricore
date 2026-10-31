@@ -32,13 +32,16 @@ class CRUDFavoriteMeal:
     def find_active_by_name(
         self, db: Session, user_id: int, name: str
     ) -> FavoriteMeal | None:
+        """By its own words, else by any name its dish answers to: a rename or a merge
+        moves a dish and its ⭐, while the row keeps the words it was saved under."""
         # Compared in Python: SQLite's lower() folds ASCII only, and the names
         # are Russian.
         wanted = name.casefold()
         for fav in self.list_active(db, user_id):
             if fav.name.casefold() == wanted:
                 return fav
-        return None
+        dish = crud_personal_food.find_by_name(db, user_id, name)
+        return self.active_of_dish(db, dish.id) if dish is not None else None
 
     def dish_of(self, db: Session, fav: FavoriteMeal) -> PersonalFood:
         """Its dish, past any merge. A row an old container wrote gets linked here.

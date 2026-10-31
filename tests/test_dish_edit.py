@@ -426,7 +426,7 @@ def test_a_star_with_no_correction_logs_what_it_holds(db, owner):
     meal = _newest(db, owner)
     assert meal.calories == 360.0
     assert meal_items._tagged(meal)["food_groups"] == ["veg"]
-    tap(f"fav:l:{fav.id}:n")
+    tap(f"fav:l:{fav.id}:n", 4901)
     assert _newest(db, owner).id != meal.id
     assert _newest(db, owner).calories == 360.0
 

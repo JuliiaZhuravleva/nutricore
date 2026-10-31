@@ -1565,12 +1565,24 @@ async def _screen_callback(
 
 
 async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on a favorites inline button (``fav:…``)."""
+    """A tap on a favorites inline button (``fav:…``). A list or a ⭐ holds no meal; one
+    just logged does, so a reply to it means that meal."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+
+    def handle(db, telegram_id: int, data: str):
+        screen = favorites.handle_callback(db, telegram_id, data, message_id=message_id)
+        if screen.text:
+            capture.tapped(db, chat_id, message_id, screen)
+        return screen
+
     await _screen_callback(
         update,
-        favorites.handle_callback,
+        handle,
         "🔒 Избранное доступно с подпиской",
         "Favorites",
+        deliver=_card_delivery.tap,
     )
 
 
@@ -2323,7 +2335,11 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             meal_slot_left_by_tap,
-            pattern=f"^(?!{meal_card.CALLBACK_PREFIX}|{dishes.CALLBACK_PREFIX})",
+            # ⚖️ Порция of a ⭐ opens a slot, and the pager's middle leaves one alone.
+            pattern=(
+                f"^(?!{meal_card.CALLBACK_PREFIX}|{dishes.CALLBACK_PREFIX}"
+                f"|{favorites.CALLBACK_PREFIX}g:|{favorites.NOP}$)"
+            ),
         ),
         group=3,
     )

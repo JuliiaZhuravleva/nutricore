@@ -25,7 +25,6 @@ from app.crud.crud_record_event import crud_record_event
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
-from app.models.meal_message import MealMessage
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
@@ -34,7 +33,6 @@ from app.services.day_card import local_time
 from app.services.favorites import BUTTON_NAME_MAX, FAVORITE_SOURCE, Screen
 from app.services.meal_card import (
     NO_MEAL,
-    REPEAT_WINDOW,
     STALE_PICK,
     UNDO_LABEL,
     UNDONE,
@@ -500,17 +498,17 @@ def _v_find(t: _Tap, data: str) -> Screen:
 
 
 def _found(t: _Tap, text: str, without: Optional[int] = None) -> list:
+    """Any name a dish answers to, a merged dish's too. A hidden one stays out: a search
+    is a list, and only typing it as food brings it back."""
     needle = " ".join(text.split()).casefold()
-    dishes = [
-        dish
-        for dish in crud_personal_food.list_live(t.db, t.user.id)
-        if dish.id != without
-        and any(
-            needle in name.casefold()
-            for name in (dish.canonical_name, *(dish.aliases or []))
-        )
-    ]
-    return _recent_first(dishes, _eaten(t))
+    answering = crud_personal_food.names_of(t.db, t.user.id)
+    live = {dish.id for dish in crud_personal_food.list_live(t.db, t.user.id)}
+    dishes = {
+        dish.id: dish
+        for name, dish in answering.items()
+        if needle in name.casefold() and dish.id in live and dish.id != without
+    }
+    return _recent_first(list(dishes.values()), _eaten(t))
 
 
 def _missed(t: _Tap, ask: dict, text: str, rows: list) -> Screen:
@@ -649,28 +647,6 @@ def _history_line(item: MealItem, meal: Meal, t: _Tap) -> str:
 # --- O10 logged from the dish -----------------------------------------------
 
 
-def _just_logged(t: _Tap, dish: PersonalFood) -> bool:
-    """A log is not a target state, so a double tap needs the clock and the message."""
-    if t.message_id is None:
-        return False
-    created = t.db.scalars(
-        select(Meal.created_at)
-        .join(MealMessage, MealMessage.meal_id == Meal.id)
-        .join(MealItem, MealItem.meal_id == Meal.id)
-        .where(
-            MealMessage.message_id == t.message_id,
-            Meal.user_id == t.user.id,
-            Meal.deleted_at.is_(None),
-            Meal.resolution_source == FAVORITE_SOURCE,
-            MealItem.personal_food_id == dish.id,
-        )
-        .order_by(Meal.id.desc())
-    ).first()
-    if created is None:
-        return False
-    return abs(t.now - meal_items._utc(created)) <= REPEAT_WINDOW
-
-
 def _log(t: _Tap, dish: PersonalFood) -> Meal:
     """One item, no model, and the source ``fav:u`` asks for. The ⭐ holds the portion
     when there is one, as a favourite logged from its own list."""
@@ -702,7 +678,7 @@ def _log(t: _Tap, dish: PersonalFood) -> Meal:
 def _v_log(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
     back = back or DEFAULT_BACK
     dish = _standing(t, fid, data, back)
-    if _just_logged(t, dish):
+    if favorites.just_logged(t.db, t.user.id, t.message_id, dish.id, t.now):
         return Screen("", None, toast=LOG_AGAIN_TOAST)
     _stars(t)
     meal = _log(t, dish)
@@ -715,7 +691,7 @@ def _v_log(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
         _to_dish(dish.id, back),
     ]
     return Screen(
-        f"Записано: {_esc(dish.canonical_name)}.",
+        favorites.logged_line(dish.canonical_name, meal, dish, shows_numbers(t.user)),
         InlineKeyboardMarkup(rows),
         toast=LOG_TOAST,
         meal_id=meal.id,
@@ -883,17 +859,12 @@ def _set_portion_state(dish: PersonalFood, state: dict) -> None:
         setattr(dish, column, state[column])
 
 
-def _typed_portion(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
-    grams = meal_card.parse_grams(text)
-    if grams is None:
-        return None  # a wait never eats food
-    back = ask.get("back") or DEFAULT_BACK
-    fid = str(ask.get("food_id"))
-    dish = _shown_in_lists(t, fid, f"dh:pg:{fid}", back)
+def _write_portion(t: _Tap, dish: PersonalFood, grams: float) -> Optional[int]:
+    """A dish's one number, from either door. The event, or None when it was so."""
     before = _portion_state(dish)
     after = {"usual_grams": grams, "usual_grams_by_user": True}
     if before == after:
-        return _card(t, dish, back, notice=meal_card.NOTHING_SAME)
+        return None
     _set_portion_state(dish, after)
     event = crud_record_event.add(
         t.db,
@@ -904,7 +875,38 @@ def _typed_portion(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
         after=after,
     )
     t.db.commit()
-    return _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event.id)
+    return event.id
+
+
+def _typed_portion(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
+    grams = meal_card.parse_grams(text)
+    if grams is None:
+        return None  # a wait never eats food
+    back = ask.get("back") or DEFAULT_BACK
+    fid = str(ask.get("food_id"))
+    dish = _shown_in_lists(t, fid, f"dh:pg:{fid}", back)
+    event_id = _write_portion(t, dish, grams)
+    if event_id is None:
+        return _card(t, dish, back, notice=meal_card.NOTHING_SAME)
+    return _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event_id)
+
+
+def _typed_star_portion(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
+    """O11a. The dish's number, so the card and the ⭐ cannot disagree. The ⭐'s own
+    grams stay: they say what its copy of the numbers is for, and that is how it scales.
+    """
+    grams = meal_card.parse_grams(text)
+    if grams is None:
+        return None  # a wait never eats food
+    fav = crud_favorite_meal.get_for_user(t.db, int(ask["back"]), t.user.id)
+    if fav is None or fav.removed_at is not None:
+        return favorites.open_list(t.db, t.telegram_id, 0, favorites.STALE)
+    dish = crud_favorite_meal.dish_of(t.db, fav)
+    event_id = _write_portion(t, dish, grams)
+    if event_id is None:
+        t.db.commit()  # dish_of may have linked an old row
+        return favorites.item_screen(t, fav, notice=meal_card.NOTHING_SAME)
+    return favorites.item_screen(t, fav, notice=NUMBERS_NOTICE, undo=event_id)
 
 
 # --- O14b the groups --------------------------------------------------------
@@ -1227,10 +1229,11 @@ def _unhide(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Scree
         return _refused(t, dish, back)
     dish.hidden_at = None
     ids = after.get("favourites") or []
-    for fav_id in ids:
-        fav = t.db.get(FavoriteMeal, fav_id)
-        if fav is not None:
-            fav.removed_at = None
+    if crud_favorite_meal.active_of_dish(t.db, dish.id) is None:
+        for fav_id in ids:  # one made since is the dish's one star
+            fav = t.db.get(FavoriteMeal, fav_id)
+            if fav is not None:
+                fav.removed_at = None
     new = crud_record_event.add(
         t.db,
         user_id=t.user.id,
@@ -1376,6 +1379,7 @@ _VERBS: tuple = (
 meal_card._TYPED[DISH_NAME] = _typed_name
 meal_card._TYPED[DISH_NUMBERS] = _typed_numbers
 meal_card._TYPED[DISH_PORTION] = _typed_portion
+meal_card._TYPED[favorites.PORTION] = _typed_star_portion
 meal_card._TYPED[DISH_FIND] = _typed_find
 meal_card._TYPED[MERGE_FIND] = _typed_merge_find
 

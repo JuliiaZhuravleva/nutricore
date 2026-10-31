@@ -710,7 +710,7 @@ def test_a_plate_line_favourite_without_numbers_shows_in_the_list(db, owner):
     meal = _meal(db, owner, ["рис", "курица"])
     item = crud_meal_item.live(db, meal.id)[0]
     _tap(db, f"ml:fi:{item.id}:1:r")
-    assert "рис" in str(_rows(favorites.open_list(db, 42)))
+    assert "Рис" in str(_rows(favorites.open_list(db, 42)))
 
 
 # --- N3, the grams --------------------------------------------------------------

@@ -362,7 +362,7 @@ def star_meal_fields(db: Session, dish: PersonalFood | None, fav: FavoriteMeal) 
         nutrients.update({_NUTRIENT_KEYS[key]: numbers.get(key) for key in FIELDS})
     tags = food_groups.carried(fav.nutrients)
     if dish is not None and dish.food_groups is not None:
-        tags = _word_tags(fav.name, dish.food_groups)
+        tags = _word_tags(dish.canonical_name, dish.food_groups)
         nutrients = {**(nutrients or {}), **tags}
     return {
         **{key: numbers.get(key) for key in FIELDS},

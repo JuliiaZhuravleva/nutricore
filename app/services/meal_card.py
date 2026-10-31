@@ -597,10 +597,12 @@ def _is_dish_star(fav) -> bool:
 
 def _meal_favourite(db, meal: Meal):
     """The meal's own star: a dish's star has this meal as its source too (US-O5)."""
-    name = _favourite_name(meal).casefold()
+    named = crud_favorite_meal.find_active_by_name(
+        db, meal.user_id, _favourite_name(meal)
+    )
+    if named is not None:
+        return named
     for fav in crud_favorite_meal.list_active(db, meal.user_id):
-        if fav.name.casefold() == name:
-            return fav
         if fav.source_meal_id == meal.id and not _is_dish_star(fav):
             return fav
     return None
@@ -1495,11 +1497,12 @@ def _stamp(moment: Optional[datetime]) -> float:
 def _pick_list(t: _Tap, without: Optional[int]) -> list:
     """(dish, starred): ⭐ first, then the most recent."""
     dishes = crud_personal_food.list_live(t.db, t.user.id)
-    stars = {
-        fav.name.casefold() for fav in crud_favorite_meal.list_active(t.db, t.user.id)
-    }
+    favs = crud_favorite_meal.list_active(t.db, t.user.id)
+    stars = {fav.personal_food_id for fav in favs}
+    # A row an old container wrote has no dish yet, only its words.
+    names = {fav.name.casefold() for fav in favs if fav.personal_food_id is None}
     rows = [
-        (dish, dish.canonical_name.casefold() in stars)
+        (dish, dish.id in stars or dish.canonical_name.casefold() in names)
         for dish in dishes
         if dish.id != without
     ]
@@ -1718,12 +1721,12 @@ def _v_star_meal(t: _Tap, data: str, mid: str, want: str, back: str) -> Screen:
     existing = _meal_favourite(t.db, meal)
     if (want == "1") == (existing is not None):
         return Screen("", None, toast=meal_items.SAME_TOAST)
-    toast = None
     if want == "0":
         crud_favorite_meal.set_removed(t.db, existing, True)
         toast = "Убрано из избранного"
     else:
         favorites.save_from_meal(t.db, meal, _favourite_name(meal))
+        toast = "Весь приём в избранном"
     if crud_meal_item.live(t.db, meal.id):
         return _more(t, meal, back, toast=toast)
     return replace(_card(t, meal, back), toast=toast)
