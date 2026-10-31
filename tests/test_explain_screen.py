@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from telegram import CallbackQuery, Update, User
@@ -55,12 +56,14 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
     assert _rows(_tap(explain.OPEN)) == [
         ["📊 Карточка дня", "📊 Карточка недели"],
         ["👣 Один шаг", "🏷 Группы еды"],
-        ["💊 Рутины", "🍽 Приём и блюда"],
+        ["📷 Запись сразу", "🎙 Голосовые"],
         ["◀️", "1/2", "▶️"],
         ["⬅️ Настройки"],
     ]
     pages = _pages()
     assert _rows(pages[1]) == [
+        ["💊 Рутины", "🍽 Приём и блюда"],
+        ["🕐 Время приёма"],
         ["🧪 Витамины и минералы"],
         ["◀️", "2/2", "▶️"],
         ["⬅️ Настройки"],
@@ -178,8 +181,9 @@ def test_the_meal_topic_is_the_spec_copy():
 
 
 def test_the_later_slices_topics_have_not_come_early():
-    # M15b to M15e say what M and O ship; said now, they would be untrue.
-    assert not {"capture", "voice", "time", "dishes"} & set(explain.TOPICS)
+    # M15e says what O ships; said now, it would be untrue.
+    assert "dishes" not in explain.TOPICS
+    assert {"capture", "voice", "time"} <= set(explain.TOPICS)  # slice M's have come
 
 
 @pytest.mark.parametrize("key", list(explain.TOPICS))
@@ -292,3 +296,41 @@ def test_links_in_the_reference_open_no_preview_over_the_screen(monkeypatch):
     assert "pubmed.ncbi.nlm.nih.gov/39373282" in text
     assert kwargs["parse_mode"] == "HTML"
     assert kwargs["link_preview_options"].is_disabled is True
+
+
+# --- M15: the three topics of the capture, verbatim -----------------------------------
+
+
+def _spec_says(words: str) -> bool:
+    spec = Path(__file__).parent.parent / "docs/stages/05-gentle-review-screens.md"
+    return words in " ".join(spec.read_text(encoding="utf-8").split())
+
+
+def test_the_capture_topics_say_what_the_spec_says_word_for_word():
+    for key in ("capture", "time", "voice"):
+        topic = explain.TOPICS[key]
+        for words in (topic.what, topic.how, topic.why, topic.source):
+            assert _spec_says(words), words
+        if topic.privacy:
+            assert _spec_says(topic.privacy), topic.privacy
+    assert not _spec_says("Такого предложения в документе нет.")  # known-negative
+
+
+def test_privacy_comes_right_after_what_it_is_and_only_where_it_is_said():
+    said = _tap(explain._TOPIC + "voice").text
+    assert said.startswith("<b>🎙 Голосовые</b>\n\n<b>Что это.</b> Голосовое")
+    order = [
+        said.index(mark)
+        for mark in (
+            "<b>Что это.</b>",
+            "<b>Приватность.</b>",
+            "<b>Как работает.</b>",
+            "<b>Откуда идея.</b>",
+            "<i>Источник: PMID 37191989</i>",
+        )
+    ]
+    assert order == sorted(order)
+    assert "<b>Приватность.</b>" in _tap(explain._TOPIC + "capture").text
+    assert "<b>Приватность.</b>" not in _tap(explain._TOPIC + "time").text
+    assert "<b>Приватность.</b>" not in _tap(explain._TOPIC + "day").text
+    assert _rows(_tap(explain._TOPIC + "capture")) == [["⬅️ Как это работает"]]

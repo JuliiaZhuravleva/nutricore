@@ -1,7 +1,7 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл]
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл] [📋 Черновик: выкл]
     [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать] [ℹ️ Как это работает]
     [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
@@ -41,8 +41,10 @@ SHOW_COSTS = "show_costs"  # the 💸 line under each analysis
 TIMEZONE = "timezone"  # an IANA name; days in 📊 and dates in ⚖️ follow it
 WEEK_PUSH = "week_push"  # False: no summary on Sunday; on unless turned off
 WEEK_PUSH_SENT = "week_push_last"  # the Monday of the last summary sent
+DRAFT_MODE = "draft_mode"  # True: food waits for «✅ Записать»; off unless turned on
 _COSTS_CB = CALLBACK_PREFIX + "costs"
 _WEEK_CB = CALLBACK_PREFIX + "week"
+_DRAFT_CB = CALLBACK_PREFIX + "draft"
 _NUMBERS_CB = CALLBACK_PREFIX + "num"
 _ZONES_CB = CALLBACK_PREFIX + "tz"
 _PICK = _ZONES_CB + ":"  # + the zone's IANA name
@@ -100,6 +102,10 @@ def week_push_on(user: User | None) -> bool:
     return (user.settings or {}).get(WEEK_PUSH) is not False if user else True
 
 
+def draft_on(user: User | None) -> bool:
+    return bool((user.settings or {}).get(DRAFT_MODE)) if user else False
+
+
 def shows_costs(db, telegram_id: int) -> bool:
     user = _user(db, telegram_id)
     return bool(user and (user.settings or {}).get(SHOW_COSTS))
@@ -137,6 +143,7 @@ def screen(
     week_push: bool = True,
     reliable: int = 0,
     never: int = 0,
+    draft: bool = False,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -148,6 +155,12 @@ def screen(
         + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
         "🗓 Итог недели: "
         + ("воскресенье, 22:00, без звука." if week_push else "не присылаю."),
+        "📋 Черновик: "
+        + (
+            "вкл. Еда попадёт в дневник после «✅ Записать»."
+            if draft
+            else "выкл. Еда записывается сразу."
+        ),
         f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
         f"🧺 Надёжная еда: {reliable or 'пока нет'} · "
         f"✋ Не предлагать: {never or 'пока нет'}",
@@ -159,7 +172,10 @@ def screen(
             _btn("🕐 Часовой пояс", _ZONES_CB),
             _btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB),
         ],
-        [_btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB)],
+        [
+            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
+            _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
+        ],
         [
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
             _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
@@ -253,6 +269,7 @@ def open_view(
         week_push_on(user),
         reliable,
         never,
+        draft_on(user),
     )
 
 
@@ -286,6 +303,15 @@ def handle_callback(
         on = not week_push_on(_user(db, telegram_id))
         _save(db, telegram_id, **{WEEK_PUSH: on})
         notice = "✓ Итог недели включён" if on else "✓ Итог недели выключен"
+        return open_view(db, telegram_id, notice, now)
+    if data == _DRAFT_CB:
+        on = not draft_on(_user(db, telegram_id))
+        _save(db, telegram_id, **{DRAFT_MODE: on})
+        notice = (
+            "✓ Черновик перед записью: вкл. Еда попадёт в дневник после «✅ Записать»."
+            if on
+            else "✓ Черновик перед записью: выкл. Еда записывается сразу."
+        )
         return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:

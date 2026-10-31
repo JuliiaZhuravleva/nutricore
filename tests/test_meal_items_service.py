@@ -61,7 +61,8 @@ def db(Session):
 
 @pytest.fixture
 def owner(db):
-    user = User(telegram_id=42, username="owner")
+    # Old meals are seeded here: M12 would be the last thing said, and has its own tests.
+    user = User(telegram_id=42, username="owner", settings={"rollout_seen": True})
     db.add(user)
     db.commit()
     return user

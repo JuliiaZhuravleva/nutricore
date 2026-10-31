@@ -14,6 +14,14 @@ class CRUDMeal:
         stmt = select(Meal).where(Meal.id == meal_id, Meal.deleted_at.is_(None))
         return db.execute(stmt).scalar_one_or_none()
 
+    def get_written(self, db: Session, meal_id: int) -> Meal | None:
+        """The meal, unless it is deleted or still a draft: for whoever reads the diary
+        from outside. A draft is not in it, not even by its id."""
+        stmt = select(Meal).where(
+            Meal.id == meal_id, Meal.deleted_at.is_(None), Meal.is_draft.is_(False)
+        )
+        return db.execute(stmt).scalar_one_or_none()
+
     def get_any(self, db: Session, meal_id: int) -> Meal | None:
         """The meal, also when deleted: for undo and for a stale button's answer."""
         stmt = select(Meal).where(Meal.id == meal_id)
@@ -76,6 +84,24 @@ class CRUDMeal:
                 Meal.meal_time < end,
                 Meal.deleted_at.is_(None),
                 Meal.is_draft.is_(False),
+            )
+            .order_by(Meal.meal_time)
+        )
+        return list(db.scalars(stmt).all())
+
+    def get_user_drafts_between(
+        self, db: Session, user_id: int, start: datetime, end: datetime
+    ) -> list[Meal]:
+        """The drafts with ``start <= meal_time < end``: only the day's list of meals
+        names them, and nothing counts them."""
+        stmt = (
+            select(Meal)
+            .where(
+                Meal.user_id == user_id,
+                Meal.meal_time >= start,
+                Meal.meal_time < end,
+                Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(True),
             )
             .order_by(Meal.meal_time)
         )

@@ -942,6 +942,23 @@ def test_a_food_with_a_time_word_inside_moves_nothing(db, owner, reader, clock):
     assert reader.text == ["вчерашний суп"]
 
 
+def _tap(application, data: str) -> Update:
+    message = _message(text="x", message_id=4900)
+    return Update.de_json(
+        {
+            "update_id": message["message_id"],
+            "callback_query": {
+                "id": "1",
+                "from": message["from"],
+                "chat_instance": "c",
+                "data": data,
+                "message": message,
+            },
+        },
+        application.bot,
+    )
+
+
 def test_a_grams_slot_takes_150_and_outside_it_150_is_a_weight(
     db, owner, reader, clock
 ):
@@ -977,6 +994,27 @@ def test_a_wait_never_eats_food_the_slot_closes_and_the_meal_is_born(
     assert "ask" not in db.get(User, 1).settings
     db.refresh(item)
     assert item.grams is None
+
+
+def test_a_restart_between_the_tap_and_the_answer_keeps_the_slot(
+    db, owner, reader, clock
+):
+    _meal_now(db, owner, names=("рис",))
+    item = db.scalars(select(MealItem)).one()
+
+    async def tapped(application, _wire):
+        await application.process_update(
+            _tap(application, f"ml:g:{item.id}:r"),
+        )
+
+    asyncio.run(_with_app(tapped))  # the process ends here, the slot only in the row
+    db.expire_all()
+    assert "ask" in db.get(User, 1).settings
+    send(text("150"))  # a new application, as after a restart
+    db.refresh(item)
+    assert item.grams == 150
+    db.expire_all()
+    assert "ask" not in db.get(User, 1).settings
 
 
 def test_a_photo_in_a_slot_is_a_meal_too(db, owner, reader, clock):

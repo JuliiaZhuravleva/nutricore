@@ -939,7 +939,10 @@ async def _new_meal(
         )
     if born.final is not None:
         inbound_msg.mark_analyzed(inbound_id, {"exact_name": born.names})
-        _map_line(born.final, await _send_line(message, born.final), "line")
+        sent = await _send_line(message, born.final)
+        _map_line(born.final, sent, "line")
+        if sent is not None:
+            await _rollout(message, came.telegram_id)
         return
     sent = await _send_line(message, born.first)
     _map_line(born.first, sent, "pending")
@@ -949,6 +952,28 @@ async def _new_meal(
         inbound_id=inbound_id,
     )
     _start_read(context.application, job)
+    if sent is not None:
+        await _rollout(message, came.telegram_id)
+
+
+async def _rollout(message, telegram_id: int) -> None:
+    """M12, right after the line and never in its place. Its own message: no quote, no
+    meal. It can cost the meal nothing, whatever goes wrong here."""
+    try:
+        with SessionLocal() as db:
+            words = capture.take_rollout(db, telegram_id)
+        if words is None:
+            return
+        try:
+            await message.reply_text(
+                words, reply_markup=main_keyboard, disable_notification=True
+            )
+        except TelegramError as e:
+            logger.warning("Rollout line not sent: %s", type(e).__name__)
+            with SessionLocal() as db:
+                capture.rollout_again(db, telegram_id)
+    except Exception as e:
+        logger.error("Rollout line failed: %s", type(e).__name__)
 
 
 async def _album_grew(
@@ -978,7 +1003,9 @@ async def _read_split(
     """M2b done: each photo gets a line of its own under it, and a read of its own."""
     tasks = []
     for message_id, job in split.jobs:
-        line = capture.Line(capture.M1_PENDING, meal_id=job.meal_id)
+        with SessionLocal() as db:
+            words = capture.split_pending(db, job.meal_id)
+        line = capture.Line(words, meal_id=job.meal_id)
         sent = None
         try:
             sent = await application.bot.send_message(

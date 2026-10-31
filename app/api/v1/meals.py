@@ -55,7 +55,7 @@ def export_meals(
 
 @router.get("/{meal_id}", response_model=Meal)
 def read_meal(meal_id: int, db: Session = Depends(get_db)):
-    db_meal = crud_meal.get(db, meal_id=meal_id)
+    db_meal = crud_meal.get_written(db, meal_id=meal_id)
     if not db_meal:
         raise HTTPException(status_code=404, detail="Meal not found.")
     return db_meal
@@ -68,7 +68,7 @@ def create_meal(meal_in: MealCreate, user_id: int, db: Session = Depends(get_db)
 
 @router.put("/{meal_id}", response_model=Meal)
 def update_meal(meal_id: int, meal_in: MealUpdate, db: Session = Depends(get_db)):
-    db_meal = crud_meal.get(db, meal_id=meal_id)
+    db_meal = crud_meal.get_written(db, meal_id=meal_id)
     if not db_meal:
         raise HTTPException(status_code=404, detail="Meal not found.")
     sent = meal_in.model_fields_set
@@ -83,7 +83,7 @@ def update_meal(meal_id: int, meal_in: MealUpdate, db: Session = Depends(get_db)
 
 @router.delete("/{meal_id}", response_model=Meal)
 def delete_meal(meal_id: int, db: Session = Depends(get_db)):
-    db_meal = crud_meal.get(db, meal_id=meal_id)
+    db_meal = crud_meal.get_written(db, meal_id=meal_id)
     if not db_meal:
         raise HTTPException(status_code=404, detail="Meal not found.")
     return meal_items.delete_meal(db, db_meal.user_id, meal_id).meal

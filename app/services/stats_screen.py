@@ -603,6 +603,13 @@ def _look(moment: datetime) -> str:
     return LOOK_EVENING if moment.hour >= 20 or moment.hour < 6 else LOOK_DAY
 
 
+def _drafts_on(db, user: User | None, day: date, zone: ZoneInfo) -> list[Meal]:
+    if user is None:
+        return []
+    start, end = _day_bounds(day, zone)
+    return crud_meal.get_user_drafts_between(db, user.id, start, end)
+
+
 def _first_day_card(db, user: User | None) -> bool:
     """True once, the first time a user sees a card with food on it."""
     if user is None or (user.settings or {}).get(DAY_CARD_SEEN):

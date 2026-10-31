@@ -255,6 +255,7 @@ def _last_item(db: Session, dish_id: int) -> Optional[MealItem]:
             MealItem.removed_at.is_(None),
             MealItem.numbers_source.notin_(("none", "plate_share")),
             Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
         )
         .order_by(MealItem.id.desc())
     )
@@ -672,7 +673,11 @@ def _groups_of_dish(db: Session, dish_id: int, name: str) -> Optional[list]:
     stmt = (
         select(MealItem)
         .join(Meal, Meal.id == MealItem.meal_id)
-        .where(MealItem.personal_food_id == dish_id, Meal.deleted_at.is_(None))
+        .where(
+            MealItem.personal_food_id == dish_id,
+            Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
+        )
         .order_by(MealItem.id.desc())
         .limit(_GROUPS_LOOKBACK)
     )
@@ -692,6 +697,7 @@ def save_exact(
     *,
     meal_time: datetime,
     meal_type: Optional[str] = None,
+    draft: bool = False,
 ) -> Meal:
     """The meal the named dishes make, with no model call and final at once."""
 
@@ -740,6 +746,7 @@ def save_exact(
             ),
             user_id,
         )
+        meal.is_draft = draft
         db.add(meal)
         db.flush()
         for position, (dish, name, portion) in enumerate(zip(dishes, names, portions)):
@@ -1486,6 +1493,7 @@ def split_album(db: Session, user_id: int, meal_id: int) -> Change:
                 user_id,
             )
             new.reading_status = "pending"
+            new.is_draft = meal.is_draft
             db.add(new)
             db.flush()
             source.meal_id = new.id

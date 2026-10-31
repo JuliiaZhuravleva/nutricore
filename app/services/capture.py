@@ -45,15 +45,14 @@ from app.services import (
     weight_screen,
 )
 from app.services.day_card import local_time
+from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
+from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
     AGAIN,
     DEAD_FILE,
     DELETE,
     IMAGE,
-    M1_PENDING,
-    M2_PENDING,
     M3A_NO_FOOD,
-    M4_PENDING,
     M4C_VOICE_HINT,
     M4D_FAILED,
     M4E_NO_SPEECH,
@@ -82,7 +81,7 @@ from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
 from app.services.meal_words import time_words
 from app.services.numbers import shows_numbers
-from app.services.settings_screen import user_zone
+from app.services.settings_screen import draft_on, user_zone
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +99,15 @@ M5F_NO_MEAL = (
     "Время можно указать ответом на нужную запись."
 )
 M6A_NOT_ASKED = "Можно не отвечать, ничего не изменится."
+M4C_DRAFT_HINT = (
+    "Голосовые пока в пробном режиме. Что услышано, видно по кнопке «🎙 Текст». "
+    "Если сервис проекта не отвечает, голосовое уходит во внешний сервис."
+)
+M12_ROLLOUT = (
+    "Теперь еда записывается сразу, без подтверждения. "
+    "Как это работает: ⚙️ Настройки → ℹ️ Как это работает."
+)
+ROLLOUT_SEEN = "rollout_seen"
 M7_NOTE = "Фото хранится при этой записи."
 M7F_REFUSED = "Записать сейчас не вышло, сервер не отвечает. Пришли ещё раз."
 M9_UNREADABLE = (
@@ -399,8 +407,9 @@ class Line:
 
 
 def _take_hint(db, user: User) -> bool:
-    """M1b, once in a person's life with the bot."""
-    if (user.settings or {}).get("capture_hint_seen"):
+    """M1b, once in a person's life with the bot. It says the food is written, so it
+    waits while the person's food waits for ✅."""
+    if draft_on(user) or (user.settings or {}).get("capture_hint_seen"):
         return False
     user.settings = {**(user.settings or {}), "capture_hint_seen": True}
     db.commit()
@@ -429,6 +438,8 @@ def _record_text(
     what = _what(db, meal)
     if what and shows_numbers(user) and meal.calories is not None:
         what += f" · ≈ {num(meal.calories)} ккал"
+    if meal.is_draft:
+        return _draft_text(meal, user, what, note, cost, voice_hint)
     photos = len(meal.photos or [])
     plain = f"Записано по {photos} фото" if photos > 1 else "Записано"
     head = line_head(meal, user_zone(user), plain)
@@ -442,6 +453,34 @@ def _record_text(
         cost,
     )
     return "\n".join(line for line in lines if line)
+
+
+def _draft_text(
+    meal: Meal,
+    user: User,
+    what: str,
+    note: Optional[str],
+    cost: Optional[str],
+    voice_hint: bool,
+) -> str:
+    """M10b. Its voice hint keeps the disclosure and loses «в дневнике»: not yet."""
+    title, *rest = meal_card.draft_lines(meal, user_zone(user), what)
+    lines = (
+        title,
+        *rest[:-1],
+        note,
+        rest[-1],
+        M4C_DRAFT_HINT if voice_hint else None,
+        cost,
+    )
+    return "\n".join(line for line in lines if line)
+
+
+def _first_markup(db, meal: Meal, join: Optional[list] = None) -> InlineKeyboardMarkup:
+    """A draft has its own buttons from its first line on."""
+    if meal.is_draft:
+        return meal_card.line_markup(db, meal)
+    return _reading_markup(meal.id, join)
 
 
 def _reading_markup(meal_id: int, join: Optional[list] = None) -> InlineKeyboardMarkup:
@@ -471,14 +510,14 @@ def _it_is_food(source_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[_button(IT_IS_FOOD, f"ml:nf:{source_id}")]])
 
 
-def _failed_line(kind: str, meal_id: int) -> Line:
-    text, markup = meal_card.failed_view(kind, meal_id)
-    return Line(text, markup, meal_id=meal_id)
+def _failed_line(kind: str, meal: Meal) -> Line:
+    text, markup = meal_card.failed_view(kind, meal.id, draft=meal.is_draft)
+    return Line(text, markup, meal_id=meal.id)
 
 
-def _no_food_photo_line(meal_id: int) -> Line:
-    text, markup = meal_card.no_food_view(meal_id)
-    return Line(text, markup, meal_id=meal_id)
+def _no_food_photo_line(meal: Meal) -> Line:
+    text, markup = meal_card.no_food_view(meal.id, draft=meal.is_draft)
+    return Line(text, markup, meal_id=meal.id)
 
 
 # --- rows 4, 7, 8: changes to a meal that is there ------------------------------------
@@ -590,6 +629,7 @@ def _born_row(
         ),
         user.id,
     )
+    meal.is_draft = draft_on(user)
     db.add(meal)
     db.flush()
     source.meal_id = source.origin_meal_id = meal.id
@@ -816,11 +856,8 @@ def _sent(meal: Meal) -> datetime:
 def _last_meal(db, user: User, within: timedelta) -> Optional[Meal]:
     meal = db.scalar(
         select(Meal)
-        .where(
-            Meal.user_id == user.id,
-            Meal.deleted_at.is_(None),
-            Meal.is_draft.is_(False),
-        )
+        # A draft is the last meal too: «ещё сыр» means it, not the one before it.
+        .where(Meal.user_id == user.id, Meal.deleted_at.is_(None))
         .order_by(Meal.id.desc())
         .limit(1)
     )
@@ -1166,7 +1203,7 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
     t.db.commit()
     if job.kind == TEXT:
         first = _record_text(t.db, meal, t.user)
-        markup = _reading_markup(meal.id)
+        markup = _first_markup(t.db, meal)
     else:
         first, markup = meal_card.pending_text(job.kind, meal), None
     return meal_card.Screen(
@@ -1203,7 +1240,7 @@ def _read_anew(t, meal: Meal) -> meal_card.Screen:
     t.db.commit()
     if job.kind == TEXT:
         first = _record_text(t.db, meal, t.user)
-        markup = _reading_markup(meal.id)
+        markup = _first_markup(t.db, meal)
     else:
         first, markup = meal_card.pending_text(job.kind, meal), None
     return meal_card.Screen(
@@ -1328,7 +1365,20 @@ def _v_heard(t, data: str, mid: str, want: str) -> meal_card.Screen:
     return meal_card.Screen(text, markup, meal_id=meal.id, view="line")
 
 
+def _v_record(t, data: str, mid: str) -> meal_card.Screen:
+    """✅ Записать: from here on it counts. A read still out keeps its way in, so ``rev``
+    does not move; and a second tap on an old button lands on the same line."""
+    meal = meal_card._own_meal(t, int(mid), data)
+    if meal.is_draft:
+        meal.is_draft = False  # ``updated_at`` moves with it: a pull sees the row now
+        t.db.commit()
+    if not crud_meal_item.live(t.db, meal.id):
+        return meal_card._v_line(t, data, mid)
+    return _screen_of(_standing_line(t.db, meal))
+
+
 meal_card.add_verbs(
+    (re.compile(rf"ml:ok:{_SID}"), _v_record),
     (re.compile(rf"ml:rr:{_SID}:{meal_card._BACK}"), _v_again),
     (re.compile(rf"ml:w:{_SID}:{meal_card._BACK}"), _v_write),
     (re.compile(rf"ml:nf:{_SID}"), _v_it_is_food),
@@ -1462,7 +1512,9 @@ def _born_exact(
     db, came: Incoming, user: User, dishes: list, note: Optional[str], said=None
 ) -> Born:
     columns = _time_columns(came.sent_at, came.forward_date, said)
-    meal = meal_items.save_exact(db, user.id, dishes, meal_time=columns["meal_time"])
+    meal = meal_items.save_exact(
+        db, user.id, dishes, meal_time=columns["meal_time"], draft=draft_on(user)
+    )
     meal.sent_at = came.sent_at
     meal.time_source = columns["time_source"]
     meal.time_precision = columns["time_precision"]
@@ -1530,6 +1582,7 @@ def born(
             user.id,
         )
         meal.reading_status = "pending"
+        meal.is_draft = draft_on(user)
         db.add(meal)
         db.flush()
         source = _source(came, user, meal.id)
@@ -1553,10 +1606,10 @@ def born(
     if kind == TEXT:
         hint = _take_hint(db, user)
         words = _record_text(db, meal, user, hint=hint, note=note)
-        markup = _reading_markup(meal.id, meal_card.join_row(db, meal))
+        markup = _first_markup(db, meal, meal_card.join_row(db, meal))
         first = Line(words, markup, meal_id=meal.id)
     else:
-        first = Line(M1_PENDING if kind == IMAGE else M4_PENDING, meal_id=meal.id)
+        first = Line(meal_card.pending_text(kind, meal), meal_id=meal.id)
     job = Read(
         meal_id=meal.id,
         rev=meal.rev or 0,
@@ -1588,10 +1641,15 @@ def album_line(db, meal_id: int) -> Optional[Retouch]:
     if line is None or meal is None:
         return None
     if line.view == "pending":
-        text = M2_PENDING.format(count=len(meal.photos or []))
+        text = meal_card.photos_pending(len(meal.photos or []), meal.is_draft)
         return Retouch(line.message_id, text, None)
     standing = _standing_line(db, meal)
     return Retouch(line.message_id, standing.text, standing.markup)
+
+
+def split_pending(db, meal_id: int) -> str:
+    """The first line of one photo out of an album."""
+    return meal_card.pending_text(IMAGE, db.get(Meal, meal_id))
 
 
 def album_wait(db, meal_id: int) -> float:
@@ -1740,7 +1798,7 @@ def _v_split_do(t, data: str, mid: str) -> meal_card.Screen:
         job = _job_of(t.db, t.db.get(Meal, source.meal_id))
         jobs.append((source.message_id, replace(job, alone=True)))
     return meal_card.Screen(
-        M2_PENDING.format(count=len(sources)),
+        meal_card.photos_pending(len(sources), meal.is_draft),
         InlineKeyboardMarkup([[meal_card._undo_button(change.event.id, "r")]]),
         meal_id=meal.id,
         view="other",  # not this meal's line: that one is sent now
@@ -2131,7 +2189,7 @@ def _no_food(db, job: Read, meal: Meal) -> Line:
         return Line(*meal_card.silent_voice_view(M3A_NO_FOOD, meal.id), meal_id=meal.id)
     if job.kind != TEXT:
         db.commit()
-        return _no_food_photo_line(meal.id)
+        return _no_food_photo_line(meal)
     # M3a: nothing goes in the diary, and the words stay.
     meal.deleted_at = _now()
     source = db.get(MealSource, job.source_id)
@@ -2391,7 +2449,7 @@ def read_failed(
     _store_reading(db, job, status=status, error=error, model=model)
     if not waited:
         return Done()
-    line = _failed_line(job.kind, meal.id)
+    line = _failed_line(job.kind, meal)
     if job.again and error == DEAD_FILE:
         zone = user_zone(db.get(User, meal.user_id))
         text, markup = meal_card.dead_file_view(meal, zone)
@@ -2447,7 +2505,7 @@ def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
         file_id=source.file_id,
         text=told or None,
         line_id=line.message_id if line else None,
-        shown=_failed_line(kind, meal.id).text if was_failed else None,
+        shown=_failed_line(kind, meal).text if was_failed else None,
         inbound_id=_inbound_of(db, user.telegram_id, source),
         automatic=automatic,
     )
@@ -2540,6 +2598,36 @@ def row_fate(db, row: InboundMessage) -> tuple:
     return SETTLED, {"meal": source.meal_id}
 
 
+def take_rollout(db, telegram_id: int) -> Optional[str]:
+    """M12, or None. Asked once in a person's life with the bot, on the first capture,
+    and marked before it is sent so two fast messages cannot both get it. Only for who
+    has a meal from before the capture: such a meal has no source of its own, a
+    deleted one counts, and a newcomer has nothing to be told. With drafts on the
+    sentence would be false."""
+    user = db.scalar(select(User).where(User.telegram_id == telegram_id))
+    if user is None or (user.settings or {}).get(ROLLOUT_SEEN):
+        return None
+    earlier = db.scalar(
+        select(Meal.id)
+        .outerjoin(MealSource, MealSource.origin_meal_id == Meal.id)
+        .where(Meal.user_id == user.id, MealSource.id.is_(None))
+        .limit(1)
+    )
+    user.settings = {**(user.settings or {}), ROLLOUT_SEEN: True}
+    db.commit()
+    return M12_ROLLOUT if earlier is not None and not draft_on(user) else None
+
+
+def rollout_again(db, telegram_id: int) -> None:
+    """Telegram refused it: the next capture says it instead."""
+    user = db.scalar(select(User).where(User.telegram_id == telegram_id))
+    if user is not None:
+        rest = dict(user.settings or {})
+        rest.pop(ROLLOUT_SEEN, None)
+        user.settings = rest
+        db.commit()
+
+
 def unread_meals(db, limit: int) -> list:
     """Ids of the meals still without a reading."""
     stmt = (
@@ -2585,7 +2673,7 @@ def _may_read_by_itself(db, meal: Meal) -> bool:
     """The cap holds, and dishes in the meal are the person's: a read would be paid for
     and could not apply. A voice is listened to by itself only locally (5.2), so with
     no local service only one already heard goes on."""
-    if meal.deleted_at is not None or meal.is_draft:
+    if meal.deleted_at is not None:
         return False
     if (meal.read_attempts or 0) >= len(RETRY_AFTER):
         return False
@@ -2604,10 +2692,10 @@ def _may_read_by_itself(db, meal: Meal) -> bool:
 
 
 def pending_meals(db) -> list:
+    """A draft too: a restart keeps it, and no line of its stays on «читаю»."""
     stmt = select(Meal.id).where(
         Meal.reading_status == "pending",
         Meal.deleted_at.is_(None),
-        Meal.is_draft.is_(False),
     )
     return list(db.scalars(stmt.order_by(Meal.id)))
 
@@ -2619,7 +2707,6 @@ def stuck_meals(db, live) -> list:
     stmt = select(Meal.id, Meal.created_at).where(
         Meal.reading_status == "pending",
         Meal.deleted_at.is_(None),
-        Meal.is_draft.is_(False),
     )
     limit = _now() - STUCK_AFTER
     return [

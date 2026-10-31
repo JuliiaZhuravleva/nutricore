@@ -75,6 +75,13 @@ HEARD = "heard"  # meal_readings.status of a voice's words, before any model rea
 M1_PENDING = "Фото в дневнике, читаю…"
 M2_PENDING = "{count} фото в дневнике, читаю…"
 M4_PENDING = "Голосовое в дневнике, слушаю…"
+# The same lines of a draft: it is kept, and it is not in the diary yet.
+M1_DRAFT_PENDING = "Фото сохранено, читаю…"
+M2_DRAFT_PENDING = "{count} фото сохранено, читаю…"
+M4_DRAFT_PENDING = "Голосовое сохранено, слушаю…"
+M10B_TITLE = "<b>📋 Черновик, {when}</b>"
+M10B_WAITS = "В дневнике появится после кнопки «✅ Записать»."
+RECORD = "✅ Записать"
 M4D_FAILED = (
     "Голосовое сохранено, разобрать сейчас не вышло.\n"
     "В дневнике запись с этим голосовым."
@@ -455,18 +462,24 @@ def again_row(kind: str, meal_id: int, back: str = "r") -> list:
     ]
 
 
-def failed_view(kind: str, meal_id: int) -> tuple:
+def _not_in_diary(text: str, draft: bool) -> str:
+    """Of a draft, the first sentence only: the second says it is in the diary."""
+    return text.split("\n")[0] if draft else text
+
+
+def failed_view(kind: str, meal_id: int, *, draft: bool = False) -> tuple:
     """M7, M7a, M4d: (text, markup)."""
-    return _FAILED_COPY[kind], InlineKeyboardMarkup([again_row(kind, meal_id)])
+    text = _not_in_diary(_FAILED_COPY[kind], draft)
+    return text, InlineKeyboardMarkup([again_row(kind, meal_id)])
 
 
-def no_food_view(meal_id: int) -> tuple:
+def no_food_view(meal_id: int, *, draft: bool = False) -> tuple:
     """M7d."""
     row = [
         _button(WRITE, f"ml:w:{meal_id}:r"),
         _button(DELETE, f"ml:d:{meal_id}:r"),
     ]
-    return M7D_NO_FOOD, InlineKeyboardMarkup([row])
+    return _not_in_diary(M7D_NO_FOOD, draft), InlineKeyboardMarkup([row])
 
 
 def silent_voice_view(text: str, meal_id: int) -> tuple:
@@ -478,7 +491,10 @@ def silent_voice_view(text: str, meal_id: int) -> tuple:
 def dead_file_view(meal: Meal, zone) -> tuple:
     """M7e. Reading again cannot help, so only the words are offered."""
     markup = InlineKeyboardMarkup([[_button(WRITE, f"ml:w:{meal.id}:r")]])
-    return M7E_DEAD_FILE.format(when=_when(meal, zone)), markup
+    text = M7E_DEAD_FILE.format(when=_when(meal, zone))
+    if meal.is_draft:
+        text = text.replace("Запись в дневнике осталась, можно", "Можно")
+    return text, markup
 
 
 def kind_of_read(source_kind: str) -> str:
@@ -490,9 +506,21 @@ def kind_of_read(source_kind: str) -> str:
 def pending_text(kind: str, meal: Meal) -> str:
     """M1, M2, M4: what a line says while the read is out."""
     if kind != IMAGE:
-        return M4_PENDING
+        return M4_DRAFT_PENDING if meal.is_draft else M4_PENDING
     photos = len(meal.photos or [])
-    return M2_PENDING.format(count=photos) if photos > 1 else M1_PENDING
+    if photos > 1:
+        return photos_pending(photos, meal.is_draft)
+    return M1_DRAFT_PENDING if meal.is_draft else M1_PENDING
+
+
+def photos_pending(count: int, draft: bool) -> str:
+    return (M2_DRAFT_PENDING if draft else M2_PENDING).format(count=count)
+
+
+def draft_lines(meal: Meal, zone, what: str) -> list:
+    """M10b: the title, what it holds, and when it counts."""
+    title = M10B_TITLE.format(when=_when(meal, zone))
+    return [title, what, M10B_WAITS] if what else [title, M10B_WAITS]
 
 
 def _read_kind(db, meal: Meal) -> str:
@@ -515,7 +543,7 @@ def _trouble_view(t: _Tap, meal: Meal) -> tuple:
     if meal.reading_status == "no_food":
         if _read_kind(t.db, meal) == VOICE:
             return silent_voice_view(M3A_NO_FOOD, meal.id)
-        return no_food_view(meal.id)
+        return no_food_view(meal.id, draft=meal.is_draft)
     error = t.db.scalar(
         select(MealReading.error)
         .where(MealReading.meal_id == meal.id)
@@ -524,7 +552,7 @@ def _trouble_view(t: _Tap, meal: Meal) -> tuple:
     )
     if error == DEAD_FILE:
         return dead_file_view(meal, t.zone)
-    return failed_view(_read_kind(t.db, meal), meal.id)
+    return failed_view(_read_kind(t.db, meal), meal.id, draft=meal.is_draft)
 
 
 def _to_card(meal_id: int, back: str) -> list:
@@ -604,7 +632,10 @@ def _card(
 ) -> Screen:
     items = crud_meal_item.live(t.db, meal.id)
     word = meal.meal_type or "Приём"
-    lines = [f"<b>🍽 {_esc(word)}, {_when(meal, t.zone)}</b>"]
+    if meal.is_draft:
+        lines = [M10B_TITLE.format(when=_when(meal, t.zone))]
+    else:
+        lines = [f"<b>🍽 {_esc(word)}, {_when(meal, t.zone)}</b>"]
     shown = shows_numbers(t.user)
     open_now = shown or opened
     tools = [
@@ -618,10 +649,9 @@ def _card(
     undo_button = _undo_button(undo, back) if undo else None
 
     if _unread(meal, items):
-        lines += [
-            "Фото сохранено, распознать еду пока не вышло.",
-            "В дневнике запись с этим фото.",
-        ]
+        lines.append("Фото сохранено, распознать еду пока не вышло.")
+        if not meal.is_draft:
+            lines.append("В дневнике запись с этим фото.")
         rows = [again_row(IMAGE, meal.id, back), tools]
         if undo_button:
             rows.append([undo_button])
@@ -647,6 +677,9 @@ def _card(
         block = _meal_block(meal, items)
         if block:
             lines.append(block)
+    if meal.is_draft:
+        # A draft never expires and its line may be long gone: it can be written here.
+        rows.insert(0, [_button(RECORD, f"ml:ok:{meal.id}")])
     rows.append(_back_row(t, meal, back))
     screen = Screen("\n".join(lines), InlineKeyboardMarkup(rows), meal_id=meal.id)
     return _with_notice(screen, notice)
@@ -1182,11 +1215,31 @@ def join_candidates(db, meal: Meal) -> list:
     return sorted(found[:JOIN_LIST_MAX], key=_moment)
 
 
+def _draft_markup(db, meal: Meal, heard_open: bool) -> InlineKeyboardMarkup:
+    """M10b. A draft joins nothing: it is not in the day it would join."""
+    rows = [
+        [
+            _button(RECORD, f"ml:ok:{meal.id}"),
+            _button("✏️ Исправить", f"ml:o:{meal.id}:r"),
+        ],
+        [
+            _button("🕐 Время", f"ml:t:{meal.id}:r"),
+            _button("🗑 Не записывать", f"ml:d:{meal.id}:r"),
+        ],
+    ]
+    if heard_of(db, meal.id) is not None:
+        label, want = ("✓ 🎙 Текст", 0) if heard_open else ("🎙 Текст", 1)
+        rows.append([_button(label, f"ml:vt:{meal.id}:{want}")])
+    return InlineKeyboardMarkup(rows)
+
+
 def line_markup(
     db, meal: Meal, *, heard_open: bool = False, joinable: bool = True
 ) -> InlineKeyboardMarkup:
     """Under the record line: the fix goes straight to the dish when there is one, a
     voice note can show what was heard, and a meal soon after another can join it."""
+    if meal.is_draft:
+        return _draft_markup(db, meal, heard_open)
     items = crud_meal_item.live(db, meal.id)
     fix = f"ml:i:{items[0].id}:r" if len(items) == 1 else f"ml:o:{meal.id}:r"
     row = [
@@ -1216,6 +1269,8 @@ def _v_line(t: _Tap, data: str, mid: str) -> Screen:
     what = _what(t.db, meal)
     head = line_head(meal, t.zone)
     text = f"{head}: {what}." if what else f"{head}."
+    if meal.is_draft:
+        text = "\n".join(draft_lines(meal, t.zone, what))
     view = "pending" if status == "pending" else "line"
     return Screen(text, line_markup(t.db, meal), meal_id=meal.id, view=view)
 
@@ -1882,6 +1937,13 @@ def _day_line_name(db, meal: Meal) -> str:
     return _esc(_cut(_names(names), LINE_NAME_MAX))
 
 
+def _day_line(db, meal: Meal, zone) -> str:
+    name = _day_line_name(db, meal)
+    if meal.is_draft:
+        return f"{_clock(meal, zone)} · черновик: {name}"
+    return f"{_clock(meal, zone)} · {name}"
+
+
 def _day_chips(meals: list, zone, origin: str, code: str, page: int) -> list:
     seen: dict = {}
     chips = []
@@ -1905,12 +1967,15 @@ def _day_list(t: _Tap, day: date, origin: str, page: int = 0) -> Screen:
     zone = t.zone
     today = local_time(t.now, zone).date()
     meals = sorted(
-        stats_screen._meals_on(t.db, t.user, day, zone),
+        [
+            *stats_screen._meals_on(t.db, t.user, day, zone),
+            *stats_screen._drafts_on(t.db, t.user, day, zone),
+        ],
         key=lambda meal: _sort_key(meal, zone),
     )
     lines = [f"<b>🍽 Приёмы, {stats_screen._card_title(day)}</b>"]
     if meals:
-        lines += [f"{_clock(m, zone)} · {_day_line_name(t.db, m)}" for m in meals]
+        lines += [_day_line(t.db, m, zone) for m in meals]
         if not t.simple:
             lines.append("<i>Нажми на время, чтобы открыть приём и поправить.</i>")
     else:
