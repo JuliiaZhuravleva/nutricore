@@ -37,6 +37,7 @@ from app.services import ai_errors, custom_emoji, explain_screen, favorites, foo
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
     meal_draft,
+    meal_items,
     routines,
     settings_screen,
     stats_screen,
@@ -366,6 +367,7 @@ def _schedule_personal_food_save(
     nutrition: dict,
     resolution_signals: dict | None,
     resolution_source: str | None,
+    canonical_name: str | None = None,
 ) -> None:
     """Enqueue the embed+upsert Celery task for the confirmed food (B4 / ADR-0003).
 
@@ -377,13 +379,27 @@ def _schedule_personal_food_save(
       1. saved_food_name — already in personal DB (saved_rag path)
       2. product_name   — OFF-matched product name (barcode_off / name_off path)
       3. first food     — vision / text analysis result
+    ``canonical_name``, when given, is the dish the meal was linked to at save, and
+    outranks them: a barcode found under another name must not make a second row.
+
+    A plate's numbers belong to no one of its foods, so they teach nothing (H6).
     """
     try:
         signals = resolution_signals or {}
 
+        if not meal_items.holds_one_dish(nutrition, signals):
+            logger.debug(
+                "_schedule_personal_food_save: a plate (user_id=%d meal_id=%d)"
+                " — its numbers are not one food's",
+                user_id,
+                meal_id,
+            )
+            return
+
         # Canonical name extraction
         canonical_name = (
-            signals.get("saved_food_name")
+            canonical_name
+            or signals.get("saved_food_name")
             or signals.get("product_name")
             or (nutrition.get("foods") or [None])[0]
         )
@@ -896,6 +912,49 @@ async def _resend_draft(
     return CONFIRMING_MEAL
 
 
+def _joined_names(names: list) -> str:
+    """«кофе», «кофе и печенье», «кофе, печенье и сыр»."""
+    if len(names) < 2:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} и {names[-1]}"
+
+
+async def _save_exact_names(update, context, text, inbound_id) -> bool:
+    """Text that names the person's dishes exactly: written at once, free (US-N1).
+
+    True if it was. A failure here costs one paid reading, not the meal, so it falls
+    through to the model.
+    """
+    try:
+        with SessionLocal() as db:
+            db_user = (
+                db.query(User)
+                .filter(User.telegram_id == update.effective_user.id)
+                .first()
+            )
+            dishes = meal_items.exact_match(db, db_user.id, text) if db_user else []
+            if not dishes:
+                return False
+            meal = meal_items.save_exact(
+                db,
+                db_user.id,
+                dishes,
+                meal_time=context.user_data.get("meal_time", datetime.now(UTC)),
+                meal_type=context.user_data.get("meal_type"),
+            )
+            names = list(meal.nutrients["foods"])
+    except Exception as e:
+        logger.warning("Exact-name save failed: %s", e, exc_info=True)
+        return False
+    # Read, for free: /reprocess must not pay for it.
+    inbound_msg.mark_analyzed(inbound_id, {"exact_name": names})
+    context.user_data.clear()
+    await update.message.reply_text(
+        f"Записано: {_joined_names(names)}.", reply_markup=main_keyboard
+    )
+    return True
+
+
 @subscription_required
 async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Process the meal description or photo."""
@@ -936,6 +995,8 @@ async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         payload = input_ref
         logger.debug("Processing meal text: %s", payload)
+        if await _save_exact_names(update, context, payload, inbound_id):
+            return CHOOSING_ACTION
 
     return await _run_meal_analysis(
         update,
@@ -1220,9 +1281,15 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
                 db.add(db_user)
                 db.commit()
                 db.refresh(db_user)
-            meal = crud_meal.create(db, meal_in, db_user.id)
+            meal = meal_items.save_meal(
+                db,
+                meal_in,
+                db_user.id,
+                grams_by_user=bool(draft.get("grams_by_user")),
+            )
             saved_user_id = db_user.id
             saved_meal_id = meal.id
+            dish_name = meal_items.only_dish_name(db, meal)
 
         # B4 learning loop: fire-and-forget embed+upsert (outside the DB
         # context so SessionLocal is released before Celery dispatch).
@@ -1232,6 +1299,7 @@ async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favor
             nutrition=nutrition,
             resolution_signals=draft.get("resolution_signals"),
             resolution_source=draft.get("resolution_source"),
+            canonical_name=dish_name,
         )
 
         text = "✅ Записано"

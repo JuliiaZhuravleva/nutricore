@@ -473,7 +473,7 @@ def test_a_new_dish_gets_the_column_defaults(db_session, user):
 
     assert food.usual_grams is None
     assert food.usual_grams_by_user is False
-    assert food.numbers_basis == "per_100"
+    assert food.numbers_basis == "none"  # no macros were given: it says so
     assert food.numbers_quality == "unverified"
     assert food.numbers_by_user is False
 

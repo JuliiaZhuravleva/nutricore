@@ -8,6 +8,7 @@ from app.core.deps import require_export_token
 from app.crud.crud_meal import crud_meal
 from app.db.session import get_db
 from app.schemas.meal import Meal, MealCreate, MealsExport, MealUpdate
+from app.services import meal_items
 
 router = APIRouter()
 
@@ -42,7 +43,7 @@ def read_meal(meal_id: int, db: Session = Depends(get_db)):
 
 @router.post("/", response_model=Meal)
 def create_meal(meal_in: MealCreate, user_id: int, db: Session = Depends(get_db)):
-    return crud_meal.create(db, meal_in, user_id)
+    return meal_items.save_meal(db, meal_in, user_id)
 
 
 @router.put("/{meal_id}", response_model=Meal)

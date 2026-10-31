@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.meal import Meal
+from app.models.meal_item import MealItem
 from app.schemas.meal import MealCreate, MealUpdate
 
 
@@ -59,8 +60,9 @@ class CRUDMeal:
         )
         return list(db.scalars(stmt).all())
 
-    def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
-        db_obj = Meal(
+    def build(self, obj_in: MealCreate, user_id: int) -> Meal:
+        """The row, not added and not committed: for a transaction that holds more."""
+        return Meal(
             user_id=user_id,
             description=obj_in.description,
             meal_time=obj_in.meal_time,
@@ -85,6 +87,9 @@ class CRUDMeal:
             numbers_basis=obj_in.numbers_basis,
             plate_totals=obj_in.plate_totals,
         )
+
+    def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
+        db_obj = self.build(obj_in, user_id)
         db.add(db_obj)
         db.commit()
         db.refresh(db_obj)
@@ -104,6 +109,9 @@ class CRUDMeal:
         stmt = select(Meal).where(Meal.id == meal_id)
         obj = db.execute(stmt).scalar_one_or_none()
         if obj:
+            # Not left to the FK: SQLite ignores it and reuses the id, so another
+            # meal would inherit these items.
+            db.execute(delete(MealItem).where(MealItem.meal_id == meal_id))
             db.delete(obj)
             db.commit()
         return obj

@@ -34,7 +34,7 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import food_groups
+from app.services import food_groups, meal_items
 from app.services.numbers import shows_numbers, toggle_label
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,11 @@ def _log(db, user_id: int, fav: FavoriteMeal, slot: str) -> Meal:
         resolution_source=FAVORITE_SOURCE,
         resolution_signals={"favorite_id": fav.id},
     )
-    meal = crud_meal.create(db, meal_in, user_id)
+    # A favourite is one dish, whatever its plate held. Its numbers stay with it: the
+    # dish in the base gets a link, and none of them.
+    meal = meal_items.save_meal(
+        db, meal_in, user_id, names=[fav.name], numbers_source="dish"
+    )
     crud_favorite_meal.mark_used(db, fav)
     return meal
 

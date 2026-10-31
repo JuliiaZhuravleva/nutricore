@@ -44,10 +44,61 @@ class AnnQueryError(RuntimeError):
 UTC = datetime.timezone.utc
 
 
+def _numbers_quality(source: Optional[str], current: Optional[str] = None) -> str:
+    """How far the numbers just written can be trusted. A reuse of the base's own
+    numbers (``saved_rag``) tells nothing new, so it keeps what the row had."""
+    if source == "barcode_off":
+        return "barcode"
+    if source == "label_ocr":
+        return "label"
+    if source == "saved_rag" and current:
+        return current
+    return "unverified"
+
+
 class CRUDPersonalFood:
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
+
+    def names_of(self, db: Session, user_id: int) -> dict:
+        """The user's dishes by lower-cased name.
+
+        Python-side lower() on purpose: SQLite's built-in one is ASCII-only, which
+        breaks Cyrillic. A personal DB has <1000 rows per user (ADR-0003 §1), so the
+        scan is cheap.
+        """
+        stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
+        return {
+            food.canonical_name.strip().lower(): food
+            for food in db.execute(stmt).scalars().all()
+        }
+
+    def find_by_name(
+        self, db: Session, user_id: int, name: str
+    ) -> Optional[PersonalFood]:
+        return self.names_of(db, user_id).get(name.strip().lower())
+
+    def add_dish(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        name: str,
+        barcode: Optional[str] = None,
+        resolution_source: Optional[str] = None,
+    ) -> PersonalFood:
+        """A new dish without numbers. Only flushes: it joins the meal being written."""
+        dish = PersonalFood(
+            user_id=user_id,
+            canonical_name=name.strip(),
+            barcode=barcode,
+            resolution_source=resolution_source,
+            numbers_basis="none",
+        )
+        db.add(dish)
+        db.flush()
+        return dish
 
     def upsert(
         self,
@@ -78,16 +129,15 @@ class CRUDPersonalFood:
         This method is idempotent: calling it twice for the same
         (user_id, canonical_name) pair is safe and retry-friendly (B4 Celery task).
         """
-        name_key = canonical_name.strip().lower()
-        # Use Python-side lower() for the case-insensitive match so we stay
-        # Unicode-correct on both Postgres (where SQL lower() is also fine) and
-        # SQLite (whose built-in lower() is ASCII-only, breaking Cyrillic/etc.).
-        # A personal DB has <1000 rows per user (ADR-0003 §1), so the scan is cheap.
-        all_foods_stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
-        all_foods = list(db.execute(all_foods_stmt).scalars().all())
-        existing = next(
-            (f for f in all_foods if f.canonical_name.strip().lower() == name_key),
-            None,
+        existing = self.find_by_name(db, user_id, canonical_name)
+        has_macros = any(
+            value is not None
+            for value in (
+                per_100g_calories,
+                per_100g_proteins,
+                per_100g_fats,
+                per_100g_carbs,
+            )
         )
 
         now = datetime.datetime.now(UTC)
@@ -120,6 +170,11 @@ class CRUDPersonalFood:
                     existing.per_100g_fats = per_100g_fats
                 if per_100g_carbs is not None:
                     existing.per_100g_carbs = per_100g_carbs
+                if has_macros:
+                    existing.numbers_basis = "per_100"
+                    existing.numbers_quality = _numbers_quality(
+                        resolution_source, existing.numbers_quality
+                    )
             db.commit()
             db.refresh(existing)
             return existing
@@ -136,6 +191,8 @@ class CRUDPersonalFood:
             per_100g_proteins=per_100g_proteins,
             per_100g_fats=per_100g_fats,
             per_100g_carbs=per_100g_carbs,
+            numbers_basis="per_100" if has_macros else "none",
+            numbers_quality=_numbers_quality(resolution_source),
             times_used=1,
             last_used_at=now,
         )
