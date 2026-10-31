@@ -27,7 +27,8 @@ from app.schemas.meal import MealCreate
 from app.services import favorites, meal_card, meal_items, next_step, stats_screen
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
-from tests.test_user_text import findings
+from tests.test_emoji_set import _is_mark, build_tiles
+from tests.test_user_text import findings, user_strings
 
 ZONE = "Asia/Tbilisi"  # UTC+4, no daylight saving
 # Monday 26 October 2026, 13:20 local.
@@ -1669,6 +1670,16 @@ def _every_screen(db, owner):
             f"ml:t:{one.id}:{origin}",
         ):
             screens.append(_tap(db, data))
+    # The time screens after a change: their notices name the meal's day.
+    moved = _tap(db, _button(_tap(db, f"ml:t:{one.id}:r"), "−15 мин"))
+    screens.append(moved)
+    screens.append(_tap(db, _button(moved, "↩️ Вернуть")))
+    time_screen = _tap(db, f"ml:t:{one.id}:r")
+    yesterday = next(
+        label for row in _rows(time_screen) for label in row if "Вчера" in label
+    )
+    screens.append(_tap(db, _button(time_screen, yesterday)))
+    screens.append(_tap(db, _button(_tap(db, f"ml:t:{one.id}:r"), "Не помню")))
     for origin in ("t", "y", "w"):
         screens.append(_tap(db, f"ml:dl:20261026:{origin}"))
     screens.append(_tap(db, f"ml:q:{item.id}:2:r"))
@@ -1743,9 +1754,152 @@ def test_every_label_mark_is_drawn(db, owner):
         "⬅️ Назад: 7 дней",
     ):
         assert expected in labels, expected
+    drawn = {mark for mark, _, _ in build_tiles.SET}
+    used = {ch for label in labels for ch in label if _is_mark(ch)}
+    assert {"🗑", "⬅", "⭐", "➕", "▶"} <= used  # control: the scan reads the labels
+    assert used - drawn == set()
+
+
+def test_worst_case_ids_on_real_rows_keep_every_button_in_64_bytes(db, owner):
+    # The longest ids a real row can hold, an INTEGER column; a larger one is refused
+    # as unknown data, and the 10**17 shapes above are for the callback's bytes alone.
+    # SQLite hands out the next id after the largest.
+    worst = 2**31 - 100
+    db.add(Meal(id=worst, user_id=owner.id, meal_time=EATEN))
+    db.add(PersonalFood(id=worst, user_id=owner.id, canonical_name="заглушка"))
+    db.flush()
+    db.add(MealItem(id=worst, meal_id=worst, origin_meal_id=worst, name="заглушка"))
+    db.add(RecordEvent(id=worst, user_id=owner.id, kind="time_set"))
+    db.commit()
+    origin = f"h{worst}"
+    meal, item = _one(db, owner)
+    other, _other_item = _one(db, owner, "хлеб")
+    assert meal.id > worst and item.id > worst and item.personal_food_id > worst
+    screens = [
+        _tap(db, f"ml:o:{meal.id}:{origin}"),
+        _tap(db, f"ml:mo:{meal.id}:{origin}"),
+        _tap(db, f"ml:i:{item.id}:{origin}"),
+        _tap(db, f"ml:g:{item.id}:{origin}"),
+        _tap(db, f"ml:pk:{meal.id}:a:{origin}:0"),
+        _tap(db, f"ml:pk:{item.id}:r:{origin}:0"),
+        _tap(db, f"ml:t:{meal.id}:{origin}"),
+        _tap(db, f"ml:q:{item.id}:2:{origin}"),
+        _tap(db, f"ml:d:{other.id}:{origin}"),
+    ]
+    longest = 0
+    for screen in screens:
+        for row in _data(screen):
+            for data in row:
+                longest = max(longest, len(data.encode()))
+                assert len(data.encode()) <= 64, data
+                assert (
+                    data == "ml:nop"
+                    or not data.startswith("ml:")
+                    or (meal_card.is_known_shape(data))
+                ), data
+    # Control: the ids really reached the buttons.
+    assert longest > 35
+
+
+def _pagers(screen):
+    return [row for row in _rows(screen) if "▶️" in row or "◀️" in row]
+
+
+def test_every_pager_with_more_than_one_page_shows_its_position(db, owner):
+    # A control first: a picker of many dishes does page.
+    screens = _every_screen(db, owner)
+    pagers = [pager for screen in screens for pager in _pagers(screen)]
+    assert pagers
+    for screen in screens:
+        for pager in _pagers(screen):
+            if "ml:op:" in str(_data(screen)):
+                continue  # N1's dish chips: the text lists every dish (2.2)
+            assert re.fullmatch(r"\d+/\d+", pager[1]), pager
+            assert _button(screen, pager[1]) == "ml:nop"
+
+
+def test_chip_pages_are_exempt_because_the_text_lists_every_dish(db, owner):
+    many = _meal(db, owner, ["рис", "курица", "овощи", "хлеб", "сыр"])
+    screen = _tap(db, f"ml:o:{many.id}:r")
+    assert _pagers(screen)
+    for name in ("Рис", "Курица", "Овощи", "Хлеб", "Сыр"):
+        assert name.lower() in screen.text.lower(), name
+
+
+_DAY = r"(пн|вт|ср|чт|пт|сб|вс) \d{1,2} [а-яё]+"
+_CLOCK = r"(?<![\d:])\d{1,2}:\d{2}"
+
+
+def _clock_lines_without_a_day(text):
+    return [
+        line
+        for line in text.split("\n")
+        if re.search(_CLOCK, line)
+        and not re.search(_DAY, line)
+        and "например" not in line  # an example names no meal (2.9)
+        and not line.startswith("<i>✓ Время: ")  # N5a: the next line holds the day
+    ]
+
+
+def _is_a_days_screen(screen):
+    # Приёмы дня and the day card: the title says the day, the lines are its clocks.
+    title = screen.text.split("\n\n")[-1] if screen.text.startswith("<i>") else ""
+    head = (title or screen.text).split("\n", 1)[0]
+    return head.startswith(("<b>🍽 Приёмы", "<b>📊"))
+
+
+def test_a_line_naming_a_meal_carries_its_day(db, owner):
+    seen = 0
+    for screen in _every_screen(db, owner):
+        if _is_a_days_screen(screen):
+            continue
+        assert _clock_lines_without_a_day(screen.text) == [], screen.text
+        seen += sum(bool(re.search(_CLOCK, ln)) for ln in screen.text.split("\n"))
+    # Control: the scan saw clocks, and a bare one is a finding.
+    assert seen > 20
+    assert _clock_lines_without_a_day("Приём в 13:20") == ["Приём в 13:20"]
+    assert _clock_lines_without_a_day(f"В приёме {WHEN}") == []
+    assert _clock_lines_without_a_day("Напиши, например 12:40") == []
+
+
+def _named_without_their_label(text, labels):
+    """Button names in a sentence: «Цифры» for «🔢 Цифры», or a mark on its own."""
+    found = []
+    named = [label.partition(" ") for label in labels]
+    named = [(m, word) for m, _, word in named if word and any(map(_is_mark, m))]
+    for mark, word in named:
+        if f"«{word}»" in text:
+            found.append(f"«{word}»")
+    for line in text.split("\n")[1:]:  # the title's mark is the screen's own
+        if line.startswith("<blockquote"):
+            continue
+        for mark in {mark for mark, _word in named}:
+            for match in re.finditer(re.escape(mark), line):
+                after = line[match.start() :]
+                whole = [f"{m} {w}" for m, w in named if m == mark]
+                if not after.startswith(tuple(whole)):
+                    found.append(line)
+    return found
+
+
+def test_a_button_in_a_sentence_carries_its_whole_label(db, owner):
+    screens = _every_screen(db, owner)
+    labels = {label for screen in screens for row in _rows(screen) for label in row}
+    # Marks the screens use for their own state, not a button: ⭐ on a picked dish.
+    labels -= {label for label in labels if label.startswith("⭐ ")}
+    assert "🔢 Цифры" in labels and "🗑 Удалить" in labels
+    for screen in screens:
+        assert _named_without_their_label(screen.text, labels) == [], screen.text
+    # Controls: both ways of naming a button short are findings, the whole label is not.
+    assert _named_without_their_label("Заголовок\nНажми «Цифры».", {"🔢 Цифры"})
+    assert _named_without_their_label("Заголовок\nНажми 🔢 и всё.", {"🔢 Цифры"})
+    assert not _named_without_their_label("Заголовок\nНажми «🔢 Цифры».", {"🔢 Цифры"})
+    two = {"🗑 Удалить", "🗑 Из приёма"}
+    assert not _named_without_their_label("Заголовок\nНажми 🗑 Удалить.", two)
 
 
 def test_copy_rules_over_every_screen(db, owner):
+    estimates = 0
     for screen in _every_screen(db, owner):
         labels = [label for row in _rows(screen) for label in row]
         assert "🗑 Убрать" not in labels
@@ -1756,10 +1910,42 @@ def test_copy_rules_over_every_screen(db, owner):
         for line in screen.text.split("\n"):
             if "🔥" in line:
                 assert "🔥 ≈" in line, line
+                estimates += 1
         # A bot line naming a meal carries its day.
         title = screen.text.split("\n", 1)[0]
         if title.startswith("<b>🍽 Приём,") or title.startswith("<b>➕ Блюдо в"):
             assert "пн 26 октября" in title
+    assert estimates, "control: no screen showed a total, the mark went unread"
+
+
+_RETIRED = re.compile(
+    r"🗑 Убрать(?![а-яё])|⬅️ (Приём|Сегодня)(?![а-яё])|исходн", re.IGNORECASE
+)
+
+
+def _retired_copy(strings):
+    return [(path, text) for path, text in strings if _RETIRED.search(text)]
+
+
+def test_no_bot_line_anywhere_says_what_the_spec_retired():
+    strings = user_strings()
+    assert any("⬅️ Приёмы дня" in text for _path, text in strings)  # scan sees backs
+    assert _retired_copy(strings) == []
+
+
+@pytest.mark.parametrize(
+    "planted", ["🗑 Убрать", "⬅️ Приём", "⬅️ Сегодня", "Исходное фото"]
+)
+def test_control_the_retired_scan_sees_a_planted_string(tmp_path, planted):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "bot.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "m.py").write_text(f'X = "{planted}"\n', encoding="utf-8")
+    assert _retired_copy(user_strings(tmp_path)) == [("app/m.py", planted)]
+
+
+def test_a_longer_label_is_not_the_retired_one():
+    # Must not wrongly refuse the spec's own labels.
+    assert not _retired_copy([("a", "⬅️ Приёмы дня"), ("a", "⬅️ Назад: сегодня")])
 
 
 def test_no_gender_no_judging_no_register_in_the_module():

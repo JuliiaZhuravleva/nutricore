@@ -3,7 +3,7 @@
     ⚙️ Настройки → <b>💊 Рутины</b>: the list, [one button each], [➕ Добавить рутину]
     ➕ → a typed name → «В какие дни?» [Каждый день] [По дням] [Раз в неделю]
        → «Какой значок?» [💊] [🚶] [🧘] [💧] [😴] → the list, <i>✓ Добавлено: …</i>
-    a routine → [🗓 Дни] [✏️ Название] [🔣 Значок] [🗑 Убрать]
+    a routine → [🗓 Дни] [✏️ Название] [🔣 Значок] [🗑 Из рутин]
     🗑 → the list with [↩️ Вернуть «…»], applied at once (no «вы уверены?»)
 
 The list starts empty and the bot ships none: no presets, and it never suggests or
@@ -267,7 +267,7 @@ def routine_screen(routine: dict) -> Screen:
         ],
         [
             _btn("🔣 Значок", f"{CALLBACK_PREFIX}ic:{rid}"),
-            _btn("🗑 Убрать", f"{CALLBACK_PREFIX}rm:{rid}"),
+            _btn("🗑 Из рутин", f"{CALLBACK_PREFIX}rm:{rid}"),
         ],
         _back_row(),
     ]

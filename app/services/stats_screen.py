@@ -486,7 +486,7 @@ def _more_screen(user: User, due: list[dict], done: set, day: date, keep: str):
     rows.append(
         [
             InlineKeyboardButton(
-                "⬅️ Сегодня", callback_data=CALLBACK_PREFIX + TODAY + keep
+                "⬅️ Назад: сегодня", callback_data=CALLBACK_PREFIX + TODAY + keep
             )
         ]
     )
@@ -785,7 +785,7 @@ def _choice_screen(db, user: User, today: date, zone: ZoneInfo, opened: bool) ->
         for key, label in labels
     ]
     back = CALLBACK_PREFIX + TODAY + keep
-    rows.append([InlineKeyboardButton("⬅️ Сегодня", callback_data=back)])
+    rows.append([InlineKeyboardButton("⬅️ Назад: сегодня", callback_data=back)])
     head = "теперь" if in_use else "первым"
     text = (
         f"🎯 <b>Что попробовать {head}?</b>\n"

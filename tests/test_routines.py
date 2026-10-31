@@ -203,7 +203,7 @@ def test_one_routine_screen_and_its_back_button(Session):
         "🗓 Дни",
         "✏️ Название",
         "🔣 Значок",
-        "🗑 Убрать",
+        "🗑 Из рутин",
         "⬅️ Рутины",
     ]
     assert _data(screen, "⬅️ Рутины") == "rt:open"
@@ -508,7 +508,7 @@ def test_only_three_ticks_fit_then_more_opens_the_rest(Session):
     more = _card(Session, data=_data(card, "Ещё 2"))
     assert more.text.startswith("<b>💊 Рутины на сегодня</b>")
     assert _labels(more)[:5] == [f"💊 {name}" for name in names]
-    assert _data(more, "⬅️ Сегодня") == "st:t"
+    assert _data(more, "⬅️ Назад: сегодня") == "st:t"
 
     more = _card(Session, data=_data(more, "Душ"))
     assert more.toast == "✓ Душ"

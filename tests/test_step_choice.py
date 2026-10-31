@@ -115,8 +115,8 @@ def test_the_choice_screen_says_one_and_can_be_changed_and_has_a_way_back(db):
     assert "🎯 <b>Что попробовать первым?</b>" in picker.text
     assert "Одно на выбор. Сменить можно в любой момент." in picker.text
     assert picker.picture is None
-    assert _rows(picker)[-1] == ["⬅️ Сегодня"]
-    assert "👣" not in _press(db, picker, "⬅️ Сегодня").text
+    assert _rows(picker)[-1] == ["⬅️ Назад: сегодня"]
+    assert "👣" not in _press(db, picker, "⬅️ Назад: сегодня").text
 
 
 def test_the_choice_offers_two_or_three_and_always_records_only(db):

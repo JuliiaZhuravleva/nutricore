@@ -14,6 +14,7 @@ where an idea is the project's own and no study tested it.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,6 +30,11 @@ _TOPIC = CALLBACK_PREFIX + "t:"
 NUTRIENTS_OPEN = CALLBACK_PREFIX + "nl"
 _NUTRIENT = CALLBACK_PREFIX + "n:"
 _NUTRIENTS_ROW = 3
+_PAGE = CALLBACK_PREFIX + "p:"
+_PAGE_DATA = re.compile(re.escape(_PAGE) + r"(\d+)")
+NOP = CALLBACK_PREFIX + "nop"
+_LIST_PAGE = 6  # three rows of two, the pager and the back row: 4 + 1 (M15)
+_LIST_ROW_LABEL = 20  # the budget of a label at two per row; a longer one stands alone
 _SETTINGS = "set:open"  # settings_screen imports this module for its button
 
 
@@ -187,6 +193,23 @@ TOPICS = {
         source="у самой отметки исследования нет, у веществ — в справке.",
         more=True,
     ),
+    "meal": Topic(
+        label="🍽 Приём и блюда",
+        what="Приём состоит из блюд, и каждое можно поправить отдельно.",
+        how=(
+            "В приёме блюдо записано таким, каким было в тот день. Правка блюда меняет "
+            "будущие приёмы, прошлые остаются как были. Ранние записи не разделены на "
+            "блюда: цифры у них на всю запись. Удалённый приём не считается ни на "
+            "карточке дня, ни на карточке недели, но хранится, чтобы его можно было "
+            "вернуть."
+        ),
+        why=(
+            "С фото лучше определяется, что было, чем сколько, поэтому сначала "
+            "выбирается блюдо, а граммы идут вторыми. Деление на блюда сделано проектом "
+            "и в исследованиях не проверялась."
+        ),
+        source="PMID 30060528",
+    ),
 }
 
 NUTRIENTS_TITLE = "🧪 Витамины и минералы"
@@ -307,16 +330,40 @@ NUTRIENTS = {
 }
 
 
-def list_screen() -> Screen:
+def _list_rows(buttons: list) -> list:
+    """Two per row, in order; a label past the two-per-row budget stands alone."""
+    rows = []
+    for button in buttons:
+        last = rows[-1] if rows else None
+        fits = last is not None and len(last) == 1
+        if fits and max(len(last[0].text), len(button.text)) <= _LIST_ROW_LABEL:
+            last.append(button)
+        else:
+            rows.append([button])
+    return rows
+
+
+def list_screen(page: int = 0) -> Screen:
     text = (
         "<b>ℹ️ Как это работает</b>\n\n"
         "Коротко о том, что умеет бот: что это, как работает и откуда идея."
     )
-    rows = [
-        [InlineKeyboardButton(topic.label, callback_data=_TOPIC + key)]
+    entries = [
+        InlineKeyboardButton(topic.label, callback_data=_TOPIC + key)
         for key, topic in TOPICS.items()
     ]
-    rows.append([InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN)])
+    entries.append(InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN))
+    pages = (len(entries) + _LIST_PAGE - 1) // _LIST_PAGE
+    page %= pages
+    rows = _list_rows(entries[page * _LIST_PAGE : (page + 1) * _LIST_PAGE])
+    if pages > 1:
+        rows.append(
+            [
+                InlineKeyboardButton("◀️", callback_data=f"{_PAGE}{(page - 1) % pages}"),
+                InlineKeyboardButton(f"{page + 1}/{pages}", callback_data=NOP),
+                InlineKeyboardButton("▶️", callback_data=f"{_PAGE}{(page + 1) % pages}"),
+            ]
+        )
     rows.append([InlineKeyboardButton("⬅️ Настройки", callback_data=_SETTINGS)])
     return Screen(text, InlineKeyboardMarkup(rows))
 
@@ -378,6 +425,11 @@ def nutrient_screen(item: Nutrient) -> Screen:
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
     if data == OPEN:
         return list_screen()
+    if data == NOP:
+        return Screen("", None)  # the pager's middle: nothing to do
+    turned = _PAGE_DATA.fullmatch(data)
+    if turned:
+        return list_screen(int(turned.group(1)))
     if data == NUTRIENTS_OPEN:
         return nutrients_screen()
     if data.startswith(_NUTRIENT) and data[len(_NUTRIENT) :] in NUTRIENTS:
