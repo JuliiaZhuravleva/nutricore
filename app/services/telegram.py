@@ -1060,12 +1060,13 @@ async def _new_meal(
     came: capture.Incoming,
     note: Optional[str],
     words: Optional[str] = None,
+    day=None,
 ) -> None:
     """Row 10: the record first, then the line, then the read."""
     message = update.message
     try:
         with SessionLocal() as db:
-            born = capture.born(db, came, note=note, words=words)
+            born = capture.born(db, came, note=note, words=words, day=day)
     except Exception as e:
         logger.error("Meal not written: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
@@ -1449,6 +1450,41 @@ async def _fill_typed_dish(fill: meal_card.Fill, telegram_id: int) -> None:
         logger.warning("Typed dish left without numbers: %s", type(e).__name__)
 
 
+async def _meal_on_asked_day(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    """O1b: the next text or photo is a meal of the day the slot holds, with no way
+    down the router, where a number would be a weigh-in. What is no meal, or no
+    longer waited for, returns False and goes the usual way, which says why."""
+    message, user = update.message, update.effective_user
+    with SessionLocal() as db:
+        if not meal_card.waits_for_day(db, user.id):
+            return False
+    if message.text is not None and not _is_plain_answer(message.text):
+        return False
+    if not await check_subscription(user.id):
+        return False
+    came = capture.incoming(message, user)
+    if came.kind is None or capture.too_big(came):
+        return False
+    with SessionLocal() as db:
+        if capture.seen(db, came):
+            return False
+        asked = meal_card.take_day(db, user.id)
+    if asked is None:
+        return False
+    day, message_id = asked
+    if message_id:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=message.chat_id, message_id=message_id, reply_markup=None
+            )
+        except TelegramError as e:
+            logger.info("Day slot: the old keyboard stays: %s", e)
+    await _new_meal(update, context, came, None, day=day)
+    return True
+
+
 async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The answer to the card's typed slot, ahead of the conversation (group -1).
 
@@ -1463,6 +1499,8 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with SessionLocal() as db:
             if not meal_card.has_slot(db, user.id):
                 return
+        if await _meal_on_asked_day(update, context):
+            raise ApplicationHandlerStop
         text = message.text if _is_plain_answer(message.text) else None
         if text is not None and not await check_subscription(user.id):
             text = None

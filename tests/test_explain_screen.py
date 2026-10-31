@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 """«ℹ️ Как это работает» (G5-R22): reached from settings, one screen per topic."""
 
 import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
     pages = _pages()
     assert _rows(pages[1]) == [
         ["💊 Рутины", "🍽 Приём и блюда"],
-        ["🕐 Время приёма"],
+        ["🕐 Время приёма", "🍲 Мои блюда"],
         ["🧪 Витамины и минералы"],
         ["◀️", "2/2", "▶️"],
         ["⬅️ Настройки"],
@@ -184,10 +185,49 @@ def test_the_meal_topic_is_the_spec_copy():
     assert _buttons(screen)[0].callback_data == "hw:open"
 
 
-def test_the_later_slices_topics_have_not_come_early():
-    # M15e says what O ships; said now, it would be untrue.
-    assert "dishes" not in explain.TOPICS
-    assert {"capture", "voice", "time"} <= set(explain.TOPICS)  # slice M's have come
+def test_the_dishes_topic_is_the_spec_copy_m15e():
+    assert _tap(explain._TOPIC + "dishes").text == "\n\n".join(
+        [
+            "<b>🍲 Мои блюда</b>",
+            "<b>Что это.</b> Все блюда из записей в одном месте. "
+            "⭐ записывается одним нажатием.",
+            "<b>Как работает.</b> Блюдо появляется само, когда приходит еда. "
+            "«🔗 Объединить» соединяет два названия одного блюда, «🗑 Из списков» "
+            "прячет блюдо. Прошлые приёмы и их цифры при этом не меняются, "
+            "и оба действия отменяются.",
+            "<b>Откуда идея.</b> Повторы в еде здесь не считаются недостатком. "
+            "Решение проекта, отдельно не проверялось.",
+            "<i>Источник: Решение проекта.</i>",
+        ]
+    )
+
+
+def _quoted_marks(words: str) -> list:
+    """What a sentence names in «»: a button's words begin with its mark."""
+    found = re.findall(r"«([^»]+)»", words)
+    return [name for name in found if unicodedata.category(name[0]) == "So"]
+
+
+# Marks in a sentence that name a thing and no button: inflected, or the way a word
+# on the picture reads. Each is a sentence, and none tells a person to tap.
+_NAMES_NO_BUTTON = {"🧺 Надёжной еды", "🔋 Силы"}
+
+
+def test_a_button_named_in_a_topic_is_a_real_label_in_full():
+    """Rule 2.9: «🍽 Ещё» told people to tap what no screen drew."""
+    source = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (Path(explain.__file__).parent).glob("*.py")
+        if path.name != "explain_screen.py"
+    )
+    named = {
+        name
+        for topic in explain.TOPICS.values()
+        for name in _quoted_marks(topic.what + topic.how + topic.why)
+    }
+    assert "🔗 Объединить" in named and "🗑 Из списков" in named  # the scan sees them
+    assert "🍽 Такой кнопки нет" not in source  # known-negative
+    assert {name for name in named - _NAMES_NO_BUTTON if name not in source} == set()
 
 
 @pytest.mark.parametrize("key", list(explain.TOPICS))
@@ -311,7 +351,7 @@ def _spec_says(words: str) -> bool:
 
 
 def test_the_capture_topics_say_what_the_spec_says_word_for_word():
-    for key in ("capture", "time", "voice"):
+    for key in ("capture", "time", "voice", "dishes"):
         topic = explain.TOPICS[key]
         for words in (topic.what, topic.how, topic.why, topic.source):
             assert _spec_says(words), words

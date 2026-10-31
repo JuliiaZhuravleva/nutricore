@@ -80,6 +80,7 @@ TICK_ROW = 3
 ADD = "add"  # the empty day's «🍽 Добавить приём пищи»; the conversation takes it
 ADD_DATA = CALLBACK_PREFIX + ADD
 MEALS_BUTTON = "🍽 Приёмы"
+WEEK_MEALS_BUTTON = "🍽 Приёмы по дням"
 LOOK_DAY, LOOK_EVENING = "day", "evening"
 DAY_CARD_SEEN = "day_card_seen"  # in ``User.settings``: the one-line intro was shown
 _TABS = ((TODAY, "Сегодня"), (YESTERDAY, "Вчера"), (WEEK, "7 дней"))
@@ -350,6 +351,16 @@ def _summary_markup(
     return InlineKeyboardMarkup([*above, [toggle]])
 
 
+def _week_meals_button(days: list[tuple[date, list[Meal]]]) -> tuple:
+    """O13a: into the newest day with a meal, and from there ‹ ›. One button, because
+    seven days would not fit three to a row."""
+    newest = max((day for day, meals in days if meals), default=None)
+    if newest is None:
+        return ()
+    data = f"ml:dl:{_day_code(newest)}:{WEEK}"
+    return (InlineKeyboardButton(WEEK_MEALS_BUTTON, callback_data=data),)
+
+
 def week_screen(
     days: list[tuple[date, list[Meal]]],
     zone: ZoneInfo,
@@ -426,7 +437,9 @@ def week_screen(
         lines += ["", f"<i>{SUMMARY_NOTE}</i>"]
     rows = count_rows if counted else ()
     markup = (
-        _summary_markup(summary, opened, rows) if summary else _tabs(WEEK, opened, rows)
+        _summary_markup(summary, opened, rows)
+        if summary
+        else _tabs(WEEK, opened, rows, _week_meals_button(days))
     )
     return Screen("\n".join(lines), markup, picture=picture)
 

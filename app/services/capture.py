@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -44,7 +44,7 @@ from app.services import (
     voice,
     weight_screen,
 )
-from app.services.day_card import local_time
+from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
@@ -1557,8 +1557,16 @@ def _join_album(
     return Born(meal.id, source.id, meal.rev or 0, joined=len(meal.photos))
 
 
-def _time_columns(sent, forward, said: Optional[SaidTime]) -> dict:
-    """When it was eaten, section 5.3. A forward's own time outranks any words."""
+def _time_columns(sent, forward, said: Optional[SaidTime], on_day=None) -> dict:
+    """When it was eaten, section 5.3. A forward's own time outranks any words, and a
+    day the person chose (O1b) outranks both: it is a hand's, and nothing moves it."""
+    if on_day:
+        return {
+            "meal_time": on_day,
+            "time_precision": DAY_ONLY,
+            "time_source": "edited",
+            "time_phrase": None,
+        }
     if forward:
         return {
             "meal_time": forward,
@@ -1589,9 +1597,15 @@ def _said(text: Optional[str], kind: str, sent, forward, user: User):
 
 
 def _born_exact(
-    db, came: Incoming, user: User, dishes: list, note: Optional[str], said=None
+    db,
+    came: Incoming,
+    user: User,
+    dishes: list,
+    note: Optional[str],
+    said=None,
+    on_day=None,
 ) -> Born:
-    columns = _time_columns(came.sent_at, came.forward_date, said)
+    columns = _time_columns(came.sent_at, came.forward_date, said, on_day)
     meal = meal_items.save_exact(
         db, user.id, dishes, meal_time=columns["meal_time"], draft=draft_on(user)
     )
@@ -1634,14 +1648,17 @@ def born(
     *,
     note: Optional[str] = None,
     words: Optional[str] = None,
+    day: Optional[date] = None,
 ) -> Optional[Born]:
     """Source and meal in one commit, before any download or model call. None: this
     message is already here, the unique key said so. ``words``: the food of a message
-    whose first words were for a meal that is gone. The source keeps what came."""
+    whose first words were for a meal that is gone. The source keeps what came.
+    ``day``: the day it was asked for (O1b); time words in it are still no dish."""
     user = _user(db, came)
     told = words if words is not None else came.text
     said = _said(told, came.kind, came.sent_at, came.forward_date, user)
-    told = said.rest if said else told
+    told = said.rest if said and (said.rest or not day) else told
+    on_day = meal_card.noon_of(day, user_zone(user)) if day else None
     try:
         joined = _join_album(db, came, user, said)
         if joined is not None:
@@ -1649,7 +1666,7 @@ def born(
         if came.kind == "text":
             dishes = meal_items.exact_match(db, user.id, told)
             if dishes:
-                return _born_exact(db, came, user, dishes, note, said)
+                return _born_exact(db, came, user, dishes, note, said, on_day)
         reading_text = came.kind == "text"
         meal = crud_meal.build(
             MealCreate(
@@ -1657,7 +1674,7 @@ def born(
                 sent_at=came.sent_at,
                 photos=[] if reading_text or came.kind == "voice" else [came.file_id],
                 numbers_basis="none",
-                **_time_columns(came.sent_at, came.forward_date, said),
+                **_time_columns(came.sent_at, came.forward_date, said, on_day),
             ),
             user.id,
         )

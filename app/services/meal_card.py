@@ -55,6 +55,7 @@ ASK_TTL = timedelta(minutes=10)
 GRAMS, DISH_ADD, DISH_REPLACE = "grams", "dish_add", "dish_replace"
 TIME = "time"
 MEAL_TEXT = "meal_text"  # M7b: the words are this meal's reading
+DAY_ADD = "day_add"  # O1b: what comes next is a meal of that day
 EXACT = "exact"
 # A card opened on the bot's line: its time screen goes back to the card, while the
 # line's own 🕐, whose data is also ``r``, goes back to the line.
@@ -912,6 +913,9 @@ def _change_stale(t: _Tap, change: meal_items.Change, meal: Meal, back: str) -> 
     return _card(t, meal, back, notice=STALE_DISH)
 
 
+DAY_ADD_BUTTON = "➕ Приём в этот день"
+
+
 # --- the typed slot ---------------------------------------------------------
 
 
@@ -920,7 +924,7 @@ def _user(db, telegram_id: int) -> Optional[User]:
 
 
 def _open_slot(
-    t: _Tap, kind: str, back: str, *, meal_id=None, item_id=None, food_id=None
+    t: _Tap, kind: str, back: str, *, meal_id=None, item_id=None, food_id=None, day=None
 ) -> None:
     t.user.settings = {
         **(t.user.settings or {}),
@@ -929,7 +933,7 @@ def _open_slot(
             "meal_id": meal_id,
             "item_id": item_id,
             "food_id": food_id,
-            "day": None,
+            "day": day,
             "message_id": t.message_id,
             "at": t.now.isoformat(),
             "back": back,
@@ -955,6 +959,29 @@ def has_slot(db, telegram_id: int) -> bool:
 
 def leave_slot(db, telegram_id: int) -> None:
     _close_slot(db, _user(db, telegram_id))
+
+
+def waits_for_day(db, telegram_id: int) -> bool:
+    """Whether the open slot is O1b's: what comes next is a meal, so it is the capture
+    that takes it, not a typed answer."""
+    user = _user(db, telegram_id)
+    ask = (user.settings or {}).get(ASK) if user else None
+    return bool(ask and ask.get("kind") == DAY_ADD)
+
+
+def take_day(
+    db, telegram_id: int, now: Optional[datetime] = None
+) -> Optional[tuple[date, Optional[int]]]:
+    """O1b's slot, closed: the day asked for and the message that asked, or None when
+    the wait is over."""
+    ask = _close_slot(db, _user(db, telegram_id))
+    if (
+        ask is None
+        or ask.get("kind") != DAY_ADD
+        or _expired(ask, now or datetime.now(UTC))
+    ):
+        return None
+    return date.fromisoformat(ask["day"]), ask.get("message_id")
 
 
 def parse_grams(text: Optional[str]) -> Optional[float]:
@@ -1804,6 +1831,9 @@ def _noon(day: date, zone) -> datetime:
     return datetime.combine(day, clock_time(12), tzinfo=zone)
 
 
+noon_of = _noon  # the capture's way to a meal with a day and no clock
+
+
 def _yesterday_of(t: _Tap) -> date:
     """Counted from today, never from the meal: the label and the write share this."""
     return local_time(t.now, t.zone).date() - timedelta(days=1)
@@ -2004,6 +2034,8 @@ def _day_list(t: _Tap, day: date, origin: str, page: int = 0) -> Screen:
         lines.append("В этом дне записей нет.")
     code = stats_screen._day_code(day)
     rows = _day_chips(meals, zone, origin, code, page)
+    if not meals:
+        rows.append([_button(DAY_ADD_BUTTON, f"ml:da:{code}:{origin}")])
     earlier, later = day - timedelta(days=1), day + timedelta(days=1)
     walk = [
         _button(
@@ -2029,6 +2061,25 @@ def _v_day(t: _Tap, data: str, code: str, origin: str, page: Optional[str]) -> S
     except ValueError:
         return _unknown(t, data)
     return _day_list(t, day, origin, int(page or 0))
+
+
+def _v_day_add(t: _Tap, data: str, code: str, origin: str) -> Screen:
+    """O1b. The day is in the data, and only a day that has come takes a meal."""
+    try:
+        day = datetime.strptime(code, "%Y%m%d").date()
+    except ValueError:
+        return _unknown(t, data)
+    if day > local_time(t.now, t.zone).date():
+        return _unknown(t, data)
+    _open_slot(t, DAY_ADD, origin, day=day.isoformat())
+    return Screen(
+        f"<b>➕ Приём, {stats_screen._card_title(day)}</b>\n"
+        "Напиши или пришли, что было. Запись будет в этом дне, без времени.",
+        InlineKeyboardMarkup(
+            [[_button("⬅️ Приёмы дня", f"ml:dl:{code}:{origin}")]],
+        ),
+        view=NO_MEAL,
+    )
 
 
 # --- the table --------------------------------------------------------------
@@ -2059,6 +2110,7 @@ _VERBS: tuple = (
     (re.compile(rf"ml:fi:{_ID}:([01]):{_BACK}"), _v_star_dish),
     (re.compile(rf"ml:fm:{_ID}:([01]):{_BACK}"), _v_star_meal),
     (re.compile(r"ml:dl:(\d{8}):(t|y|w)(?::(\d{1,2}))?"), _v_day),
+    (re.compile(r"ml:da:(\d{8}):(t|y|w)"), _v_day_add),
 )
 
 

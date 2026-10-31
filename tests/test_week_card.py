@@ -170,7 +170,7 @@ def test_records_without_tags_say_so_and_never_claim_an_empty_week(db):
     screen = _week(db)
     assert week_card.NO_TAGS in screen.text
     assert "записей нет" not in screen.text
-    assert _rows(screen)[0] == ["🔢 Цифры"]
+    assert _rows(screen)[0] == ["🔢 Цифры", "🍽 Приёмы по дням"]  # O13a
 
 
 def test_two_records_show_the_same_shape_as_seven_and_no_empty_grid(db):
@@ -258,9 +258,12 @@ def test_numbers_wait_behind_the_button_and_open_as_a_quote_of_logged_days(db):
     _meal(db, _at(28), _item("овёс", "grain"), calories=2000)
     closed = _week(db)
     assert "ккал" not in closed.text
-    assert _rows(closed) == [["🔢 Цифры"], ["Сегодня", "Вчера", "✓ 7 дней"]]
+    assert _rows(closed) == [
+        ["🔢 Цифры", "🍽 Приёмы по дням"],  # O13a
+        ["Сегодня", "Вчера", "✓ 7 дней"],
+    ]
     opened = _week(db, opened=True)
-    assert _rows(opened)[0] == ["✓ 🔢 Цифры"]
+    assert _rows(opened)[0] == ["✓ 🔢 Цифры", "🍽 Приёмы по дням"]
     quote = re.search(
         r"<blockquote expandable>(.*)</blockquote>", opened.text, re.S
     ).group(1)
@@ -275,7 +278,10 @@ def test_settings_showing_numbers_leaves_no_button(db):
     _meal(db, _at(26), _item("овёс", "grain"))
     screen = _week(db)
     assert "ккал" in screen.text
-    assert _rows(screen) == [["Сегодня", "Вчера", "✓ 7 дней"]]
+    assert _rows(screen) == [
+        ["🍽 Приёмы по дням"],  # O13a: no toggle, the way in stays
+        ["Сегодня", "Вчера", "✓ 7 дней"],
+    ]
 
 
 def test_no_weight_on_the_card(db):
