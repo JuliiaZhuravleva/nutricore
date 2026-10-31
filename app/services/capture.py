@@ -1524,14 +1524,15 @@ def _join_album(
         return None
     meals = list(
         db.scalars(
-            select(Meal)
-            .join(MealSource, MealSource.meal_id == Meal.id)
-            .where(
-                MealSource.user_id == user.id,
-                MealSource.media_group_id == came.media_group_id,
+            select(Meal).where(
                 Meal.deleted_at.is_(None),
+                Meal.id.in_(
+                    select(MealSource.meal_id).where(
+                        MealSource.user_id == user.id,
+                        MealSource.media_group_id == came.media_group_id,
+                    )
+                ),
             )
-            .distinct()
         )
     )
     if len(meals) != 1:
@@ -2382,7 +2383,9 @@ def read_done(
     text = _record_text(
         db, meal, user, hint=hint, note=job.note, cost=cost, voice_hint=voice_hint
     )
-    if text == job.shown:
+    # The same words still owe the one dish its fix: the items came only with this read.
+    one_dish = not meal.is_draft and len(crud_meal_item.live(db, meal.id)) == 1
+    if text == job.shown and not one_dish:
         return Done(learn=learn)
     line = Line(text, meal_card.line_markup(db, meal), meal_id=meal.id)
     return Done(line, learn)

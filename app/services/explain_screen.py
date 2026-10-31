@@ -413,10 +413,7 @@ def _list_rows(buttons: list) -> list:
 
 
 def list_screen(page: int = 0) -> Screen:
-    text = (
-        "<b>ℹ️ Как это работает</b>\n\n"
-        "Коротко о том, что умеет бот: что это, как работает и откуда идея."
-    )
+    text = "<b>ℹ️ Как это работает</b>"
     entries = [
         InlineKeyboardButton(topic.label, callback_data=_TOPIC + key)
         for key, topic in TOPICS.items()

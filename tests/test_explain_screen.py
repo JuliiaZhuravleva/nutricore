@@ -52,6 +52,10 @@ def test_the_settings_hub_opens_the_list_and_keeps_its_row_budget():
     )
 
 
+def test_the_list_says_only_its_name_as_the_spec_has_it():
+    assert _tap(explain.OPEN).text == "<b>ℹ️ Как это работает</b>"
+
+
 def test_the_list_offers_every_topic_and_goes_back_to_settings():
     assert _rows(_tap(explain.OPEN)) == [
         ["📊 Карточка дня", "📊 Карточка недели"],

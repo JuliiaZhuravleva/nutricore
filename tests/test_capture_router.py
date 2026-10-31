@@ -22,6 +22,7 @@ from telegram.request import BaseRequest
 
 import app.services.telegram as tg
 from app.core.config import settings
+from app.crud.crud_meal_item import crud_meal_item
 from app.db.base import Base
 from app.models import (
     InboundMessage,
@@ -1451,3 +1452,34 @@ def test_album_photos_share_one_meal_one_line_and_one_read(
 def test_different_albums_are_different_meals(db, owner, reader):
     send(photo(media_group_id="a1"), photo(media_group_id="a2"))
     assert len(_meals(db)) == 2
+
+
+def _hint_seen(db, owner) -> None:
+    owner.settings = {**owner.settings, "capture_hint_seen": True}
+    db.commit()
+
+
+def test_a_line_that_reads_the_same_still_gets_the_fix_for_its_one_dish(
+    db, owner, reader
+):
+    """Typed words leave the text as it was, but the items came only with the read: the
+    M1 rule «with one dish, ✏️ Исправить is ml:i» has to reach the line all the same."""
+    _hint_seen(db, owner)
+    reader.answer = {**NUTRITION, "foods": ["суп"]}
+    wire = send(text("суп"))
+    db.expire_all()
+    meal = _meals(db)[0]
+    item = crud_meal_item.live(db, meal.id)[0]
+    assert wire.sent()[0]["text"] == "Записано: суп."
+    assert _kb(wire.sent()[0])[0][0] == f"ml:o:{meal.id}:r"  # no items yet
+    assert [e["text"] for e in wire.edits()] == ["Записано: суп."]
+    assert _kb(wire.edits()[0])[0] == [f"ml:i:{item.id}:r", f"ml:t:{meal.id}:r"]
+
+
+def test_a_line_that_reads_the_same_with_many_dishes_is_left_alone(db, owner, reader):
+    """Known-positive: its keyboard is right from the start, an edit would be refused."""
+    _hint_seen(db, owner)
+    reader.answer = {**NUTRITION, "foods": ["суп", "хлеб"]}
+    wire = send(text("суп и хлеб"))
+    assert wire.sent()[0]["text"] == "Записано: суп и хлеб."
+    assert wire.edits() == []

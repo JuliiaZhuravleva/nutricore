@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from telegram import Update
 from telegram.error import BadRequest
 
@@ -913,3 +913,23 @@ def test_nothing_about_the_food_reaches_the_logs(db, soup, caplog):
     soup.error = ValueError("boom")
     album(shot("a", caption="секретный суп"), shot("b"))
     assert "секретный" not in caplog.text
+
+
+def test_finding_the_album_never_asks_postgres_to_compare_json(db, soup, Session):
+    """``SELECT DISTINCT meals.*`` passes on SQLite and is refused by Postgres, whose
+    json has no equality: there every album answered «Записать сейчас не вышло»."""
+    engine = Session.kw["bind"]
+    seen = []
+
+    def watch(conn, cursor, statement, parameters, context, executemany):
+        seen.append(" ".join(statement.split()))
+
+    event.listen(engine, "before_cursor_execute", watch)
+    try:
+        album(shot("a"), shot("b"))
+    finally:
+        event.remove(engine, "before_cursor_execute", watch)
+    joined = [s for s in seen if "meal_sources.media_group_id" in s]
+    assert joined  # the query under guard did run
+    assert not [s for s in joined if "DISTINCT meals." in s]
+    assert _meal(db).photos == ["a", "b"]
