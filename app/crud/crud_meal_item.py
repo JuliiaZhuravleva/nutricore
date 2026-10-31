@@ -26,6 +26,18 @@ class CRUDMealItem:
         )
         return list(db.scalars(stmt).all())
 
+    def live_names(self, db: Session, meal_ids: list[int]) -> dict[int, list[str]]:
+        """Meal id → the names of its live items, in their order. One query."""
+        stmt = (
+            select(MealItem.meal_id, MealItem.name)
+            .where(MealItem.meal_id.in_(meal_ids), MealItem.removed_at.is_(None))
+            .order_by(MealItem.position, MealItem.id)
+        )
+        names: dict[int, list[str]] = {}
+        for meal_id, name in db.execute(stmt):
+            names.setdefault(meal_id, []).append(name)
+        return names
+
     def add(
         self,
         db: Session,

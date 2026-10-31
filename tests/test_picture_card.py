@@ -782,6 +782,8 @@ chrome = os.environ.get("CHROME")
         ("injection", 0),
         ("week", 0),
         ("week_few", 0),
+        ("day_no_time", 0),
+        ("day_only_no_time", 0),
         ("week_empty", 0),
         ("week_no_tags", 0),
         ("week_summary", 0),

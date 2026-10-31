@@ -38,19 +38,22 @@ class Report:
 
 def _foods(row) -> list:
     nutrients = row.nutrients if isinstance(row.nutrients, dict) else {}
-    foods = [str(food) for food in nutrients.get("foods") or []]
+    foods = [str(food) for food in nutrients.get("foods") or [] if str(food).strip()]
     fallback = row.name if isinstance(row, FavoriteMeal) else row.description
-    return foods or ([fallback] if fallback else [])
+    return foods or ([fallback] if fallback and fallback.strip() else [])
 
 
 def pending(db) -> list:
-    """Live favorites and meals without confirmed groups that have something to tag."""
+    """Live favorites and meals without confirmed groups that have something to tag.
+    A meal with nothing read names no food, and a call about it pays for nothing."""
     favorites = db.execute(
         select(FavoriteMeal)
         .where(FavoriteMeal.removed_at.is_(None))
         .order_by(FavoriteMeal.id)
     ).scalars()
-    meals = db.execute(select(Meal).order_by(Meal.id)).scalars()
+    meals = db.execute(
+        select(Meal).where(Meal.deleted_at.is_(None)).order_by(Meal.id)
+    ).scalars()
     rows = [
         favorite
         for favorite in favorites

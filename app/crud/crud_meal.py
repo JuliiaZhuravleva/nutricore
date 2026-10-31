@@ -24,14 +24,25 @@ class CRUDMeal:
         return db.scalars(stmt).all()
 
     def get_for_export(
-        self, db: Session, *, since: datetime | None = None
+        self,
+        db: Session,
+        *,
+        since: datetime | None = None,
+        updated_since: datetime | None = None,
     ) -> list[Meal]:
         """All meals in meal_time order (optionally only those at/after ``since``).
 
         Ordered so a downstream incremental pull can page by time; no ``limit`` —
         the consumer dedups idempotently on the stable meal id.
+
+        ``updated_since`` asks what changed, so it is the one pull that holds deleted
+        meals: their ``deleted_at`` is how a consumer holding the row learns of it.
         """
-        stmt = select(Meal).where(Meal.deleted_at.is_(None)).order_by(Meal.meal_time)
+        stmt = select(Meal).order_by(Meal.meal_time)
+        if updated_since is None:
+            stmt = stmt.where(Meal.deleted_at.is_(None))
+        else:
+            stmt = stmt.where(Meal.updated_at >= updated_since)
         if since is not None:
             stmt = stmt.where(Meal.meal_time >= since)
         return list(db.scalars(stmt).all())

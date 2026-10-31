@@ -26,6 +26,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_meal_item import crud_meal_item
 from app.models.user import User
 from app.services.favorites import Screen
 from app.services.next_step import NO_SUGGEST, RELIABLE
@@ -104,6 +105,21 @@ def counts(user: User | None) -> tuple[int, int]:
     return len(_names(user, RELIABLE)), len(_names(user, NO_SUGGEST))
 
 
+def _written(db, meals: list) -> list:
+    """Each meal's names, once per meal: its live dishes, or the description of a
+    meal that has none. A blank one names nothing."""
+    dishes = crud_meal_item.live_names(db, [meal.id for meal in meals])
+    written = []
+    for meal in meals:
+        once = {}
+        for name in dishes.get(meal.id) or [meal.description or ""]:
+            name = _clean(name)
+            if name:
+                once.setdefault(_key(name), name)
+        written += once.values()
+    return written
+
+
 def seed(db, user: User, now: datetime | None = None) -> None:
     """Favourites first, then what repeats in the records, up to ``MAX_FOODS``. What
     is on the list stays, whatever happens to its favourite: the user edits it here."""
@@ -111,7 +127,7 @@ def seed(db, user: User, now: datetime | None = None) -> None:
     meals = crud_meal.get_user_meals_between(
         db, user.id, now - timedelta(days=SEED_DAYS), now
     )
-    written = [_clean(m.description) for m in meals if m.description]
+    written = _written(db, meals)
     repeats = Counter(_key(name) for name in written)
     spelled = {_key(name): name for name in reversed(written)}
     found = [fav.name for fav in crud_favorite_meal.list_active(db, user.id)]

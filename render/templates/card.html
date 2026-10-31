@@ -185,6 +185,8 @@ body.pdf { background: #E9E4DA; }
       if (R.gap) add(rp, el("div", "gapline", R.gap));
       add(c, rp);
     }
+    // The text twin's line: a meal with a day and no time has no dot to be.
+    if (!R.empty && R.noTime) add(c, el("div", "gapline", R.noTime));
     if (!R.empty && (R.grain || R.anchor || R.foods)) {
       var g = el("div", "panel rows");
       if (R.grain) add(g, grow("grain", R.grain));

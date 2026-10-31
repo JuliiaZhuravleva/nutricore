@@ -177,7 +177,7 @@ def test_one_meal_has_no_gap_and_a_meal_without_time_shows_no_time(db):
     timeless.meal_time = None
     assert day_card.facts(
         [timed, timeless], ZONE, lambda m: m.description
-    ) == day_card.DayFacts(times=("9:00",), anchor="тофу", foods="еда")
+    ) == day_card.DayFacts(times=("9:00",), anchor="тофу", foods="еда", no_time="еда")
 
 
 def test_the_numbers_are_collapsed_and_there_is_no_goal(db):

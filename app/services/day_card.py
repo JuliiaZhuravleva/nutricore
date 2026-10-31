@@ -37,6 +37,7 @@ class DayFacts:
     grain: Optional[str] = None  # «овсянка утром»
     anchor: Optional[str] = None  # «тофу в обед · чечевица вечером»
     foods: Optional[str] = None  # «чипсы, лапша»: what no group line named
+    no_time: Optional[str] = None  # «яблоко, суп»: meals that hold a day and no time
 
 
 def plain_time(moment: datetime) -> str:
@@ -177,6 +178,21 @@ def _foods_line(meals: list, name_of: Callable) -> Optional[str]:
     return ", ".join(foods[:MAX_NAMES]) + (f", ещё {extra}" if extra > 0 else "")
 
 
+def _no_time_line(meals: list, name_of: Callable) -> Optional[str]:
+    """Meals with no place on the line of times, each name once, past ``MAX_NAMES``
+    a count."""
+    seen, names = set(), []
+    for meal in meals:
+        name = name_of(meal)
+        if not has_clock(meal) and name.casefold() not in seen:
+            seen.add(name.casefold())
+            names.append(short(name))
+    if not names:
+        return None
+    extra = len(names) - MAX_NAMES
+    return ", ".join(names[:MAX_NAMES]) + (f", ещё {extra}" if extra > 0 else "")
+
+
 def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
     """``meals`` in time order, as the CRUD returns them."""
     timed = [m for m in meals if has_clock(m)]
@@ -186,6 +202,7 @@ def facts(meals: list, zone: ZoneInfo, name_of: Callable) -> DayFacts:
         grain=_group_line(meals, "grain", zone, name_of),
         anchor=_group_line(meals, "anchor", zone, name_of),
         foods=_foods_line(meals, name_of),
+        no_time=_no_time_line(meals, name_of),
     )
 
 
@@ -209,12 +226,20 @@ def foods_label(day: DayFacts) -> Optional[str]:
     return day.foods[:1].upper() + day.foods[1:]
 
 
+def no_time_label(day: DayFacts) -> Optional[str]:
+    """The same words in the text and the picture, as on the day's list of meals."""
+    return f"без времени · {day.no_time}" if day.no_time else None
+
+
 def lines(day: DayFacts, escape: Callable) -> list:
     """The card's text; every name passes ``escape``."""
     out = []
     if day.times:
         rhythm = "🕐 " + " · ".join(day.times)
         out.append(rhythm + (f", {day.gap} длинный перерыв" if day.gap else ""))
+    no_time = no_time_label(day)
+    if no_time:
+        out.append(escape(no_time))
     if day.grain:
         out.append(
             f"{food_groups.GROUPS['grain'][0]} Цельные злаки: {escape(day.grain)}"

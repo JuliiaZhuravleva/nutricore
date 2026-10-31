@@ -31,7 +31,7 @@ NumbersBasis = Literal["items", "plate", "none"]
 
 
 class MealCreate(MealBase):
-    # On create and update only, so the export payload does not change here.
+    # On create and update only: not in the export payload.
     sent_at: Optional[datetime] = None
     time_precision: TimePrecision = None
     time_source: TimeSource = None
@@ -81,7 +81,12 @@ class MealInDB(MealInDBBase):
     pass
 
 
+class ExportedMeal(Meal):
+    # The only way a consumer holding this row can learn it was deleted.
+    deleted_at: Optional[datetime] = None
+
+
 class MealsExport(BaseModel):
     """Wrapper for the read-only meals export consumed by the my-health vault."""
 
-    meals: List[Meal]
+    meals: List[ExportedMeal]

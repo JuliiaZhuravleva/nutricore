@@ -26,11 +26,14 @@ def read_meals(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 )
 def export_meals(
     since: Optional[datetime] = None,
+    updated_since: Optional[datetime] = None,
     db: Session = Depends(get_db),
 ):
     """Read-only meals export for the my-health vault (token-guarded; single-user
-    instance → all meals; ``since`` for incremental pulls)."""
-    return MealsExport(meals=crud_meal.get_for_export(db, since=since))
+    instance → all meals; ``since`` for incremental pulls on ``meal_time``;
+    ``updated_since`` for what changed, deleted meals included, with ``deleted_at``)."""
+    meals = crud_meal.get_for_export(db, since=since, updated_since=updated_since)
+    return MealsExport(meals=meals)
 
 
 @router.get("/{meal_id}", response_model=Meal)

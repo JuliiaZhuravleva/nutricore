@@ -247,6 +247,7 @@ def day_screen(
     lines += day_card.lines(facts, html.escape)
     picture |= {
         "meals": day_card.marks(meals, zone),
+        "noTime": day_card.no_time_label(facts),
         "gap": f"{facts.gap.capitalize()} длинный перерыв" if facts.gap else None,
         "grain": facts.grain,
         "anchor": facts.anchor,
