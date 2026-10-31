@@ -73,6 +73,7 @@ class CRUDPersonalFood:
           Increments times_used, refreshes last_used_at.
           Overwrites macros/barcode/resolution_source if provided (non-None).
           Does NOT overwrite with None — callers may omit unchanged fields.
+          Never overwrites macros a person typed (numbers_by_user).
 
         This method is idempotent: calling it twice for the same
         (user_id, canonical_name) pair is safe and retry-friendly (B4 Celery task).
@@ -110,14 +111,15 @@ class CRUDPersonalFood:
                 existing.barcode = barcode
             if brand is not None:
                 existing.brand = brand
-            if per_100g_calories is not None:
-                existing.per_100g_calories = per_100g_calories
-            if per_100g_proteins is not None:
-                existing.per_100g_proteins = per_100g_proteins
-            if per_100g_fats is not None:
-                existing.per_100g_fats = per_100g_fats
-            if per_100g_carbs is not None:
-                existing.per_100g_carbs = per_100g_carbs
+            if not existing.numbers_by_user:
+                if per_100g_calories is not None:
+                    existing.per_100g_calories = per_100g_calories
+                if per_100g_proteins is not None:
+                    existing.per_100g_proteins = per_100g_proteins
+                if per_100g_fats is not None:
+                    existing.per_100g_fats = per_100g_fats
+                if per_100g_carbs is not None:
+                    existing.per_100g_carbs = per_100g_carbs
             db.commit()
             db.refresh(existing)
             return existing

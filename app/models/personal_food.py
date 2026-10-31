@@ -22,14 +22,18 @@ import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -130,6 +134,24 @@ class PersonalFood(Base, BaseClass):
     # Usage tracking (for future quick-pick UX, B5)
     times_used = Column(Integer, nullable=False, default=1, server_default="1")
     last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # The usual portion, and whether a person set it.
+    usual_grams = Column(Float, nullable=True)
+    usual_grams_by_user = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # "per_100" | "per_portion" | "none".
+    numbers_basis = Column(
+        String, nullable=False, default="per_100", server_default="per_100"
+    )
+    # "unverified" | "barcode" | "label" | "user". Only the last three drop the ≈.
+    numbers_quality = Column(
+        String, nullable=False, default="unverified", server_default="unverified"
+    )
+    # A person typed these numbers: upsert must not overwrite them.
+    numbers_by_user = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     # NOT NULL + server_default (TD-006 lesson)
     created_at = Column(

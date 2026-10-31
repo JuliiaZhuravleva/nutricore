@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -23,8 +23,21 @@ class MealBase(BaseModel):
     resolution_signals: Optional[Dict[str, Any]] = None
 
 
+# A default of None with no Optional in the type: leaving one of these out is fine,
+# and an explicit null is refused, because the three columns are NOT NULL.
+TimePrecision = Literal["exact", "approx", "day_only"]
+TimeSource = Literal["sent", "said", "forward", "edited"]
+NumbersBasis = Literal["items", "plate", "none"]
+
+
 class MealCreate(MealBase):
-    pass
+    # On create and update only, so the export payload does not change here.
+    sent_at: Optional[datetime] = None
+    time_precision: TimePrecision = None
+    time_source: TimeSource = None
+    time_phrase: Optional[str] = None
+    numbers_basis: NumbersBasis = None
+    plate_totals: Optional[Dict[str, Any]] = None
 
 
 class MealUpdate(BaseModel):
@@ -42,6 +55,13 @@ class MealUpdate(BaseModel):
     ai_analysis: Optional[Dict[str, Any]] = None
     resolution_source: Optional[str] = None
     resolution_signals: Optional[Dict[str, Any]] = None
+    # Not sent_at, which never moves, and not rev, which crud_meal.update counts.
+    time_precision: TimePrecision = None
+    time_source: TimeSource = None
+    time_phrase: Optional[str] = None
+    numbers_basis: NumbersBasis = None
+    plate_totals: Optional[Dict[str, Any]] = None
+    deleted_at: Optional[datetime] = None
 
 
 class MealInDBBase(MealBase):

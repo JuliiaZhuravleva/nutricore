@@ -115,3 +115,23 @@ def test_revision_ids_are_unique():
     for rev, name in ids:
         assert rev not in seen, f"duplicate revision {rev!r}: {seen[rev]} and {name}"
         seen[rev] = name
+
+
+def _heads(chain: dict) -> list:
+    parents = {p for ps, _ in chain.values() for p in ps}
+    return sorted(rev for rev in chain if rev not in parents)
+
+
+def test_the_head_check_sees_two_heads(tmp_path):
+    """Known-positive control: two children of one parent are two heads."""
+    (tmp_path / "a.py").write_text('revision = "a"\ndown_revision = None\n')
+    (tmp_path / "b.py").write_text('revision = "b"\ndown_revision = "a"\n')
+    (tmp_path / "c.py").write_text('revision = "c"\ndown_revision = "a"\n')
+
+    assert _heads(_chain(tmp_path)) == ["b", "c"]
+
+
+def test_slice_n_migration_sits_on_routine_ticks():
+    chain = _chain()
+    parents, filename = chain["d4e5f6a7b8c9"]
+    assert parents == ("a9b8c7d6e5f4",), filename
