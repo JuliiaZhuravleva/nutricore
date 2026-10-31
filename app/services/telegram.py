@@ -102,6 +102,13 @@ _credit_alerted: Dict[str, datetime] = {}
 # Reads running at once (section 5.2), and the tasks of them that are running.
 READS_AT_ONCE = 3
 _meal_reads: set = set()
+# The meals a task is reading now, with their diagnostic row. A sweep leaves these be.
+_live_reads: Dict[int, Optional[int]] = {}
+
+SWEEP_EVERY_SECONDS = 300
+REPLAY_LIMIT = REPROCESS_BATCH_LIMIT  # one start's pending reads; the rest wait
+SWEEP_TASK = "meal_sweep"
+REPLAY_DONE = "meal_replay_done"
 
 # Conversation states
 (
@@ -579,7 +586,13 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
         logger.error("Meal %s not read: %s", job.meal_id, error)
         inbound_msg.mark_failed(job.inbound_id, error)
         with SessionLocal() as db:
-            done = capture.read_failed(db, job, error, model=_model_of(job))
+            done = capture.read_failed(
+                db,
+                job,
+                error,
+                status=capture.failure_status(e),
+                model=_model_of(job),
+            )
         await _show(bot, job, done.line)
         refusal = ai_errors.out_of_credit(e)
         if refusal is not None:
@@ -608,12 +621,20 @@ async def _read_meal(application: Application, job: capture.Read) -> None:
     )
     try:
         async with gate:
+            if job.automatic:
+                with SessionLocal() as db:
+                    refused = capture.automatic_start(db, job)
+                if refused is not None:
+                    await _show(application.bot, job, refused.line)
+                    return
             with metering() as meter:
                 _, dead = await _read_one(application.bot, job, meter)
-        if dead is not None:
+        # The picker is a push, and a read nobody asked for pushes nothing: the next
+        # live meal asks.
+        if dead is not None and not job.automatic:
             await _offer_model_choice(application, job, dead)
     except Exception as e:
-        # The record stands, and the line says «читаю…» until /reprocess.
+        # The record stands; the sweep gives the line its failure.
         logger.error("Meal %s read crashed: %s", job.meal_id, type(e).__name__)
 
 
@@ -624,7 +645,99 @@ def _keep_task(task) -> None:
 
 
 def _start_read(application: Application, job: capture.Read) -> None:
-    _keep_task(application.create_task(_read_meal(application, job)))
+    # Live from now, not from when the task first runs: nothing awaits in between.
+    _live_reads[job.meal_id] = job.inbound_id
+    task = application.create_task(_read_meal(application, job))
+    _keep_task(task)
+    task.add_done_callback(lambda _: _live_reads.pop(job.meal_id, None))
+
+
+def _pending_at_start() -> list:
+    """Taken before polling begins: a meal born after this has its own task coming."""
+    try:
+        with SessionLocal() as db:
+            return capture.pending_meals(db)
+    except Exception as e:
+        logger.error("Pending meals not read at start: %s", type(e).__name__)
+        return []
+
+
+async def _replay_pending(application: Application, meals: list) -> None:
+    """What the last process left: read again from the stored source. What may not be
+    read now is told so, and no line stays on «читаю»."""
+    with SessionLocal() as db:
+        jobs, given_up = [], []
+        for meal_id in meals:
+            if meal_id in _live_reads:
+                continue
+            job = None
+            if len(jobs) < REPLAY_LIMIT:
+                job = capture.automatic_read(db, meal_id)
+            if job is not None:
+                jobs.append(job)
+            else:
+                given_up.append(capture.give_up(db, meal_id))
+    await _show_given_up(application, given_up)
+    for job in jobs:
+        _start_read(application, job)
+
+
+async def _show_given_up(application: Application, given_up: list) -> None:
+    for job, done in given_up:
+        if job is not None:
+            await _show(application.bot, job, done.line)
+
+
+async def _sweep(application: Application) -> None:
+    """One pass: a stuck pending fails and its line says so; what is due is read again."""
+    with SessionLocal() as db:
+        stuck = capture.stuck_meals(db, _live_reads)
+        given_up = [capture.give_up(db, meal_id) for meal_id in stuck]
+        due = capture.due_retries(db, capture.RETRIES_PER_SWEEP)
+        jobs = [capture.read_again(db, meal_id, automatic=True) for meal_id in due]
+    await _show_given_up(application, given_up)
+    for job in jobs:
+        if job is not None:
+            _start_read(application, job)
+
+
+async def _sweep_loop(application: Application, meals: list) -> None:
+    """Nothing here may end the loop but the end of the process."""
+    while not application.running:
+        await asyncio.sleep(0.05)
+    try:
+        await _replay_pending(application, meals)
+    except Exception as e:
+        logger.error("Replay of pending meals failed: %s", type(e).__name__)
+    finally:
+        application.bot_data[REPLAY_DONE].set()
+    while True:
+        await asyncio.sleep(SWEEP_EVERY_SECONDS)
+        if not application.running:
+            return
+        try:
+            await _sweep(application)
+        except Exception as e:
+            logger.error("Meal sweep failed: %s", type(e).__name__)
+
+
+async def _on_start(application: Application) -> None:
+    # Not ``application.create_task``: not running yet, it would only warn, and made
+    # while running ``stop()`` would wait for this one for ever.
+    meals = _pending_at_start()
+    application.bot_data[REPLAY_DONE] = asyncio.Event()
+    application.bot_data[SWEEP_TASK] = asyncio.create_task(
+        _sweep_loop(application, meals)
+    )
+    await _load_custom_emoji(application)
+
+
+async def _on_stop(application: Application) -> None:
+    task = application.bot_data.get(SWEEP_TASK)
+    if task is None:
+        return
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 async def _send_line(message, line: capture.Line):
@@ -1353,7 +1466,9 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     try:
         with SessionLocal() as db:
+            # A read already running is paid for: it is not asked twice.
             meals = capture.unread_meals(db, REPROCESS_BATCH_LIMIT)
+            meals = [meal_id for meal_id in meals if meal_id not in _live_reads]
             jobs = [capture.read_again(db, meal_id) for meal_id in meals]
         jobs = [job for job in jobs if job is not None]
         room = REPROCESS_BATCH_LIMIT - len(jobs)
@@ -1365,7 +1480,7 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Не удалось получить список сообщений.")
         return
     # A meal's own diagnostic row is its meal's, and is not paid for twice.
-    taken = {job.inbound_id for job in jobs}
+    taken = {job.inbound_id for job in jobs} | set(_live_reads.values())
     rows = [row for row in rows if row.id not in taken][:room]
 
     if not jobs and not rows:
@@ -1382,12 +1497,20 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     analyzed = failed = 0
     for job in jobs:
-        with metering() as meter:
-            read, dead = await _read_one(context.bot, job, meter)
-        if dead is not None:
-            await update.message.reply_text(stopped(dead))
-            return
-        analyzed, failed = analyzed + read, failed + (not read)
+        _live_reads[job.meal_id] = job.inbound_id
+    try:
+        for job in jobs:
+            with metering() as meter:
+                read, dead = await _read_one(context.bot, job, meter)
+            _live_reads.pop(job.meal_id, None)
+            if dead is not None:
+                await update.message.reply_text(stopped(dead))
+                return
+            analyzed, failed = analyzed + read, failed + (not read)
+    finally:
+        # Those not reached stay pending, and the sweep gives their lines the failure.
+        for job in jobs:
+            _live_reads.pop(job.meal_id, None)
 
     for row in rows:
         try:
@@ -1481,7 +1604,13 @@ def create_bot_application() -> Application:
     bot = custom_emoji.build_bot(
         settings.TELEGRAM_BOT_TOKEN, custom_emoji.CustomEmoji()
     )
-    application = Application.builder().bot(bot).post_init(_load_custom_emoji).build()
+    application = (
+        Application.builder()
+        .bot(bot)
+        .post_init(_on_start)
+        .post_shutdown(_on_stop)
+        .build()
+    )
 
     # Global access gate — runs before every other handler (group=-2) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.

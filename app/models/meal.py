@@ -82,6 +82,7 @@ class Meal(Base, BaseClass):
     reading_status = Column(
         String, nullable=False, default="read", server_default="read"
     )
+    # The reads nobody asked for, retries and replays; capped. Not the person's own.
     read_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     # Not in any reader until the person finishes it.
     is_draft = Column(Boolean, nullable=False, default=False, server_default=false())

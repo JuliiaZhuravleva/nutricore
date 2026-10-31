@@ -24,7 +24,9 @@ class MealReading(Base, BaseClass):
 
     A late answer is kept here with ``applied=false``, so what the model said is never
     lost and never overwrites the person. ``error`` is the exception's class, never a
-    body: logs and this column carry no transcript and no message text.
+    body: logs and this column carry no transcript and no message text. ``status`` says
+    what happens next: ``done``, ``no_food``, ``failed`` (no retry), ``retry`` (passes
+    by itself) or ``no_credit`` (passes after a top-up).
     """
 
     __tablename__ = "meal_readings"

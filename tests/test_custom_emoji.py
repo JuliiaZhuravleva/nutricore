@@ -435,9 +435,25 @@ def test_the_application_bot_is_an_emoji_bot_with_the_builders_pools(monkeypatch
     default = Application.builder().token("123:fake").build()
 
     assert isinstance(application.bot, ce.EmojiBot)
-    assert application.post_init is tg._load_custom_emoji
     for ours, theirs in zip(application.bot._request, default.bot._request):
         assert ours._client_kwargs == theirs._client_kwargs
+
+
+def test_the_application_start_loads_the_emoji_sets(monkeypatch):
+    """Through the application's own ``post_init``, whatever else it starts."""
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "123:fake")
+    monkeypatch.setattr(settings, "CUSTOM_EMOJI", "some_set")
+    application = tg.create_bot_application()
+    load = AsyncMock()
+    monkeypatch.setattr(application.bot.emoji, "load", load)
+    monkeypatch.setattr(tg, "_pending_at_start", lambda: [])
+
+    async def run():
+        await application.post_init(application)
+        await application.post_shutdown(application)
+
+    asyncio.run(run())
+    load.assert_awaited_once_with(application.bot, "some_set")
 
 
 def test_startup_tells_the_owner_when_named_sets_cannot_be_read(monkeypatch):

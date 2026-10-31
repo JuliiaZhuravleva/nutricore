@@ -8,15 +8,19 @@ No text, transcript or message body goes to a log or to ``meal_readings.error``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+import httpx
+import openai
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from telegram import InlineKeyboardMarkup
+from telegram.error import BadRequest, NetworkError
 
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
@@ -28,7 +32,14 @@ from app.models.meal_reading import MealReading
 from app.models.meal_source import MealSource
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import food_groups, meal_card, meal_items, stats_screen, weight_screen
+from app.services import (
+    ai_errors,
+    food_groups,
+    meal_card,
+    meal_items,
+    stats_screen,
+    weight_screen,
+)
 from app.services.day_card import local_time
 from app.services.meal_card import _button, _cut, _what, _when
 from app.services.meal_draft import num
@@ -117,6 +128,19 @@ LINE, WEIGHT, TICK, SILENT, NEW_MEAL = "line", "weight", "tick", "silent", "new_
 # The read that a meal's line waits for.
 IMAGE, TEXT, VOICE = "image", "text", "voice"
 _READING_KIND = {IMAGE: "vision", TEXT: "text", VOICE: "transcript"}
+
+# What a reading that did not end says about the next try, section 5.2.
+FAILED = "failed"  # the same answer again: a parse error, a dead file, a dead model
+RETRY = "retry"  # passes by itself: a timeout, a dropped connection, a 5xx, a 429
+NO_CREDIT = "no_credit"  # passes only after a top-up
+NO_LIVE_READ = "NoLiveRead"  # no task holds this meal, the process went down in it
+NO_BALANCE = "NoBalance"  # not asked: the last answer said the balance is out
+
+# The reads nobody asked for. ``read_attempts`` counts them, and is the index here.
+RETRY_AFTER = (timedelta(minutes=5), timedelta(hours=1), timedelta(hours=6))
+RETRY_WINDOW = timedelta(hours=24)
+RETRIES_PER_SWEEP = 5
+STUCK_AFTER = timedelta(minutes=5)
 
 
 class NoVoiceReader(Exception):
@@ -587,9 +611,13 @@ def _apply_correction(
     )
 
 
-def _sent(meal: Meal) -> datetime:
-    moment = meal.sent_at or meal.created_at
+def _aware(moment: datetime) -> datetime:
+    """SQLite reads a stored moment back without its zone; stored is always UTC."""
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+def _sent(meal: Meal) -> datetime:
+    return _aware(meal.sent_at or meal.created_at)
 
 
 def _last_meal(db, user: User, within: timedelta) -> Optional[Meal]:
@@ -730,6 +758,7 @@ class Read:
     text: Optional[str]
     line_id: Optional[int] = None
     shown: Optional[str] = None  # what the line says now
+    automatic: bool = False  # nobody asked for it: counted, capped, never a push
     hint: bool = False  # the line carries M1b: the edit keeps it
     note: Optional[str] = None
     inbound_id: Optional[int] = None
@@ -914,6 +943,7 @@ def _store_reading(
             status=status,
             error=error,
             applied=applied,
+            created_at=_now(),
         )
     )
     db.commit()
@@ -1013,25 +1043,69 @@ def read_done(
     return Done(line, learn)
 
 
-def read_failed(db, job: Read, error: str, *, model: Optional[str] = None) -> Done:
+def failure_status(error: BaseException) -> str:
+    """What this failure says about trying again. Only what passes by itself is
+    retried, and anything unknown is not: a retry is a paid call. Along the whole
+    chain, since the photo pipeline raises its own error from the model's."""
+    if ai_errors.out_of_credit(error) is not None:
+        return NO_CREDIT
+    if ai_errors.rate_limited(error):
+        return RETRY
+    for link in ai_errors._chain(error):
+        # A BadRequest is a NetworkError to the library: a dead file, no network.
+        if isinstance(link, BadRequest):
+            return FAILED
+        if isinstance(
+            link,
+            (
+                openai.APITimeoutError,
+                openai.APIConnectionError,
+                openai.InternalServerError,
+                NetworkError,
+                httpx.TransportError,
+                asyncio.TimeoutError,
+            ),
+        ):
+            return RETRY
+    return FAILED
+
+
+def read_failed(
+    db,
+    job: Read,
+    error: str,
+    *,
+    status: str = FAILED,
+    model: Optional[str] = None,
+) -> Done:
     """``error`` is the exception's class: a body or a transcript never goes there."""
     meal = db.get(Meal, job.meal_id)
     meal.reading_status = "failed"
-    meal.read_attempts = (meal.read_attempts or 0) + 1
     db.commit()
-    _store_reading(db, job, status="failed", error=error, model=model)
+    _store_reading(db, job, status=status, error=error, model=model)
     line = _failed_line(job.kind, meal.id)
-    return Done(line if _claim_view(db, job) else None)
+    if not _claim_view(db, job) or line.text == job.shown:
+        # A retry that failed again: the line says it already.
+        return Done()
+    return Done(line)
 
 
 # --- reading again --------------------------------------------------------------------
 
 
-def read_again(db, meal_id: int) -> Optional[Read]:
-    """The read for a meal that has none yet; its line opens for the edit again."""
-    meal = db.get(Meal, meal_id)
-    if meal is None or meal.deleted_at is not None:
-        return None
+def _line_of(db, meal_id: int) -> Optional[MealMessage]:
+    """The line the capture sent, if it still is a line. A later reply's line belongs
+    to the meal too, and a screen opened on it is the person's."""
+    line = db.scalar(
+        select(MealMessage)
+        .where(MealMessage.meal_id == meal_id, MealMessage.view != "source")
+        .order_by(MealMessage.id)
+        .limit(1)
+    )
+    return line if line is not None and line.view in ("pending", "line") else None
+
+
+def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
     source = db.scalar(
         select(MealSource)
         .where(MealSource.meal_id == meal.id)
@@ -1041,30 +1115,39 @@ def read_again(db, meal_id: int) -> Optional[Read]:
     if source is None:
         return None
     user = db.get(User, meal.user_id)
-    line = db.scalar(
-        select(MealMessage)
-        .where(
-            MealMessage.meal_id == meal.id, MealMessage.view.in_(("pending", "line"))
-        )
-        .order_by(MealMessage.id.desc())
-        .limit(1)
-    )
-    if line is not None:
-        line.view = "pending"
-    meal.reading_status = "pending"
-    db.commit()
+    line = _line_of(db, meal.id)
+    kind = _kind_of_read(source.kind)
+    was_failed = meal.reading_status == "failed"
     return Read(
         meal_id=meal.id,
         rev=meal.rev or 0,
         source_id=source.id,
         telegram_id=user.telegram_id,
         chat_id=source.chat_id,
-        kind=_kind_of_read(source.kind),
+        kind=kind,
         file_id=source.file_id,
         text=source.text,
         line_id=line.message_id if line else None,
+        shown=_failed_line(kind, meal.id).text if was_failed else None,
         inbound_id=_inbound_of(db, user.telegram_id, source),
+        automatic=automatic,
     )
+
+
+def read_again(db, meal_id: int, *, automatic: bool = False) -> Optional[Read]:
+    """The read for a meal that has none yet; its line opens for the edit again."""
+    meal = db.get(Meal, meal_id)
+    if meal is None or meal.deleted_at is not None:
+        return None
+    job = _job_of(db, meal, automatic=automatic)
+    if job is None:
+        return None
+    line = _line_of(db, meal.id)
+    if line is not None:
+        line.view = "pending"
+    meal.reading_status = "pending"
+    db.commit()
+    return job
 
 
 def _inbound_of(db, telegram_id: int, source: MealSource) -> Optional[int]:
@@ -1096,3 +1179,140 @@ def unread_meals(db, limit: int) -> list:
         .limit(limit)
     )
     return list(db.scalars(stmt))
+
+
+# --- the reads nobody asked for, section 5.2 ------------------------------------------
+
+
+def balance_out(db) -> bool:
+    """Whether the model's last word was that the money is gone. From the rows, so a
+    restart remembers: only a refusal or a real answer says anything about it. A
+    timeout does not, and an exact name asked no model."""
+    last = db.scalar(
+        select(MealReading.status)
+        .where(
+            or_(
+                MealReading.status == NO_CREDIT,
+                and_(
+                    MealReading.kind.in_(("vision", "text")),
+                    MealReading.status.in_(("done", "no_food")),
+                ),
+            )
+        )
+        .order_by(MealReading.id.desc())
+        .limit(1)
+    )
+    return last == NO_CREDIT
+
+
+def _may_read_by_itself(db, meal: Meal) -> bool:
+    """A voice has no reader yet, the cap holds, and dishes in the meal are the
+    person's: a read would be paid for and could not apply."""
+    if meal.deleted_at is not None or meal.is_draft:
+        return False
+    if (meal.read_attempts or 0) >= len(RETRY_AFTER):
+        return False
+    voice = db.scalar(
+        select(MealSource.id)
+        .where(MealSource.meal_id == meal.id, MealSource.kind == "voice")
+        .limit(1)
+    )
+    if voice is not None:
+        return False
+    return not crud_meal_item.live(db, meal.id)
+
+
+def pending_meals(db) -> list:
+    stmt = select(Meal.id).where(
+        Meal.reading_status == "pending",
+        Meal.deleted_at.is_(None),
+        Meal.is_draft.is_(False),
+    )
+    return list(db.scalars(stmt.order_by(Meal.id)))
+
+
+def stuck_meals(db, live) -> list:
+    """Pending, older than the wait, and no task holds them. A slow read is not stuck.
+    From the row's birth, not the message's: it may have come in while the bot was down.
+    """
+    stmt = select(Meal.id, Meal.created_at).where(
+        Meal.reading_status == "pending",
+        Meal.deleted_at.is_(None),
+        Meal.is_draft.is_(False),
+    )
+    limit = _now() - STUCK_AFTER
+    return [
+        meal_id
+        for meal_id, born_at in db.execute(stmt.order_by(Meal.id))
+        if meal_id not in live and _aware(born_at) <= limit
+    ]
+
+
+def due_retries(db, limit: int) -> list:
+    """Ids of the failed meals whose next try is due; none while the balance is out."""
+    if balance_out(db):
+        return []
+    now = _now()
+    failed = db.scalars(
+        select(Meal)
+        .where(
+            Meal.reading_status == "failed",
+            Meal.sent_at > now - RETRY_WINDOW,
+            Meal.read_attempts < len(RETRY_AFTER),
+        )
+        .order_by(Meal.id)
+    )
+    due = []
+    for meal in failed:
+        last = db.scalar(
+            select(MealReading)
+            .where(MealReading.meal_id == meal.id)
+            .order_by(MealReading.id.desc())
+            .limit(1)
+        )
+        if last is None or last.status != RETRY:
+            continue
+        if now - _aware(last.created_at) < RETRY_AFTER[meal.read_attempts or 0]:
+            continue
+        if _may_read_by_itself(db, meal):
+            due.append(meal.id)
+            if len(due) == limit:
+                break
+    return due
+
+
+def automatic_read(db, meal_id: int) -> Optional[Read]:
+    """The read of a pending meal found at startup; None if it may not have one."""
+    meal = db.get(Meal, meal_id)
+    if meal is None or meal.reading_status != "pending":
+        return None
+    if not _may_read_by_itself(db, meal):
+        return None
+    return read_again(db, meal_id, automatic=True)
+
+
+def automatic_start(db, job: Read) -> Optional[Done]:
+    """At the semaphore, right before the paid call. Counted now, so a process that
+    dies in the read has still spent the try. A Done: the balance ran out while this
+    one waited, and nothing was asked."""
+    if balance_out(db):
+        return read_failed(db, job, NO_BALANCE, status=RETRY)
+    meal = db.get(Meal, job.meal_id)
+    meal.read_attempts = (meal.read_attempts or 0) + 1
+    db.commit()
+    return None
+
+
+def give_up(db, meal_id: int) -> tuple:
+    """(job, done) of a pending meal with nothing reading it, so that no line stays on
+    «читаю». What it failed on may pass by itself, so it may be retried. (None, None)
+    if there is nothing to edit, or it is no longer pending."""
+    meal = db.get(Meal, meal_id)
+    if meal is None or meal.reading_status != "pending":
+        return None, None
+    job = _job_of(db, meal)
+    if job is None:
+        meal.reading_status = "failed"
+        db.commit()
+        return None, None
+    return job, read_failed(db, job, NO_LIVE_READ, status=RETRY)
