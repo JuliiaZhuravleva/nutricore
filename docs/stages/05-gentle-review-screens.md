@@ -56,7 +56,7 @@ Decisions that bend a written story are marked **Decision**. Section 9 lists the
 | `ml:o:<mid>:<b>`, `ml:op:<mid>:<pg>:<b>`, `ml:mo:<mid>:<b>` | card, next page of dish chips, the card's `Ещё ›` |
 | `ml:i:<iid>:<b>`, `ml:q:<iid>:<h\|1\|2>:<b>`, `ml:g:<iid>:<b>`, `ml:ga:<iid>:<grams>:<b>`, `ml:x:<iid>:<b>` | dish, quantity, grams, apply grams from a reply (`M5d`), remove |
 | `ml:pk:<mid>:a:<b>:<pg>`, `ml:pk:<iid>:r:<b>:<pg>`, `ml:pa:<mid>:<fid>:<b>`, `ml:pr:<iid>:<fid>:<b>` | picker, add picked, replace picked |
-| `ml:t:<mid>:<b>`, `ml:ts:<mid>:<ts>:<e\|a\|d>:<b>` | time, set time (exact, approx, day only) |
+| `ml:t:<mid>:<b>`, `ml:ts:<mid>:<ts>:<e\|a\|d\|y>:<b>` | time, set time (exact, approx, day only, day only on the button's day) |
 | `ml:d:<mid>:<b>`, `ml:u:<eid>:<b>` | delete, undo by event |
 | `ml:n:<mid>:<0\|1>:<b>`, `ml:ni:<iid>:<0\|1>:<b>` | numbers, as on the day card |
 | `ml:fm:<mid>:<0\|1>:<b>`, `ml:fi:<iid>:<0\|1>:<b>` | ⭐ whole meal, ⭐ dish |
@@ -416,7 +416,7 @@ The dish chips open the smallest unit first. **A one-dish meal skips this card:*
 ```
 
 - **Trigger:** `⚖️ Граммы`, ask `grams`.
-- **Input:** a number from 1 to 5000 with an optional `г`. Inside this slot a bare `150` is grams, outside it is a weigh-in. Anything else closes the slot and goes down the router.
+- **Input:** a number from 1 to 5000 with an optional unit: `г`, `гр`, `грамм`, `граммов`, `g`, `gr`, a closing dot allowed. Inside this slot a bare `150` is grams, outside it is a weigh-in. Anything else closes the slot and goes down the router.
 - **Result:** `N2`, sent as a new message with the old keyboard stripped, and `<i>✓ 150 г</i>`, `↩️ Вернуть`. With `base_grams`, factor = typed / base. Without it, but with per-100 g numbers on the dish, numbers come from the dish. With neither, grams are stored and the notice is `<i>✓ 150 г, цифры не менялись</i>`.
 - **Reads:** item, dish. **Writes:** `grams`, `factor`, totals, event. **Back:** `⬅️ К блюду в приёме`. **Stale:** S. **Hard day:** not on the path, same screen.
 
@@ -558,9 +558,11 @@ One screen for add and replace (US-N4). The slot opens at once.
 ```
 
 ```kb
-Вчера, 30 окт => ml:ts:<mid>:<ts>:a:<b> | ↩️ Вернуть => ml:u:<eid>:<b>
+Вчера, 30 окт => ml:ts:<mid>:<ts>:y:<b> | ↩️ Вернуть => ml:u:<eid>:<b>
 ⬅️ К приёму => ml:o:<mid>:<b>
 ```
+
+`Вчера, 30 окт` here moves the day and keeps `day_only` (rule 7): no clock was given, so none is shown. Its result is this screen with the day changed and the notice `<i>✓ Время не указано. Приём теперь в пт 30 октября, без времени.</i>`.
 
 #### `N6` meal-removed
 
@@ -579,7 +581,7 @@ One screen for add and replace (US-N4). The slot opens at once.
 - **Writes:** `meals.deleted_at`, event. Items and totals stay, so undo restores exactly. No time limit on undo.
 - **Soft delete:** the record stays stored. The explanation says so plainly (`M15`), and real erasure is left for R35's "delete media" later.
 - **Reads:** meal. **Back:** `⬅️ Приёмы дня`; from `r`, `📊 Карточка дня` (`st:t`), because the line no longer describes anything.
-- **Stale:** a second tap on undo opens the restored card. A later tap on any other button of a deleted meal is `N6a`.
+- **Stale:** a second tap on undo opens the restored card. A second tap on `🗑 Удалить` or `🗑 Из приёма`, or on the undo that deleted it again, is this screen again with the same `↩️ Вернуть` and no new event. A tap on any other button of a deleted meal, or a deleted meal with no event to return to, is `N6a`.
 - **Hard day:** same, quiet.
 
 **`N6a`** A tap on a deleted meal's button.

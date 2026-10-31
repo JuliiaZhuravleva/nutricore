@@ -35,7 +35,7 @@ from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
 from app.services import food_groups
-from app.services.product_lookup_service import _parse_portion_grams
+from app.services.product_lookup_service import _parse_portion_grams, has_usable_macros
 
 # What a change did. SAME wrote nothing and no event: the toast is ``SAME_TOAST``.
 DONE = "done"
@@ -242,13 +242,15 @@ def _item_grams(item: MealItem) -> Optional[float]:
 
 
 def _last_item(db: Session, dish_id: int) -> Optional[MealItem]:
-    """The dish's last portion that has numbers of its own."""
+    """The dish's last portion that has numbers of its own, in a meal still kept."""
     stmt = (
         select(MealItem)
+        .join(Meal, Meal.id == MealItem.meal_id)
         .where(
             MealItem.personal_food_id == dish_id,
             MealItem.removed_at.is_(None),
             MealItem.numbers_source.notin_(("none", "plate_share")),
+            Meal.deleted_at.is_(None),
         )
         .order_by(MealItem.id.desc())
     )
@@ -278,6 +280,8 @@ def dish_portion(db: Session, dish: PersonalFood) -> Portion:
         return Portion()
     last = _last_item(db, dish.id)
     source = db.get(Meal, dish.meal_id) if dish.meal_id else None
+    if source is not None and source.deleted_at is not None:
+        source = None  # what a person threw away serves no portion
     source_has_numbers = source is not None and any(
         value is not None for value in _meal_totals(source).values()
     )
@@ -415,7 +419,8 @@ def _groups_of_dish(db: Session, dish_id: int, name: str) -> Optional[list]:
     """The groups the dish carried the last time a meal tagged it, for free."""
     stmt = (
         select(MealItem)
-        .where(MealItem.personal_food_id == dish_id)
+        .join(Meal, Meal.id == MealItem.meal_id)
+        .where(MealItem.personal_food_id == dish_id, Meal.deleted_at.is_(None))
         .order_by(MealItem.id.desc())
         .limit(_GROUPS_LOOKBACK)
     )
@@ -698,6 +703,34 @@ def _own_item(db: Session, user_id: int, item_id: int):
     return (item, meal) if meal is not None else (None, None)
 
 
+_BASE_FIELDS = (*(f"base_{key}" for key in FIELDS), "base_grams")
+
+
+def _recorded(db: Session, item: MealItem) -> Optional[dict]:
+    """What a typed weight's per-100 g numbers took the place of, while they stand.
+
+    Those numbers are the dish's, not the record's, and ½, ×1, ×2 count from the record.
+    None when no weight did that, or when nothing was recorded to come back to.
+    """
+    events = db.scalars(
+        select(RecordEvent)
+        .where(RecordEvent.meal_id == item.meal_id, RecordEvent.kind == "grams")
+        .order_by(RecordEvent.id.desc())
+    )
+    key = str(item.id)
+    for event in events:
+        before = ((event.before or {}).get("items") or {}).get(key)
+        after = ((event.after or {}).get("items") or {}).get(key)
+        if not before or not after:
+            continue
+        if all(before[name] == after[name] for name in _BASE_FIELDS):
+            continue
+        holds = all(after[name] == getattr(item, name) for name in _BASE_FIELDS)
+        known = any(before[f"base_{name}"] is not None for name in FIELDS)
+        return before if holds and known else None
+    return None
+
+
 def set_quantity(db: Session, user_id: int, item_id: int, factor: float) -> Change:
     """½, ×1, ×2 of what was recorded. ×1 also drops a typed weight: it is the base."""
     item, meal = _own_item(db, user_id, item_id)
@@ -709,8 +742,12 @@ def set_quantity(db: Session, user_id: int, item_id: int, factor: float) -> Chan
         raise ValueError(f"factor must be positive: {factor}")
     if item.factor == factor and item.grams is None:
         return Change(SAME, meal)
+    recorded = _recorded(db, item)
 
     def mutate(_live: list) -> list:
+        if recorded is not None:
+            for name in (*_BASE_FIELDS, "numbers_source"):
+                setattr(item, name, recorded[name])
         item.factor = factor
         item.grams = None
         item.by_user = True
@@ -869,13 +906,15 @@ def replace_item(
     columns = {"numbers_source": item.numbers_source}
     if item.numbers_source != "plate_share":
         portion = dish_portion(db, dish)
-        per_100 = _per_100(dish) if portion.numbers else None
+        per_100 = None if _is_plate_row(db, dish) else _per_100(dish)
         if per_100 and item.grams:
             portion = Portion(per_100, 100.0)
         columns = _with_numbers(portion)
     factor = item.factor
-    if item.grams and columns.get("base_grams") == 100.0:
-        factor = item.grams / 100.0
+    if item.grams and item.numbers_source != "plate_share":
+        # The typed weight stays, so it counts from the new dish's own portion.
+        base = columns.get("base_grams")
+        factor = item.grams / base if base else 1.0
 
     def mutate(_live: list) -> list:
         new = crud_meal_item.add(
@@ -896,6 +935,51 @@ def replace_item(
         return [new]
 
     return _changed(db, meal, "replace", mutate, food_id=dish.id)
+
+
+def fill_numbers(
+    db: Session, item_id: int, rev: int, event_id: int, nutrition: dict
+) -> bool:
+    """The model's numbers for a typed new name, arriving after the answer (N4).
+
+    They apply only while ``rev`` still matches (3.1), so the event that made the item
+    is the meal's latest. It learns what it wrote, or its ↩️ would be refused for good.
+    """
+    item = crud_meal_item.get(db, item_id)
+    meal = crud_meal.get(db, item.meal_id) if item else None
+    event = crud_record_event.get(db, event_id)
+    if (
+        meal is None
+        or event is None
+        or event.meal_id != meal.id
+        or item.removed_at is not None
+        or item.numbers_source != "none"
+        or meal.rev != rev
+        or not has_usable_macros(nutrition.get("calories"))
+    ):
+        return False
+
+    def write() -> bool:
+        for key, name in _NUTRIENT_KEYS.items():
+            setattr(item, f"base_{key}", nutrition.get(name))
+        grams = _parse_portion_grams(nutrition)
+        item.base_grams = grams
+        item.factor = item.grams / grams if item.grams and grams else 1.0
+        item.numbers_source = "model"
+        db.flush()
+        live = crud_meal_item.live(db, meal.id)
+        known = _groups_by_item(meal, live)
+        _recompute(meal, live)
+        _rewrite_fields(db, meal, live, known)
+        meal.rev = rev + 1
+        meal.updated_at = datetime.now(UTC)
+        db.flush()
+        written = [crud_meal_item.get(db, int(key)) for key in event.after["items"]]
+        event.after = _meal_state(meal, written)
+        db.commit()
+        return True
+
+    return _rolled_back(db, write)
 
 
 def _soft_delete(db: Session, meal: Meal, *, food_id: Optional[int] = None) -> Change:

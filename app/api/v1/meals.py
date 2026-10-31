@@ -6,11 +6,28 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import require_export_token
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_meal_item import crud_meal_item
 from app.db.session import get_db
 from app.schemas.meal import Meal, MealCreate, MealsExport, MealUpdate
 from app.services import meal_items
 
 router = APIRouter()
+
+# A meal with items holds these only as their sum (3.1): written here they would be
+# overwritten by the next change and refuse every undo in between.
+_OWNED_BY_ITEMS = frozenset(
+    {
+        "description",
+        "calories",
+        "proteins",
+        "fats",
+        "carbohydrates",
+        "nutrients",
+        "ai_analysis",
+        "numbers_basis",
+        "plate_totals",
+    }
+)
 
 
 @router.get("/", response_model=List[Meal])
@@ -54,6 +71,13 @@ def update_meal(meal_id: int, meal_in: MealUpdate, db: Session = Depends(get_db)
     db_meal = crud_meal.get(db, meal_id=meal_id)
     if not db_meal:
         raise HTTPException(status_code=404, detail="Meal not found.")
+    sent = meal_in.model_fields_set
+    if "deleted_at" in sent:
+        raise HTTPException(status_code=409, detail="Delete a meal with DELETE.")
+    if sent & _OWNED_BY_ITEMS and crud_meal_item.live(db, meal_id):
+        raise HTTPException(
+            status_code=409, detail="These fields follow the meal's items."
+        )
     return crud_meal.update(db, db_meal, meal_in)
 
 
@@ -62,4 +86,4 @@ def delete_meal(meal_id: int, db: Session = Depends(get_db)):
     db_meal = crud_meal.get(db, meal_id=meal_id)
     if not db_meal:
         raise HTTPException(status_code=404, detail="Meal not found.")
-    return crud_meal.remove(db, meal_id)
+    return meal_items.delete_meal(db, db_meal.user_id, meal_id).meal

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 import re
@@ -1518,6 +1519,28 @@ def _is_plain_answer(text: Optional[str]) -> bool:
     return _KEYBOARD_LABEL.fullmatch(text) is None
 
 
+# Held here: the event loop keeps only a weak reference to a running task.
+_typed_fills: set = set()
+
+
+async def _fill_typed_dish(fill: meal_card.Fill, telegram_id: int) -> None:
+    """N4: a typed new name's numbers, with no new message. If this fails the name
+    stays, and its screen says «Цифры не посчитаны.»."""
+    try:
+        nutrition = await _analyze_and_parse(
+            kind="text",
+            payload=fill.name,
+            input_ref=fill.name,
+            telegram_id=telegram_id,
+        )
+        with SessionLocal() as db:
+            meal_items.fill_numbers(
+                db, fill.item_id, fill.rev, fill.event_id, nutrition
+            )
+    except Exception as e:
+        logger.warning("Typed dish left without numbers: %s", e, exc_info=True)
+
+
 async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The answer to the card's typed slot, ahead of the conversation (group -1).
 
@@ -1562,6 +1585,10 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             meal_card.slot_sent(db, user.id, sent.message_id)
     except Exception as e:
         logger.error("Meal slot: the answer's id was not kept: %s", e, exc_info=True)
+    if typed.fill:
+        task = asyncio.create_task(_fill_typed_dish(typed.fill, user.id))
+        _typed_fills.add(task)
+        task.add_done_callback(_typed_fills.discard)
     raise ApplicationHandlerStop
 
 

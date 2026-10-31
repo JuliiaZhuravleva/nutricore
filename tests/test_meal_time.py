@@ -338,11 +338,14 @@ def test_typing_after_not_remembered_gives_the_clock_back(db, owner):
     assert meal.time_precision == "exact"
 
 
-def test_yesterday_after_not_remembered_is_marked_approximate(db, owner):
+def test_yesterday_after_not_remembered_moves_the_day_and_invents_no_clock(db, owner):
     meal, _item = _one(db, owner)
     screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "Не помню"))
     screen = _sat(db, _button(screen, "Вчера, 30 окт"))
-    assert "Записано на: пт 30 октября, ≈ 12:00." in screen.text
+    assert "Записано на: пт 30 октября, без времени." in screen.text
+    assert "12:00" not in screen.text
+    db.refresh(meal)
+    assert meal.time_precision == "day_only"
 
 
 def test_the_chip_on_a_meal_already_yesterday_says_no_new_day(db, owner):

@@ -17,9 +17,11 @@ from sqlalchemy.orm import sessionmaker
 from telegram.error import BadRequest
 
 from app.core.config import settings
+from app.crud.crud_meal import crud_meal
 from app.db.base import Base
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
+from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import favorites as fv
 from app.services import telegram as tg
@@ -276,11 +278,18 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
 
         undone = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert undone.toast == "Отменено"
-        assert db.get(Meal, meal.id) is None
+        # Soft, as every delete (3.3): the export learns of it from ``deleted_at``.
+        db.expire_all()
+        assert db.get(Meal, meal.id).deleted_at is not None
+        kinds = [e.kind for e in db.query(RecordEvent).filter_by(meal_id=meal.id)]
+        assert kinds == ["delete"]
+        pull = crud_meal.get_for_export(db, updated_since=datetime(2020, 1, 1))
+        assert meal.id in [row.id for row in pull]
+        assert meal.id not in [row.id for row in crud_meal.get_for_export(db)]
         # A second tap on the same old button: a notice, not an error.
         again = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert "уже отменена" in again.text
-        assert db.query(Meal).count() == meals_before
+        assert db.query(Meal).count() == meals_before + 1
 
 
 def test_logged_line_names_the_dish_only_while_numbers_are_off(Session):

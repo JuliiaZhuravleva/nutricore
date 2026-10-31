@@ -1285,6 +1285,32 @@ def test_a_verified_row_is_only_from_the_dishes(Session, db, owner):
     assert meal_items.numbers_tag(meal) == "из твоих блюд"
 
 
+def test_a_deleted_meal_does_not_feed_the_next_saving_by_name(Session, db, owner):
+    """A meal a person threw away is no portion, through the real text handler."""
+    _send_first = _saved(db, owner, foods=("сырники",), calories=900.0)
+    item = crud_meal_item.live(db, _send_first.id)[0]
+    dish = db.get(PersonalFood, item.personal_food_id)
+    assert meal_items.dish_portion(db, dish).numbers["calories"] == 900.0  # positive
+    meal_items.delete_meal(db, owner.id, _send_first.id)
+
+    _state, message, analysis, _context = _send("сырники")
+
+    analysis.assert_not_called()
+    assert message.replies == ["Записано: сырники."]
+    meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
+    assert meal.calories is None and meal.numbers_basis == "none"
+
+
+def test_a_kept_meal_still_feeds_the_next_saving_by_name(Session, db, owner):
+    # Control for the test above: the same steps with the meal left alone.
+    _saved(db, owner, foods=("сырники",), calories=900.0)
+
+    _send("сырники")
+
+    meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
+    assert meal.calories == 900.0
+
+
 def test_a_plate_row_is_never_served_as_numbers(Session, db, owner):
     source = _legacy(
         db,
@@ -1426,5 +1452,7 @@ def test_favourite_undo_still_works_with_items(db, owner):
     )
 
     assert "Отменено" in screen.text
-    assert db.scalars(select(Meal)).all() == []
-    assert db.scalars(select(MealItem)).all() == []
+    # Soft, as every delete (3.3); the items stay for the way back.
+    assert crud_meal.get(db, meal.id) is None
+    assert _only_meal(db).deleted_at is not None
+    assert all(item.removed_at is None for item in db.scalars(select(MealItem)))

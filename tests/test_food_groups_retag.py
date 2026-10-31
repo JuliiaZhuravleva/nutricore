@@ -9,12 +9,14 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.crud.crud_meal_item import crud_meal_item
 from app.db.base import Base
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.user import User
+from app.schemas.meal import MealCreate
 from app.services import food_groups_retag as retag
-from app.services import usage_meter
+from app.services import meal_items, usage_meter
 
 _REPLY = json.dumps({"food_items": [{"name": "тофу", "groups": ["legumes", "anchor"]}]})
 
@@ -218,3 +220,137 @@ def test_a_favorite_is_tagged_in_nutrients_and_a_removed_one_is_not(db):
     assert (report.meals, report.tagged) == (1, 1)
     assert favorite.nutrients["food_groups"] == ["legumes", "anchor"]
     assert "food_groups" not in removed.nutrients
+
+
+# --- a late reply (3.1: it applies only if ``rev`` still matches) -----------
+
+
+@pytest.fixture
+def two_sessions(tmp_path):
+    """A file, so the person's tap and the run are two connections, as in production."""
+    engine = create_engine(f"sqlite:///{tmp_path}/retag.db")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    with factory() as session:
+        session.add(User(id=1, telegram_id=42))
+        session.commit()
+    yield factory
+    engine.dispose()
+
+
+def _plate(session, *names):
+    meal = meal_items.save_meal(
+        session,
+        MealCreate(
+            description=", ".join(names),
+            meal_time=datetime(2026, 10, 26, 9, 20, tzinfo=UTC),
+            calories=500.0,
+            proteins=20.0,
+            fats=10.0,
+            carbohydrates=60.0,
+            nutrients={
+                "foods": list(names),
+                "calories": 500.0,
+                "protein": 20.0,
+                "fats": 10.0,
+                "carbs": 60.0,
+            },
+        ),
+        1,
+    )
+    return meal.id
+
+
+def _during(service, act):
+    """The fake model acts on the record while the run waits for it."""
+    tag = service.tag_food_groups
+
+    async def waiting(foods):
+        act()
+        return await tag(foods)
+
+    service.tag_food_groups = waiting
+    return service
+
+
+def test_a_reply_never_lands_on_a_meal_changed_while_it_was_waited_for(two_sessions):
+    with two_sessions() as session:
+        meal_id = _plate(session, "рис", "курица")
+    box = {}
+
+    def remove_a_dish():
+        if box:
+            return
+        with two_sessions() as other:
+            items = crud_meal_item.live(other, meal_id)
+            box["event"] = meal_items.remove_item(other, 1, items[1].id).event.id
+            box["rev"] = other.get(Meal, meal_id).rev
+
+    with two_sessions() as session:
+        report = _run(session, _during(_service(), remove_a_dish), apply=True)
+
+    assert report.tagged == 0 and report.skipped == 1 and report.failed == 0
+    with two_sessions() as session:
+        meal = session.get(Meal, meal_id)
+        assert meal.rev == box["rev"]
+        assert meal.nutrients["foods"] == ["рис"]
+        assert "food_groups" not in meal.nutrients
+        assert "food_groups" not in (meal.ai_analysis or {})
+        # The undo of the person's change was not taken away by the run.
+        assert meal_items.undo(session, 1, box["event"]).status == meal_items.DONE
+
+
+def test_a_reply_never_lands_on_a_meal_deleted_while_it_was_waited_for(two_sessions):
+    with two_sessions() as session:
+        first = _plate(session, "рис")
+        second = _plate(session, "тофу")
+    deleted = []
+
+    def delete_the_second():
+        if not deleted:
+            with two_sessions() as other:
+                meal_items.delete_meal(other, 1, second)
+            deleted.append(second)
+
+    with two_sessions() as session:
+        report = _run(session, _during(_service(), delete_the_second), apply=True)
+
+    assert report.tagged == 1 and report.skipped == 1
+    with two_sessions() as session:
+        assert "food_groups" in session.get(Meal, first).nutrients  # known positive
+        assert "food_groups" not in session.get(Meal, second).nutrients
+
+
+def test_a_meal_skipped_is_picked_up_by_the_next_run(two_sessions):
+    with two_sessions() as session:
+        meal_id = _plate(session, "рис", "курица")
+    fired = []
+
+    def once():
+        if not fired:
+            fired.append(1)
+            with two_sessions() as other:
+                items = crud_meal_item.live(other, meal_id)
+                meal_items.remove_item(other, 1, items[1].id)
+
+    with two_sessions() as session:
+        _run(session, _during(_service(), once), apply=True)
+    with two_sessions() as session:
+        assert _run(session, _service(), apply=True).tagged == 1
+    with two_sessions() as session:
+        assert session.get(Meal, meal_id).nutrients["foods"] == ["рис"]
+        assert "food_groups" in session.get(Meal, meal_id).nutrients
+
+
+def test_a_tagged_meal_moves_its_rev_and_its_update_time(two_sessions):
+    with two_sessions() as session:
+        meal_id = _plate(session, "рис")
+        session.get(Meal, meal_id).updated_at = datetime(2020, 1, 1, tzinfo=UTC)
+        session.commit()
+        rev = session.get(Meal, meal_id).rev
+    with two_sessions() as session:
+        assert _run(session, _service(), apply=True).tagged == 1
+    with two_sessions() as session:
+        meal = session.get(Meal, meal_id)
+        assert meal.rev == rev + 1
+        assert meal.updated_at.year > 2020

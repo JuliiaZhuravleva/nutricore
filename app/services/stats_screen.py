@@ -111,6 +111,9 @@ def _card_title(day: date) -> str:
     return f"{_WEEKDAYS[day.weekday()]} {day.day} {_MONTHS_FULL[day.month - 1]}"
 
 
+NOT_COUNTED = "не посчитано"
+
+
 def _sum(meals: list[Meal], field: str) -> float:
     total = 0.0
     for meal in meals:
@@ -125,11 +128,17 @@ def _kcal(value: float) -> str:
     return f"{round(value):,}".replace(",", " ") + " ккал"
 
 
-def _macros(meals: list[Meal], divide_by: int = 1) -> str:
-    return " · ".join(
+def _macros(meals: list[Meal], divide_by: int = 1) -> list[str]:
+    """Only what somebody knows: a field nobody counted is not 0 (rule 7)."""
+    return [
         f"{label} {num(_sum(meals, field) / divide_by, 0)} г"
         for label, field in (("Б", "proteins"), ("Ж", "fats"), ("У", "carbohydrates"))
-    )
+        if any(getattr(meal, field) is not None for meal in meals)
+    ]
+
+
+def _is_counted(meal: Meal) -> bool:
+    return meal.calories is not None
 
 
 def _meal_name(meal: Meal) -> str:
@@ -180,11 +189,19 @@ def _tabs(
 
 def _numbers_block(meals: list[Meal], zone: ZoneInfo) -> str:
     """The day in numbers, collapsed: only a tap away and never the first thing."""
-    rows = [f"🔢 За день: ≈ {_kcal(_sum(meals, 'calories'))} · {_macros(meals)}"]
+    counted = [meal for meal in meals if _is_counted(meal)]
+    if counted:
+        day = [f"≈ {_kcal(_sum(counted, 'calories'))}", *_macros(counted)]
+        rows = ["🔢 За день: " + " · ".join(day)]
+    else:
+        rows = [f"🔢 За день: {NOT_COUNTED}"]
     for meal in meals:
         when = day_card.clock(meal, zone) if meal.meal_time else "—"
         name = html.escape(_meal_name(meal))
-        rows.append(f"{when} {name} — ≈ {_kcal(_sum([meal], 'calories'))}")
+        amount = f"≈ {_kcal(_sum([meal], 'calories'))}"
+        rows.append(f"{when} {name} — {amount if _is_counted(meal) else NOT_COUNTED}")
+    if len(counted) < len(meals):
+        rows.append(f"Не посчитано приёмов: {len(meals) - len(counted)}")
     return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
 
 
@@ -275,19 +292,31 @@ def day_screen(
 def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
     """Only the days with records: an empty day is not a gap to look at."""
     logged = [(day, meals) for day, meals in days if meals]
-    everything = [meal for _day, meals in logged for meal in meals]
-    average = _sum(everything, "calories") / len(logged)
-    rows = [
-        f"🔢 В среднем за день с записями: ≈ {_kcal(average)} · "
-        f"{_macros(everything, len(logged))}"
+    counted = [
+        (day, [meal for meal in meals if _is_counted(meal)]) for day, meals in logged
     ]
-    totals = [_sum(meals, "calories") for _day, meals in logged]
+    known_days = sum(1 for _day, meals in counted if meals)
+    everything = [meal for _day, meals in counted for meal in meals]
+    if known_days:
+        average = _sum(everything, "calories") / known_days
+        parts = [f"≈ {_kcal(average)}", *_macros(everything, known_days)]
+        rows = ["🔢 В среднем за день с записями: " + " · ".join(parts)]
+    else:
+        rows = [f"🔢 В среднем за день с записями: {NOT_COUNTED}"]
+    totals = [_sum(meals, "calories") for _day, meals in counted]
     top = max(totals) or 1.0
-    for (day, _meals), total in zip(logged, totals):
+    for (day, meals), total in zip(counted, totals):
+        if not meals:
+            empty = "▱" * BAR_WIDTH
+            rows.append(f"{_WEEKDAYS[day.weekday()]} {empty} {NOT_COUNTED}")
+            continue
         filled = max(1, round(BAR_WIDTH * total / top))
         bar = "▰" * filled + "▱" * (BAR_WIDTH - filled)
         amount = _kcal(total).removesuffix(" ккал")
         rows.append(f"{_WEEKDAYS[day.weekday()]} {bar} {amount}")
+    missing = sum(len(meals) for _day, meals in logged) - len(everything)
+    if missing:
+        rows.append(f"Не посчитано приёмов: {missing}")
     return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
 
 

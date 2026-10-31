@@ -300,7 +300,8 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
         ):
             return Screen("<i>Эта запись уже отменена.</i>", _back_to_list_markup())
         name = meal.description or "Блюдо"
-        crud_meal.remove(db, meal.id)
+        # Soft, as every delete: a pull holding this row learns of it (3.3).
+        meal_items.delete_meal(db, user_id, meal.id)
         return Screen(
             f"↩️ Отменено: {html.escape(name)} не записано.",
             _back_to_list_markup(),

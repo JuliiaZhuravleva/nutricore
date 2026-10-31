@@ -29,6 +29,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal_item import crud_meal_item
+from app.crud.crud_personal_food import crud_personal_food
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
 from app.models.personal_food import PersonalFood
@@ -78,7 +79,11 @@ HOW = (
 UNDO_LABEL = "↩️ Вернуть"
 NOTHING_SAME = "<i>Уже так</i>"
 TIME_FUTURE = "<i>Это время ещё не наступило. Напиши другое.</i>"
-_PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY}
+# ``d``: without a time, on the meal's present day. ``y``: without a time, on the
+# button's day, for a meal that has no clock a day could be counted with.
+_PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY, "y": DAY_ONLY}
+# Two taps on one picked dish are one wish; the same dish a moment later is another.
+REPEAT_WINDOW = timedelta(seconds=3)
 
 _EXACT = frozenset({"barcode", "label", "user"})
 _QUANTITY = {"h": 0.5, "1": 1.0, "2": 2.0}
@@ -100,8 +105,21 @@ _DAY_BACK = {
     stats_screen.YESTERDAY: "⬅️ Назад: вчера",
     stats_screen.WEEK: "⬅️ Назад: 7 дней",
 }
-_GRAMS_TEXT = re.compile(r"\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*[гГ]?\s*")
+_GRAMS_TEXT = re.compile(
+    r"\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:г|гр|грамм(?:а|ов)?|g|gr|grams?)?\.?\s*",
+    re.IGNORECASE,
+)
 _TIME_TEXT = re.compile(r"\s*(вчера\s+)?(\d{1,2})[:.](\d{2})\s*", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Fill:
+    """A typed new name: the numbers are asked for after the answer (N4)."""
+
+    item_id: int
+    rev: int
+    event_id: int
+    name: str
 
 
 @dataclass
@@ -111,6 +129,7 @@ class _Tap:
     telegram_id: int
     now: datetime
     message_id: Optional[int] = None
+    fill: Optional[Fill] = None
 
     @property
     def zone(self):
@@ -136,6 +155,7 @@ class Typed:
 
     screen: Screen
     message_id: Optional[int] = None
+    fill: Optional[Fill] = None
 
 
 # --- words ------------------------------------------------------------------
@@ -305,6 +325,22 @@ def _item_block(item: MealItem) -> Optional[str]:
     return _blockquote([line for line in lines if line])
 
 
+def _typed_later(db, item: MealItem) -> bool:
+    """A name typed into a photo's meal: its numbers were read from the words (N4)."""
+    key = str(item.id)
+    events = db.scalars(
+        select(RecordEvent).where(
+            RecordEvent.meal_id == item.meal_id,
+            RecordEvent.kind.in_(("add", "replace")),
+        )
+    )
+    return any(
+        key in ((event.after or {}).get("items") or {})
+        and key not in ((event.before or {}).get("items") or {})
+        for event in events
+    )
+
+
 def _dish_tag(db, item: MealItem, meal: Meal) -> Optional[str]:
     source = item.numbers_source
     if source == "barcode":
@@ -324,7 +360,8 @@ def _dish_tag(db, item: MealItem, meal: Meal) -> Optional[str]:
         )
         tag = meal_items.TAG_DISH if sure else meal_items.TAG_DISH_UNVERIFIED
     elif source == "model":
-        tag = "оценка по фото" if meal.photos else "оценка по тексту"
+        read = meal.photos and not _typed_later(db, item)
+        tag = "оценка по фото" if read else "оценка по тексту"
     else:
         return None
     return f"<i>{_capital(tag)}</i>"
@@ -375,10 +412,17 @@ def _dish_chips(meal: Meal, items: list, back: str, page: int) -> list:
     return [[*row, more] if more else row]
 
 
+def _is_dish_star(fav) -> bool:
+    return (fav.nutrients or {}).get("foods") == [fav.name]
+
+
 def _meal_favourite(db, meal: Meal):
+    """The meal's own star: a dish's star has this meal as its source too (US-O5)."""
     name = _favourite_name(meal).casefold()
     for fav in crud_favorite_meal.list_active(db, meal.user_id):
-        if fav.source_meal_id == meal.id or fav.name.casefold() == name:
+        if fav.name.casefold() == name:
+            return fav
+        if fav.source_meal_id == meal.id and not _is_dish_star(fav):
             return fav
     return None
 
@@ -604,10 +648,16 @@ def _stale_meal(t: _Tap) -> Screen:
     return _today(t, STALE_MEAL)
 
 
-def _own_meal(t: _Tap, meal_id: int, data: str) -> Meal:
+def _own_row(t: _Tap, meal_id: int, data: str) -> Meal:
+    """This person's meal, also when deleted."""
     meal = _row(t.db, Meal, meal_id)
     if meal is None or t.user is None or meal.user_id != t.user.id:
         raise _Answer(_unknown(t, data))
+    return meal
+
+
+def _own_meal(t: _Tap, meal_id: int, data: str) -> Meal:
+    meal = _own_row(t, meal_id, data)
     if meal.deleted_at is not None:
         raise _Answer(_stale_meal(t))
     return meal
@@ -674,7 +724,7 @@ def leave_slot(db, telegram_id: int) -> None:
 
 
 def parse_grams(text: Optional[str]) -> Optional[float]:
-    """A number from 1 to 5000 with an optional «г»; anything else is not an answer."""
+    """A number from 1 to 5000 with an optional unit; anything else is not an answer."""
     match = _GRAMS_TEXT.fullmatch(text or "")
     if match is None:
         return None
@@ -739,7 +789,7 @@ def take_typed(
         screen = answer.screen
     if screen is None:
         return None
-    return Typed(screen, ask.get("message_id"))
+    return Typed(screen, ask.get("message_id"), t.fill)
 
 
 def _typed_grams(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
@@ -763,19 +813,36 @@ def _apply_grams(t: _Tap, item_id: int, grams: float, back: str, data: str) -> S
     return _dish(t, item, meal, back, notice=notice, undo=change.event.id)
 
 
+def _is_new_name(t: _Tap, text: str) -> bool:
+    return (
+        crud_personal_food.find_by_name(t.db, t.user.id, meal_items._clean_name(text))
+        is None
+    )
+
+
+def _ask_numbers(t: _Tap, change: meal_items.Change) -> None:
+    """Only a name nobody has seen: a known dish is free, numbers or not (N4)."""
+    item = change.items[0]
+    if item.numbers_source == "none":
+        t.fill = Fill(item.id, change.meal.rev, change.event.id, item.name)
+
+
 def _typed_add(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
     back = ask.get("back") or "r"
     meal = _own_meal(t, ask["meal_id"], "slot")
+    new = _is_new_name(t, text)
     change = meal_items.add_item(t.db, t.user.id, meal.id, name=text)
     if change.status != meal_items.DONE:
         return None if change.meal is not None else _stale_meal(t)
+    if new:
+        _ask_numbers(t, change)
     return _added(t, change, meal, back)
 
 
 def _typed_replace(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
     back = ask.get("back") or "r"
     item, meal = _own_item(t, ask["item_id"], back, "slot")
-    return _replace(t, item, meal, back, name=text)
+    return _replace(t, item, meal, back, name=text, new=_is_new_name(t, text))
 
 
 _TYPED: dict[str, Callable] = {
@@ -798,7 +865,14 @@ def _kept_note(item: MealItem) -> str:
 
 
 def _replace(
-    t: _Tap, item: MealItem, meal: Meal, back: str, *, food_id=None, name=None
+    t: _Tap,
+    item: MealItem,
+    meal: Meal,
+    back: str,
+    *,
+    food_id=None,
+    name=None,
+    new: bool = False,
 ) -> Optional[Screen]:
     old, note = item.name, _kept_note(item)
     change = meal_items.replace_item(
@@ -810,6 +884,8 @@ def _replace(
         return _dish(t, item, meal, back, notice=NOTHING_SAME)
     if change.status != meal_items.DONE:
         return None if change.meal is not None else _stale_meal(t)
+    if new:
+        _ask_numbers(t, change)
     notice = f"<i>✓ Заменено: {_esc(old)} → {_esc(change.items[0].name)}{note}</i>"
     return _card(t, meal, back, notice=notice, undo=change.event.id)
 
@@ -916,7 +992,44 @@ def _removed_screen(t: _Tap, meal: Meal, event_id: int, back: str) -> Screen:
     )
 
 
+def _already_removed(t: _Tap, meal: Meal, back: str) -> Screen:
+    """A second tap: the state is what the first left, and the way back stays."""
+    event = t.db.scalars(
+        select(RecordEvent)
+        .where(RecordEvent.meal_id == meal.id, RecordEvent.kind == "delete")
+        .order_by(RecordEvent.id.desc())
+    ).first()
+    return _stale_meal(t) if event is None else _removed_screen(t, meal, event.id, back)
+
+
+def _event_still_on(t: _Tap, meal: Meal, item: MealItem, kind: str):
+    """The event that took this item out, while nothing has changed since."""
+    key = str(item.id)
+    events = t.db.scalars(
+        select(RecordEvent)
+        .where(RecordEvent.meal_id == meal.id, RecordEvent.kind == kind)
+        .order_by(RecordEvent.id.desc())
+    )
+    for event in events:
+        before = ((event.before or {}).get("items") or {}).get(key)
+        after = ((event.after or {}).get("items") or {}).get(key)
+        if before and after and not before["removed"] and after["removed"]:
+            return event if meal_items._still_holds(t.db, meal, event) else None
+    return None
+
+
 def _v_remove(t: _Tap, data: str, iid: str, back: str) -> Screen:
+    row = _row(t.db, MealItem, int(iid))
+    if row is None:
+        return _unknown(t, data)
+    owner = _own_row(t, row.meal_id, data)
+    if owner.deleted_at is not None:
+        return _already_removed(t, owner, back)
+    if row.removed_at is not None:
+        event = _event_still_on(t, owner, row, "remove")
+        if event is not None:
+            notice = f"<i>✓ Убрано: {_esc(row.name)}{_kept_note(row)}</i>"
+            return _card(t, owner, back, notice=notice, undo=event.id)
     item, meal = _own_item(t, int(iid), back, data)
     name, note = item.name, _kept_note(item)
     change = meal_items.remove_item(t.db, t.user.id, item.id)
@@ -929,7 +1042,9 @@ def _v_remove(t: _Tap, data: str, iid: str, back: str) -> Screen:
 
 
 def _v_delete(t: _Tap, data: str, mid: str, back: str) -> Screen:
-    meal = _own_meal(t, int(mid), data)
+    meal = _own_row(t, int(mid), data)
+    if meal.deleted_at is not None:
+        return _already_removed(t, meal, back)
     change = meal_items.delete_meal(t.db, t.user.id, meal.id)
     if change.status != meal_items.DELETED:
         return _stale_meal(t)
@@ -1054,11 +1169,35 @@ def _picked_dish(t: _Tap, food_id: int, data: str) -> Optional[PersonalFood]:
     return dish
 
 
+def _just_added(t: _Tap, meal: Meal, dish: PersonalFood) -> bool:
+    """An add is not a target state, so a double tap needs the clock to tell (rule 4)."""
+    event = t.db.scalars(
+        select(RecordEvent)
+        .where(
+            RecordEvent.meal_id == meal.id,
+            RecordEvent.kind == "add",
+            RecordEvent.food_id == dish.id,
+            RecordEvent.undoes_event_id.is_(None),
+        )
+        .order_by(RecordEvent.id.desc())
+    ).first()
+    if event is None:
+        return False
+    undone = t.db.scalars(
+        select(RecordEvent.id).where(RecordEvent.undoes_event_id == event.id)
+    ).first()
+    if undone is not None:
+        return False
+    return abs(t.now - meal_items._utc(event.created_at)) <= REPEAT_WINDOW
+
+
 def _v_pick_add(t: _Tap, data: str, mid: str, fid: str, back: str) -> Screen:
     meal = _own_meal(t, int(mid), data)
     dish = _picked_dish(t, int(fid), data)
     if dish is None:
         return _add_picker(t, meal, back, 0, STALE_PICK)
+    if _just_added(t, meal, dish):
+        return Screen("", None, toast=meal_items.SAME_TOAST)
     change = meal_items.add_item(t.db, t.user.id, meal.id, food_id=dish.id)
     if change.status != meal_items.DONE:
         return (
@@ -1069,7 +1208,32 @@ def _v_pick_add(t: _Tap, data: str, mid: str, fid: str, back: str) -> Screen:
     return _added(t, change, meal, back)
 
 
+def _already_replaced(t: _Tap, iid: int, fid: int, back: str) -> Optional[Screen]:
+    """A second tap on the same dish: the state is what the first left."""
+    old = _row(t.db, MealItem, iid)
+    new = _row(t.db, MealItem, old.replaced_by_item_id or 0) if old else None
+    if new is None or new.personal_food_id != fid:
+        return None
+    meal = _row(t.db, Meal, old.meal_id)
+    if (
+        meal is None
+        or t.user is None
+        or meal.user_id != t.user.id
+        or meal.deleted_at is not None
+    ):
+        return None
+    event = _event_still_on(t, meal, old, "replace")
+    if event is None:
+        return None
+    note = _kept_note(new)
+    notice = f"<i>✓ Заменено: {_esc(old.name)} → {_esc(new.name)}{note}</i>"
+    return _card(t, meal, back, notice=notice, undo=event.id)
+
+
 def _v_pick_replace(t: _Tap, data: str, iid: str, fid: str, back: str) -> Screen:
+    repeat = _already_replaced(t, int(iid), int(fid), back)
+    if repeat is not None:
+        return repeat
     item, meal = _own_item(t, int(iid), back, data)
     dish = _picked_dish(t, int(fid), data)
     if dish is None:
@@ -1171,7 +1335,7 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
     if done is not None:
         # A second tap: the state is what the first left.
         if meal.deleted_at:
-            return _stale_meal(t)
+            return _already_removed(t, meal, back)
         return (
             _time_screen(t, meal, back) if event.kind == TIME else _card(t, meal, back)
         )
@@ -1232,6 +1396,8 @@ def _time_screen(
     )
     undo_row = [_undo_button(undo, back)] if undo else []
     if meal.time_precision == DAY_ONLY:
+        # No clock to carry over: the day moves, and it still claims no time (N5c).
+        yesterday = _time_chip(meal, label, _noon(day, zone), "y", back)
         rows = [[yesterday, *undo_row]]
     else:
         rows = [
@@ -1261,6 +1427,8 @@ def _time_notice(t: _Tap, meal: Meal, was: date) -> str:
     day = meal_day(meal, t.user)
     if meal.time_precision == DAY_ONLY:
         title = stats_screen._card_title(day)
+        if day != was:
+            return f"<i>✓ Время не указано. Приём теперь в {title}, без времени.</i>"
         return f"<i>✓ Время не указано. Приём остаётся в {title}, без времени.</i>"
     word = "Время примерное" if meal.time_precision == APPROX else "Время"
     if day != was:
@@ -1311,7 +1479,7 @@ def _v_time_set(
 ) -> Screen:
     meal = _own_meal(t, int(mid), data)
     precision = _PRECISION_OF[kind]
-    if precision == DAY_ONLY:
+    if kind == "d":
         # The meal's present day, not the button's: it may have moved since it was drawn.
         moment = meal.meal_time
         if meal.time_precision != DAY_ONLY:
@@ -1432,7 +1600,7 @@ _VERBS: tuple = (
     (re.compile(rf"ml:d:{_ID}:{_BACK}"), _v_delete),
     (re.compile(rf"ml:u:{_ID}:{_BACK_TIME}"), _v_undo),
     (re.compile(rf"ml:t:{_ID}:{_BACK_TIME}"), _v_time),
-    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d):{_BACK_TIME}"), _v_time_set),
+    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d|y):{_BACK_TIME}"), _v_time_set),
     (re.compile(rf"ml:pk:{_ID}:(a|r):{_BACK}:(\d{{1,2}})"), _v_pick),
     (re.compile(rf"ml:pa:{_ID}:{_ID}:{_BACK}"), _v_pick_add),
     (re.compile(rf"ml:pr:{_ID}:{_ID}:{_BACK}"), _v_pick_replace),

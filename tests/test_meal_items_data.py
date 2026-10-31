@@ -21,6 +21,7 @@ from app.db.base import Base
 from app.models import Meal, MealItem, PersonalFood, RecordEvent
 from app.schemas.meal import MealCreate, MealUpdate
 from app.schemas.user import UserCreate
+from app.services import meal_items
 
 NOW = datetime(2026, 10, 26, 13, 20, tzinfo=UTC)
 
@@ -527,3 +528,86 @@ def test_upsert_leaves_macros_a_person_typed(db_session, user):
     assert food.times_used == 2
     assert food.barcode == "4600000000000"
     assert food.numbers_by_user is True
+
+
+# --- REST: a delete is soft, and the totals belong to the items -------------
+
+
+def _with_items(db_session, user):
+    return meal_items.save_meal(
+        db_session,
+        MealCreate(
+            meal_time=NOW,
+            description="омлет",
+            calories=300.0,
+            nutrients={"foods": ["омлет"], "calories": 300.0},
+        ),
+        user.id,
+    )
+
+
+def test_rest_delete_is_soft_and_the_export_learns_of_it(db_session, user):
+    meal = _with_items(db_session, user)
+
+    answer = delete_meal(meal.id, db_session)
+
+    assert answer.id == meal.id and answer.deleted_at is not None
+    kept = crud_meal.get_any(db_session, meal.id)
+    assert kept is not None and kept.calories == 300.0
+    assert crud_meal_item.live(db_session, meal.id)  # the items stay, for the undo
+    pull = crud_meal.get_for_export(db_session, updated_since=NOW - timedelta(days=1))
+    assert meal.id in [row.id for row in pull]
+    kinds = db_session.scalars(
+        select(RecordEvent.kind).where(RecordEvent.meal_id == meal.id)
+    ).all()
+    assert "delete" in kinds
+    with pytest.raises(HTTPException) as caught:
+        delete_meal(meal.id, db_session)
+    assert caught.value.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"calories": 1.0},
+        {"proteins": 1.0},
+        {"fats": 1.0},
+        {"carbohydrates": 1.0},
+        {"description": "x"},
+        {"nutrients": {"foods": ["x"]}},
+        {"ai_analysis": {"food_groups": []}},
+        {"numbers_basis": "none"},
+        {"plate_totals": {"calories": 1}},
+    ],
+)
+def test_rest_update_refuses_what_the_items_own(db_session, user, fields):
+    meal = _with_items(db_session, user)
+    rev = meal.rev
+
+    with pytest.raises(HTTPException) as caught:
+        update_meal(meal.id, MealUpdate(**fields), db_session)
+
+    assert caught.value.status_code == 409
+    db_session.refresh(meal)
+    assert meal.rev == rev and meal.calories == 300.0
+
+
+def test_rest_update_never_deletes_past_the_event(db_session, user):
+    for meal in (_with_items(db_session, user), _meal(db_session, user)):
+        with pytest.raises(HTTPException) as caught:
+            update_meal(meal.id, MealUpdate(deleted_at=NOW), db_session)
+        assert caught.value.status_code == 409
+        db_session.refresh(meal)
+        assert meal.deleted_at is None
+
+
+def test_rest_update_keeps_what_is_not_the_items(db_session, user):
+    # Controls: a label on a meal with items, and anything on a legacy one.
+    meal = _with_items(db_session, user)
+    assert update_meal(meal.id, MealUpdate(meal_type="Обед"), db_session).meal_type == (
+        "Обед"
+    )
+    legacy = _meal(db_session, user)
+    assert crud_meal_item.live(db_session, legacy.id) == []
+    answer = update_meal(legacy.id, MealUpdate(calories=5.0), db_session)
+    assert answer.calories == 5.0

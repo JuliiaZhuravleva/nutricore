@@ -1365,8 +1365,15 @@ def test_every_verb_on_a_deleted_meal_is_todays_card_with_the_notice(db, owner):
     _o, other = _one(db, owner, "хлеб")
     meal_items.delete_meal(db, owner.id, meal.id)
     events = _counts(db)
-    for data in _all_verbs(meal.id, item.id, other.personal_food_id, 0):
+    # A second tap on what deleted it keeps the way back (N6).
+    deleting = {f"ml:d:{meal.id}:r", f"ml:x:{item.id}:r"}
+    verbs = _all_verbs(meal.id, item.id, other.personal_food_id, 0)
+    assert deleting <= set(verbs)  # known positive: the loop below does skip them
+    for data in verbs:
         screen = _tap(db, data)
+        if data in deleting:
+            assert screen.text.startswith("<b>🗑 Приём удалён</b>"), data
+            continue
         assert screen.text.startswith(DELETED_NOTICE + "\n\n<b>📊 Сегодня"), data
     assert _counts(db) == events
     assert _ask(db, owner) is None
@@ -1466,13 +1473,27 @@ def test_a_removed_dish_opens_the_card_with_its_notice(db, owner):
         f"ml:i:{chicken.id}:r",
         f"ml:q:{chicken.id}:2:r",
         f"ml:g:{chicken.id}:r",
-        f"ml:x:{chicken.id}:r",
         f"ml:fi:{chicken.id}:1:r",
         f"ml:pk:{chicken.id}:r:r:0",
     ):
         screen = _tap(db, data)
         assert _text_lines(screen)[0] == DISH_GONE, data
         assert screen.text.split("\n\n", 1)[1].startswith("<b>🍽 Приём"), data
+    assert meal.id
+
+
+def test_a_second_remove_keeps_its_way_back_until_something_changed(db, owner):
+    meal, rice, chicken, _veg = _three_counted(db, owner)
+    tap = f"ml:x:{chicken.id}:r"
+    first = _tap(db, tap)
+    events = _counts(db)
+    second = _tap(db, tap)
+    assert second.text == first.text and _counts(db) == events
+    assert second.text.startswith("<i>✓ Убрано: курица")
+    assert _button(second, "↩️ Вернуть").startswith("ml:u:")
+    # Control: a change since means the undo would be refused, so no undo is offered.
+    meal_items.set_quantity(db, owner.id, rice.id, 2.0)
+    assert _text_lines(_tap(db, tap))[0] == DISH_GONE
     assert meal.id
 
 

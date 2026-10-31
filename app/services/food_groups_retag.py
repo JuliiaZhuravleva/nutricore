@@ -5,12 +5,15 @@ number of items. Above the limit (or with no known price) nothing further is
 called and nothing is written; the caller gets the sum to ask the owner about.
 The run meters every call and stops if what it spent reaches the limit.
 Favorites are tagged too, or every meal logged from an old one stays untagged.
-A row that already has groups is never touched, whoever set them.
+A row that already has groups is never touched, whoever set them. A reply takes
+seconds: a row that moved meanwhile is left for the next run, or it would write foods
+that are no longer there over the person's change (3.1).
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -32,6 +35,7 @@ class Report:
     spent_usd: float = 0.0
     tagged: int = 0
     failed: int = 0
+    skipped: int = 0  # changed while the reply was awaited; a later run picks it up
     stopped: str | None = None
     unpriced: list = field(default_factory=list)
 
@@ -67,6 +71,22 @@ def pending(db) -> list:
     return rows
 
 
+def _rev(row):
+    return row.rev if isinstance(row, Meal) else None
+
+
+def _moved(db, row, rev) -> bool:
+    """Whether the row is still what the reply answered about, from the database."""
+    db.refresh(row)
+    if isinstance(row, FavoriteMeal):
+        return row.removed_at is not None or "food_groups" in (row.nutrients or {})
+    return (
+        row.rev != rev
+        or row.deleted_at is not None
+        or "food_groups" in (row.ai_analysis or {})
+    )
+
+
 def _write(row, items: list) -> None:
     tags = {
         "food_items": items,
@@ -77,6 +97,9 @@ def _write(row, items: list) -> None:
     row.nutrients = {**(row.nutrients or {}), **tags}
     if isinstance(row, Meal):
         row.ai_analysis = {**(row.ai_analysis or {}), **tags}
+        # A new rev and time, as any change: a pull by ``updated_since`` wants the tags.
+        row.rev = (row.rev or 0) + 1
+        row.updated_at = datetime.now(UTC)
 
 
 async def _tag(service, row) -> list:
@@ -98,6 +121,7 @@ async def run(db, service, *, apply: bool, limit_usd: float = LIMIT_USD) -> Repo
 
     with usage_meter.metering() as meter:
         first_items = None
+        first_rev = _rev(rows[0])
         try:
             first_items = await _tag(service, rows[0])
         except Exception:
@@ -126,7 +150,12 @@ async def run(db, service, *, apply: bool, limit_usd: float = LIMIT_USD) -> Repo
                 report.stopped = "spent the limit"
                 break
             try:
+                rev = first_rev if index == 0 else _rev(row)
                 items = first_items if index == 0 else await _tag(service, row)
+                if _moved(db, row, rev):
+                    db.rollback()
+                    report.skipped += 1
+                    continue
                 _write(row, items)
                 db.commit()
                 report.tagged += 1
