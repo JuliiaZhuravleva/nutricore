@@ -645,18 +645,6 @@ def test_add_starts_the_name_step_from_every_kind_of_state(conv):
     )
 
 
-@pytest.mark.parametrize(
-    "state", ["ADDING_MEAL_TIME", "ADDING_MEAL", "CONFIRMING_MEAL"]
-)
-def test_add_cannot_pull_the_user_out_of_a_meal(conv, Session, state):
-    handlers = conv.states[getattr(tg, state)] + conv.fallbacks
-    assert _first_match(handlers, _tap_update("rt:add")) is None
-    assert _first_match(handlers, _tap_update("rt:ren:abc")) is None
-    screen = _tap(Session, "rt:add")
-    assert screen.text.startswith("<b>💊 Рутины</b>")
-    assert "/cancel" in screen.toast
-
-
 def test_any_other_tap_closes_the_name_step_through_its_own_group():
     application = tg.create_bot_application()
     handler = application.handlers[1][0]
@@ -690,30 +678,11 @@ def test_in_the_name_step_text_is_the_name_and_menu_buttons_still_work(conv):
     assert _is(_first_match(handlers, _tap_update("rt:open")), tg.routine_leave_name)
 
 
-def test_outside_a_step_plain_text_goes_to_the_typed_tick(conv):
-    handlers = conv.states[tg.CHOOSING_ACTION]
-    assert _is(_first_match(handlers, _text_update("Прогулка")), tg.typed_routine_tick)
-    assert _is(
-        _first_match(conv.entry_points, _text_update("Йога")), tg.typed_routine_tick
-    )
-
-
-def test_the_typed_tick_leaves_a_weight_and_the_menu_to_their_handlers(conv):
-    handlers = conv.states[tg.CHOOSING_ACTION]
-    assert _is(_first_match(handlers, _text_update("72,5")), tg.process_weight)
-    assert _is(_first_match(handlers, _text_update("⚙️ Настройки")), tg.show_settings)
-
-
 @pytest.mark.parametrize("text", ["❓ О боте", "💎 Получить подписку"])
 def test_the_typed_tick_does_not_swallow_the_two_fallback_buttons(conv, text):
     update = _text_update(text)
     assert _first_match(conv.states[tg.CHOOSING_ACTION], update) is None
     assert _first_match(conv.fallbacks, update) is not None
-
-
-def test_food_being_entered_never_reaches_the_typed_tick(conv):
-    handler = _first_match(conv.states[tg.ADDING_MEAL], _text_update("Прогулка"))
-    assert not _is(handler, tg.typed_routine_tick)
 
 
 # --- the handlers end to end -----------------------------------------------------
@@ -774,41 +743,29 @@ def test_back_from_the_name_step_closes_it(Session):
     assert "<b>💊 Рутины</b>" in query.edit_message_text.call_args.args[0]
 
 
-def _after_moving_on(Session, text):
-    """➕ or ✏️ tapped, then another screen's button: the step is closed."""
+def _after_moving_on(Session, monkeypatch, text):
+    """The rename was asked, then the person tapped elsewhere and typed."""
+    routed = AsyncMock()
+    monkeypatch.setattr(tg, "capture_message", routed)
     routine = _add(Session, "Прогулка")
     context = SimpleNamespace(user_data={})
     _query, update = _query_update(f"rt:ren:{routine['id']}")
     asyncio.run(tg.routine_ask_name(update, context))
     asyncio.run(tg.routine_left_by_tap(_query_update("st:t")[1], context))
-    message, update = _msg_update(text)
-    return asyncio.run(tg.process_routine_name(update, context)), message, routine
+    _message, update = _msg_update(text)
+    return asyncio.run(tg.process_routine_name(update, context)), routed
 
 
-def test_text_after_moving_on_is_no_rename_and_stays_silent(Session):
-    state, message, _routine = _after_moving_on(Session, "гречка")
+def test_text_after_moving_on_is_no_rename_and_goes_to_the_router(Session, monkeypatch):
+    state, routed = _after_moving_on(Session, monkeypatch, "гречка")
     assert state == tg.CHOOSING_ACTION
     assert [r["name"] for r in _active(Session)] == ["Прогулка"]
-    message.reply_text.assert_not_called()
+    routed.assert_awaited_once()
 
 
-def test_a_weight_after_moving_on_is_a_weight(Session, monkeypatch):
-    recorded = AsyncMock(return_value=tg.ENTERING_WEIGHT)
-    monkeypatch.setattr(tg, "process_weight", recorded)
-    state, _message, _routine = _after_moving_on(Session, "72,5")
-    assert state == tg.ENTERING_WEIGHT
-    recorded.assert_awaited_once()
-    assert [r["name"] for r in _active(Session)] == ["Прогулка"]
-
-
-def test_a_routine_name_after_moving_on_ticks_it(Session):
-    state, message, routine = _after_moving_on(Session, "Прогулка")
-    assert state == tg.CHOOSING_ACTION
-    assert [tick[0] for tick in _ticks(Session)] == [routine["id"]]
-    assert message.reply_text.call_args.args[0] == "✓ Прогулка"
-
-
-def test_the_name_step_expires_after_its_wait(Session):
+def test_the_name_step_expires_after_its_wait(Session, monkeypatch):
+    routed = AsyncMock()
+    monkeypatch.setattr(tg, "capture_message", routed)
     routine = _add(Session, "Прогулка")
     context = SimpleNamespace(user_data={})
     _query, update = _query_update(f"rt:ren:{routine['id']}")
@@ -817,6 +774,21 @@ def test_the_name_step_expires_after_its_wait(Session):
     _message, update = _msg_update("гречка")
     assert asyncio.run(tg.process_routine_name(update, context)) == tg.CHOOSING_ACTION
     assert [r["name"] for r in _active(Session)] == ["Прогулка"]
+    routed.assert_awaited_once()
+
+
+def test_a_name_in_time_renames_and_never_reaches_the_router(Session, monkeypatch):
+    # Known positive of the two above.
+    routed = AsyncMock()
+    monkeypatch.setattr(tg, "capture_message", routed)
+    routine = _add(Session, "Прогулка")
+    context = SimpleNamespace(user_data={})
+    _query, update = _query_update(f"rt:ren:{routine['id']}")
+    asyncio.run(tg.routine_ask_name(update, context))
+    _message, update = _msg_update("Йога")
+    assert asyncio.run(tg.process_routine_name(update, context)) == tg.CHOOSING_ACTION
+    assert [r["name"] for r in _active(Session)] == ["Йога"]
+    routed.assert_not_awaited()
 
 
 def test_a_name_that_does_not_fit_keeps_the_step_open(Session):
@@ -851,16 +823,3 @@ def test_a_locked_user_gets_no_name_step(Session, monkeypatch):
     assert asyncio.run(tg.routine_ask_name(update, context)) is None
     query.answer.assert_awaited_once()
     query.edit_message_text.assert_not_called()
-
-
-def test_a_typed_tick_answers_and_other_text_stays_silent(Session):
-    routine = _add(Session, "Прогулка")
-    context = SimpleNamespace(user_data={})
-    message, update = _msg_update("гречка")
-    assert asyncio.run(tg.typed_routine_tick(update, context)) is None
-    message.reply_text.assert_not_called()
-
-    message, update = _msg_update("Прогулка")
-    assert asyncio.run(tg.typed_routine_tick(update, context)) == tg.CHOOSING_ACTION
-    assert message.reply_text.call_args.args[0] == "✓ Прогулка"
-    assert [tick[0] for tick in _ticks(Session)] == [routine["id"]]

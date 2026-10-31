@@ -391,80 +391,11 @@ class _Msg:
         self.kwargs.append(kwargs)
 
 
-def _confirm(text, current_meal):
-    message = _Msg(text)
-    update = SimpleNamespace(
-        message=message, effective_user=SimpleNamespace(id=42, username="owner")
-    )
-    context = SimpleNamespace(
-        user_data={"current_meal": current_meal, "meal_type": "Обед"}
-    )
-    state = asyncio.run(tg.confirm_meal(update, context))
-    return state, message
-
-
-def test_typed_confirm_intents():
-    # The former reply-keyboard texts still classify when typed or tapped from
-    # an old keyboard left on screen.
-    assert tg._confirm_intent("✅ Да") == "affirm"
-    assert tg._confirm_intent("⭐ Да, и в избранное") == "affirm_favorite"
-    assert tg._confirm_intent("Нет") == "reject"
-
-
 def test_main_keyboard_has_favorites_next_to_add_meal():
     assert [b.text for b in tg.main_keyboard.keyboard[0]] == [
         "🍽 Добавить приём пищи",
         "⭐ Избранное",
     ]
-
-
-def test_confirm_with_favorite_saves_meal_and_favorite_named_by_caption(Session):
-    meal = {
-        "nutrition": _NUTRITION,
-        "description": "savory pastry",
-        "caption": "Самса веган",
-        "photos": ["PHOTO"],
-    }
-    state, message = _confirm("⭐ Да, и в избранное", meal)
-
-    assert state == tg.CHOOSING_ACTION
-    assert "✅ Записано" in message.replies[-1]
-    assert "⭐ В избранном: «Самса веган»" in message.replies[-1]
-    with Session() as db:
-        saved = db.query(Meal).one()
-        fav = db.query(FavoriteMeal).one()
-        assert fav.name == "Самса веган" and fav.source_meal_id == saved.id
-        assert fav.calories == saved.calories == 420.4
-
-    # The same dish again: one favorite, and the reply says so.
-    _, message = _confirm("⭐ Да, и в избранное", dict(meal))
-    assert "уже в избранном" in message.replies[-1]
-    with Session() as db:
-        assert db.query(Meal).count() == 2
-        assert db.query(FavoriteMeal).count() == 1
-
-
-def test_plain_yes_adds_no_favorite(Session):
-    _confirm("✅ Да", {"nutrition": _NUTRITION, "description": "x"})
-    with Session() as db:
-        assert db.query(Meal).count() == 1
-        assert db.query(FavoriteMeal).count() == 0
-
-
-def test_favorite_failure_keeps_the_saved_meal(Session, monkeypatch):
-    def boom(*a, **k):
-        raise RuntimeError("db hiccup")
-
-    monkeypatch.setattr(fv, "save_from_meal", boom)
-    state, message = _confirm(
-        "⭐ Да, и в избранное", {"nutrition": _NUTRITION, "description": "x"}
-    )
-    assert state == tg.CHOOSING_ACTION
-    assert "✅ Записано" in message.replies[-1]
-    assert "не получилось" in message.replies[-1]
-    assert "ошибка при сохранении" not in message.replies[-1]
-    with Session() as db:
-        assert db.query(Meal).count() == 1
 
 
 def test_menu_button_sends_the_list(Session):

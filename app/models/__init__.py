@@ -7,6 +7,9 @@ from .favorite_meal import FavoriteMeal
 from .inbound_message import InboundMessage
 from .meal import Meal
 from .meal_item import MealItem
+from .meal_message import MealMessage
+from .meal_reading import MealReading
+from .meal_source import MealSource
 from .personal_food import PersonalFood, PersonalFoodEmbedding
 from .product_cache import ProductCache
 from .record_event import RecordEvent
@@ -19,6 +22,9 @@ __all__ = [
     "BodyMetric",
     "Meal",
     "MealItem",
+    "MealSource",
+    "MealReading",
+    "MealMessage",
     "RecordEvent",
     "FavoriteMeal",
     "RoutineTick",

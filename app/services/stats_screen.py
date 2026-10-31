@@ -441,7 +441,7 @@ def _step_rows(step: next_step.View, day: date, opened: bool | None) -> list:
         return [[button("👣 Вернуть шаг", next_step.BRING_BACK), other], [energy]]
     return [
         [
-            # PTB 21.9 predates ``style``: see meal_draft's «✅ Сохранить».
+            # PTB 21.9 predates ``style``: custom keyboards carry it through ``api_kwargs``.
             button("✅ Готово", next_step.TAKE, api_kwargs={"style": "success"}),
             button("🔄 Другой шаг", next_step.SWAP),
             button("😴 Не сейчас", next_step.PUT_OFF),

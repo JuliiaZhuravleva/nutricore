@@ -129,7 +129,7 @@ class ResolutionResult:
     source: str  # "barcode_off" | "name_off" | "label_ocr" | "name_web" | "vision"
     confidence_tier: str  # "high" | "medium" | "low"
     # Nutrition keys match the existing schema: calories, protein, fats, carbs,
-    # portion, foods — so _nutrition_reply and confirm_meal need no changes.
+    # portion, foods — so the read of a meal needs no changes.
     nutrition: dict
     description: Optional[str]  # human-readable name for the confirm reply
     portion_grams: Optional[float]  # gram basis used for scaling (shown in reply)

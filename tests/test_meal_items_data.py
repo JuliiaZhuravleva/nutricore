@@ -121,6 +121,11 @@ def test_create_stores_every_field_its_schema_accepts(db_session, user):
         "updated_at",
         "deleted_at",
         "rev",
+        # Written by capture, never taken from the API.
+        "reading_status",
+        "read_attempts",
+        "is_draft",
+        "merged_into_id",
     }
 
 

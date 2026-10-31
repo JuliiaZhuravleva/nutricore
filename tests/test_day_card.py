@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import day_card, explain_screen
+from app.services import capture, day_card, explain_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services.settings_screen import SHOW_NUMBERS
@@ -359,17 +359,12 @@ def _target(handler):
     return inspect.unwrap(handler.callback) if handler else None
 
 
-def test_the_add_button_enters_the_flow_from_idle_and_from_the_menu_states(conv):
+def test_the_add_button_answers_from_idle_and_from_the_menu_states(conv):
     tap = _tap_update(st.ADD_DATA)
     assert _target(_first(conv.entry_points, tap)) is tg.add_meal_from_card
-    for state in ("CHOOSING_ACTION", "ENTERING_WEIGHT", "ADDING_MEAL"):
+    for state in ("CHOOSING_ACTION", "ENTERING_WEIGHT"):
         handlers = conv.states[getattr(tg, state)]
         assert _target(_first(handlers, tap)) is tg.add_meal_from_card
-
-
-@pytest.mark.parametrize("state", ["ADDING_MEAL_TIME", "CONFIRMING_MEAL"])
-def test_the_add_button_does_not_break_a_step_in_progress(conv, state):
-    assert _first(conv.states[getattr(tg, state)], _tap_update(st.ADD_DATA)) is None
 
 
 def test_a_tab_is_not_taken_for_the_add_button(conv):
@@ -382,7 +377,7 @@ def _context():
     )
 
 
-def test_tapping_add_asks_the_same_question_with_a_clean_draft(monkeypatch):
+def test_tapping_add_says_to_send_it_and_opens_no_step(monkeypatch):
     monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
     sent = AsyncMock()
     query = SimpleNamespace(answer=AsyncMock())
@@ -392,14 +387,14 @@ def test_tapping_add_asks_the_same_question_with_a_clean_draft(monkeypatch):
         effective_chat=SimpleNamespace(send_message=sent),
     )
     context = _context()
+    before = dict(context.user_data)
 
     state = asyncio.run(tg.add_meal_from_card(update, context))
 
-    assert state == tg.ADDING_MEAL_TIME
+    assert state is None
     query.answer.assert_awaited_once_with()
-    assert sent.await_args.args == ("Когда был приём пищи?",)
-    assert sent.await_args.kwargs["reply_markup"] is tg.time_keyboard
-    assert context.user_data == {"current_meal": {}}
+    assert sent.await_args.kwargs["text"] == capture.M9A_NEW_MEAL
+    assert context.user_data == before
 
 
 def test_without_a_subscription_add_is_refused_and_nothing_starts(monkeypatch):

@@ -336,54 +336,126 @@ def save_meal(
     """
 
     def write() -> Meal:
-        wanted = names if names is not None else _names(meal_in)
         meal = crud_meal.build(meal_in, user_id)
-        totals = _meal_totals(meal)
-        read = any(value is not None for value in totals.values())
-        one_dish = len(wanted) == 1
-        if not read:
-            meal.numbers_basis = "none"
-        elif one_dish:
-            meal.numbers_basis = "items"
-        else:
-            meal.numbers_basis = "plate"
-            meal.plate_totals = totals
-        db.add(meal)
-        db.flush()
-
-        signals = meal_in.resolution_signals or {}
-        barcode = (signals.get("barcode_raw") or None) if one_dish else None
-        for position, name in enumerate(wanted):
-            dish = _dish_for(
-                db, user_id, name, barcode=barcode, source=meal_in.resolution_source
-            )
-            _used(db, dish, meal, one_dish=one_dish)
-            columns = {"numbers_source": "none"}
-            if read and one_dish:
-                grams = signals.get("portion_grams") or _parse_portion_grams(
-                    meal_in.nutrients or {}
-                )
-                columns = {
-                    **{f"base_{key}": value for key, value in totals.items()},
-                    "base_grams": grams,
-                    "grams": grams if grams_by_user else None,
-                    "by_user": grams_by_user,
-                    "numbers_source": numbers_source
-                    or _NUMBERS_SOURCE.get(meal_in.resolution_source, "model"),
-                }
-            elif read:
-                columns = {"numbers_source": "plate_share"}
-            crud_meal_item.add(
-                db,
-                meal_id=meal.id,
-                name=name,
-                personal_food_id=dish.id,
-                position=position,
-                **columns,
-            )
+        _write_reading(
+            db,
+            meal,
+            meal_in,
+            user_id,
+            names=names,
+            numbers_source=numbers_source,
+            grams_by_user=grams_by_user,
+        )
         db.commit()
         db.refresh(meal)
         return meal
+
+    return _rolled_back(db, write)
+
+
+def _write_reading(
+    db: Session,
+    meal: Meal,
+    meal_in: MealCreate,
+    user_id: int,
+    *,
+    names: Optional[list] = None,
+    numbers_source: Optional[str] = None,
+    grams_by_user: bool = False,
+    source_id: Optional[int] = None,
+) -> None:
+    """The meal's basis and its items, from what was read. Commits nothing."""
+    wanted = names if names is not None else _names(meal_in)
+    totals = _meal_totals(meal)
+    read = any(value is not None for value in totals.values())
+    one_dish = len(wanted) == 1
+    if not read:
+        meal.numbers_basis = "none"
+    elif one_dish:
+        meal.numbers_basis = "items"
+    else:
+        meal.numbers_basis = "plate"
+        meal.plate_totals = totals
+    db.add(meal)
+    db.flush()
+
+    signals = meal_in.resolution_signals or {}
+    barcode = (signals.get("barcode_raw") or None) if one_dish else None
+    for position, name in enumerate(wanted):
+        dish = _dish_for(
+            db, user_id, name, barcode=barcode, source=meal_in.resolution_source
+        )
+        _used(db, dish, meal, one_dish=one_dish)
+        columns = {"numbers_source": "none"}
+        if read and one_dish:
+            grams = signals.get("portion_grams") or _parse_portion_grams(
+                meal_in.nutrients or {}
+            )
+            columns = {
+                **{f"base_{key}": value for key, value in totals.items()},
+                "base_grams": grams,
+                "grams": grams if grams_by_user else None,
+                "by_user": grams_by_user,
+                "numbers_source": numbers_source
+                or _NUMBERS_SOURCE.get(meal_in.resolution_source, "model"),
+            }
+        elif read:
+            columns = {"numbers_source": "plate_share"}
+        crud_meal_item.add(
+            db,
+            meal_id=meal.id,
+            name=name,
+            personal_food_id=dish.id,
+            position=position,
+            source_id=source_id,
+            **columns,
+        )
+
+
+# What a reading fills on a meal that is already in the diary.
+_READ_FIELDS = (
+    "description",
+    "calories",
+    "proteins",
+    "fats",
+    "carbohydrates",
+    "nutrients",
+    "ai_analysis",
+    "resolution_source",
+    "resolution_signals",
+)
+
+
+def names_read(meal_in: MealCreate) -> list:
+    """The dishes a reading found: the person's own words do not count as one."""
+    return _names(meal_in.model_copy(update={"description": None}))
+
+
+def apply_read(
+    db: Session,
+    meal: Meal,
+    rev: int,
+    meal_in: MealCreate,
+    *,
+    source_id: Optional[int] = None,
+) -> bool:
+    """A reading onto the meal born before it. False, and nothing written, if the
+    meal has changed since: what the person did outranks a late answer.
+
+    No event: the person changed nothing, and there is no earlier state to return to.
+    """
+    if (meal.rev or 0) != rev or meal.deleted_at is not None:
+        return False
+
+    def write() -> bool:
+        for key in _READ_FIELDS:
+            setattr(meal, key, getattr(meal_in, key))
+        _write_reading(db, meal, meal_in, meal.user_id, source_id=source_id)
+        meal.reading_status = "read"
+        meal.rev = rev + 1
+        db.commit()
+        db.refresh(meal)
+        return True
 
     return _rolled_back(db, write)
 

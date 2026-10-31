@@ -1610,50 +1610,6 @@ def test_an_empty_today_has_no_way_to_the_meals(db, owner):
     assert "🍽 Приёмы" not in str(_rows(_day_keyboard(db)))
 
 
-def test_saved_draft_footer_opens_the_card(db, owner):
-    update = SimpleNamespace(effective_user=SimpleNamespace(id=42, username="owner"))
-    replies = []
-
-    async def reply(body, **kwargs):
-        replies.append(body)
-
-    draft = {
-        "description": "рис и курица",
-        "nutrition": {
-            "foods": ["рис", "курица"],
-            "calories": 500.0,
-            "protein": 20.0,
-            "fats": 10.0,
-            "carbs": 60.0,
-        },
-    }
-    with patch("celery_app.tasks.personal_food.embed_and_save_personal_food.delay"):
-        saved = asyncio.run(
-            tg._save_current_meal(
-                update.effective_user,
-                draft,
-                {"meal_time": EATEN},
-                reply,
-                favorite=False,
-            )
-        )
-    meal = db.scalars(select(Meal)).one()
-    assert saved == meal.id
-    markup = tg._day_card_button(saved)
-    assert [[b.text for b in row] for row in markup.inline_keyboard] == [
-        ["🍽 Приём", "📊 Карточка дня"]
-    ]
-    assert markup.inline_keyboard[0][0].callback_data == f"ml:o:{meal.id}:r"
-    assert markup.inline_keyboard[0][1].callback_data == "st:t"
-    assert _tap(db, markup.inline_keyboard[0][0].callback_data).text.startswith(
-        "<b>🍽 Приём"
-    )
-    # Elsewhere, where no meal is at hand, only the day.
-    assert [[b.text for b in row] for row in tg._day_card_button().inline_keyboard] == [
-        ["📊 Карточка дня"]
-    ]
-
-
 # --- layout and copy ---------------------------------------------------------------
 
 

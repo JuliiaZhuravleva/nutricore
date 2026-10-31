@@ -1,6 +1,6 @@
 """Personal food DB learning-loop write-back task (B4 / ADR-0003).
 
-Fire-and-forget: called from confirm_meal in telegram.py after the meal is
+Fire-and-forget: called from the read of a meal in telegram.py after the meal is
 saved.  Embeds the canonical food name and upserts it into personal_foods so
 the personal RAG DB grows with each confirmed meal.
 

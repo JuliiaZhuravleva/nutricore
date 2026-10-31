@@ -569,22 +569,29 @@ def test_reliable_text_closes_the_step(Session, context):
     assert "food_kind" not in context.user_data
 
 
-def test_text_after_the_wait_is_never_silently_a_food(Session, context):
+def test_text_after_the_wait_is_never_silently_a_food(Session, context, monkeypatch):
+    routed = AsyncMock()
+    monkeypatch.setattr(tg, "capture_message", routed)
     context.user_data.update(
         food_kind=ns.NO_SUGGEST,
         food_asked_at=datetime.now(UTC) - tg.FOOD_NAME_WAIT - timedelta(seconds=1),
     )
-    _run(tg.process_food_name, _update(text="грибы"), context)
+    state = _run(tg.process_food_name, _update(text="грибы"), context)
+    assert state == tg.CHOOSING_ACTION
     assert not _setting(Session, ns.NO_SUGGEST)
+    routed.assert_awaited_once()
 
 
-def test_a_bare_number_after_the_wait_is_still_a_weigh_in(
+def test_text_inside_the_wait_is_a_food_and_never_reaches_the_router(
     Session, context, monkeypatch
 ):
-    weighed = AsyncMock(return_value=tg.CHOOSING_ACTION)
-    monkeypatch.setattr(tg, "process_weight", weighed)
-    _run(tg.process_food_name, _update(text="72,5"), context)
-    weighed.assert_awaited_once()
+    # Known positive of the one above: the same text, in time, is the list's.
+    routed = AsyncMock()
+    monkeypatch.setattr(tg, "capture_message", routed)
+    context.user_data.update(food_kind=ns.NO_SUGGEST, food_asked_at=datetime.now(UTC))
+    _run(tg.process_food_name, _update(text="грибы"), context)
+    assert _setting(Session, ns.NO_SUGGEST) == ["грибы"]
+    routed.assert_not_awaited()
 
 
 def test_any_other_tap_closes_the_wait(context):

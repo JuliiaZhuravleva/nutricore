@@ -74,12 +74,17 @@ def _schema_before(conn) -> None:
     old.create_all(conn)
 
 
+# Columns a later migration adds to a table this one creates: not this one's to write.
+_LATER = {"meal_items": {"source_id"}}
+
+
 def _gaps(conn) -> dict:
     """{table: columns the model has and the database lacks, or the reverse}."""
     inspector = sa.inspect(conn)
     gaps = {}
     for name in ("meals", "personal_foods", "meal_items", "record_events"):
         model = {c.name for c in Base.metadata.tables[name].columns}
+        model -= _LATER.get(name, set())
         found = (
             {c["name"] for c in inspector.get_columns(name)}
             if inspector.has_table(name)
@@ -123,7 +128,7 @@ def test_nullability_and_foreign_keys_match_the_models(conn):
             if name not in _NEW_BY_TABLE
             else _NEW_BY_TABLE[name]
         )
-        for column in watched:
+        for column in set(watched) - _LATER.get(name, set()):
             if table.c[column].primary_key:
                 continue
             assert found[column]["nullable"] == table.c[column].nullable, (
@@ -135,6 +140,7 @@ def test_nullability_and_foreign_keys_match_the_models(conn):
         model = {
             fk.parent.name: (fk.column.table.name, fk.ondelete)
             for fk in table.foreign_keys
+            if fk.parent.name not in _LATER.get(name, set())
         }
         found = {
             fk["constrained_columns"][0]: (

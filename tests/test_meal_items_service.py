@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -13,7 +11,6 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from telegram.ext import ConversationHandler, MessageHandler
 
 from app.api.v1.meals import create_meal
 from app.core.config import settings
@@ -24,11 +21,14 @@ from app.crud.crud_record_event import crud_record_event
 from app.db.base import Base
 from app.models import FavoriteMeal, Meal, MealItem, PersonalFood, RecordEvent, User
 from app.schemas.meal import MealCreate
+from app.services import ai_call_log_service as log_service
 from app.services import day_card, favorites
 from app.services import inbound_message_service as im_service
-from app.services import meal_items
+from app.services import meal_items, model_selection
 from app.services import telegram as tg
+from app.services.product_lookup_service import ResolutionResult
 from app.services.stats_screen import _meal_name, _sum
+from tests.test_capture_router import photo, send, text
 
 NOW = datetime(2026, 10, 26, 13, 20, tzinfo=UTC)
 DELAY = "celery_app.tasks.personal_food.embed_and_save_personal_food.delay"
@@ -45,7 +45,10 @@ def Session(monkeypatch):
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr(tg, "SessionLocal", factory)
     monkeypatch.setattr(im_service, "SessionLocal", factory)
+    monkeypatch.setattr(log_service, "SessionLocal", factory)
+    monkeypatch.setattr(model_selection, "SessionLocal", factory)
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "42")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "123:fake")
     yield factory
     engine.dispose()
 
@@ -70,28 +73,19 @@ def delay():
         yield mock
 
 
-def _update(text):
-    message = SimpleNamespace(photo=None, text=text, caption=None, replies=[])
-
-    async def reply_text(body, *args, **kwargs):
-        message.replies.append(body)
-
-    message.reply_text = reply_text
-    update = SimpleNamespace(
-        message=message,
-        effective_user=SimpleNamespace(id=42, username="owner"),
-    )
-    return update, message
-
-
 def _confirm(draft):
-    """The draft saved by the real handler, with a typed «Да»."""
-    update, message = _update("Да")
-    context = SimpleNamespace(
-        user_data={"current_meal": draft, "meal_time": NOW, "meal_type": "Обед"}
+    """A photo through the real application, read as this draft."""
+    result = ResolutionResult(
+        nutrition=draft["nutrition"],
+        source=draft.get("resolution_source"),
+        confidence_tier="low",
+        description=None,
+        portion_grams=None,
+        signals=draft.get("resolution_signals"),
     )
-    asyncio.run(tg.confirm_meal(update, context))
-    assert "✅ Записано" in message.replies[-1]
+    with patch.object(tg, "resolve_meal_nutrition", AsyncMock(return_value=result)):
+        wire = send(photo())
+    assert wire.seen()[-1].startswith("Записано")
 
 
 def _draft(foods, calories=500.0, **fields):
@@ -224,7 +218,7 @@ def test_one_food_gives_items_and_its_numbers(Session, db, owner, delay):
     (item,) = crud_meal_item.live(db, meal.id)
     assert meal.numbers_basis == "items"
     assert meal.plate_totals is None
-    assert meal.meal_type == "Обед"
+    assert meal.meal_type is None  # the labels went, section 3.2
     assert item.name == "рис"
     assert item.base_calories == 500.0
     assert item.base_proteins == 20.0
@@ -238,19 +232,6 @@ def test_one_food_gives_items_and_its_numbers(Session, db, owner, delay):
     assert item.by_user is False
     assert item.origin_meal_id == meal.id
     assert item.personal_food_id == item.original_food_id == _dishes(db)[0].id
-
-
-def test_a_weight_typed_on_the_draft_is_kept_as_the_persons(Session, db, owner, delay):
-    draft = _draft(["рис"], calories=300.0, grams_by_user=True)
-    draft["nutrition"]["portion"] = "150г"
-    draft["nutrition"]["portion_grams"] = 150.0
-    _confirm(draft)
-
-    (item,) = crud_meal_item.live(db, _only_meal(db).id)
-    assert item.grams == 150.0
-    assert item.base_grams == 150.0
-    assert item.base_calories == 300.0
-    assert item.by_user is True
 
 
 def test_nothing_read_gives_none_and_null_totals(Session, db, owner, delay):
@@ -1142,27 +1123,12 @@ def test_numbers_typed_by_a_person_survive_upsert(db, owner):
 # --- the free exact-name path, through the real handler ---------------------
 
 
-def _meal_text_handler():
-    """The callback the running bot calls for text at the meal step."""
-    application = tg.create_bot_application()
-    handlers = [h for group in application.handlers.values() for h in group]
-    (conv,) = [h for h in handlers if isinstance(h, ConversationHandler)]
-    (handler,) = [
-        h
-        for h in conv.states[tg.ADDING_MEAL]
-        if isinstance(h, MessageHandler) and h.callback is tg.process_meal_input
-    ]
-    return handler.callback
-
-
-def _send(text, **user_data):
-    """Text at the meal step; the model call is a fake that must stay untouched."""
-    update, message = _update(text)
-    context = SimpleNamespace(user_data={"meal_time": NOW, **user_data})
-    analysis = AsyncMock(return_value=tg.CONFIRMING_MEAL)
-    with patch.object(tg, "_run_meal_analysis", analysis):
-        state = asyncio.run(_meal_text_handler()(update, context))
-    return state, message, analysis, context
+def _send(body):
+    """Text through the real application; the model is a fake that must stay untouched."""
+    analysis = AsyncMock(return_value={"foods": [body]})
+    with patch.object(tg, "_analyze_and_parse", analysis):
+        wire = send(text(body))
+    return wire.seen()[-1].splitlines()[0], analysis
 
 
 def test_exact_name_is_written_at_once_with_no_model(Session, db, owner):
@@ -1175,15 +1141,12 @@ def test_exact_name_is_written_at_once_with_no_model(Session, db, owner):
         usual_grams=200.0,
     )
 
-    state, message, analysis, context = _send("омлет", meal_type="Завтрак")
+    line, analysis = _send("омлет")
 
     analysis.assert_not_called()
-    assert state == tg.CHOOSING_ACTION
-    assert message.replies == ["Записано: Омлет."]
-    assert context.user_data == {}
+    assert line == "Записано: Омлет."
     meal = _only_meal(db)
     (item,) = crud_meal_item.live(db, meal.id)
-    assert meal.meal_type == "Завтрак"
     assert meal.numbers_basis == "items"
     assert meal.calories == 300.0
     assert meal.proteins == 25.0
@@ -1201,10 +1164,10 @@ def test_every_comma_part_matching_is_one_meal_of_dishes(Session, db, owner):
     _dish(db, owner, "кофе", per_100g_calories=Decimal("2.00"), usual_grams=200.0)
     _dish(db, owner, "печенье", per_100g_calories=Decimal("450.00"), usual_grams=20.0)
 
-    _state, message, analysis, _context = _send("Кофе, печенье")
+    line, analysis = _send("Кофе, печенье")
 
     analysis.assert_not_called()
-    assert message.replies == ["Записано: кофе и печенье."]
+    assert line == "Записано: кофе и печенье."
     meal = _only_meal(db)
     assert meal.numbers_basis == "items"
     assert meal.calories == 94.0
@@ -1215,28 +1178,29 @@ def test_three_names_read_as_a_list(Session, db, owner):
     for name in ("кофе", "печенье", "сыр"):
         _dish(db, owner, name)
 
-    _state, message, _analysis, _context = _send("кофе, печенье, сыр")
+    line, _analysis = _send("кофе, печенье, сыр")
 
-    assert message.replies == ["Записано: кофе, печенье и сыр."]
+    assert line == "Записано: кофе, печенье и сыр."
 
 
 def test_whole_text_with_a_comma_can_be_a_dish(Session, db, owner):
     _dish(db, owner, "рис, жареный")
 
-    _state, message, analysis, _context = _send("рис, жареный")
+    line, analysis = _send("рис, жареный")
 
     analysis.assert_not_called()
-    assert message.replies == ["Записано: рис, жареный."]
+    assert line == "Записано: рис, жареный."
 
 
-@pytest.mark.parametrize("text", ["омлет с сыром", "омлет, сыр", "омлет,", "2 омлета"])
-def test_not_an_exact_match_goes_to_the_model(Session, db, owner, text):
+@pytest.mark.parametrize("body", ["омлет с сыром", "омлет, сыр", "омлет,", "2 омлета"])
+def test_not_an_exact_match_goes_to_the_model(Session, db, owner, body):
     _dish(db, owner, "омлет")
 
-    _state, _message, analysis, _context = _send(text)
+    _line, analysis = _send(body)
 
     analysis.assert_called_once()
-    assert db.scalars(select(Meal)).all() == []
+    # The model was asked, about a meal born before it; no dish was linked by name.
+    assert _only_meal(db).resolution_source != "exact_name"
 
 
 def test_another_persons_dish_is_not_a_match(Session, db, owner):
@@ -1245,7 +1209,7 @@ def test_another_persons_dish_is_not_a_match(Session, db, owner):
     db.commit()
     _dish(db, stranger, "омлет")
 
-    _state, _message, analysis, _context = _send("омлет")
+    _line, analysis = _send("омлет")
 
     analysis.assert_called_once()
 
@@ -1293,10 +1257,10 @@ def test_a_deleted_meal_does_not_feed_the_next_saving_by_name(Session, db, owner
     assert meal_items.dish_portion(db, dish).numbers["calories"] == 900.0  # positive
     meal_items.delete_meal(db, owner.id, _send_first.id)
 
-    _state, message, analysis, _context = _send("сырники")
+    line, analysis = _send("сырники")
 
     analysis.assert_not_called()
-    assert message.replies == ["Записано: сырники."]
+    assert line == "Записано: сырники."
     meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
     assert meal.calories is None and meal.numbers_basis == "none"
 
@@ -1328,10 +1292,10 @@ def test_a_plate_row_is_never_served_as_numbers(Session, db, owner):
     )
     assert meal_items.dish_portion(db, row).numbers is None
 
-    _state, message, analysis, _context = _send("рис")
+    line, analysis = _send("рис")
 
     analysis.assert_not_called()
-    assert message.replies == ["Записано: рис."]
+    assert line == "Записано: рис."
     meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
     (item,) = crud_meal_item.live(db, meal.id)
     assert item.numbers_source == "none"

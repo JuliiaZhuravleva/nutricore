@@ -1,6 +1,17 @@
 import datetime
 
-from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    false,
+)
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -66,6 +77,16 @@ class Meal(Base, BaseClass):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     # +1 on any change. A late model result applies only if ``rev`` still matches.
     rev = Column(Integer, nullable=False, default=0, server_default="0")
+    # "pending" | "read" | "failed" | "no_food" | "no_speech". A meal is in the day
+    # from its first moment, read or not.
+    reading_status = Column(
+        String, nullable=False, default="read", server_default="read"
+    )
+    read_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    # Not in any reader until the person finishes it.
+    is_draft = Column(Boolean, nullable=False, default=False, server_default=false())
+    # The meal this one was born as and then joined into; with ``deleted_at`` set.
+    merged_into_id = Column(Integer, ForeignKey("meals.id"), nullable=True)
     created_at = Column(
         DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC)
     )

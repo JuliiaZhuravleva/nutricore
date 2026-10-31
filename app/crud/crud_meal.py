@@ -20,7 +20,12 @@ class CRUDMeal:
         return db.execute(stmt).scalar_one_or_none()
 
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> list[Meal]:
-        stmt = select(Meal).where(Meal.deleted_at.is_(None)).offset(skip).limit(limit)
+        stmt = (
+            select(Meal)
+            .where(Meal.deleted_at.is_(None), Meal.is_draft.is_(False))
+            .offset(skip)
+            .limit(limit)
+        )
         return db.scalars(stmt).all()
 
     def get_for_export(
@@ -38,7 +43,7 @@ class CRUDMeal:
         ``updated_since`` asks what changed, so it is the one pull that holds deleted
         meals: their ``deleted_at`` is how a consumer holding the row learns of it.
         """
-        stmt = select(Meal).order_by(Meal.meal_time)
+        stmt = select(Meal).where(Meal.is_draft.is_(False)).order_by(Meal.meal_time)
         if updated_since is None:
             stmt = stmt.where(Meal.deleted_at.is_(None))
         else:
@@ -50,7 +55,11 @@ class CRUDMeal:
     def get_user_meals(self, db: Session, user_id: int) -> list[Meal]:
         stmt = (
             select(Meal)
-            .where(Meal.user_id == user_id, Meal.deleted_at.is_(None))
+            .where(
+                Meal.user_id == user_id,
+                Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(False),
+            )
             .order_by(Meal.meal_time.desc())
         )
         return list(db.scalars(stmt).all())
@@ -66,6 +75,7 @@ class CRUDMeal:
                 Meal.meal_time >= start,
                 Meal.meal_time < end,
                 Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(False),
             )
             .order_by(Meal.meal_time)
         )

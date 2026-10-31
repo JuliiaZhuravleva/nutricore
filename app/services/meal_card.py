@@ -893,23 +893,25 @@ def _replace(
 # --- verbs ------------------------------------------------------------------
 
 
+def line_markup(db, meal: Meal) -> InlineKeyboardMarkup:
+    """Under the record line: the fix goes straight to the dish when there is one."""
+    items = crud_meal_item.live(db, meal.id)
+    fix = f"ml:i:{items[0].id}:r" if len(items) == 1 else f"ml:o:{meal.id}:r"
+    return InlineKeyboardMarkup(
+        [
+            [
+                _button("✏️ Исправить", fix),
+                _button("🕐 Время", f"ml:t:{meal.id}:r"),
+            ]
+        ]
+    )
+
+
 def _v_line(t: _Tap, data: str, mid: str) -> Screen:
     meal = _own_meal(t, int(mid), data)
-    items = crud_meal_item.live(t.db, meal.id)
     what = _what(t.db, meal)
     text = f"Записано: {what}." if what else "Записано."
-    fix = f"ml:i:{items[0].id}:r" if len(items) == 1 else f"ml:o:{meal.id}:r"
-    return Screen(
-        text,
-        InlineKeyboardMarkup(
-            [
-                [
-                    _button("✏️ Исправить", fix),
-                    _button("🕐 Время", f"ml:t:{meal.id}:r"),
-                ]
-            ]
-        ),
-    )
+    return Screen(text, line_markup(t.db, meal))
 
 
 def _v_open(t: _Tap, data: str, mid: str, back: str) -> Screen:

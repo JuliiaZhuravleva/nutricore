@@ -1,27 +1,20 @@
 """Integration tests for the barcode → Open Food Facts pipeline (A7).
 
-These tests exercise the FULL stack from ``process_meal_input`` / ``reprocess``
-through the pluggable pipeline to the Telegram reply — all with mocked I/O:
+These tests run the real stack with mocked I/O, from a photo sent through the real
+application, or from /reprocess, through the pluggable pipeline to the stored meal:
 no real OpenAI calls, no real HTTP calls to OFF, no real database.
 
-Coverage matrix (A7 spec):
-  ✓ barcode→OFF lookup (mocked EAN fixtures) — end-to-end from process_meal_input
+  ✓ barcode→OFF lookup (mocked EAN fixtures), end to end
   ✓ cache hit path (off_from_cache=True in resolution_signals)
   ✓ graceful fallback to vision when barcode not found in OFF
-  ✓ chosen-path + signals recording (resolution_source + resolution_signals on draft)
-  ✓ confirm_meal persists resolution_source + resolution_signals to DB
-  ✓ auto-trigger: barcode found → CONFIRMING_MEAL immediately (no disambiguation)
-  ✓ gram-basis display when portion estimate available (scaled "150г" in reply)
-  ✓ per-100g warning when no vision portion estimate
+  ✓ chosen-path + signals recording (resolution_source + resolution_signals on the row)
+  ✓ numbers scaled to the portion read; no portion read still makes a meal
   ✓ /reprocess image path through pipeline (barcode→OFF wins)
   ✓ /reprocess image vision fallback (no barcode → vision result used)
-  ✓ opt-in gating: existing photo flow still works when barcode=None
 """
 
 import asyncio
-import base64
 import json
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -36,8 +29,10 @@ from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
 from app.services import ai_call_log_service as ai_log
 from app.services import inbound_message_service as im_service
+from app.services import model_selection
 from app.services import telegram as tg
 from app.services.open_food_facts_service import OFFLookupResult
+from tests.test_capture_router import photo, send
 
 # ---------------------------------------------------------------------------
 # Test data
@@ -120,21 +115,8 @@ def _make_update(*, photo=None, text=None, caption=None):
     return update, message
 
 
-def _make_photo_update():
-    return _make_update(photo=[SimpleNamespace(file_id="PHOTO_FILE_ID")])
-
-
 def _make_text_update(text):
     return _make_update(text=text)
-
-
-def _make_photo_context():
-    file = SimpleNamespace(
-        download_as_bytearray=AsyncMock(return_value=bytearray(_IMAGE_BYTES)),
-        file_path="https://api.telegram.org/file/bot<TOKEN>/photos/x.jpg",
-    )
-    bot = SimpleNamespace(get_file=AsyncMock(return_value=file))
-    return SimpleNamespace(bot=bot, user_data={})
 
 
 def _make_reprocess_context(image_bytes=None):
@@ -157,6 +139,8 @@ def _make_reprocess_context(image_bytes=None):
 @pytest.fixture(autouse=True)
 def _owner_is_admin(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "42")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "123:fake")
+    monkeypatch.setattr(tg, "_schedule_personal_food_save", lambda **_: None)
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +155,7 @@ def patched_db(monkeypatch):
     monkeypatch.setattr(ai_log, "SessionLocal", Session)
     monkeypatch.setattr(im_service, "SessionLocal", Session)
     monkeypatch.setattr(pls_module, "SessionLocal", Session)
+    monkeypatch.setattr(model_selection, "SessionLocal", Session)
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
@@ -250,6 +235,17 @@ def _default_no_label_ocr(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_no_saved_food(monkeypatch):
+    """SavedFoodRAGStrategy asks the real embeddings client once the person has a
+    row, and the router gives everyone who writes one.  It is tested directly in
+    test_product_lookup_service.py.
+    """
+    from app.services.product_lookup_service import SavedFoodRAGStrategy
+
+    monkeypatch.setattr(SavedFoodRAGStrategy, "resolve", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
 def _default_no_web_search(monkeypatch):
     """A9 NameWebSearchStrategy makes a Responses-API call whenever the pipeline
     reaches it.  Stub the entire resolve() so no real call is made and no
@@ -262,45 +258,30 @@ def _default_no_web_search(monkeypatch):
 
 
 # ===========================================================================
-# 1. End-to-end: barcode→OFF hit → badge + EAN in reply
+# 1. End-to-end: a photo through the real application and the real pipeline
 # ===========================================================================
 
 
-def test_barcode_photo_flow_shows_badge_and_ean(monkeypatch):
-    """process_meal_input → barcode found + OFF hit → badge + EAN in reply."""
+def _photo_meal(patched_db) -> Meal:
+    """One photo through the application; the meal it left, read back from the row."""
+    wire = send(photo())
+    assert wire.seen()[-1].startswith("Записано"), wire.seen()
+    with sessionmaker(bind=patched_db)() as db:
+        (meal,) = db.query(Meal).all()
+        db.expunge(meal)
+    return meal
+
+
+def test_barcode_photo_keeps_the_product_and_how_it_was_found(patched_db, monkeypatch):
     _patch_barcode(monkeypatch, _EAN)
     _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
     _patch_off(monkeypatch, _OFF_RESULT)
 
-    update, message = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    state = asyncio.run(tg.process_meal_input(update, context))
-
-    assert state == tg.CONFIRMING_MEAL, f"Expected CONFIRMING_MEAL, got {state}"
-    reply = message.replies[0]
-    # Badge tells the user the source of the data
-    assert "штрих-коду" in reply, "Source badge missing from reply"
-    # EAN is surfaced so the user can spot a wrong read
-    assert _EAN in reply, "EAN not shown in reply"
-    # Product name is shown
-    assert "Pringles" in reply, "Product name missing from reply"
-
-
-def test_barcode_photo_flow_draft_has_resolution_metadata(monkeypatch):
-    """process_meal_input → barcode path stores resolution_source in draft."""
-    _patch_barcode(monkeypatch, _EAN)
-    _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
-    _patch_off(monkeypatch, _OFF_RESULT)
-
-    update, _ = _make_photo_update()
-    context = _make_photo_context()
-
-    asyncio.run(tg.process_meal_input(update, context))
-
-    meal = context.user_data["current_meal"]
-    assert meal["resolution_source"] == "barcode_off"
-    signals = meal["resolution_signals"]
+    assert meal.resolution_source == "barcode_off"
+    assert "Pringles" in meal.description
+    signals = meal.resolution_signals
     assert signals["barcode_raw"] == _EAN
     assert signals["strategy_chosen"] == "barcode_off"
     assert signals["confidence_tier"] == "high"
@@ -311,19 +292,14 @@ def test_barcode_photo_flow_draft_has_resolution_metadata(monkeypatch):
 # ===========================================================================
 
 
-def test_barcode_photo_flow_cache_hit_reflected_in_signals(monkeypatch):
-    """When OFF returns from_cache=True, resolution_signals records the cache hit."""
+def test_barcode_photo_cache_hit_reflected_in_signals(patched_db, monkeypatch):
     _patch_barcode(monkeypatch, _EAN)
     _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
     _patch_off(monkeypatch, _OFF_RESULT_CACHED)
 
-    update, _ = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    asyncio.run(tg.process_meal_input(update, context))
-
-    signals = context.user_data["current_meal"]["resolution_signals"]
-    assert signals["off_from_cache"] is True, "Cache hit not reflected in signals"
+    assert meal.resolution_signals["off_from_cache"] is True
 
 
 # ===========================================================================
@@ -331,175 +307,55 @@ def test_barcode_photo_flow_cache_hit_reflected_in_signals(monkeypatch):
 # ===========================================================================
 
 
-def test_barcode_found_but_off_miss_falls_back_to_vision(monkeypatch):
-    """Barcode read, but OFF has no record → vision fallback + low badge."""
+def test_barcode_found_but_off_miss_falls_back_to_vision(patched_db, monkeypatch):
     _patch_barcode(monkeypatch, "9999999999999")  # unknown barcode
     _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
     _patch_off(monkeypatch, None)  # OFF returns not-found
 
-    update, message = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    state = asyncio.run(tg.process_meal_input(update, context))
-
-    assert state == tg.CONFIRMING_MEAL
-    meal = context.user_data["current_meal"]
-    # Falls back to vision when OFF misses
-    assert meal["resolution_source"] == "vision"
-    # Low-confidence badge ("оценка по фото") shown
-    reply = message.replies[0]
-    assert "фото" in reply, "Vision fallback badge missing"
-    # Both strategies appear in the tried list
-    signals = meal["resolution_signals"]
-    assert "barcode_off" in signals["strategy_tried"]
-    assert "vision" in signals["strategy_tried"]
+    assert meal.resolution_source == "vision"
+    tried = meal.resolution_signals["strategy_tried"]
+    assert "barcode_off" in tried
+    assert "vision" in tried
 
 
-def test_no_barcode_falls_back_to_vision(monkeypatch):
-    """When no barcode in the image, pipeline skips BarcodeOFFStrategy → vision."""
-    _patch_barcode(monkeypatch, None)  # no barcode
+def test_no_barcode_falls_back_to_vision(patched_db, monkeypatch):
+    """The vision-only path coexists with the barcoded one."""
+    _patch_barcode(monkeypatch, None)
     _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
 
-    update, message = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    state = asyncio.run(tg.process_meal_input(update, context))
-
-    assert state == tg.CONFIRMING_MEAL
-    assert context.user_data["current_meal"]["resolution_source"] == "vision"
-    assert "фото" in message.replies[0]
+    assert meal.resolution_source == "vision"
+    assert meal.calories == _VISION_NUTRITION_WITH_PORTION["calories"]
 
 
 # ===========================================================================
-# 4. Gram-basis display and portion scaling
+# 4. Portion scaling, and the case with no portion to scale to
 # ===========================================================================
 
 
-def test_barcode_reply_shows_scaled_gram_basis(monkeypatch):
-    """When vision gives a portion estimate, the reply shows the scaled gram basis."""
+def test_barcode_numbers_are_scaled_to_the_portion_read(patched_db, monkeypatch):
     _patch_barcode(monkeypatch, _EAN)
     _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)  # 150g portion
-    _patch_off(monkeypatch, _OFF_RESULT)
+    _patch_off(monkeypatch, _OFF_RESULT)  # 520 kcal per 100 g
 
-    update, message = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    asyncio.run(tg.process_meal_input(update, context))
-
-    reply = message.replies[0]
-    # The portion field should show the scaled value (150г), not per-100g
-    assert "150г" in reply, "Scaled portion (150г) missing from reply"
-    # No per-100g warning when grams are known
-    assert "не определена" not in reply, "Unexpected per-100g warning when grams known"
+    assert meal.calories == 780.0
+    assert meal.nutrients["portion"] == "150г"
 
 
-def test_barcode_reply_warns_per_100g_when_no_portion_estimate(monkeypatch):
-    """When vision can't estimate grams, reply warns data is per-100g."""
+def test_barcode_with_no_portion_read_still_makes_a_meal(patched_db, monkeypatch):
     _patch_barcode(monkeypatch, _EAN)
     _patch_vision(monkeypatch, _VISION_NUTRITION_NO_PORTION)  # no grams extractable
     _patch_off(monkeypatch, _OFF_RESULT)
 
-    update, message = _make_photo_update()
-    context = _make_photo_context()
+    meal = _photo_meal(patched_db)
 
-    asyncio.run(tg.process_meal_input(update, context))
-
-    reply = message.replies[0]
-    assert "не определена" in reply, "Per-100g warning missing from reply"
-    # The per-100g numbers themselves wait behind «🔢 Цифры» (stage 5, G5-R01).
-    assert "поправь вес кнопкой" in reply, "the fix is not offered"
-
-
-# ===========================================================================
-# 5. Auto-trigger: no disambiguation needed when pipeline is confident
-# ===========================================================================
-
-
-def test_auto_trigger_goes_directly_to_confirming_meal(monkeypatch):
-    """Auto-trigger: barcode detected → pipeline resolves immediately.
-
-    The system must NOT enter DISAMBIGUATING_PRODUCT when the barcode→OFF path
-    returns a confident result.  The user receives the reply in the same turn —
-    no button press needed.
-    """
-    _patch_barcode(monkeypatch, _EAN)
-    _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
-    _patch_off(monkeypatch, _OFF_RESULT)
-
-    update, _ = _make_photo_update()
-    context = _make_photo_context()
-
-    state = asyncio.run(tg.process_meal_input(update, context))
-
-    # DISAMBIGUATING_PRODUCT = 7 (defined in telegram.py); must NOT be returned.
-    assert state == tg.CONFIRMING_MEAL, (
-        f"Expected CONFIRMING_MEAL ({tg.CONFIRMING_MEAL}), got {state} "
-        f"(DISAMBIGUATING_PRODUCT={tg.DISAMBIGUATING_PRODUCT})"
-    )
-
-
-# ===========================================================================
-# 6. confirm_meal persists resolution columns to the DB
-# ===========================================================================
-
-
-def test_confirm_meal_persists_resolution_source(patched_db):
-    """confirm_meal writes resolution_source + resolution_signals to meals table."""
-    resolution_signals = {
-        "barcode_raw": _EAN,
-        "strategy_chosen": "barcode_off",
-        "confidence_tier": "high",
-    }
-    update, message = _make_text_update("Да")
-    context = SimpleNamespace(
-        user_data={
-            "current_meal": {
-                "nutrition": _VISION_NUTRITION_WITH_PORTION,
-                "description": "Чипсы Pringles Original",
-                "photos": ["PHOTO_FILE_ID"],
-                "resolution_source": "barcode_off",
-                "resolution_signals": resolution_signals,
-            },
-            "meal_time": datetime(2026, 7, 7, 12, 0, tzinfo=UTC),
-        }
-    )
-
-    state = asyncio.run(tg.confirm_meal(update, context))
-
-    assert state == tg.CHOOSING_ACTION
-    assert "✅ Записано" in message.replies[-1]
-
-    with sessionmaker(bind=patched_db)() as db:
-        meals = db.query(Meal).all()
-    assert len(meals) == 1
-    saved = meals[0]
-    assert saved.resolution_source == "barcode_off"
-    assert saved.resolution_signals is not None
-    assert saved.resolution_signals["barcode_raw"] == _EAN
-    assert saved.resolution_signals["strategy_chosen"] == "barcode_off"
-
-
-def test_confirm_meal_vision_path_resolution_source_null(patched_db):
-    """Vision-path meal has resolution_source=None (no barcode used)."""
-    update, _ = _make_text_update("Да")
-    context = SimpleNamespace(
-        user_data={
-            "current_meal": {
-                "nutrition": _VISION_NUTRITION_WITH_PORTION,
-                "description": "chips",
-                "photos": ["PHOTO_FILE_ID"],
-                # No resolution_source key → legacy / vision-only
-            },
-            "meal_time": datetime(2026, 7, 7, 12, 0, tzinfo=UTC),
-        }
-    )
-
-    asyncio.run(tg.confirm_meal(update, context))
-
-    with sessionmaker(bind=patched_db)() as db:
-        meals = db.query(Meal).all()
-    assert meals[0].resolution_source is None
-    assert meals[0].resolution_signals is None
+    assert meal.resolution_source == "barcode_off"
+    assert meal.reading_status == "read"
 
 
 # ===========================================================================
@@ -581,26 +437,3 @@ def test_reprocess_image_off_miss_still_analyzes_via_vision(patched_db, monkeypa
 # ===========================================================================
 # 8. Opt-in gating: existing photo flow still works when barcode=None
 # ===========================================================================
-
-
-def test_existing_photo_flow_unaffected_when_no_barcode(monkeypatch):
-    """The vision-only path (no barcode) is unaffected by the new pipeline code.
-
-    This is the regression guard for A7: barcoded and non-barcoded photo flows
-    must coexist without breaking the existing vision-only tests.
-    """
-    _patch_barcode(monkeypatch, None)  # simulate the barcode_mock fixture behaviour
-    _patch_vision(monkeypatch, _VISION_NUTRITION_WITH_PORTION)
-
-    update, message = _make_photo_update()
-    context = _make_photo_context()
-
-    state = asyncio.run(tg.process_meal_input(update, context))
-
-    assert state == tg.CONFIRMING_MEAL
-    meal = context.user_data["current_meal"]
-    assert meal["nutrition"] == _VISION_NUTRITION_WITH_PORTION
-    # No OFF badge — vision path shows the photo badge
-    assert "фото" in message.replies[0]
-    # No resolution data from barcode pipeline
-    assert meal["resolution_source"] == "vision"

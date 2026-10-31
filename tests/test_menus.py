@@ -811,31 +811,6 @@ def test_every_menu_button_has_a_handler_everywhere_the_menu_shows(conv):
             assert _first_match(where, text) is getattr(tg, _MENU[text]), text
 
 
-@pytest.mark.parametrize(
-    "text, where, expected",
-    [
-        ("72,5", "entry", "process_weight"),
-        ("72,5", "menu", "process_weight"),
-        ("72,5", "weight", "process_weight"),
-        ("гречка", "weight", "process_weight"),  # gets the hint
-        # Free text is not a weight. The typed tick looks at it and stays silent
-        # unless it is exactly a routine (tests/test_routines.py).
-        ("гречка", "entry", "typed_routine_tick"),
-        ("гречка", "menu", "typed_routine_tick"),
-        ("150 г", "menu", "typed_routine_tick"),
-    ],
-)
-def test_typed_text_routing(conv, text, where, expected):
-    conv, _handlers = conv
-    handlers = {
-        "entry": conv.entry_points,
-        "menu": conv.states[tg.CHOOSING_ACTION],
-        "weight": conv.states[tg.ENTERING_WEIGHT],
-    }[where]
-    found = _first_match(handlers, text)
-    assert found is (getattr(tg, expected) if expected else None)
-
-
 def test_inline_taps_are_registered_outside_the_conversation(conv):
     from telegram.ext import CallbackQueryHandler
 
@@ -859,65 +834,6 @@ def test_week_title_spans_a_month_boundary():
     assert st.week_screen(days, UTC).text.startswith(
         "<b>📊 7 дней, 29 октября – 4 ноября</b>"
     )
-
-
-def _photo_update(caption=None):
-    from telegram import Chat, Message, PhotoSize, Update
-    from telegram import User as TgUser
-
-    message = Message(
-        message_id=1,
-        date=NOW,
-        chat=Chat(id=42, type="private"),
-        from_user=TgUser(id=42, first_name="o", is_bot=False),
-        photo=[PhotoSize("f", "u", 90, 90)],
-        caption=caption,
-    )
-    return Update(update_id=1, message=message)
-
-
-def _first_match_update(handlers, update):
-    for h in handlers:
-        if getattr(h, "filters", None) is not None and h.check_update(update):
-            return h.callback
-    return None
-
-
-@pytest.mark.parametrize("caption", [None, "Вот такие 4 конфеты сегодня съела"])
-@pytest.mark.parametrize("where", ["entry", "menu", "weight", "time"])
-def test_a_photo_outside_the_meal_steps_is_a_meal(conv, where, caption):
-    conv, _handlers = conv
-    handlers = {
-        "entry": conv.entry_points,
-        "menu": conv.states[tg.CHOOSING_ACTION],
-        "weight": conv.states[tg.ENTERING_WEIGHT],
-        "time": conv.states[tg.ADDING_MEAL_TIME],
-    }[where]
-    assert _first_match_update(handlers, _photo_update(caption)) is (
-        tg.quick_meal_photo
-    )
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Отмена", "cancel"),  # not food: no paid analysis of the word
-        ("📊 Статистика", "show_statistics"),
-        ("🍽 Добавить приём пищи", "add_meal"),
-        ("🍽 Добавить прием пищи", "add_meal"),  # a keyboard sent before the fix
-        ("гречка 200 г", "process_meal_input"),  # no finding: food still goes on
-    ],
-)
-def test_meal_step_takes_cancel_and_menu_before_the_analysis(conv, text, expected):
-    conv, _handlers = conv
-    found = _first_match(conv.states[tg.ADDING_MEAL], text)
-    assert found is getattr(tg, expected)
-
-
-def test_meal_step_photo_still_goes_to_the_analysis(conv):
-    conv, _handlers = conv
-    found = _first_match_update(conv.states[tg.ADDING_MEAL], _photo_update("обед"))
-    assert found is tg.process_meal_input
 
 
 # --- «🔢 Цифры» (stage 5, G5-R01/R02) ----------------------------------------

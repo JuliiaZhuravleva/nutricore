@@ -49,14 +49,21 @@ def _foods(row) -> list:
 
 def pending(db) -> list:
     """Live favorites and meals without confirmed groups that have something to tag.
-    A meal with nothing read names no food, and a call about it pays for nothing."""
+    A meal with nothing read names no food, and a call about it pays for nothing. A
+    draft, or a meal still being read, waits: its read brings the groups itself."""
     favorites = db.execute(
         select(FavoriteMeal)
         .where(FavoriteMeal.removed_at.is_(None))
         .order_by(FavoriteMeal.id)
     ).scalars()
     meals = db.execute(
-        select(Meal).where(Meal.deleted_at.is_(None)).order_by(Meal.id)
+        select(Meal)
+        .where(
+            Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
+            Meal.reading_status == "read",
+        )
+        .order_by(Meal.id)
     ).scalars()
     rows = [
         favorite

@@ -3,6 +3,7 @@ import base64
 import logging
 import re
 import warnings
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
@@ -13,6 +14,7 @@ from telegram import (
     InlineKeyboardMarkup,
     LinkPreviewOptions,
     ReplyKeyboardMarkup,
+    ReplyParameters,
     Update,
 )
 from telegram.constants import ParseMode
@@ -31,12 +33,16 @@ from telegram.ext import (
 from telegram.warnings import PTBUserWarning
 
 from app.core.config import settings
-from app.crud.crud_meal import crud_meal
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
-from app.models.user import User
-from app.schemas.meal import MealCreate
-from app.services import ai_errors, custom_emoji, explain_screen, favorites, food_lists
+from app.services import (
+    ai_errors,
+    capture,
+    custom_emoji,
+    explain_screen,
+    favorites,
+    food_lists,
+)
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
     meal_card,
@@ -59,11 +65,9 @@ from app.services.model_selection import (
     persist_task_model,
 )
 from app.services.model_watch import render_status, run_model_watch
-from app.services.numbers import shows_numbers_for
 from app.services.openai_service import ModelUnavailableError, get_openai_service
 from app.services.picture_renderer import PictureRenderer
 from app.services.product_lookup_service import (
-    ResolutionResult,
     _parse_portion_grams,
     has_usable_macros,
     parse_nutrition,
@@ -95,20 +99,19 @@ REPROCESS_BATCH_LIMIT = 20
 CREDIT_ALERT_EVERY_SECONDS = 3600
 _credit_alerted: Dict[str, datetime] = {}
 
+# Reads running at once (section 5.2), and the tasks of them that are running.
+READS_AT_ONCE = 3
+_meal_reads: set = set()
+
 # Conversation states
 (
     CHOOSING_ACTION,
-    ADDING_MEAL,
-    ADDING_MEAL_TIME,
-    ADDING_MEAL_PHOTO,
-    CONFIRMING_MEAL,
     SUBSCRIPTION_INQUIRY,
-    CHOOSING_MODEL,
     DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
     ENTERING_WEIGHT,
     ENTERING_ROUTINE_NAME,
     ENTERING_FOOD_NAME,
-) = range(11)
+) = range(6)
 
 # Keyboard layouts
 subscription_keyboard = ReplyKeyboardMarkup(
@@ -134,72 +137,6 @@ _KEYBOARD_LABEL = re.compile(
     "|❓ О боте|💎 Получить подписку|📱 Связаться с админом|Отмена"
     "|Сейчас|Завтрак|Обед|Ужин|Назад"
 )
-
-time_keyboard = ReplyKeyboardMarkup(
-    [
-        ["Сейчас"],
-        ["Завтрак", "Обед", "Ужин"],
-        ["Назад"],
-    ],
-    resize_keyboard=True,
-)
-
-# The only values meals.meal_type may hold. The keyboard above is the contract,
-# but a Telegram user can type anything instead of pressing a button, and this
-# text is persisted and exported — so an unrecognised answer stores no label
-# rather than becoming one. Keep this in step with the keyboard.
-_MEAL_TYPE_LABELS = ("Завтрак", "Обед", "Ужин")
-
-
-def _meal_type_label(text: str | None) -> str | None:
-    """Canonical meal-of-day label for an answer, or None if it is not one.
-
-    "Сейчас" is not a meal of the day — it means "just now" — so it maps to None,
-    which is what clears a previous answer.
-    """
-    if not text:
-        return None
-    cleaned = text.strip()
-    for label in _MEAL_TYPE_LABELS:
-        if cleaned.casefold() == label.casefold():
-            return label
-    return None
-
-
-# The confirm step answers with inline buttons under the draft (meal_draft.py).
-# Typed replies still work (TD-015): Да saves, Нет discards, a weight rescales,
-# anything else is a correction rather than a silent reject-and-restart. These
-# two are the texts of the former reply keyboard, still accepted when typed.
-CONFIRM_YES = "✅ Да"
-CONFIRM_YES_FAVORITE = "⭐ Да, и в избранное"
-
-# Accepted spellings for the confirm prompt. Matched case-insensitively and with
-# trailing punctuation stripped, so a lowercase ``да`` or a stray ``Нет.`` is not
-# misread as a correction (the TD-015 papercut).
-_CONFIRM_AFFIRM = {"да", "ага", "верно", "yes", "ок", "ok", "👍", "✅", "✅ да"}
-_CONFIRM_REJECT = {"нет", "no", "❌"}
-# «Отмена» drops the meal and goes back to the menu, like the draft's
-# «✖️ Отмена» button; «Нет» asks again (2026-10-28, Julia).
-_CONFIRM_CANCEL = {"отмена", "cancel", "✖️ отмена"}
-
-# Shown when a resolution strategy ERRORED (as opposed to finding nothing): the
-# numbers came from a shallower path than they should have.
-_DEGRADED_LINE = "⚠️ часть путей поиска не сработала — числа могут быть грубее обычного"
-
-
-def _confirm_intent(text: str | None) -> str:
-    """Classify a reply to "Всё верно? (Да/Нет)" as
-    affirm | affirm_favorite | reject | cancel | correction."""
-    norm = (text or "").strip().lower().strip(".!…? ")
-    if norm == CONFIRM_YES_FAVORITE.lower():
-        return "affirm_favorite"
-    if norm in _CONFIRM_AFFIRM:
-        return "affirm"
-    if norm in _CONFIRM_REJECT:
-        return "reject"
-    if norm in _CONFIRM_CANCEL:
-        return "cancel"
-    return "correction"
 
 
 class TelegramService:
@@ -238,20 +175,24 @@ async def check_subscription(telegram_id: int) -> bool:
         db.close()
 
 
+LOCK_TEXT = (
+    "🔒 Эта функция доступна только для пользователей с подпиской.\n\n"
+    "Базовая версия бота позволяет:\n"
+    "• Узнать о возможностях бота\n"
+    "• Связаться с администратором\n"
+    "• Получить подписку\n\n"
+    "Подробнее — кнопка «💎 Получить подписку»."
+)
+
+
 def subscription_required(func):
     """Decorator to check subscription before executing function"""
 
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_subscription(update.effective_user.id):
-            text = (
-                "🔒 Эта функция доступна только для пользователей с подпиской.\n\n"
-                "Базовая версия бота позволяет:\n"
-                "• Узнать о возможностях бота\n"
-                "• Связаться с администратором\n"
-                "• Получить подписку\n\n"
-                "Подробнее — кнопка «💎 Получить подписку»."
+            await update.message.reply_text(
+                LOCK_TEXT, reply_markup=subscription_keyboard
             )
-            await update.message.reply_text(text, reply_markup=subscription_keyboard)
             return SUBSCRIPTION_INQUIRY
         return await func(update, context)
 
@@ -276,87 +217,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_ACTION
 
 
-async def _ask_meal_time(reply, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Start clean: drop any leftover draft from an abandoned previous entry so a
-    # new meal never inherits stale nutrition/photos/time.
-    context.user_data["current_meal"] = {}
-    context.user_data.pop("meal_time", None)
-    # Also drop the label: it outlived an abandoned entry and would have been
-    # attached to the NEXT meal (which may well be a different one).
-    context.user_data.pop("meal_type", None)
-    await reply("Когда был приём пищи?", reply_markup=time_keyboard)
-    return ADDING_MEAL_TIME
+def _new_meal_hint() -> dict:
+    """M9a: no state, no steps, the next thing sent is the meal."""
+    favorite = InlineKeyboardButton("⭐ Избранное", callback_data="fav:p:0")
+    return {
+        "text": capture.M9A_NEW_MEAL,
+        "parse_mode": ParseMode.HTML,
+        "reply_markup": InlineKeyboardMarkup([[favorite]]),
+    }
 
 
 @subscription_required
 async def add_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start the meal addition process."""
-    return await _ask_meal_time(update.message.reply_text, context)
+    """«🍽 Добавить приём пищи» in the menu."""
+    await update.message.reply_text(**_new_meal_hint())
+    return CHOOSING_ACTION
 
 
 async def add_meal_from_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """«🍽 Добавить приём пищи» on an empty day card: the menu button's flow. The
-    card stays as it is, and the question comes as a new message: a reply keyboard
-    cannot arrive on an edit."""
+    """The same on an empty day card. The card stays as it is."""
     query = update.callback_query
     if not await check_subscription(update.effective_user.id):
         await query.answer("🔒 Статистика доступна с подпиской", show_alert=True)
         return None
     await query.answer()
-    return await _ask_meal_time(update.effective_chat.send_message, context)
-
-
-@subscription_required
-async def process_meal_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process the meal time and ask for the meal description."""
-    text = update.message.text
-
-    if text == "Назад":
-        await update.message.reply_text(
-            "Что делаем?",
-            reply_markup=main_keyboard,
-        )
-        return CHOOSING_ACTION
-
-    # Store the meal time in context.
-    #
-    # Both branches record meal_time as NOW on purpose. "Завтрак" is a label, not
-    # a clock reading: deriving 08:00 from it would invent a timestamp the user
-    # never gave, and they may well be logging it at 16:00. What they DID tell us
-    # is the label, and that is what gets stored (meals.meal_type).
-    #
-    # This handler is AUTHORITATIVE for both keys: it overwrites meal_type on
-    # every answer, including clearing it for "Сейчас". Clearing it only in
-    # add_meal covered one of the two ways back to this step — the bot's own
-    # retry ("Нет" → "Когда был приём пищи?") re-enters here directly, so a
-    # declined label survived and was written to the next meal.
-    context.user_data["meal_time"] = datetime.now(UTC)
-    label = _meal_type_label(text)
-    if label is None:
-        context.user_data.pop("meal_type", None)
-    else:
-        context.user_data["meal_type"] = label
-
-    await update.message.reply_text(
-        "Теперь опиши еду или отправь фото.\n\n"
-        "Можешь также отправить и то, и другое.",
-        reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True),
-    )
-    return ADDING_MEAL
-
-
-@subscription_required
-async def quick_meal_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """A photo sent outside the meal steps is a meal eaten now.
-
-    The same analysis as «🍽 Добавить приём пищи» → «Сейчас» → the photo, minus
-    the two taps: before this the photo matched no handler and was dropped
-    without a word. Starts clean like ``add_meal``.
-    """
-    context.user_data["current_meal"] = {}
-    context.user_data["meal_time"] = datetime.now(UTC)
-    context.user_data.pop("meal_type", None)
-    return await process_meal_input(update, context)
+    await update.effective_chat.send_message(**_new_meal_hint())
+    return None
 
 
 # parse_nutrition is imported from product_lookup_service (where the pipeline
@@ -519,168 +405,13 @@ def _schedule_personal_food_save(
         )
 
 
-def _source_badge(result: ResolutionResult | None) -> str:
-    """Localised source/confidence badge for the reply, or empty for text inputs.
-
-    Matches the ADR-0001 §6 confidence-tier taxonomy so the user always knows how
-    much to trust the numbers (see also: docs/product-philosophy.md).
-    """
-    if result is None:
-        return ""
-    if result.source == "saved_rag":
-        return "⭐ из твоей базы"
-    if result.source == "barcode_off":
-        # The tier is downgraded when OFF is missing macros for this product. The
-        # badge has to follow, otherwise the downgrade exists only in the DB and
-        # the user still reads "точно" next to a "—" macro.
-        if result.confidence_tier != "high":
-            return "📦 по штрих-коду (неполные данные)"
-        return "📦 по штрих-коду (точно)"
-    if result.source == "label_ocr":
-        return "🏷️ с этикетки (проверь)"
-    if result.source == "name_web":
-        # Dynamic confidence_tier: "medium" when OFF re-query succeeded,
-        # "low" when only web-prose numbers are available (ADR-0002 §6).
-        if result.confidence_tier == "low":
-            return "🌐 нашли в сети (сверь — веб)"
-        return "🌐 нашли в сети (проверь)"
-    if result.confidence_tier == "high":
-        return "✅ из базы (точно)"
-    if result.confidence_tier == "medium":
-        return "🔍 нашли в базе (проверь)"
-    return "📷 оценка по фото"
-
-
-def _resolution_detail_lines(result: ResolutionResult | None) -> list:
-    """Key intermediate values surfaced for high/medium-confidence results.
-
-    Returns the EAN read and the matched product name. The gram basis used for
-    scaling (A6 — CQ2) and the per-100g warning live in the draft's "Порция"
-    line now (``meal_draft``), next to the buttons that correct them.
-    Vision-only results carry no meaningful intermediate signals beyond the
-    nutrition fields already shown in the reply.
-
-    These lines let the user catch a wrong barcode read, wrong product match,
-    or wrong portion estimate before confirming the meal
-    (ADR-0001 §6 + §7, north-star transparency principle).
-    """
-    if result is None:
-        return []
-    signals = result.signals or {}
-    # A strategy that BROKE (not one that merely found nothing) means the numbers
-    # below came from a shallower path than the user would otherwise have got.
-    # This is the only user-visible trace of a swallowed failure, so it fires even
-    # for a vision-only result — that is precisely the case where a broken
-    # strategy is what pushed us down to vision.
-    # Only warn when the failure could actually have cost the user accuracy. If a
-    # strategy broke but a HIGH-confidence path (a barcode match with complete
-    # data) still won, the numbers are the best the pipeline can produce and
-    # "числа могут быть грубее обычного" would contradict the badge beside it.
-    # Keyed on a RECORDED error, not on outcome == "error": a strategy can return
-    # a result AND have recorded a failure (NameWebSearchStrategy falls back to
-    # web prose when its OFF re-query breaks). Reading only the outcome would show
-    # a clean reply for numbers that came from the lowest-trust leg.
-    has_error = any(a.get("error") for a in (signals.get("strategy_attempts") or []))
-    degraded = has_error and result.confidence_tier != "high"
-    if result.source == "vision":
-        return [_DEGRADED_LINE] if degraded else []
-    lines: list = []
-    barcode_raw = signals.get("barcode_raw")
-    if barcode_raw:
-        lines.append(f"Штрих-код: {barcode_raw}")
-    product_name = signals.get("product_name")
-    if product_name:
-        lines.append(f"Продукт: {product_name}")
-    missing = signals.get("off_missing_macros") or []
-    if missing:
-        lines.append(f"⚠️ в базе нет: {', '.join(missing)} — впиши при подтверждении")
-    if degraded:
-        lines.append(_DEGRADED_LINE)
-    return lines
-
-
-def _start_draft(
-    draft: dict,
-    header: str,
-    resolution_result: ResolutionResult | None,
-    numbers: bool = False,
-) -> dict:
-    """Stamp the confirm view onto a fresh draft: badge, details, gram basis.
-
-    A photo whose portion was estimated gets the size chips around that
-    estimate (the samosa: 250 ккал at a guessed 100 г, really ~140 г). A
-    database hit that could not be scaled carries per-100g numbers, so its
-    base is 100 г and the weight button rescales it. Everything else rescales
-    from whatever grams its own portion text names, or not at all.
-    """
-    nutrition = draft["nutrition"]
-    if resolution_result is None:
-        return meal_draft.start(
-            draft,
-            header=header,
-            badge="",
-            detail_lines=[],
-            estimate=True,
-            base_grams=_parse_portion_grams(nutrition),
-            numbers=numbers,
-        )
-    grams = resolution_result.portion_grams
-    estimated = grams is not None and grams > 0
-    per_100g = not estimated and resolution_result.source != "vision"
-    if estimated:
-        base = float(grams)
-    elif per_100g:
-        base = 100.0
-    else:
-        base = _parse_portion_grams(nutrition)
-    basis = None
-    if estimated:
-        signals = resolution_result.signals or {}
-        basis = (
-            "оценка по фото и твоему описанию"
-            if signals.get("portion_source") == "vision+note"
-            else "оценка по фото"
-        )
-    # The ⚠️ lines are caveats about the numbers: hidden numbers hide them too.
-    details = _resolution_detail_lines(resolution_result)
-    return meal_draft.start(
-        draft,
-        header=header,
-        badge=_source_badge(resolution_result),
-        detail_lines=[line for line in details if not line.startswith("⚠️")],
-        number_notes=[line for line in details if line.startswith("⚠️")],
-        estimate=resolution_result.confidence_tier != "high",
-        base_grams=base,
-        per_100g=per_100g,
-        chips=estimated,
-        basis=basis,
-        numbers=numbers,
-    )
-
-
-def _nutrition_reply(
-    data,
-    header,
-    resolution_result: ResolutionResult | None = None,
-    numbers: bool = False,
-):
-    """The confirm message for freshly analyzed ``data`` (no buttons pressed).
-
-    ``resolution_result`` is provided for image inputs so the reply can surface
-    the source/confidence badge and key intermediate values (EAN, product name,
-    gram basis). Text inputs pass ``None``.
-    """
-    draft = _start_draft({"nutrition": data}, header, resolution_result, numbers)
-    return meal_draft.text(draft)
-
-
 async def _analyze_and_parse(
     *, kind: str, payload: str, input_ref: str, telegram_id: int | None
 ) -> dict:
     """Run the OpenAI analysis for `kind`, record it to ai_call_logs, and return
     the parsed nutrition.
 
-    The single analyze pipeline shared by the live flow (``_run_meal_analysis``)
+    The single analyze pipeline shared by the background read (``_read_one``)
     and the replay (``reprocess``) so both go through the same code AND the same
     audit trail. Raises ``ModelUnavailableError`` on a dead model and ``ValueError``
     on a malformed response (both handled by the callers).
@@ -701,663 +432,345 @@ async def _analyze_and_parse(
     )
 
 
-async def _run_meal_analysis(update, context, *, kind: str, **kw) -> int:
-    """``_analyze_meal`` under a loader: the analysis takes seconds (a web
-    search, up to half a minute), and silence read as a dead bot. Metered:
-    the owner may have asked to see what each analysis cost (⚙️ Настройки)."""
-    text = "⏳ Смотрю фото…" if kind == "image" else "⏳ Считаю…"
-    try:
-        with SessionLocal() as db:
-            show_cost = settings_screen.shows_costs(db, update.effective_user.id)
-            show_numbers = shows_numbers_for(db, update.effective_user.id)
-    except Exception as e:
-        # A display preference must not stop the analysis itself.
-        logger.warning("Could not read the display settings: %s", e, exc_info=True)
-        show_cost = show_numbers = False
-    with metering() as meter:
-        async with Loader(update.message, text) as loader:
-            return await _analyze_meal(
-                update,
-                context,
-                loader,
-                meter if show_cost else None,
-                kind=kind,
-                numbers=show_numbers,
-                **kw,
-            )
+async def _download_image(bot, file_id: str) -> str:
+    file = await bot.get_file(file_id)
+    return _image_data_url(await file.download_as_bytearray())
 
 
-async def _out_of_credit_text(update: Update, err, *, saved: int | None) -> str:
-    """What to say when the AI balance or spend limit is used up (``ai_errors``).
-
-    The owner learns where to top up and that the meal waits for /reprocess;
-    anyone else hears that the owner knows — and the owner is told, at most
-    once an hour per provider, so a burst of meals is one alert.
-    """
+async def _credit_alert(bot, err, job: capture.Read) -> None:
+    """The AI balance or spend limit is used up (``ai_errors``): the person sees only
+    M7. The owner learns where to top up, in a message of their own, at most once an
+    hour per provider when it was someone else's meal."""
     provider, where = ai_errors.billing(err)
     head = f"💳 У {provider} закончился баланс или лимит трат на ИИ"
-    user = update.effective_user
-    if user is not None and user.id in settings.admin_ids:
-        text = (
-            f"{head} — разобрать еду сейчас не получится, повтор не поможет.\n"
-            f"Пополни баланс или подними лимит: {where}."
-        )
-        if saved is not None:
-            text += "\nСообщение сохранено: после пополнения отправь /reprocess."
-        return text
-    now = datetime.now(UTC)
-    last = _credit_alerted.get(provider)
-    told = (
-        last is not None and (now - last).total_seconds() < CREDIT_ALERT_EVERY_SECONDS
-    )
-    if not told and await notify_admins(
-        f"{head} — у пользователя {user.id if user else '?'} не разобралась еда.\n"
-        f"Пополни баланс или подними лимит: {where}, потом /reprocess."
-    ):
-        _credit_alerted[provider] = now
-        told = True
-    owner = " — владельцу бота уже пришло уведомление" if told else ""
-    return f"💳 Распознавание еды временно недоступно{owner}. Попробуй позже."
-
-
-async def _analyze_meal(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    loader: Loader,
-    meter: Meter | None,
-    *,
-    kind: str,
-    input_ref: str,
-    payload: str,
-    inbound_id: int | None = None,
-    caption: str | None = None,
-    numbers: bool = False,
-) -> int:
-    """Analyze one meal input (image data URL or text), reply, and stage the draft.
-
-    Shared by the first attempt (``process_meal_input``) and the retry after a
-    model switch (``process_model_choice``). On a model deprecation it offers the
-    model picker (→ CHOOSING_MODEL); on any other failure it asks for the input
-    again (→ ADDING_MEAL). The draft is committed only after a successful reply,
-    so a failure never leaves half-written state in ``user_data``. ``inbound_id``
-    (the persisted inbound message, TD-009) is flipped to analyzed/failed here.
-    """
     try:
-        if kind == "image":
-            # Phase 1+2 pipeline: concurrent barcode+vision extraction, then
-            # ordered strategy resolution (BarcodeOFFStrategy → VisionFallback).
-            resolution_result = await resolve_meal_nutrition(
-                payload,
-                telegram_id=update.effective_user.id,
-                input_ref=input_ref,
-                caption=caption,
+        if job.telegram_id in settings.admin_ids:
+            await bot.send_message(
+                job.chat_id,
+                f"{head} — разобрать еду сейчас не получится, повтор не поможет.\n"
+                f"Пополни баланс или подними лимит: {where}.\n"
+                "Сообщение сохранено: после пополнения отправь /reprocess.",
             )
-            nutrition_info = resolution_result.nutrition
-        else:
-            resolution_result = None
-            nutrition_info = await _analyze_and_parse(
-                kind=kind,
-                payload=payload,
-                input_ref=input_ref,
-                telegram_id=update.effective_user.id,
-            )
-    except ModelUnavailableError as e:
-        # Configured model is gone — record the miss, then let the owner pick a
-        # new model and retry (the same inbound_id is re-marked on success).
-        inbound_msg.mark_failed(inbound_id, str(e))
-        await loader.drop()  # the picker's reply keyboard needs a new message
-        return await _offer_model_choice(
-            update,
-            context,
-            e,
-            kind=kind,
-            input_ref=input_ref,
-            payload=payload,
-            inbound_id=inbound_id,
-            caption=caption,
-        )
-    except Exception as e:
-        logger.error("Error analyzing meal (%s): %s", kind, e, exc_info=True)
-        inbound_msg.mark_failed(inbound_id, str(e))
-        cost = f"\n\n{meter.line()}" if meter else ""
-        refusal = ai_errors.out_of_credit(e)
-        if refusal is not None:
-            # A retry cannot pass until someone pays: back to the menu, not
-            # «send it again».
-            text = await _out_of_credit_text(update, refusal, saved=inbound_id)
-            await loader.reply(text + cost, reply_markup=main_keyboard)
-            return CHOOSING_ACTION
-        if ai_errors.rate_limited(e):
-            text = (
-                "⏳ ИИ сейчас перегружен запросами. Подожди минуту и отправь ещё раз."
-            )
-        else:
-            text = "Не получилось разобрать. Попробуй ещё раз или опиши еду иначе."
-        await loader.reply(text + cost)
-        return ADDING_MEAL
-
-    # Analysis succeeded — record it now, independent of the reply below. A
-    # Telegram send failure must NOT relabel a clean analysis as failed (that
-    # would make /reprocess re-pay OpenAI for an already-analyzed message).
-    inbound_msg.mark_analyzed(inbound_id, nutrition_info)
-
-    if kind == "image":
-        draft = {
-            "nutrition": nutrition_info,
-            "description": ", ".join(nutrition_info.get("foods", []))
-            or "Фото приёма пищи",
-            # Telegram file_id so the saved meal keeps a photo reference
-            # (re-fetchable; cheaper than storing the bytes in the DB).
-            "photos": [input_ref],
-            # Resolution pipeline metadata (A1 columns): persisted in confirm_meal.
-            "resolution_source": (
-                resolution_result.source if resolution_result else None
-            ),
-            "resolution_signals": (
-                resolution_result.signals if resolution_result else None
-            ),
-            # The owner's own words name a favorite better than the food list.
-            "caption": caption,
-        }
-        header = "Разбор фото:"
-    else:
-        draft = {"nutrition": nutrition_info, "description": payload}
-        header = "Разбор приёма пищи:"
-
-    if meter:
-        draft["cost_line"] = meter.line()
-    _start_draft(draft, header, resolution_result, numbers)
-    try:
-        sent = await loader.reply(
-            meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
-        )
-    except Exception as e:
-        # Analysis is saved; only the confirmation reply failed. Keep the draft
-        # atomic (don't commit) and ask the owner to send the meal again.
-        logger.error("Error sending meal confirmation (%s): %s", kind, e, exc_info=True)
-        await update.message.reply_text(
-            "Не получилось разобрать. Попробуй ещё раз или опиши еду иначе."
-        )
-        return ADDING_MEAL
-
-    # Reply succeeded: commit the draft and clear any pending retry state. The
-    # draft REPLACES the previous one: a correction's fresh analysis must not
-    # inherit the old attempt's photo, resolution or button state.
-    _remember_draft_message(draft, sent)
-    context.user_data["current_meal"] = draft
-    context.user_data.pop("pending_analysis", None)
-    return CONFIRMING_MEAL
-
-
-def _remember_draft_message(draft: dict, sent) -> None:
-    """Where the draft's buttons are, so a newer draft can take them away."""
-    draft["chat_id"] = getattr(sent, "chat_id", None)
-    draft["msg_id"] = getattr(sent, "message_id", None)
-
-
-async def _strip_draft_buttons(context: ContextTypes.DEFAULT_TYPE, draft: dict):
-    """Remove the inline buttons from a draft's message once it is superseded,
-    so an old size chip cannot be tapped against the new numbers. Best effort:
-    the stale-button check (draft id) still guards a message this misses."""
-    bot = getattr(context, "bot", None)
-    if bot is None or not draft.get("msg_id") or draft.get("chat_id") is None:
-        return
-    try:
-        await bot.edit_message_reply_markup(
-            chat_id=draft["chat_id"], message_id=draft["msg_id"], reply_markup=None
-        )
-    except Exception as e:
-        logger.debug("Could not strip draft buttons: %s", e)
-
-
-async def _resend_draft(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, draft: dict
-) -> int:
-    """The draft changed by a typed reply: a new message below it, with the
-    buttons moved there (the old message would be out of sight above)."""
-    await _strip_draft_buttons(context, draft)
-    sent = await update.message.reply_text(
-        meal_draft.text(draft), reply_markup=meal_draft.markup(draft)
-    )
-    _remember_draft_message(draft, sent)
-    return CONFIRMING_MEAL
-
-
-def _joined_names(names: list) -> str:
-    """«кофе», «кофе и печенье», «кофе, печенье и сыр»."""
-    if len(names) < 2:
-        return "".join(names)
-    return f"{', '.join(names[:-1])} и {names[-1]}"
-
-
-async def _save_exact_names(update, context, text, inbound_id) -> bool:
-    """Text that names the person's dishes exactly: written at once, free (US-N1).
-
-    True if it was. A failure here costs one paid reading, not the meal, so it falls
-    through to the model.
-    """
-    try:
-        with SessionLocal() as db:
-            db_user = (
-                db.query(User)
-                .filter(User.telegram_id == update.effective_user.id)
-                .first()
-            )
-            dishes = meal_items.exact_match(db, db_user.id, text) if db_user else []
-            if not dishes:
-                return False
-            meal = meal_items.save_exact(
-                db,
-                db_user.id,
-                dishes,
-                meal_time=context.user_data.get("meal_time", datetime.now(UTC)),
-                meal_type=context.user_data.get("meal_type"),
-            )
-            names = list(meal.nutrients["foods"])
-    except Exception as e:
-        logger.warning("Exact-name save failed: %s", e, exc_info=True)
-        return False
-    # Read, for free: /reprocess must not pay for it.
-    inbound_msg.mark_analyzed(inbound_id, {"exact_name": names})
-    context.user_data.clear()
-    await update.message.reply_text(
-        f"Записано: {_joined_names(names)}.", reply_markup=main_keyboard
-    )
-    return True
-
-
-@subscription_required
-async def process_meal_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process the meal description or photo."""
-    context.user_data.setdefault("current_meal", {})
-
-    if update.message.photo:
-        # Get the largest photo (best quality).
-        photo = update.message.photo[-1]
-        kind, input_ref, content = "image", photo.file_id, update.message.caption
-    else:
-        kind, input_ref, content = "text", update.message.text, update.message.text
-
-    # Persist the raw inbound message on receipt, BEFORE any fetch/OpenAI work, so
-    # even a photo-fetch or analysis failure leaves a replayable trace (TD-009).
-    inbound_id = inbound_msg.record_inbound(
-        telegram_id=update.effective_user.id,
-        kind=kind,
-        content=content,
-        photo_file_id=input_ref if kind == "image" else None,
-    )
-
-    if kind == "image":
-        try:
-            # Send the image to OpenAI as a base64 data URL rather than Telegram's
-            # file URL — that URL embeds the bot token (api.telegram.org/file/bot<TOKEN>/…)
-            # and we don't want to hand it to a third party. It also avoids relying
-            # on OpenAI being able to fetch from api.telegram.org.
-            file = await context.bot.get_file(input_ref)
-            image_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            logger.error("Error fetching photo: %s", e, exc_info=True)
-            inbound_msg.mark_failed(inbound_id, f"photo fetch failed: {e}")
-            await update.message.reply_text(
-                "Не удалось загрузить фото. Опиши еду текстом."
-            )
-            return ADDING_MEAL
-        payload = _image_data_url(image_bytes)
-    else:
-        payload = input_ref
-        logger.debug("Processing meal text: %s", payload)
-        if await _save_exact_names(update, context, payload, inbound_id):
-            return CHOOSING_ACTION
-
-    return await _run_meal_analysis(
-        update,
-        context,
-        kind=kind,
-        input_ref=input_ref,
-        payload=payload,
-        inbound_id=inbound_id,
-        # `content` IS update.message.caption for photos. It was persisted to
-        # inbound_messages and then dropped here — the user's own words about
-        # brand and portion never reached the model (fixed 2026-09-13).
-        caption=content if kind == "image" else None,
-    )
+            return
+        now = datetime.now(UTC)
+        last = _credit_alerted.get(provider)
+        if last and (now - last).total_seconds() < CREDIT_ALERT_EVERY_SECONDS:
+            return
+        if await notify_admins(
+            f"{head} — у пользователя {job.telegram_id} не разобралась еда.\n"
+            f"Пополни баланс или подними лимит: {where}, потом /reprocess."
+        ):
+            _credit_alerted[provider] = now
+    except TelegramError as e:
+        logger.warning("Credit alert not sent: %s", type(e).__name__)
 
 
 async def _offer_model_choice(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    err: ModelUnavailableError,
-    *,
-    kind: str,
-    input_ref: str,
-    payload: str,
-    inbound_id: int | None = None,
-    caption: str | None = None,
-) -> int:
-    """A model went missing mid-analysis: stash the input and show the owner a
-    picker, so they can switch models and have the analysis retried automatically.
-
-    Only an admin picks (ADR-0004): anyone else is told the owner already knows —
-    the alert went out from ``OpenAIService`` when the failure was detected.
-    """
-    user = update.effective_user
-    if user is None or user.id not in settings.admin_ids:
-        await update.message.reply_text(
-            "Распознавание сейчас недоступно — владельцу бота уже пришло "
-            "уведомление. Попробуй позже.",
-            reply_markup=main_keyboard,
-        )
-        return CHOOSING_ACTION
-
+    application: Application, job: capture.Read, err: ModelUnavailableError
+) -> None:
+    """A model went missing: the owner gets a picker, and a pick reads the meal again.
+    Only an admin picks (ADR-0004); ``OpenAIService`` has told them already when it
+    was someone else's meal. In memory, like the conversation it replaces: the meal
+    stands either way, and /reprocess reads it after a restart."""
+    if job.telegram_id not in settings.admin_ids:
+        return
     svc = telegram_service.openai_service
-    task = err.task or ("vision" if kind == "image" else "text")
-    context.user_data["pending_analysis"] = {
-        "kind": kind,
-        "input_ref": input_ref,
-        "payload": payload,
-        "inbound_id": inbound_id,
-        # Stashed too: the retry re-runs the analysis from scratch, and a caption
-        # dropped here would silently degrade exactly the retry the owner runs
-        # after a model outage.
-        "caption": caption,
-    }
+    task = err.task or ("vision" if job.kind == capture.IMAGE else "text")
     # Replace the model where it was configured: a task with its own pick gets a
     # new pick; a task on the default replaces the default, so one dead default
     # model takes one choice, not one per task.
-    context.user_data["model_task"] = (
-        None if err.task is None or svc.runs_on_default(task) else task
-    )
+    model_task = None if err.task is None or svc.runs_on_default(task) else task
     models = await svc.list_candidates(task, exclude=err.model)
-    context.user_data["model_choices"] = models
-    keyboard = ReplyKeyboardMarkup(
-        [[m] for m in models] + [["Отмена"]], resize_keyboard=True
-    )
-    await update.message.reply_text(
+    stash = application.user_data[job.telegram_id]
+    stash["pending_meal"] = job.meal_id
+    stash["model_task"] = model_task
+    stash["model_choices"] = models
+    await application.bot.send_message(
+        job.chat_id,
         f"⚠️ Модель «{err.model}» недоступна (устарела, удалена или нет ключа).\n"
         "Выбери другую — я запомню её и сразу повторю анализ:",
-        reply_markup=keyboard,
+        reply_markup=ReplyKeyboardMarkup(
+            [[m] for m in models] + [["Отмена"]], resize_keyboard=True
+        ),
     )
-    return CHOOSING_MODEL
 
 
-@subscription_required
-async def process_model_choice(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> int:
-    """Apply the owner's model pick, persist it, and retry the stashed analysis."""
-    text = update.message.text
+async def _model_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """The answer to the picker, ahead of the router; True if this message was it."""
+    stash, text = context.user_data, update.message.text
+    choices = stash.get("model_choices")
+    if not choices or (text not in choices and text != "Отмена"):
+        return False
+    meal_id = stash.pop("pending_meal", None)
+    task = stash.pop("model_task", None)
+    stash.pop("model_choices", None)
     if text == "Отмена":
-        context.user_data.clear()
         await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
-        return CHOOSING_ACTION
-
-    user = update.effective_user
-    if user is None or user.id not in settings.admin_ids:
-        # The picker is only ever shown to an admin; this guards a stale state.
-        context.user_data.clear()
-        await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
-        return CHOOSING_ACTION
-
-    if text not in context.user_data.get("model_choices", []):
-        await update.message.reply_text("Выбери модель кнопкой из списка.")
-        return CHOOSING_MODEL
-
-    task = context.user_data.pop("model_task", None)
+        return True
     telegram_service.openai_service.set_model(text, task=task)
     if task is None:
         persist_model(text)
     else:
         persist_task_model(task, text)
-    await update.message.reply_text(f"✅ Модель обновлена: {text}. Повторяю анализ…")
-
-    pending = context.user_data.get("pending_analysis")
-    if not pending:
-        # No stashed input (shouldn't normally happen) — ask for it again.
-        await update.message.reply_text(
-            "Отправь фото или описание приёма пищи ещё раз.",
-            reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True),
-        )
-        return ADDING_MEAL
-    return await _run_meal_analysis(
-        update,
-        context,
-        kind=pending["kind"],
-        input_ref=pending["input_ref"],
-        payload=pending["payload"],
-        inbound_id=pending.get("inbound_id"),
-        caption=pending.get("caption"),
-    )
-
-
-@subscription_required
-async def confirm_meal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """A typed reply at the confirm step (the buttons go to ``meal_callback``).
-
-    Five outcomes (TD-015): **Да** saves; **Нет** discards the draft and
-    restarts; **Отмена** discards it and goes back to the menu; a weight ("150 г", or a bare number after «Поправить вес»)
-    rescales the draft; anything else is a *correction* — re-analyzed together
-    with what came before, the photo included, while staying at this step.
-    """
-    draft = context.user_data.get("current_meal") or {}
-    text = update.message.text
-    intent = _confirm_intent(text)
-    awaiting = draft.get("awaiting")
-
-    if intent == "correction" and meal_draft.can_rescale(draft):
-        # A bare "2" may mean two pieces — only a weight that was asked for, or
-        # one with its unit, is read as grams.
-        grams = meal_draft.parse_grams(text, unit_required=awaiting != "grams")
-        if grams is not None:
-            meal_draft.set_grams(draft, grams)
-            draft["awaiting"] = None
-            return await _resend_draft(update, context, draft)
-        if awaiting == "grams":
-            await update.message.reply_text(
-                "Вес не распознан — напиши число граммов, например 150."
-            )
-            return CONFIRMING_MEAL
-
-    if intent == "correction":
-        return await _reanalyze_with_correction(update, context, draft, text)
-
-    if intent in ("affirm", "affirm_favorite"):
-        await _strip_draft_buttons(context, draft)
-        saved = await _save_current_meal(
-            update.effective_user,
-            draft,
-            context.user_data,
-            update.message.reply_text,
-            favorite=intent == "affirm_favorite",
-        )
-        if not saved:
-            return CHOOSING_ACTION
-        context.user_data.clear()
-        return CHOOSING_ACTION
-
-    if intent == "cancel":
-        await _strip_draft_buttons(context, draft)
-        context.user_data.clear()
-        await update.message.reply_text("Отменено.", reply_markup=main_keyboard)
-        return CHOOSING_ACTION
-
-    # Rejecting discards the draft — the retry is a fresh entry and must not
-    # inherit stale nutrition/photos from the rejected attempt.
-    await _strip_draft_buttons(context, draft)
-    context.user_data["current_meal"] = {}
     await update.message.reply_text(
-        "Давай попробуем ещё раз. Когда был приём пищи?",
-        reply_markup=time_keyboard,
+        f"✅ Модель обновлена: {text}. Повторяю анализ…", reply_markup=main_keyboard
     )
-    return ADDING_MEAL_TIME
+    with SessionLocal() as db:
+        job = capture.read_again(db, meal_id) if meal_id else None
+    if job is not None:
+        _start_read(context.application, job)
+    return True
 
 
-def _correction_caption(draft: dict, correction: str) -> str:
-    """The photo's caption for a re-analysis: the original words, the
-    correction, and a weight the user already set (it outlives a product fix).
-
-    The original caption stays on the first line — a favorite is named by it.
-    """
-    parts = [draft.get("caption"), correction]
-    if draft.get("grams_by_user"):
-        grams = meal_draft.num(draft["nutrition"]["portion_grams"], 0)
-        parts.append(f"Съедено {grams} г")
-    return "\n".join(p.strip() for p in parts if p and p.strip())
-
-
-async def _reanalyze_with_correction(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, draft: dict, correction: str
-) -> int:
-    """Re-run the analysis with the user's correction, keeping the input.
-
-    A photo draft re-reads the same photo with the correction as part of its
-    caption (the caption beats the photo guess), so a wrong product is fixed
-    without sending the photo again. A text draft is re-analyzed as the old
-    description plus the correction. meal_time and meal_type live outside the
-    draft and are kept.
-    """
-    await _strip_draft_buttons(context, draft)
-    user_id = update.effective_user.id
-    photos = draft.get("photos") or []
-    if photos:
-        file_id = photos[0]
-        caption = _correction_caption(draft, correction)
-        inbound_id = inbound_msg.record_inbound(
-            telegram_id=user_id, kind="image", content=caption, photo_file_id=file_id
+async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
+    """The result into the same line. Telegram's refusal costs nothing: the record
+    is written."""
+    if line is None or job.line_id is None:
+        return
+    try:
+        await bot.edit_message_text(
+            line.text,
+            chat_id=job.chat_id,
+            message_id=job.line_id,
+            parse_mode=ParseMode.HTML,
+            reply_markup=line.markup,
         )
-        try:
-            file = await context.bot.get_file(file_id)
-            image_bytes = await file.download_as_bytearray()
-        except Exception as e:
-            # Not a dead end: the correction still goes through, as text.
-            logger.error("Error re-fetching photo: %s", e, exc_info=True)
-            inbound_msg.mark_failed(inbound_id, f"photo fetch failed: {e}")
-        else:
-            return await _run_meal_analysis(
-                update,
-                context,
-                kind="image",
-                input_ref=file_id,
-                payload=_image_data_url(image_bytes),
-                inbound_id=inbound_id,
-                caption=caption,
-            )
+    except TelegramError as e:
+        logger.warning("Meal line not edited: %s", type(e).__name__)
 
-    previous = (draft.get("description") or "").strip()
-    payload = f"{previous}\nУточнение: {correction}" if previous else correction
-    inbound_id = inbound_msg.record_inbound(
-        telegram_id=user_id, kind="text", content=payload, photo_file_id=None
+
+async def _reading(bot, job: capture.Read) -> tuple:
+    """(nutrition, resolution) of the meal's source."""
+    if job.kind == capture.IMAGE:
+        # Sent to the model as a data URL: Telegram's file URL embeds the bot token.
+        payload = await _download_image(bot, job.file_id)
+        resolution = await resolve_meal_nutrition(
+            payload,
+            telegram_id=job.telegram_id,
+            input_ref=job.file_id,
+            caption=job.text,
+        )
+        return resolution.nutrition, resolution
+    if job.kind == capture.TEXT:
+        nutrition = await _analyze_and_parse(
+            kind="text",
+            payload=job.text,
+            input_ref=job.text,
+            telegram_id=job.telegram_id,
+        )
+        return nutrition, None
+    raise capture.NoVoiceReader()
+
+
+def _model_of(job: capture.Read) -> Optional[str]:
+    if job.kind == capture.VOICE:
+        return None
+    task = "vision" if job.kind == capture.IMAGE else "text"
+    return telegram_service.openai_service.model_for(task)
+
+
+async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
+    """One read of a meal, and its line. (read, the dead model's error if that is why
+    not). Nothing here logs a message body: only the class of what went wrong."""
+    try:
+        nutrition, resolution = await _reading(bot, job)
+    except Exception as e:
+        error = type(e).__name__
+        logger.error("Meal %s not read: %s", job.meal_id, error)
+        inbound_msg.mark_failed(job.inbound_id, error)
+        with SessionLocal() as db:
+            done = capture.read_failed(db, job, error, model=_model_of(job))
+        await _show(bot, job, done.line)
+        refusal = ai_errors.out_of_credit(e)
+        if refusal is not None:
+            await _credit_alert(bot, refusal, job)
+        return False, e if isinstance(e, ModelUnavailableError) else None
+    # Recorded now, independent of the line below: a Telegram failure must not make
+    # /reprocess pay for this again.
+    inbound_msg.mark_analyzed(job.inbound_id, nutrition)
+    with SessionLocal() as db:
+        cost = (
+            meter.line() if settings_screen.shows_costs(db, job.telegram_id) else None
+        )
+        done = capture.read_done(
+            db, job, nutrition, resolution, cost=cost, model=_model_of(job)
+        )
+    if done.learn:
+        _schedule_personal_food_save(**done.learn)
+    await _show(bot, job, done.line)
+    return True, None
+
+
+async def _read_meal(application: Application, job: capture.Read) -> None:
+    """The background read. At most ``READS_AT_ONCE``, each with its own meter."""
+    gate = application.bot_data.setdefault(
+        "meal_reads_gate", asyncio.Semaphore(READS_AT_ONCE)
     )
-    return await _run_meal_analysis(
-        update,
-        context,
-        kind="text",
-        input_ref=payload,
-        payload=payload,
+    try:
+        async with gate:
+            with metering() as meter:
+                _, dead = await _read_one(application.bot, job, meter)
+        if dead is not None:
+            await _offer_model_choice(application, job, dead)
+    except Exception as e:
+        # The record stands, and the line says «читаю…» until /reprocess.
+        logger.error("Meal %s read crashed: %s", job.meal_id, type(e).__name__)
+
+
+def _keep_task(task) -> None:
+    # Held here: the event loop keeps only a weak reference to a running task.
+    _meal_reads.add(task)
+    task.add_done_callback(_meal_reads.discard)
+
+
+def _start_read(application: Application, job: capture.Read) -> None:
+    _keep_task(application.create_task(_read_meal(application, job)))
+
+
+async def _send_line(message, line: capture.Line):
+    """A silent reply to the person's message, mapped when it belongs to a meal; None
+    if Telegram refused it."""
+    try:
+        sent = await message.reply_text(
+            line.text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_keyboard if line.menu else line.markup,
+            disable_notification=True,
+            reply_parameters=ReplyParameters(message_id=message.message_id),
+        )
+    except TelegramError as e:
+        logger.warning("Meal line not sent: %s", type(e).__name__)
+        return None
+    return sent
+
+
+def _map_line(line: capture.Line, sent, view: str) -> None:
+    if sent is None or line.meal_id is None:
+        return
+    with SessionLocal() as db:
+        capture.map_message(db, sent.chat_id, sent.message_id, line.meal_id, view)
+
+
+async def _new_meal(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    came: capture.Incoming,
+    note: Optional[str],
+) -> None:
+    """Row 10: the record first, then the line, then the read."""
+    message = update.message
+    try:
+        with SessionLocal() as db:
+            born = capture.born(db, came, note=note)
+    except Exception as e:
+        logger.error("Meal not written: %s", type(e).__name__)
+        await message.reply_text(capture.M7F_REFUSED)
+        return
+    if born is None:
+        return
+    if born.joined:
+        await _album_grew(context.bot, came, born)
+        return
+    # The diagnostic row that /reprocess replays; a voice has nothing to replay yet.
+    inbound_id = None
+    if came.kind != "voice":
+        image = came.kind != "text"
+        inbound_id = inbound_msg.record_inbound(
+            telegram_id=came.telegram_id,
+            kind="image" if image else "text",
+            content=came.text,
+            photo_file_id=came.file_id if image else None,
+        )
+    if born.final is not None:
+        inbound_msg.mark_analyzed(inbound_id, {"exact_name": born.names})
+        _map_line(born.final, await _send_line(message, born.final), "line")
+        return
+    sent = await _send_line(message, born.first)
+    _map_line(born.first, sent, "pending")
+    job = replace(
+        born.job,
+        line_id=sent.message_id if sent else None,
         inbound_id=inbound_id,
     )
+    _start_read(context.application, job)
 
 
-async def _save_current_meal(user, draft: dict, user_data: dict, reply, *, favorite):
-    """Save the draft as a meal; its id if it was saved, else False.
-
-    ``reply`` sends the outcome (a message's ``reply_text``): the typed "Да"
-    and the «Сохранить» button end the same way.
-    """
+async def _album_grew(bot, came: capture.Incoming, born: capture.Born) -> None:
+    """Another photo of an album: on the same line, with no second line and no read."""
+    with SessionLocal() as db:
+        line_id = capture.album_line_id(db, born.meal_id)
+    if line_id is None:
+        return
     try:
-        nutrition = draft.get("nutrition", {})
-        meal_in = MealCreate(
-            description=draft.get("description"),
-            meal_time=user_data.get("meal_time", datetime.now(UTC)),
-            # The answer to "Когда был приём пищи?" — collected since the
-            # first version, stored since 2026-09-13.
-            meal_type=user_data.get("meal_type"),
-            calories=nutrition.get("calories"),
-            proteins=nutrition.get("protein"),
-            fats=nutrition.get("fats"),
-            carbohydrates=nutrition.get("carbs"),
-            nutrients=meal_draft.stored_nutrients(draft),
-            photos=draft.get("photos", []),
-            # What the analysis said, before any portion change by the user,
-            # plus the food groups the user confirmed.
-            ai_analysis=meal_draft.stored_analysis(draft),
-            # Pipeline resolution tracking (A1 columns).
-            resolution_source=draft.get("resolution_source"),
-            resolution_signals=draft.get("resolution_signals"),
+        await bot.edit_message_text(
+            capture.M2_PENDING.format(count=born.joined),
+            chat_id=came.chat_id,
+            message_id=line_id,
         )
+    except TelegramError as e:
+        logger.warning("Album line not edited: %s", type(e).__name__)
 
+
+async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Section 5.1: what a private message is, when no menu, command or slot took it.
+
+    Outside the conversation, so no state ever eats food. The handler returns before
+    the read ends.
+    """
+    message, user = update.message, update.effective_user
+    if message is None or user is None:
+        return
+    if not await check_subscription(user.id):
+        await message.reply_text(LOCK_TEXT, reply_markup=subscription_keyboard)
+        return
+    if message.text and await _model_choice(update, context):
+        return
+    came = capture.incoming(message, user)
+    if came.kind is None:
+        await message.reply_text(capture.M9_UNREADABLE)
+        return
+    if capture.too_big(came):
+        await message.reply_text(capture.M4F_TOO_BIG)
+        return
+    try:
         with SessionLocal() as db:
-            db_user = db.query(User).filter(User.telegram_id == user.id).first()
-            if not db_user:
-                db_user = User(telegram_id=user.id, username=user.username)
-                db.add(db_user)
-                db.commit()
-                db.refresh(db_user)
-            meal = meal_items.save_meal(
-                db,
-                meal_in,
-                db_user.id,
-                grams_by_user=bool(draft.get("grams_by_user")),
-            )
-            saved_user_id = db_user.id
-            saved_meal_id = meal.id
-            dish_name = meal_items.only_dish_name(db, meal)
-
-        # B4 learning loop: fire-and-forget embed+upsert (outside the DB
-        # context so SessionLocal is released before Celery dispatch).
-        _schedule_personal_food_save(
-            user_id=saved_user_id,
-            meal_id=saved_meal_id,
-            nutrition=nutrition,
-            resolution_signals=draft.get("resolution_signals"),
-            resolution_source=draft.get("resolution_source"),
-            canonical_name=dish_name,
-        )
-
-        text = "✅ Записано"
-        if favorite:
-            text += "\n" + _save_favorite(saved_meal_id, draft)
-        await reply(text, reply_markup=main_keyboard)
-        return saved_meal_id
+            if capture.seen(db, came):
+                return
+            if came.kind == "text":
+                route = capture.route_text(db, came)
+            else:
+                route = capture.Route(capture.NEW_MEAL)
     except Exception as e:
-        logger.error(f"Error saving meal: {e}", exc_info=True)
-        await reply(
-            "Не получилось сохранить. Попробуй ещё раз.",
-            reply_markup=main_keyboard,
-        )
-        return False
+        logger.error("Router failed: %s", type(e).__name__)
+        await message.reply_text(capture.M7F_REFUSED)
+        return
+
+    if route.action == capture.NEW_MEAL:
+        await _new_meal(update, context, came, route.note)
+    elif route.action == capture.LINE:
+        line = route.line
+        _map_line(line, await _send_line(message, line), "line")
+        if line.fill:
+            task = context.application.create_task(_fill_typed_dish(line.fill, user.id))
+            _keep_task(task)
+    elif route.action == capture.WEIGHT:
+        await process_weight(update, context)
+    elif route.action == capture.TICK:
+        await message.reply_text(f"✓ {route.tick}", reply_markup=_day_card_button())
 
 
-def _day_card_button(meal_id: Optional[int] = None) -> InlineKeyboardMarkup:
-    """Under a saved draft: the meal's own card, and the day, where it now shows."""
+def _day_card_button() -> InlineKeyboardMarkup:
+    """Under a ticked routine: the day, where it now shows."""
     day = InlineKeyboardButton(
         "📊 Карточка дня",
         callback_data=stats_screen.CALLBACK_PREFIX + stats_screen.TODAY,
     )
-    if meal_id is None:
-        return InlineKeyboardMarkup([[day]])
-    meal = InlineKeyboardButton("🍽 Приём", callback_data=f"ml:o:{meal_id}:r")
-    return InlineKeyboardMarkup([[meal, day]])
-
-
-async def _edit_draft_message(
-    query, draft: dict, footer: str | None = None, settled_markup=None
-):
-    """Redraw the draft in place; a settled draft (``footer``) loses its buttons,
-    bar ``settled_markup``."""
-    markup = settled_markup if footer else meal_draft.markup(draft)
-    try:
-        await query.edit_message_text(
-            meal_draft.text(draft, footer=footer), reply_markup=markup
-        )
-    except BadRequest as e:
-        # A repeated tap that leads to the same screen: nothing to change.
-        if "not modified" not in str(e).lower():
-            raise
+    return InlineKeyboardMarkup([[day]])
 
 
 async def meal_stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on the buttons of a draft that is no longer the current one (saved,
-    cancelled, corrected, or lost to a restart): say so and drop the buttons."""
+    """A tap on the buttons of a draft from before the drafts were retired, still on
+    someone's screen: say so and drop the buttons."""
     query = update.callback_query
     await query.answer(
         "Этот черновик уже неактуален — отправь приём пищи заново", show_alert=True
@@ -1366,120 +779,6 @@ async def meal_stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_reply_markup(reply_markup=None)
     except BadRequest:
         pass
-
-
-async def meal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on the draft's inline buttons (``meal:<draft id>:<verb>``)."""
-    query = update.callback_query
-    if not await check_subscription(update.effective_user.id):
-        await query.answer("🔒 Доступно с подпиской", show_alert=True)
-        return None
-    draft = context.user_data.get("current_meal") or {}
-    parsed = meal_draft.parse_callback(query.data)
-    if parsed is None:
-        logger.warning("meal draft: malformed callback data %r", query.data)
-    if parsed is None or parsed[0] != draft.get("id"):
-        await meal_stale_callback(update, context)
-        return None
-    _draft_id, verb, arg = parsed
-
-    if verb == meal_draft.SIZE:
-        if not meal_draft.set_size(draft, arg):
-            await query.answer()
-            return None
-        draft["awaiting"] = None
-        await query.answer(f"{meal_draft.SIZES[arg][0]} порция")
-        await _edit_draft_message(query, draft)
-        return None
-    if verb == meal_draft.NUMBERS:
-        if not meal_draft.toggle_numbers(draft):
-            await query.answer()
-            return None
-        await query.answer()
-        await _edit_draft_message(query, draft)
-        return None
-    if verb in (meal_draft.GROUPS_OPEN, meal_draft.GROUPS_CLOSE):
-        draft["groups_open"] = verb == meal_draft.GROUPS_OPEN
-        draft["awaiting"] = None
-        await query.answer()
-        await _edit_draft_message(query, draft)
-        return None
-    if verb == meal_draft.GROUP_TOGGLE:
-        if not meal_draft.toggle_group(draft, arg):
-            logger.warning("meal draft: unknown group in callback %r", query.data)
-            await query.answer()
-            return None
-        await query.answer()
-        await _edit_draft_message(query, draft)
-        return None
-    if verb == meal_draft.ASK_GRAMS:
-        draft["awaiting"] = "grams"
-        await query.answer("Напиши вес в граммах")
-        await _edit_draft_message(query, draft)
-        return None
-    if verb == meal_draft.ASK_FOOD:
-        draft["awaiting"] = "food"
-        await query.answer("Напиши, что это")
-        await _edit_draft_message(query, draft)
-        return None
-    if verb in (meal_draft.SAVE, meal_draft.SAVE_FAVORITE):
-        await query.answer()
-        saved = await _save_current_meal(
-            update.effective_user,
-            draft,
-            context.user_data,
-            query.message.reply_text,
-            favorite=verb == meal_draft.SAVE_FAVORITE,
-        )
-        if not saved:
-            await _edit_draft_message(query, draft, footer="⚠️ Не сохранено")
-            return CHOOSING_ACTION
-        # The meal is written: a failed redraw must not leave the draft live, or
-        # another tap on Save writes it twice. «✅ Записано» has already gone out.
-        try:
-            await _edit_draft_message(
-                query,
-                draft,
-                footer="✅ Сохранено",
-                settled_markup=_day_card_button(saved),
-            )
-        except TelegramError as e:
-            logger.warning("Saved draft not redrawn: %s", type(e).__name__)
-        context.user_data.clear()
-        return CHOOSING_ACTION
-    if verb == meal_draft.CANCEL:
-        await query.answer("Отменено")
-        await _edit_draft_message(query, draft, footer="✖️ Отменено")
-        context.user_data.clear()
-        await query.message.reply_text("Отменено.", reply_markup=main_keyboard)
-        return CHOOSING_ACTION
-    logger.warning("meal draft: unknown verb in callback data %r", query.data)
-    await query.answer()
-    return None
-
-
-def _save_favorite(meal_id: int, current_meal: dict) -> str:
-    """Add the just-saved meal to favorites; the line to append to the reply.
-
-    Runs after the meal is committed and never raises: a favorites failure must
-    not turn a saved meal into "ошибка при сохранении".
-    """
-    name = favorites.favorite_name(
-        caption=current_meal.get("caption"),
-        description=current_meal.get("description"),
-        foods=current_meal.get("nutrition", {}).get("foods"),
-    )
-    try:
-        with SessionLocal() as db:
-            meal = crud_meal.get(db, meal_id)
-            fav, created = favorites.save_from_meal(db, meal, name)
-            name = fav.name
-    except Exception as e:
-        logger.error("Error saving favorite for meal %s: %s", meal_id, e, exc_info=True)
-        return "⚠️ В избранное добавить не получилось — приём пищи сохранён."
-    if created:
-        return f"⭐ В избранном: «{name}»"
-    return f"⭐ «{name}» уже в избранном"
 
 
 @subscription_required
@@ -1497,11 +796,16 @@ _card_delivery = CardDelivery(PictureRenderer(Path(settings.RENDER_DIR)))
 
 
 async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The ``ml:`` verbs. The message id goes along: a typed answer retires its keyboard."""
-    message_id = getattr(update.callback_query.message, "message_id", None)
+    """The ``ml:`` verbs. The message id goes along: a typed answer retires its
+    keyboard, and a line that became a screen is no longer the read's to edit."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
 
     def handle(db, telegram_id: int, data: str):
-        return meal_card.handle_callback(db, telegram_id, data, message_id=message_id)
+        screen = meal_card.handle_callback(db, telegram_id, data, message_id=message_id)
+        if screen.text:
+            capture.tapped(db, getattr(message, "chat_id", None), message_id)
+        return screen
 
     await _screen_callback(
         update,
@@ -1538,7 +842,7 @@ async def _fill_typed_dish(fill: meal_card.Fill, telegram_id: int) -> None:
                 db, fill.item_id, fill.rev, fill.event_id, nutrition
             )
     except Exception as e:
-        logger.warning("Typed dish left without numbers: %s", e, exc_info=True)
+        logger.warning("Typed dish left without numbers: %s", type(e).__name__)
 
 
 async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1802,9 +1106,8 @@ async def process_routine_name(
     asked_at = context.user_data.pop("routine_asked_at", None)
     if asked_at is None or datetime.now(UTC) - asked_at > ROUTINE_NAME_WAIT:
         context.user_data.pop("routine_rename", None)
-        if weight_screen.KG_PATTERN.match(update.message.text or ""):
-            return await process_weight(update, context)
-        return await typed_routine_tick(update, context) or CHOOSING_ACTION
+        await capture_message(update, context)
+        return CHOOSING_ACTION
     with SessionLocal() as db:
         screen, done = routines.submit_name(
             db,
@@ -1817,6 +1120,16 @@ async def process_routine_name(
         context.user_data["routine_asked_at"] = asked_at
         return ENTERING_ROUTINE_NAME
     context.user_data.pop("routine_rename", None)
+    return CHOOSING_ACTION
+
+
+async def _capture_and_leave_wait(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Media while a typed name is waited for: a meal, and the wait is over."""
+    for key in ("routine_asked_at", "routine_rename", "food_asked_at", "food_kind"):
+        context.user_data.pop(key, None)
+    await capture_message(update, context)
     return CHOOSING_ACTION
 
 
@@ -1866,9 +1179,8 @@ async def process_food_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         or datetime.now(UTC) - asked_at > FOOD_NAME_WAIT
     ):
         context.user_data.pop("food_kind", None)
-        if weight_screen.KG_PATTERN.match(update.message.text or ""):
-            return await process_weight(update, context)
-        return await typed_routine_tick(update, context) or CHOOSING_ACTION
+        await capture_message(update, context)
+        return CHOOSING_ACTION
     with SessionLocal() as db:
         screen, wait = food_lists.submit_food(
             db, update.effective_user.id, kind, update.message.text
@@ -1878,23 +1190,6 @@ async def process_food_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data["food_asked_at"] = datetime.now(UTC)
         return ENTERING_FOOD_NAME
     context.user_data.pop("food_kind", None)
-    return CHOOSING_ACTION
-
-
-async def typed_routine_tick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A message that is exactly a routine on today's card ticks it (G5-R08).
-
-    Any other text stays ignored in these states, as before; no subscription
-    notice either, for a message that was not asking for anything.
-    """
-    user = update.effective_user
-    if not await check_subscription(user.id):
-        return None
-    with SessionLocal() as db:
-        name = stats_screen.tick_by_name(db, user.id, update.message.text)
-    if name is None:
-        return None
-    await update.message.reply_text(f"✓ {name}", reply_markup=_day_card_button())
     return CHOOSING_ACTION
 
 
@@ -2047,44 +1342,65 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @admin_required
 async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Re-analyze pending/failed inbound messages (owner only — TD-009).
+    """Read again what was not read (owner only — TD-009, TD-010).
 
-    The replay mechanism after a model fix: switch the model via the self-heal
-    picker, then run /reprocess to re-run what failed. Each message is re-analyzed
-    through the same pipeline as the live flow (recorded to ai_call_logs) and the
-    result is written back to its row (fills ai_analysis, flips status). It does
-    NOT create a Meal — turning a recovered analysis into a logged meal is a
-    separate step (deferred, TD-010); this only repairs the record. Capped at
-    REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for more. If
-    the model is still unavailable it stops early and says so.
+    The replay after a model fix or a top-up. A meal still without a reading is read
+    through the live path, so the meal gets filled and its line says so; a voice has
+    no reader yet and never goes to the text model. What remains of the older
+    diagnostic rows, with no meal of their own, is re-analyzed and written back to its
+    row. Capped at REPROCESS_BATCH_LIMIT per call to bound OpenAI spend; run again for
+    more. If the model is still unavailable it stops early and says so.
     """
     try:
-        rows = inbound_msg.get_reprocessable(limit=REPROCESS_BATCH_LIMIT)
+        with SessionLocal() as db:
+            meals = capture.unread_meals(db, REPROCESS_BATCH_LIMIT)
+            jobs = [capture.read_again(db, meal_id) for meal_id in meals]
+        jobs = [job for job in jobs if job is not None]
+        room = REPROCESS_BATCH_LIMIT - len(jobs)
+        rows = (
+            inbound_msg.get_reprocessable(limit=REPROCESS_BATCH_LIMIT) if room else []
+        )
     except Exception as e:
-        logger.error("reprocess: could not load queue: %s", e, exc_info=True)
+        logger.error("reprocess: could not load queue: %s", type(e).__name__)
         await update.message.reply_text("Не удалось получить список сообщений.")
         return
+    # A meal's own diagnostic row is its meal's, and is not paid for twice.
+    taken = {job.inbound_id for job in jobs}
+    rows = [row for row in rows if row.id not in taken][:room]
 
-    if not rows:
+    if not jobs and not rows:
         await update.message.reply_text("Нет сообщений для повторной обработки. 👍")
         return
 
+    def stopped(e: ModelUnavailableError) -> str:
+        # Still broken — leave the rest queued and tell the owner to switch.
+        return (
+            f"⚠️ Модель «{e.model}» всё ещё недоступна. Смени модель (отправь "
+            "приём пищи, выбери модель) и повтори /reprocess.\n"
+            f"Обработано до остановки: успешно {analyzed}, с ошибкой {failed}."
+        )
+
     analyzed = failed = 0
+    for job in jobs:
+        with metering() as meter:
+            read, dead = await _read_one(context.bot, job, meter)
+        if dead is not None:
+            await update.message.reply_text(stopped(dead))
+            return
+        analyzed, failed = analyzed + read, failed + (not read)
+
     for row in rows:
         try:
             if row.kind == "image":
                 if not row.photo_file_id:
                     raise ValueError("no photo reference to re-fetch")
-                file = await context.bot.get_file(row.photo_file_id)
-                image_bytes = await file.download_as_bytearray()
-                payload = _image_data_url(image_bytes)
-                input_ref = row.photo_file_id
+                payload = await _download_image(context.bot, row.photo_file_id)
                 # Use the full pipeline so reprocessed images also benefit from
                 # barcode→OFF lookup (same quality as the live flow).
                 resolution_result = await resolve_meal_nutrition(
                     payload,
                     telegram_id=row.telegram_id,
-                    input_ref=input_ref,
+                    input_ref=row.photo_file_id,
                     # The stored caption. /reprocess OVERWRITES ai_analysis, so
                     # replaying without it would actively downgrade a record the
                     # live flow got right.
@@ -2101,12 +1417,7 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     telegram_id=row.telegram_id,
                 )
         except ModelUnavailableError as e:
-            # Still broken — leave this row queued and tell the owner to switch.
-            await update.message.reply_text(
-                f"⚠️ Модель «{e.model}» всё ещё недоступна. Смени модель (отправь "
-                "приём пищи, выбери модель) и повтори /reprocess.\n"
-                f"Обработано до остановки: успешно {analyzed}, с ошибкой {failed}."
-            )
+            await update.message.reply_text(stopped(e))
             return
         except Exception as e:
             logger.error("reprocess: message %s failed: %s", row.id, e, exc_info=True)
@@ -2125,7 +1436,8 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             failed += 1
 
     await update.message.reply_text(
-        f"Повторная обработка ({len(rows)}): успешно {analyzed}, с ошибкой {failed}."
+        f"Повторная обработка ({len(jobs) + len(rows)}): "
+        f"успешно {analyzed}, с ошибкой {failed}."
     )
 
 
@@ -2181,9 +1493,8 @@ def create_bot_application() -> Application:
         MessageHandler(filters.UpdateType.MESSAGE, meal_slot_text), group=-1
     )
 
-    # The confirm step's inline buttons are tracked per chat, not per message, on
-    # purpose: the draft id in the callback data already tells the current
-    # draft's buttons from an old one's. PTB warns about exactly that setup.
+    # A callback handler inside a conversation tracked per chat, not per message, on
+    # purpose: the callback data carries the step. PTB warns about exactly that setup.
     warnings.filterwarnings(
         "ignore", message="If 'per_message=False'", category=PTBUserWarning
     )
@@ -2205,36 +1516,32 @@ def create_bot_application() -> Application:
 
     routine_ask = CallbackQueryHandler(routine_ask_name, pattern=routines.ASK_PATTERN)
     food_ask = CallbackQueryHandler(food_ask_name, pattern=food_lists.ASK_PATTERN)
-    # Past the fallbacks' two reply-keyboard buttons, or it would swallow them.
-    routine_tick = MessageHandler(
-        filters.TEXT
-        & ~filters.COMMAND
-        & ~filters.Regex("^(❓ О боте|💎 Получить подписку)$"),
-        typed_routine_tick,
+    # A photo, a file or a voice while a name is waited for is a meal, not the name.
+    media_leaves_wait = MessageHandler(
+        ~filters.TEXT & ~filters.COMMAND, _capture_and_leave_wait
+    )
+    # What the subscription keyboard sends. Anything else goes on to the router: a
+    # subscriber whose state stayed here after a grant still has a diary.
+    subscription_labels = MessageHandler(
+        filters.Regex("^(❓ О боте|💎 Получить подписку|📱 Связаться с админом)$"),
+        handle_subscription_inquiry,
     )
     conv_handler = ConversationHandler(
         # The menu buttons are entry points too: the conversation state lives in
         # memory, so after a bot restart they would otherwise do nothing until
-        # /start.
+        # /start. Everything else a person sends is the router's, below.
         entry_points=[
             CommandHandler("start", start),
             *menu(),
-            # A bare weight ("72,5") outside any step: the weight screen's
-            # prompt still holds after a restart or an undo.
-            MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
-            MessageHandler(filters.PHOTO, quick_meal_photo),
+            subscription_labels,
             routine_ask,
             food_ask,
-            routine_tick,
         ],
         states={
             CHOOSING_ACTION: [
                 *menu(),
-                MessageHandler(filters.Regex(weight_screen.KG_PATTERN), process_weight),
-                MessageHandler(filters.PHOTO, quick_meal_photo),
                 routine_ask,
                 food_ask,
-                routine_tick,
             ],
             ENTERING_FOOD_NAME: [
                 *menu(),
@@ -2243,7 +1550,7 @@ def create_bot_application() -> Application:
                 CallbackQueryHandler(
                     food_leave_name, pattern=f"^{food_lists.CALLBACK_PREFIX}"
                 ),
-                MessageHandler(filters.PHOTO, quick_meal_photo),
+                media_leaves_wait,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_food_name),
             ],
             ENTERING_ROUTINE_NAME: [
@@ -2253,44 +1560,17 @@ def create_bot_application() -> Application:
                 CallbackQueryHandler(
                     routine_leave_name, pattern=f"^{routines.CALLBACK_PREFIX}"
                 ),
-                MessageHandler(filters.PHOTO, quick_meal_photo),
+                media_leaves_wait,
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_routine_name),
             ],
             ENTERING_WEIGHT: [
                 *menu(),
                 routine_ask,
                 food_ask,
-                MessageHandler(filters.PHOTO, quick_meal_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_weight),
-            ],
-            ADDING_MEAL_TIME: [
-                MessageHandler(filters.PHOTO, quick_meal_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_meal_time),
-            ],
-            ADDING_MEAL: [
-                # Ahead of the analysis: «Отмена» and the menu buttons are not
-                # food, and sending them to the model costs money. The menu
-                # keyboard is still on screen after a failed quick photo.
-                MessageHandler(filters.Regex("^Отмена$"), cancel),
-                *menu(),
-                MessageHandler(
-                    (filters.TEXT | filters.PHOTO) & ~filters.COMMAND,
-                    process_meal_input,
-                ),
-            ],
-            CONFIRMING_MEAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_meal),
-                CallbackQueryHandler(
-                    meal_callback, pattern=f"^{meal_draft.CALLBACK_PREFIX}"
-                ),
-            ],
-            CHOOSING_MODEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_model_choice),
             ],
             SUBSCRIPTION_INQUIRY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND, handle_subscription_inquiry
-                )
+                *menu(),
+                subscription_labels,
             ],
         },
         fallbacks=[
@@ -2304,6 +1584,15 @@ def create_bot_application() -> Application:
     )
 
     application.add_handler(conv_handler)
+
+    # Section 5.1: every private message the conversation did not take. No state of
+    # the conversation is involved, so a wait never eats food.
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & ~filters.COMMAND,
+            capture_message,
+        )
+    )
 
     # Favorites inline buttons (stateless; see favorites_callback).
     application.add_handler(
@@ -2363,8 +1652,7 @@ def create_bot_application() -> Application:
         group=3,
     )
 
-    # Draft buttons tapped outside the confirm step (after a save, a cancel or
-    # a restart): the conversation above did not take them.
+    # Buttons of the retired draft, still on someone's screen.
     application.add_handler(
         CallbackQueryHandler(
             meal_stale_callback, pattern=f"^{meal_draft.CALLBACK_PREFIX}"

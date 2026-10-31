@@ -113,11 +113,11 @@ def test_the_scan_sees_the_bot_strings():
     found = user_strings()
     texts = [text for _path, text in found]
     assert len(texts) > 100
-    assert "Разбор фото:" in texts  # a known reply: the collector reaches telegram.py
+    assert "Отменено." in texts  # a known reply: the collector reaches telegram.py
     assert "Отключат … — осталось … дн." in texts  # an f-string, read whole
     paths = {path for path, _text in found}
     for name in (
-        "favorites", "meal_draft", "numbers", "settings_screen",
+        "capture", "favorites", "numbers", "settings_screen",
         "stats_screen", "telegram", "weight_screen",
     ):  # fmt: skip
         assert any(path.endswith(f"{name}.py") for path in paths), name

@@ -73,6 +73,8 @@ class MealItem(Base, BaseClass):
         Integer, ForeignKey("meal_items.id", ondelete="SET NULL"), nullable=True
     )
     removed_at = Column(DateTime(timezone=True), nullable=True)
+    # The capture this dish came from, once it has one. A plain integer, as above.
+    source_id = Column(Integer, nullable=True)
     # NOT NULL + server_default (TD-006 lesson)
     created_at = Column(
         DateTime(timezone=True),
