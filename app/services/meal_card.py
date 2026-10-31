@@ -802,6 +802,11 @@ def _dish(
                     f"ml:ni:{item.id}:{0 if open_now else 1}:{back}",
                 )
             )
+        if counted and item.personal_food_id is not None:
+            token = f"i{item.id}" if back == "r" else f"i{item.id}-{back}"
+            fourth.append(
+                _button("🍲 Всё о блюде", f"dh:o:{item.personal_food_id}:{token}")
+            )
         if undo_button:
             fourth.append(undo_button)
         if fourth:
@@ -912,14 +917,16 @@ def _user(db, telegram_id: int) -> Optional[User]:
     return db.query(User).filter(User.telegram_id == telegram_id).first()
 
 
-def _open_slot(t: _Tap, kind: str, back: str, *, meal_id: int, item_id=None) -> None:
+def _open_slot(
+    t: _Tap, kind: str, back: str, *, meal_id=None, item_id=None, food_id=None
+) -> None:
     t.user.settings = {
         **(t.user.settings or {}),
         ASK: {
             "kind": kind,
             "meal_id": meal_id,
             "item_id": item_id,
-            "food_id": None,
+            "food_id": food_id,
             "day": None,
             "message_id": t.message_id,
             "at": t.now.isoformat(),

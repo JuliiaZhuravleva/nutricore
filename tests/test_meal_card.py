@@ -554,14 +554,14 @@ def test_n2_is_the_spec_screen(db, owner):
         ["🔄 Заменить", "🗑 Из приёма"],
         ["½", "×1", "✓ ×2"],
         ["⚖️ Граммы", "⭐ В избранное"],
-        ["🔢 Цифры"],
+        ["🔢 Цифры", "🍲 Всё о блюде"],
         ["⬅️ К приёму"],
     ]
     assert _data(screen) == [
         [f"ml:pk:{item.id}:r:r:0", f"ml:x:{item.id}:r"],
         [f"ml:q:{item.id}:h:r", f"ml:q:{item.id}:1:r", f"ml:q:{item.id}:2:r"],
         [f"ml:g:{item.id}:r", f"ml:fi:{item.id}:1:r"],
-        [f"ml:ni:{item.id}:1:r"],
+        [f"ml:ni:{item.id}:1:r", f"dh:o:{item.personal_food_id}:i{item.id}"],
         [f"ml:o:{meal.id}:r"],
     ]
 
@@ -898,7 +898,7 @@ def test_a_photo_a_command_and_a_menu_button_close_the_slot_and_go_on(db, owner)
 def test_every_main_menu_label_passes_a_name_slot(db, owner):
     meal, _item = _one(db, owner)
     labels = [b.text for row in tg.main_keyboard.keyboard for b in row]
-    assert len(labels) == 5
+    assert len(labels) == 6
     for label in labels:
         _tap(db, f"ml:pk:{meal.id}:a:r:0", now=datetime.now(UTC))
         _message, _bot, consumed = _send(label)
@@ -1861,8 +1861,8 @@ def _named_without_their_label(text, labels):
     for mark, word in named:
         if f"«{word}»" in text:
             found.append(f"«{word}»")
-    for line in text.split("\n")[1:]:  # the title's mark is the screen's own
-        if line.startswith("<blockquote"):
+    for line in text.split("\n"):  # a title's mark is the screen's own
+        if line.startswith(("<blockquote", "<b>")):
             continue
         for mark in {mark for mark, _word in named}:
             for match in re.finditer(re.escape(mark), line):
@@ -1884,6 +1884,7 @@ def test_a_button_in_a_sentence_carries_its_whole_label(db, owner):
     # Controls: both ways of naming a button short are findings, the whole label is not.
     assert _named_without_their_label("Заголовок\nНажми «Цифры».", {"🔢 Цифры"})
     assert _named_without_their_label("Заголовок\nНажми 🔢 и всё.", {"🔢 Цифры"})
+    assert not _named_without_their_label("<b>🔢 Заголовок</b>", {"🔢 Цифры"})
     assert not _named_without_their_label("Заголовок\nНажми «🔢 Цифры».", {"🔢 Цифры"})
     two = {"🗑 Удалить", "🗑 Из приёма"}
     assert not _named_without_their_label("Заголовок\nНажми 🗑 Удалить.", two)

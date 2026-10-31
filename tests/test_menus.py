@@ -797,6 +797,7 @@ _MENU = {
     "📊 Статистика": "show_statistics",
     "⚖️ Мой вес": "show_weight",
     "⚙️ Настройки": "show_settings",
+    "🍲 Блюда": "show_dishes",
 }
 
 
@@ -829,6 +830,8 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
     assert not by_callback[tg.settings_callback].pattern.match("st:w")
     assert by_callback[tg.meal_card_callback].pattern.match("ml:o:1:r")
     assert not by_callback[tg.meal_card_callback].pattern.match("meal:1:save")
+    assert by_callback[tg.dishes_callback].pattern.match("dh:l:0")
+    assert not by_callback[tg.dishes_callback].pattern.match("ml:o:1:r")
 
 
 def test_week_title_spans_a_month_boundary():

@@ -62,6 +62,7 @@ M10B = (
 )
 M12 = (
     "Теперь еда записывается сразу, без подтверждения. "
+    "В меню появились «🍲 Блюда». "
     "Как это работает: ⚙️ Настройки → ℹ️ Как это работает."
 )
 
@@ -857,10 +858,9 @@ def test_m12_is_not_sent_while_it_would_be_false(db, owner, reader, unseen):
     assert db.get(User, owner.id).settings["rollout_seen"] is True
 
 
-def test_m12_control_a_second_sentence_about_dishes_waits_for_its_slice():
-    assert "Блюда" not in capture.M12_ROLLOUT
+def test_m12_says_the_dishes_are_in_the_menu_and_they_are():
     assert capture.M12_ROLLOUT == M12
-    assert "🍲 Блюда" not in str(tg.main_keyboard.to_dict())
+    assert "🍲 Блюда" in str(tg.main_keyboard.to_dict())
 
 
 # --- layout -------------------------------------------------------------------------

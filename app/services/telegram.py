@@ -43,6 +43,7 @@ from app.services import (
     ai_errors,
     capture,
     custom_emoji,
+    dishes,
     explain_screen,
     favorites,
     food_lists,
@@ -143,7 +144,7 @@ main_keyboard = ReplyKeyboardMarkup(
     [
         ["🍽 Добавить приём пищи", "⭐ Избранное"],
         ["📊 Статистика", "⚖️ Мой вес"],
-        ["⚙️ Настройки"],
+        ["⚙️ Настройки", "🍲 Блюда"],
     ],
     resize_keyboard=True,
 )
@@ -151,6 +152,7 @@ main_keyboard = ReplyKeyboardMarkup(
 # What a reply keyboard sends: never the answer to a typed slot.
 _KEYBOARD_LABEL = re.compile(
     "🍽 Добавить при[её]м пищи|⭐ Избранное|📊 Статистика|⚖️ Мой вес|⚙️ Настройки"
+    "|🍲 Блюда"
     "|❓ О боте|💎 Получить подписку|📱 Связаться с админом|Отмена"
     "|Сейчас|Завтрак|Обед|Ужин|Назад"
 )
@@ -237,10 +239,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _new_meal_hint() -> dict:
     """M9a: no state, no steps, the next thing sent is the meal."""
     favorite = InlineKeyboardButton("⭐ Избранное", callback_data="fav:p:0")
+    all_dishes = InlineKeyboardButton("🍲 Блюда", callback_data="dh:l:0")
     return {
         "text": capture.M9A_NEW_MEAL,
         "parse_mode": ParseMode.HTML,
-        "reply_markup": InlineKeyboardMarkup([[favorite]]),
+        "reply_markup": InlineKeyboardMarkup([[favorite, all_dishes]]),
     }
 
 
@@ -1309,6 +1312,17 @@ async def show_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return CHOOSING_ACTION
 
 
+@subscription_required
+async def show_dishes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """The dish base (menu button «🍲 Блюда»)."""
+    with SessionLocal() as db:
+        screen = dishes.open_list(db, update.effective_user.id)
+    await update.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+    return CHOOSING_ACTION
+
+
 _card_delivery = CardDelivery(PictureRenderer(Path(settings.RENDER_DIR)))
 
 
@@ -1330,6 +1344,28 @@ async def _send_files(context, chat_id: int, screen):
         logger.warning("Kept photo not sent: %s", type(e).__name__)
         return replace(screen, toast="Не получилось, попробуй ещё раз")
     return screen
+
+
+async def dishes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The ``dh:`` verbs. A list or a dish holds no meal; a dish just logged does, so a
+    reply to it means that meal."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+
+    def handle(db, telegram_id: int, data: str):
+        screen = dishes.handle_callback(db, telegram_id, data, message_id=message_id)
+        if screen.text:
+            capture.tapped(db, chat_id, message_id, screen)
+        return screen
+
+    await _screen_callback(
+        update,
+        handle,
+        "🔒 Блюда доступны с подпиской",
+        "Dishes",
+        deliver=_card_delivery.tap,
+    )
 
 
 async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2141,6 +2177,7 @@ def create_bot_application() -> Application:
             MessageHandler(filters.Regex("^📊 Статистика$"), show_statistics),
             MessageHandler(filters.Regex("^⚖️ Мой вес$"), show_weight),
             MessageHandler(filters.Regex("^⚙️ Настройки$"), show_settings),
+            MessageHandler(filters.Regex("^🍲 Блюда$"), show_dishes),
             CallbackQueryHandler(
                 add_meal_from_card, pattern=f"^{stats_screen.ADD_DATA}$"
             ),
@@ -2233,6 +2270,12 @@ def create_bot_application() -> Application:
         )
     )
 
+    # The dish base (stateless, like favorites). It holds a typed slot of its own, so
+    # a tap here closes that itself and does not count as leaving one (see below).
+    application.add_handler(
+        CallbackQueryHandler(dishes_callback, pattern=f"^{dishes.CALLBACK_PREFIX}")
+    )
+
     # Statistics tabs and the weight undo (stateless, like favorites).
     application.add_handler(
         CallbackQueryHandler(stats_callback, pattern=f"^{stats_screen.CALLBACK_PREFIX}")
@@ -2279,7 +2322,8 @@ def create_bot_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(
-            meal_slot_left_by_tap, pattern=f"^(?!{meal_card.CALLBACK_PREFIX})"
+            meal_slot_left_by_tap,
+            pattern=f"^(?!{meal_card.CALLBACK_PREFIX}|{dishes.CALLBACK_PREFIX})",
         ),
         group=3,
     )

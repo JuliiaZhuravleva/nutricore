@@ -1213,7 +1213,7 @@ def test_the_menu_button_is_a_hint_with_favorites_and_no_state(db, owner, reader
         "<b>🍽 Новый приём</b>\nПришли фото, голосовое или напиши, что было. "
         "Время и остальное можно поправить потом."
     )
-    assert _kb(wire.sent()[0]) == [["fav:p:0"]]
+    assert _kb(wire.sent()[0]) == [["fav:p:0", "dh:l:0"]]
     assert len(_meals(db)) == 1
 
 
