@@ -2,6 +2,9 @@
 
 Public interface:
   upsert()                — idempotent insert-or-update by (user_id, lower(canonical_name))
+  names_of()/find_by_name() — every name a dish answers to, hidden and merged included
+  list_live()             — what a list may show: neither hidden nor merged
+  rename()/holder_of_name() — old name to alias; the row a new name would collide with
   get_by_barcode()        — exact-barcode lookup (Phase A short-circuit for B3)
   find_similar()          — ANN query over personal_food_embeddings <=> cosine distance
                             THIS IS THE MOCKABLE B6 SEAM (see ADR-0003 §4d)
@@ -44,6 +47,25 @@ class AnnQueryError(RuntimeError):
 UTC = datetime.timezone.utc
 
 
+NO_NAME = "Блюдо"
+
+
+def _key(name: str) -> str:
+    return name.strip().lower()
+
+
+def _live(food: PersonalFood, get) -> PersonalFood:
+    """Where a merged dish ended up. A loop of merges ends instead of hanging."""
+    seen = {food.id}
+    while food.merged_into_id is not None and food.merged_into_id not in seen:
+        target = get(food.merged_into_id)
+        if target is None:
+            break
+        seen.add(target.id)
+        food = target
+    return food
+
+
 def _numbers_quality(source: Optional[str], current: Optional[str] = None) -> str:
     """How far the numbers just written can be trusted. A reuse of the base's own
     numbers (``saved_rag``) tells nothing new, so it keeps what the row had."""
@@ -62,22 +84,64 @@ class CRUDPersonalFood:
     # ------------------------------------------------------------------
 
     def names_of(self, db: Session, user_id: int) -> dict:
-        """The user's dishes by lower-cased name.
+        """Every name the user's dishes answer to, lower-cased, and its dish.
 
         Python-side lower() on purpose: SQLite's built-in one is ASCII-only, which
         breaks Cyrillic. A personal DB has <1000 rows per user (ADR-0003 §1), so the
         scan is cheap.
+
+        This is the writing side, so it is not a list: a hidden dish answers, because
+        typing its name brings it back and a new row would break the unique key. A
+        merged name answers with the dish it went into. A dish's own name beats
+        another's old name.
         """
         stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
-        return {
-            food.canonical_name.strip().lower(): food
-            for food in db.execute(stmt).scalars().all()
-        }
+        rows = db.execute(stmt).scalars().all()
+        by_id = {food.id: food for food in rows}
+        names = {}
+        for food in rows:
+            for alias in food.aliases or []:
+                names[_key(alias)] = _live(food, by_id.get)
+        for food in rows:
+            names[_key(food.canonical_name)] = _live(food, by_id.get)
+        return names
 
     def find_by_name(
         self, db: Session, user_id: int, name: str
     ) -> Optional[PersonalFood]:
-        return self.names_of(db, user_id).get(name.strip().lower())
+        return self.names_of(db, user_id).get(_key(name))
+
+    def rename(self, db: Session, dish: PersonalFood, name: str) -> None:
+        """The old name becomes an alias. Only flushes, and checks nothing: a taken
+        name is the caller's to refuse first, by ``holder_of_name``."""
+        new = name.strip()
+        aliases = [a for a in dish.aliases or [] if _key(a) != _key(new)]
+        old = dish.canonical_name
+        if _key(old) != _key(new) and _key(old) not in {_key(a) for a in aliases}:
+            aliases.append(old)
+        dish.canonical_name = new
+        dish.aliases = aliases
+        db.flush()
+
+    def for_favourite(self, db: Session, user_id: int, name: str) -> PersonalFood:
+        """The dish a new ⭐ belongs to. One it finds keeps its numbers and comes back
+        if hidden, since a star is asking for it. A new one has none: the favourite
+        holds them, as a portion. Only flushes: it joins the row being written."""
+        dish = self.find_by_name(db, user_id, name)
+        if dish is not None:
+            dish.hidden_at = None
+            db.flush()
+            return dish
+        dish = self.add_dish(
+            db,
+            user_id=user_id,
+            name=name.strip() or NO_NAME,
+            resolution_source="favorite",
+        )
+        dish.numbers_basis = "per_portion"
+        dish.times_used = 0
+        db.flush()
+        return dish
 
     def add_dish(
         self,
@@ -152,6 +216,7 @@ class CRUDPersonalFood:
             if is_new_confirmation:
                 existing.times_used = (existing.times_used or 0) + 1
                 existing.last_used_at = now
+                existing.hidden_at = None  # eaten again; a retry is not that
             existing.updated_at = now
             if meal_id is not None:
                 existing.meal_id = meal_id
@@ -247,6 +312,41 @@ class CRUDPersonalFood:
     # Read operations
     # ------------------------------------------------------------------
 
+    def list_live(self, db: Session, user_id: int) -> List[PersonalFood]:
+        """The dishes a list may show: neither hidden nor merged."""
+        stmt = select(PersonalFood).where(
+            PersonalFood.user_id == user_id,
+            PersonalFood.hidden_at.is_(None),
+            PersonalFood.merged_into_id.is_(None),
+        )
+        return list(db.execute(stmt).scalars().all())
+
+    def get_for_user(
+        self, db: Session, food_id: int, user_id: int
+    ) -> Optional[PersonalFood]:
+        """The dish if it belongs to this user, in any state."""
+        dish = db.get(PersonalFood, food_id)
+        return dish if dish is not None and dish.user_id == user_id else None
+
+    def live_of(self, db: Session, dish: PersonalFood) -> PersonalFood:
+        """The dish a merged one went into, along the chain; else the dish itself."""
+        return _live(dish, lambda food_id: db.get(PersonalFood, food_id))
+
+    def holder_of_name(
+        self, db: Session, user_id: int, name: str, without: Optional[int] = None
+    ) -> Optional[PersonalFood]:
+        """The row whose own name this is, in any state: the unique key sees them all.
+
+        A rename onto a hidden or merged row's name is an IntegrityError on Postgres,
+        while SQLite has no such key and would let it through. An alias holds no place
+        in the key. Compared in Python, as ``names_of``.
+        """
+        stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
+        for food in db.execute(stmt).scalars().all():
+            if food.id != without and _key(food.canonical_name) == _key(name):
+                return food
+        return None
+
     def get_by_barcode(
         self,
         db: Session,
@@ -272,6 +372,8 @@ class CRUDPersonalFood:
             .where(
                 PersonalFood.user_id == user_id,
                 PersonalFood.barcode == barcode,
+                PersonalFood.hidden_at.is_(None),
+                PersonalFood.merged_into_id.is_(None),
             )
             .order_by(PersonalFood.times_used.desc(), PersonalFood.id.desc())
         )
@@ -341,6 +443,8 @@ class CRUDPersonalFood:
             FROM personal_food_embeddings pfe
             JOIN personal_foods pf ON pf.id = pfe.personal_food_id
             WHERE pf.user_id = :user_id
+              AND pf.hidden_at IS NULL
+              AND pf.merged_into_id IS NULL
             ORDER BY cosine_distance
             LIMIT 1
             """

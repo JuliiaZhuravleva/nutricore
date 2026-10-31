@@ -22,6 +22,7 @@ import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     DateTime,
@@ -151,6 +152,16 @@ class PersonalFood(Base, BaseClass):
     # A person typed these numbers: upsert must not overwrite them.
     numbers_by_user = Column(
         Boolean, nullable=False, default=False, server_default=false()
+    )
+
+    # The names it had before a rename. Typing one finds this dish. Reassign a new
+    # list to change it: an in-place change to a JSON column is not saved.
+    aliases = Column(JSON, nullable=True)
+    # Hidden and merged rows leave the lists, the barcode and the ANN lookup, and keep
+    # their name in the unique key, so anything writing by name has to find them.
+    hidden_at = Column(DateTime(timezone=True), nullable=True)
+    merged_into_id = Column(
+        Integer, ForeignKey("personal_foods.id", ondelete="SET NULL"), nullable=True
     )
 
     # NOT NULL + server_default (TD-006 lesson)

@@ -25,6 +25,7 @@ from typing import Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import NAME_MAX, crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
@@ -202,6 +203,7 @@ def _used(db: Session, dish: PersonalFood, meal: Meal, *, one_dish: bool) -> Non
     """
     dish.times_used = (dish.times_used or 0) + 1
     dish.last_used_at = datetime.now(UTC)
+    dish.hidden_at = None  # eating it again brings it back
     if one_dish and not _is_plate_row(db, dish):
         dish.meal_id = meal.id
 
@@ -294,7 +296,24 @@ def _source_grams(meal: Meal) -> Optional[float]:
 
 
 def dish_portion(db: Session, dish: PersonalFood) -> Portion:
-    """A serving of the dish: its usual portion, else its last one. No model.
+    """A serving of the dish: its own, else the portion its ⭐ holds. No model.
+
+    A favourite's name is a known name, and a known name costs no read, so a dish with
+    no numbers of its own would write an empty meal where the favourite knows the
+    answer. A removed favourite lends nothing: what a person threw away serves no
+    portion.
+    """
+    own = _own_portion(db, dish)
+    if own.numbers is not None and any(v is not None for v in own.numbers.values()):
+        return own
+    fav = crud_favorite_meal.active_of_dish(db, dish.id)
+    if fav is None or all(getattr(fav, key) is None for key in FIELDS):
+        return own
+    return Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
+
+
+def _own_portion(db: Session, dish: PersonalFood) -> Portion:
+    """Its usual portion, else its last one.
 
     A plate row serves no numbers (H6). A dish corrected in the base reaches future
     meals, so known grams count at the dish's numbers of today, and a recorded

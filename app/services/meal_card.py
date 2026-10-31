@@ -1487,9 +1487,7 @@ def _stamp(moment: Optional[datetime]) -> float:
 
 def _pick_list(t: _Tap, without: Optional[int]) -> list:
     """(dish, starred): ⭐ first, then the most recent."""
-    dishes = t.db.scalars(
-        select(PersonalFood).where(PersonalFood.user_id == t.user.id)
-    ).all()
+    dishes = crud_personal_food.list_live(t.db, t.user.id)
     stars = {
         fav.name.casefold() for fav in crud_favorite_meal.list_active(t.db, t.user.id)
     }
@@ -1592,6 +1590,8 @@ def _picked_dish(t: _Tap, food_id: int, data: str) -> Optional[PersonalFood]:
     dish = _row(t.db, PersonalFood, food_id)
     if dish is not None and dish.user_id != t.user.id:
         raise _Answer(_unknown(t, data))
+    if dish is not None and (dish.hidden_at or dish.merged_into_id):
+        return None  # a picker still on screen: gone from the list, so gone here
     return dish
 
 
@@ -1701,6 +1701,7 @@ def _v_star_dish(t: _Tap, data: str, iid: str, want: str, back: str) -> Screen:
         numbers=numbers,
         nutrients=nutrients,
         source_meal_id=meal.id,
+        usual_grams=meal_items._item_grams(item),
     )
     return _dish(t, item, meal, back)
 
