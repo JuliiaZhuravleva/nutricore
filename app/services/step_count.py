@@ -49,8 +49,14 @@ def days_word(count: int) -> str:
 
 
 def _moments(meals: list, zone: ZoneInfo) -> list:
-    """The times the records hold. A meal with only a day has none to give."""
-    return sorted(local_time(m.meal_time, zone) for m in meals if has_clock(m))
+    """The times the records hold. A meal with only a day has none to give, and a photo
+    that held no food says the person was there, not that they ate. It still counts as
+    logged, which is another question."""
+    return sorted(
+        local_time(m.meal_time, zone)
+        for m in meals
+        if has_clock(m) and getattr(m, "reading_status", None) != "no_food"
+    )
 
 
 def _turn(moments: list) -> Optional[int]:

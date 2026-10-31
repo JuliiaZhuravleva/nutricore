@@ -30,15 +30,18 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.orm import object_session
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_meal import crud_meal
+from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
 from app.services import (
     day_card,
     food_lists,
+    meal_items,
     next_step,
     routines,
     step_count,
@@ -187,18 +190,30 @@ def _tabs(
 # --- screens ----------------------------------------------------------------
 
 
+def _numbers_mark(meals: list[Meal]) -> str:
+    """≈, unless every meal behind the number is exact (2.6): a total is as exact as
+    the least exact of its parts. A meal cut off from its rows counts as an estimate."""
+    for meal in meals:
+        db = object_session(meal)
+        items = crud_meal_item.live(db, meal.id) if db is not None else []
+        if not meal_items.numbers_exact(meal, items):
+            return "≈ "
+    return ""
+
+
 def _numbers_block(meals: list[Meal], zone: ZoneInfo) -> str:
     """The day in numbers, collapsed: only a tap away and never the first thing."""
     counted = [meal for meal in meals if _is_counted(meal)]
     if counted:
-        day = [f"≈ {_kcal(_sum(counted, 'calories'))}", *_macros(counted)]
+        amount = f"{_numbers_mark(counted)}{_kcal(_sum(counted, 'calories'))}"
+        day = [amount, *_macros(counted)]
         rows = ["🔢 За день: " + " · ".join(day)]
     else:
         rows = [f"🔢 За день: {NOT_COUNTED}"]
     for meal in meals:
         when = day_card.clock(meal, zone) if meal.meal_time else "—"
         name = html.escape(_meal_name(meal))
-        amount = f"≈ {_kcal(_sum([meal], 'calories'))}"
+        amount = f"{_numbers_mark([meal])}{_kcal(_sum([meal], 'calories'))}"
         rows.append(f"{when} {name} — {amount if _is_counted(meal) else NOT_COUNTED}")
     if len(counted) < len(meals):
         rows.append(f"Не посчитано приёмов: {len(meals) - len(counted)}")
@@ -299,7 +314,10 @@ def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
     everything = [meal for _day, meals in counted for meal in meals]
     if known_days:
         average = _sum(everything, "calories") / known_days
-        parts = [f"≈ {_kcal(average)}", *_macros(everything, known_days)]
+        parts = [
+            f"{_numbers_mark(everything)}{_kcal(average)}",
+            *_macros(everything, known_days),
+        ]
         rows = ["🔢 В среднем за день с записями: " + " · ".join(parts)]
     else:
         rows = [f"🔢 В среднем за день с записями: {NOT_COUNTED}"]

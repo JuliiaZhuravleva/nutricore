@@ -1021,8 +1021,11 @@ def test_a_message_gone_back_to_the_stats_answers_for_no_meal(db, owner, reader,
     ).first()
 
 
-def test_a_reply_to_a_line_still_read_stops_saying_it_reads(db, owner, reader, clock):
-    """No line stays on «читаю»: the read comes back late and finds ``rev`` moved."""
+def test_a_reply_to_a_line_still_read_loses_neither_the_plate_nor_the_words(
+    db, owner, reader, clock
+):
+    """Words added to a photo still being read leave the read its place: the line goes
+    on saying «читаю» and the plate lands beside the words."""
     reader.gate = asyncio.Event()
 
     async def steps(application, wire):
@@ -1053,17 +1056,17 @@ def test_a_reply_to_a_line_still_read_stops_saying_it_reads(db, owner, reader, c
                     application.bot,
                 )
             )
-            assert wire.edits()[-1]["message_id"] == row.message_id
-            assert wire.edits()[-1]["text"] == "Записано: сыр."
-            edits = len(wire.edits())
+            assert wire.edits() == []
+            assert wire.sent()[-1]["text"].startswith("Добавлено")
         finally:
             # A failed assertion must not leave the read waiting for ever.
             reader.gate.set()
         await asyncio.gather(*list(tg._meal_reads))
-        assert len(wire.edits()) == edits
+        assert wire.edits()[-1]["message_id"] == row.message_id
+        assert "рис" in wire.edits()[-1]["text"] and "сыр" in wire.edits()[-1]["text"]
 
     asyncio.run(_with_app(steps))
-    assert _item_names(db, _live(db)[0]) == ["сыр"]
+    assert sorted(_item_names(db, _live(db)[0])) == ["курица", "овощи", "рис", "сыр"]
 
 
 def test_a_stop_word_in_reply_is_no_dish(db, owner, reader, clock):

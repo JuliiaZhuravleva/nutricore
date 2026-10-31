@@ -194,10 +194,25 @@ _SECOND_HELPING = re.compile(
     r"еще\s+порци[яю]|добавк[ау]|втор(?:ая|ую)\s+порци[яю]"
     r"|еще\s+(?:один|одна|одну|одно)"
 )
+# Words that hold no dish and only answer: «нет, спасибо» is no «нет, индейка».
+STOP_WORDS = frozenset(("привет", "спасибо", "ок", "окей", "да", "нет", "пока"))
 _IT_WAS = re.compile(r"(?:это\s+был[аои]?\s+|нет,\s*)(.+)", _WORDS)
+_SAYS_NO = re.compile(r"нет,\s*(.+)", _WORDS)
 _NOT_BUT = re.compile(r"не\s+(.+?),\s*а\s+(.+)", _WORDS)
 _REMOVE_WORDS = re.compile(r"(?:убери|убрать)\s+(.+)", _WORDS)
 _NAME_EDGE = " .,!;:\n"
+
+
+def _no_dish(rest: str) -> bool:
+    """What follows «нет,»: a thanks, or a denial, names nothing to write."""
+    rest = rest.strip(_NAME_EDGE + "…)(").casefold()
+    return rest in STOP_WORDS or rest.startswith("не ")
+
+
+def says_no(text: str) -> bool:
+    """«нет, спасибо», «нет, не ел»: an answer, and no food in it."""
+    match = _SAYS_NO.fullmatch(text.strip())
+    return match is not None and _no_dish(match.group(1))
 
 
 def correction(text: str) -> Optional[tuple]:
@@ -212,6 +227,8 @@ def correction(text: str) -> Optional[tuple]:
     if match:
         found = CHANGE, match.group(2), match.group(1).strip()
     elif match := _IT_WAS.fullmatch(body):
+        if says_no(body):
+            return None
         found = CHANGE, match.group(1), None
     elif match := _REMOVE_WORDS.fullmatch(body):
         found = REMOVE, match.group(1), None

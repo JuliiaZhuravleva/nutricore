@@ -133,7 +133,7 @@ _PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY, "y": DAY_ONLY}
 # Two taps on one picked dish are one wish; the same dish a moment later is another.
 REPEAT_WINDOW = timedelta(seconds=3)
 
-_EXACT = frozenset({"barcode", "label", "user"})
+_EXACT = meal_items.EXACT_SOURCES
 _QUANTITY = {"h": 0.5, "1": 1.0, "2": 2.0}
 _PORTION = {0.5: "½ порции", 2.0: "2 порции"}
 _DONE_NOTICE = {
@@ -361,13 +361,24 @@ def _blockquote(lines: list) -> Optional[str]:
     return "<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
 
 
+def line_what(db, meal: Meal, user: Optional[User]) -> str:
+    """What a meal's line holds, one wording for the answer and for the way back to it."""
+    what = _what(db, meal)
+    if what and shows_numbers(user) and meal.calories is not None:
+        items = crud_meal_item.live(db, meal.id)
+        exact = meal_items.numbers_exact(meal, items)
+        what += f" · {_mark(exact)}{num(meal.calories)} ккал"
+    return what
+
+
+def line_plain(meal: Meal) -> str:
+    photos = len(meal.photos or [])
+    return f"Записано по {photos} фото" if photos > 1 else "Записано"
+
+
 def _meal_block(meal: Meal, items: list) -> Optional[str]:
     counted = [item for item in items if _counted(item)]
-    exact = (
-        bool(counted)
-        and meal.numbers_basis == "items"
-        and all(_is_exact(item) for item in counted)
-    )
+    exact = meal_items.numbers_exact(meal, items)
     totals = {key: getattr(meal, key) for key in meal_items.FIELDS}
     lines = [line for line in (_sum_line(totals, exact),) if line]
     for item in counted:
@@ -1266,8 +1277,8 @@ def _v_line(t: _Tap, data: str, mid: str) -> Screen:
             return Screen(
                 pending_text(kind, meal), None, meal_id=meal.id, view="pending"
             )
-    what = _what(t.db, meal)
-    head = line_head(meal, t.zone)
+    what = line_what(t.db, meal, t.user)
+    head = line_head(meal, t.zone, line_plain(meal))
     text = f"{head}: {what}." if what else f"{head}."
     if meal.is_draft:
         text = "\n".join(draft_lines(meal, t.zone, what))

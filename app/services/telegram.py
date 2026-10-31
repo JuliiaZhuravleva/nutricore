@@ -1,8 +1,10 @@
 import asyncio
 import base64
 import logging
+import os
 import re
 import time
+import traceback
 import warnings
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -20,7 +22,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -44,6 +46,7 @@ from app.services import (
     explain_screen,
     favorites,
     food_lists,
+    image_clean,
 )
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
@@ -110,6 +113,9 @@ _live_reads: Dict[int, Optional[int]] = {}
 _read_holders: Dict[int, asyncio.Task] = {}  # which task holds a meal in _live_reads
 
 SWEEP_EVERY_SECONDS = 300
+SHOW_TRIES = 3  # a line, to Telegram: past a moment of it, the sweep owes the line
+SHOW_PAUSE_SECONDS = 1.0
+SHOW_WAIT_MAX_SECONDS = 5.0  # a flood wait longer than this is not waited out here
 REPLAY_LIMIT = REPROCESS_BATCH_LIMIT  # one start's pending reads; the rest wait
 SWEEP_TASK = "meal_sweep"
 REPLAY_DONE = "meal_replay_done"
@@ -265,7 +271,9 @@ _parse_nutrition = parse_nutrition
 def _image_data_url(image_bytes) -> str:
     """base64 data URL for OpenAI vision — never Telegram's token-bearing file URL
     (api.telegram.org/file/bot<TOKEN>/…), and no dependency on OpenAI fetching it."""
-    return "data:image/jpeg;base64," + base64.b64encode(bytes(image_bytes)).decode()
+    clean = image_clean.clean(bytes(image_bytes))
+    mime = image_clean.mime_of(clean)
+    return f"data:{mime};base64," + base64.b64encode(clean).decode()
 
 
 def _schedule_personal_food_save(
@@ -351,12 +359,10 @@ def _schedule_personal_food_save(
             # a wrong number that outlives the meal that created it. Learn nothing
             # rather than learn a lie.
             logger.warning(
-                "_schedule_personal_food_save: no per-100g basis for %r "
-                "(user_id=%d meal_id=%d portion=%r) — not saving to the personal DB",
-                canonical_name,
+                "_schedule_personal_food_save: no per-100g basis "
+                "(user_id=%d meal_id=%d) — not saving to the personal DB",
                 user_id,
                 meal_id,
-                nutrition.get("portion"),
             )
             return
 
@@ -372,9 +378,8 @@ def _schedule_personal_food_save(
             # would create a personal_foods row that can never be served — and
             # that still counts as "learned" for times_used.
             logger.warning(
-                "_schedule_personal_food_save: %r has no usable calories "
+                "_schedule_personal_food_save: no usable calories "
                 "(user_id=%d meal_id=%d) — not saving to the personal DB",
-                canonical_name,
                 user_id,
                 meal_id,
             )
@@ -400,11 +405,9 @@ def _schedule_personal_food_save(
             per_100g_carbs=per_100g_carbs,
         )
         logger.debug(
-            "_schedule_personal_food_save: enqueued for user_id=%d"
-            " meal_id=%d canonical=%r",
+            "_schedule_personal_food_save: enqueued for user_id=%d meal_id=%d",
             user_id,
             meal_id,
-            canonical_name,
         )
     except Exception:
         logger.warning(
@@ -534,21 +537,117 @@ async def _model_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
     return True
 
 
-async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
-    """The result into the same line. Telegram's refusal costs nothing: the record
-    is written."""
-    if line is None or job.line_id is None:
-        return
-    try:
-        await bot.edit_message_text(
+async def _tries(send):
+    """A moment of Telegram is not worth a lost line: a timeout, a network error or a
+    short flood wait is tried again. A refusal is an answer, and it comes out at once.
+    """
+    for left in range(SHOW_TRIES - 1, -1, -1):
+        try:
+            return await send()
+        except BadRequest:
+            raise
+        except RetryAfter as e:
+            wait = float(getattr(e, "retry_after", SHOW_WAIT_MAX_SECONDS + 1))
+            if not left or wait > SHOW_WAIT_MAX_SECONDS:
+                raise
+            await asyncio.sleep(wait)
+        except NetworkError:
+            if not left:
+                raise
+            await asyncio.sleep(SHOW_PAUSE_SECONDS)
+
+
+def _is_not_modified(e: BadRequest) -> bool:
+    return "not modified" in str(e).casefold()
+
+
+async def _edit_line(bot, chat_id: int, message_id: int, line: capture.Line) -> None:
+    await _tries(
+        lambda: bot.edit_message_text(
             line.text,
-            chat_id=job.chat_id,
-            message_id=job.line_id,
+            chat_id=chat_id,
+            message_id=message_id,
             parse_mode=ParseMode.HTML,
             reply_markup=line.markup,
         )
+    )
+
+
+async def _send_unsent(bot, job: capture.Read, line: capture.Line) -> None:
+    """The first line never went out, so nothing can be edited: the answer goes as a
+    message of its own, under what was sent, and is the meal's line from now on."""
+    with SessionLocal() as db:
+        message_id = capture.message_of(db, job.source_id)
+    quote = None
+    if message_id is not None:
+        quote = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
+    try:
+        sent = await _tries(
+            lambda: bot.send_message(
+                job.chat_id,
+                line.text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=line.markup,
+                disable_notification=True,
+                reply_parameters=quote,
+            )
+        )
+    except TelegramError as e:
+        logger.warning("Meal line not sent: %s", type(e).__name__)
+        return
+    _map_line(line, sent, "line")
+
+
+async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
+    """The result into the same line. A refusal costs nothing, the record is written.
+    Telegram being away is another matter: the line would stay on «читаю», so it is owed
+    and the sweep puts it right."""
+    if line is None:
+        return
+    if job.line_id is None:
+        if job.unsent:
+            await _send_unsent(bot, job, line)
+        return
+    try:
+        await _edit_line(bot, job.chat_id, job.line_id, line)
+    except BadRequest as e:
+        if _is_not_modified(e):
+            return
+        logger.warning("Meal line not edited: %s", type(e).__name__)
+        owed = False
+    except (RetryAfter, NetworkError) as e:
+        logger.warning("Meal line not edited, owed: %s", type(e).__name__)
+        owed = True
     except TelegramError as e:
         logger.warning("Meal line not edited: %s", type(e).__name__)
+        owed = False
+    else:
+        return
+    with SessionLocal() as db:
+        capture.line_not_shown(db, job, line, owed=owed)
+
+
+async def _show_owed(application: Application) -> None:
+    """The lines Telegram did not take when their read ended. Nothing is read here. One
+    that cannot be shown does not hold back the next."""
+    with SessionLocal() as db:
+        owed = capture.owed_lines(db, _live_reads)
+    for one in owed:
+        try:
+            try:
+                await _edit_line(application.bot, one.chat_id, one.message_id, one.line)
+            except (RetryAfter, NetworkError) as e:
+                if isinstance(e, BadRequest):
+                    logger.warning("Owed line refused: %s", type(e).__name__)
+                else:
+                    logger.warning("Owed line still owed: %s", type(e).__name__)
+                    continue
+            except TelegramError as e:
+                logger.warning("Owed line refused: %s", type(e).__name__)
+            with SessionLocal() as db:
+                capture.owed_settled(db, one.chat_id, one.message_id)
+        except Exception as e:
+            logger.error("Owed line failed: %s", type(e).__name__)
 
 
 async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> None:
@@ -701,13 +800,41 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     # Recorded now, independent of the line below: a Telegram failure must not make
     # /reprocess pay for this again.
     inbound_msg.mark_analyzed(job.inbound_id, nutrition)
-    with SessionLocal() as db:
-        cost = (
-            meter.line() if settings_screen.shows_costs(db, job.telegram_id) else None
+    try:
+        with SessionLocal() as db:
+            cost = (
+                meter.line()
+                if settings_screen.shows_costs(db, job.telegram_id)
+                else None
+            )
+            done = capture.read_done(
+                db, job, nutrition, resolution, cost=cost, model=_model_of(job)
+            )
+    except Exception as e:
+        # The answer is paid for and no retry would read it differently: kept, and the
+        # line says it did not work. The class and the place only: a validation error's
+        # text quotes the answer.
+        error = type(e).__name__
+        place = traceback.extract_tb(e.__traceback__)[-1]
+        logger.error(
+            "Meal %s not written after its read: %s at %s:%s",
+            job.meal_id,
+            error,
+            os.path.basename(place.filename),
+            place.lineno,
         )
-        done = capture.read_done(
-            db, job, nutrition, resolution, cost=cost, model=_model_of(job)
-        )
+        with SessionLocal() as db:
+            done = capture.read_failed(
+                db,
+                job,
+                error,
+                status=capture.FAILED,
+                model=_model_of(job),
+                output=nutrition,
+            )
+        await _show(bot, job, done.line)
+        await _say_not_yet(bot, job)
+        return False, None
     if done.learn:
         _schedule_personal_food_save(**done.learn)
     await _show(bot, job, done.line)
@@ -807,21 +934,24 @@ def _pending_at_start() -> list:
 async def _replay_pending(application: Application, meals: list) -> None:
     """What the last process left: read again from the stored source. What may not be
     read now is told so, and no line stays on «читаю»."""
-    with SessionLocal() as db:
-        jobs, given_up = [], []
-        for meal_id in meals:
-            if meal_id in _live_reads:
-                continue
-            job = None
-            if len(jobs) < REPLAY_LIMIT:
-                job = capture.automatic_read(db, meal_id)
+    begun = 0
+    for meal_id in meals:
+        if meal_id in _live_reads:
+            continue
+        try:
+            with SessionLocal() as db:
+                job = None
+                if begun < REPLAY_LIMIT:
+                    job = capture.automatic_read(db, meal_id)
+                given_up = None if job is not None else capture.give_up(db, meal_id)
             if job is not None:
-                jobs.append(job)
+                begun += 1
+                _start_read(application, job)
             else:
-                given_up.append(capture.give_up(db, meal_id))
-    await _show_given_up(application, given_up)
-    for job in jobs:
-        _start_read(application, job)
+                await _show_given_up(application, [given_up])
+        except Exception as e:
+            logger.error("Meal %s not replayed: %s", meal_id, type(e).__name__)
+    await _show_owed(application)
 
 
 async def _show_given_up(application: Application, given_up: list) -> None:
@@ -834,13 +964,24 @@ async def _sweep(application: Application) -> None:
     """One pass: a stuck pending fails and its line says so; what is due is read again."""
     with SessionLocal() as db:
         stuck = capture.stuck_meals(db, _live_reads)
-        given_up = [capture.give_up(db, meal_id) for meal_id in stuck]
+    for meal_id in stuck:
+        try:
+            with SessionLocal() as db:
+                given_up = capture.give_up(db, meal_id)
+            await _show_given_up(application, [given_up])
+        except Exception as e:
+            logger.error("Meal %s not given up: %s", meal_id, type(e).__name__)
+    await _show_owed(application)
+    with SessionLocal() as db:
         due = capture.due_retries(db, capture.RETRIES_PER_SWEEP)
-        jobs = [capture.read_again(db, meal_id, automatic=True) for meal_id in due]
-    await _show_given_up(application, given_up)
-    for job in jobs:
-        if job is not None:
-            _start_read(application, job)
+    for meal_id in due:
+        try:
+            with SessionLocal() as db:
+                job = capture.read_again(db, meal_id, automatic=True)
+            if job is not None:
+                _start_read(application, job)
+        except Exception as e:
+            logger.error("Meal %s not read again: %s", meal_id, type(e).__name__)
 
 
 async def _sweep_loop(application: Application, meals: list) -> None:
@@ -884,14 +1025,18 @@ async def _on_stop(application: Application) -> None:
 
 async def _send_line(message, line: capture.Line):
     """A silent reply to the person's message, mapped when it belongs to a meal; None
-    if Telegram refused it."""
+    if Telegram refused it, after a moment of it was tried again."""
     try:
-        sent = await message.reply_text(
-            line.text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_keyboard if line.menu else line.markup,
-            disable_notification=True,
-            reply_parameters=ReplyParameters(message_id=message.message_id),
+        sent = await _tries(
+            lambda: message.reply_text(
+                line.text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_keyboard if line.menu else line.markup,
+                disable_notification=True,
+                reply_parameters=ReplyParameters(
+                    message_id=message.message_id, allow_sending_without_reply=True
+                ),
+            )
         )
     except TelegramError as e:
         logger.warning("Meal line not sent: %s", type(e).__name__)
@@ -950,6 +1095,7 @@ async def _new_meal(
         born.job,
         line_id=sent.message_id if sent else None,
         inbound_id=inbound_id,
+        unsent=sent is None,
     )
     _start_read(context.application, job)
     if sent is not None:
@@ -1008,19 +1154,26 @@ async def _read_split(
         line = capture.Line(words, meal_id=job.meal_id)
         sent = None
         try:
-            sent = await application.bot.send_message(
-                chat_id,
-                line.text,
-                disable_notification=True,
-                reply_parameters=ReplyParameters(
-                    message_id=message_id, allow_sending_without_reply=True
-                ),
+            sent = await _tries(
+                lambda: application.bot.send_message(
+                    chat_id,
+                    line.text,
+                    disable_notification=True,
+                    reply_parameters=ReplyParameters(
+                        message_id=message_id, allow_sending_without_reply=True
+                    ),
+                )
             )
         except TelegramError as e:
             logger.warning("Meal line not sent: %s", type(e).__name__)
         _map_line(line, sent, "pending")
         line_id = sent.message_id if sent else None
-        job = replace(job, line_id=line_id, shown=line.text)
+        job = replace(
+            job,
+            line_id=line_id,
+            shown=line.text if sent else None,
+            unsent=sent is None,
+        )
         tasks.append(_start_read(application, job))
     if tapped is not None:
         _keep_task(

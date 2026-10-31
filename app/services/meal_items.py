@@ -40,6 +40,9 @@ from app.services import food_groups
 from app.services.product_lookup_service import _parse_portion_grams, has_usable_macros
 
 # What a change did. SAME wrote nothing and no event: the toast is ``SAME_TOAST``.
+EXACT_SOURCES = frozenset({"barcode", "label", "user"})
+OWED_VIEW = "owed"  # a meal's line whose last word Telegram has not taken yet
+LINE_VIEWS = ("pending", "line", OWED_VIEW)  # the rows that are a meal's own line
 DONE = "done"
 DELETED = "deleted"
 SAME = "same"
@@ -218,6 +221,22 @@ def _scaled(numbers: dict, factor: float) -> dict:
         key: None if value is None else round(value * factor, 2)
         for key, value in numbers.items()
     }
+
+
+def numbers_exact(meal: Meal, items: list) -> bool:
+    """Only a barcode, a label or typed numbers go without ≈ (2.6), every dish of them.
+    A share of a plate is no dish of its own, and a dish with no numbers says nothing.
+    """
+    counted = [
+        item
+        for item in items
+        if item.numbers_source != "plate_share" and _has_numbers(item)
+    ]
+    return (
+        bool(counted)
+        and meal.numbers_basis == "items"
+        and all(item.numbers_source in EXACT_SOURCES for item in counted)
+    )
 
 
 def _has_numbers(item: MealItem) -> bool:
@@ -532,10 +551,15 @@ def reread(
     meal_in: MealCreate,
     *,
     source_id: Optional[int] = None,
+    quiet: bool = False,
 ) -> Optional[Change]:
     """🔁 Прочитать заново: only what this meal's own read gave goes. What the person
     typed stays, a dish they took out stays out, and a meal joined here is not this
     reading's business. None, with nothing written, if the meal moved since the tap.
+
+    ``quiet``: the first read of a meal something was joined to while it was out. The
+    person changed nothing and there is no read before it to return to: no event, like
+    ``apply_read``.
     """
     if (meal.rev or 0) != rev or meal.deleted_at is not None:
         return None
@@ -625,6 +649,10 @@ def reread(
         meal.rev = rev + 1
         meal.updated_at = now
         db.flush()
+        if quiet:
+            db.commit()
+            db.refresh(meal)
+            return Change(DONE, meal, None, made)
         event = crud_record_event.add(
             db,
             user_id=meal.user_id,
@@ -1208,7 +1236,7 @@ def join(
         ):
             row.meal_id = into.id
             messages.append(row.id)
-            if row.view in ("pending", "line"):
+            if row.view in LINE_VIEWS:
                 was_line.append(row.id)
                 row.view = "other"  # a line of what it was, not of this meal
         remembered.update(
@@ -1451,7 +1479,7 @@ def split_album(db: Session, user_id: int, meal_id: int) -> Change:
             db.scalars(
                 select(MealMessage).where(
                     MealMessage.meal_id == meal.id,
-                    MealMessage.view.in_(("pending", "line")),
+                    MealMessage.view.in_(LINE_VIEWS),
                 )
             )
         )
@@ -1566,7 +1594,7 @@ def _undo_album(db: Session, meal: Meal, event: RecordEvent) -> Change:
         for row in db.scalars(
             select(MealMessage).where(
                 MealMessage.meal_id == meal.id,
-                MealMessage.view.in_(("pending", "line")),
+                MealMessage.view.in_(LINE_VIEWS),
             )
         ):
             take_back(row)
@@ -1583,7 +1611,7 @@ def _undo_album(db: Session, meal: Meal, event: RecordEvent) -> Change:
             for row in db.scalars(
                 select(MealMessage).where(MealMessage.meal_id == other.id)
             ):
-                if row.view in ("pending", "line"):
+                if row.view in LINE_VIEWS:
                     take_back(row)
                 row.meal_id = meal.id
             for item in crud_meal_item.live(db, other.id):

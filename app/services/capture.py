@@ -74,13 +74,16 @@ from app.services.meal_card import (  # noqa: F401 (the copy is read from here t
 from app.services.meal_card import kind_of_read as _kind_of_read
 from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
     line_head,
+    line_plain,
+    line_what,
 )
 from app.services.meal_draft import num
+from app.services.meal_words import STOP_WORDS  # noqa: F401 (the name tests read)
 from app.services.meal_words import ADD, REMOVE, REPEAT, SaidTime
 from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
+from app.services.meal_words import says_no as _says_no
 from app.services.meal_words import time_words
-from app.services.numbers import shows_numbers
 from app.services.settings_screen import draft_on, user_zone
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,9 @@ logger = logging.getLogger(__name__)
 # --- the copy (section 5.5) ---------------------------------------------------------
 
 M1B_HINT = "На этом всё. Поправить можно кнопками или ответом на это сообщение."
+# M11 where 🔁 would not read what was edited, and where no record stands to wait.
+M11_KEPT = "Сообщение изменено. В дневнике пока прежняя запись."
+M11_NO_RECORD = "Сообщение изменено. В дневнике по нему записи нет."
 M3B_QUESTION = "Вопросы здесь пока не разбираются, в дневник не записано."
 M4F_TOO_BIG = (
     "Файл больше 20 МБ, Telegram такие боту не передаёт. В дневник не записано."
@@ -163,13 +169,21 @@ SHOW_PHOTO = "📷 Показать фото"
 
 # --- the rules ------------------------------------------------------------------------
 
+READ_SURVIVES = ("time", "join")  # what a person does that takes nothing from a read
+OWED_VIEW = (
+    meal_items.OWED_VIEW
+)  # the read is over; Telegram has not taken its last word
+LINE_VIEWS = meal_items.LINE_VIEWS
 READ_ANEW_VIEW = "reread"  # a message whose 🔁 may pay to read a standing record anew
 PHOTO_SOURCES = ("photo", "document_photo")
+READABLE_IMAGES = frozenset(
+    ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif")
+)
 SOURCE_WORDS_MAX = 60
+OWED_PER_SWEEP = 20  # lines put right in one pass: a long outage leaves many
 SPLIT_BUTTONS_MAX = 9
 
 STALE_LABELS = frozenset(("Сейчас", "Завтрак", "Обед", "Ужин", "Назад", "Отмена"))
-STOP_WORDS = frozenset(("привет", "спасибо", "ок", "окей", "да", "нет", "пока"))
 FILE_MAX = 20 * 1024 * 1024  # what Telegram hands a bot
 CORRECTION_WINDOW = timedelta(hours=3)  # ASSUMED, section 5.1
 TIME_WINDOW = timedelta(hours=24)  # ASSUMED, M5e
@@ -235,11 +249,17 @@ class Incoming:
     forward_date: Optional[datetime]
 
 
+def _is_readable_image(mime: Optional[str]) -> bool:
+    """A file sent as an image, if the model can see it: HEIC, TIFF and SVG it cannot,
+    however many times it is tried, so they go the way of any other unreadable file."""
+    return (mime or "").casefold() in READABLE_IMAGES
+
+
 def incoming(message, user) -> Incoming:
     kind = text = file = None
     if message.photo:
         kind, file, text = "photo", message.photo[-1], message.caption
-    elif message.document and (message.document.mime_type or "").startswith("image/"):
+    elif message.document and _is_readable_image(message.document.mime_type):
         kind, file, text = "document_photo", message.document, message.caption
     elif message.voice:
         kind, file, text = "voice", message.voice, message.caption
@@ -367,7 +387,7 @@ def tapped(db, chat_id: int, message_id: Optional[int], screen=None) -> None:
         select(MealMessage).where(
             MealMessage.chat_id == chat_id,
             MealMessage.message_id == message_id,
-            MealMessage.view.in_(("pending", "line")),
+            MealMessage.view.in_(LINE_VIEWS),
         )
     )
     if row is not None:
@@ -378,7 +398,7 @@ def tapped(db, chat_id: int, message_id: Optional[int], screen=None) -> None:
 def _claim_view(db, job: "Read") -> bool:
     """Whether the line is still the read's to edit; from here on it is a plain line."""
     if job.line_id is None:
-        return False
+        return job.unsent
     row = db.scalar(
         select(MealMessage).where(
             MealMessage.chat_id == job.chat_id,
@@ -435,14 +455,10 @@ def _record_text(
     cost: Optional[str] = None,
     voice_hint: bool = False,
 ) -> str:
-    what = _what(db, meal)
-    if what and shows_numbers(user) and meal.calories is not None:
-        what += f" · ≈ {num(meal.calories)} ккал"
+    what = line_what(db, meal, user)
     if meal.is_draft:
         return _draft_text(meal, user, what, note, cost, voice_hint)
-    photos = len(meal.photos or [])
-    plain = f"Записано по {photos} фото" if photos > 1 else "Записано"
-    head = line_head(meal, user_zone(user), plain)
+    head = line_head(meal, user_zone(user), line_plain(meal))
     first = f"{head}: {what}." if what else f"{head}."
     if note:
         first += f" {note}"
@@ -566,7 +582,13 @@ def _set_time(
     _keep(db, came, user, meal.id)
     db.refresh(meal)
     what = _what(db, meal)
-    text = f"Время приёма теперь {_when(meal, user_zone(user))}: {what}."
+    when = _when(meal, user_zone(user))
+    # A meal still being read has nothing to name yet.
+    text = (
+        f"Время приёма теперь {when}: {what}."
+        if what
+        else f"Время приёма теперь {when}."
+    )
     if change.status == meal_items.SAME:
         return Line(text, _fix_markup(meal.id), meal_id=meal.id, view="other")
     return Line(
@@ -673,6 +695,12 @@ def _added_line(
     )
 
 
+def _stays_its_own_draft(meal: Meal, target: Meal) -> bool:
+    """A meal that waits for ✅ does not count by way of one that has it: joined, it
+    would be in the day with nobody having said so."""
+    return bool(meal.is_draft) and not target.is_draft
+
+
 def _joined_line(
     db,
     source: MealSource,
@@ -686,7 +714,15 @@ def _joined_line(
     new = len(dishes) == 1 and "name" in dishes[0]
     new = new and _is_new_name(db, user, dishes[0]["name"])
     meal = _born_row(db, source, user, said)
-    _with_dishes(db, user, meal, dishes)
+    changes = _with_dishes(db, user, meal, dishes)
+    if _stays_its_own_draft(meal, target):
+        text = _record_text(db, meal, user)
+        return Line(
+            text,
+            meal_card.line_markup(db, meal),
+            meal_id=meal.id,
+            fill=_fill_of(changes[0], new),
+        )
     names = [item.name for item in crud_meal_item.live(db, meal.id)]
     joined = meal_items.join(db, user.id, target.id, meal.id, source_id=source.id)
     if joined.status != meal_items.DONE:
@@ -809,7 +845,10 @@ def _apply_correction(
         return _take_out(db, _keep(db, came, user), user, meal, found[0])
     found = _matching(items, old or name)
     if len(found) != 1:
-        found = items if len(items) == 1 else []
+        # One dish takes a name directly, not a sentence: «это был отличный день» has
+        # to ask, or it overwrites the only dish.
+        named = old is not None or len(name.split()) == 1
+        found = items if len(items) == 1 and named else []
     if not found:
         return _chooser(db, came, user, meal, items, "Какое блюдо это меняет?")
     return _swap(db, _keep(db, came, user), user, meal, found[0], name)
@@ -818,14 +857,41 @@ def _apply_correction(
 # --- the meal's original line ---------------------------------------------------------
 
 
+def _last_event(db, meal: Meal) -> int:
+    latest = db.scalar(
+        select(RecordEvent.id)
+        .where(RecordEvent.meal_id == meal.id)
+        .order_by(RecordEvent.id.desc())
+        .limit(1)
+    )
+    return latest or 0
+
+
+def _read_still_lands(db, meal: Meal) -> bool:
+    """A read is out, and the last thing done to the meal does not stand in its way."""
+    if meal.reading_status != "pending":
+        return False
+    kind = db.scalar(
+        select(RecordEvent.kind)
+        .where(RecordEvent.meal_id == meal.id)
+        .order_by(RecordEvent.id.desc())
+        .limit(1)
+    )
+    return kind in READ_SURVIVES
+
+
 def _retouch_of(db, user: User, meal: Meal, known: str, rev) -> Optional[Retouch]:
     """The line of a meal that changed, if it still is a line and says something else
-    now. A line still on «читаю» stops saying it: its late read will not apply."""
+    now. A line still on «читаю» stops saying it: its late read will not apply. Unless
+    all that changed is a time or what joined it: that read still lands, on this line.
+    """
     db.refresh(meal)
     if meal.deleted_at is not None or (meal.rev or 0) == (rev or 0):
         return None
     row = _line_of(db, meal.id)
     if row is None:
+        return None
+    if row.view == "pending" and _read_still_lands(db, meal):
         return None
     text = _record_text(db, meal, user)
     if text == known and row.view != "pending":
@@ -980,7 +1046,8 @@ def _on_reply(db, came: Incoming, user: User, meal: Meal) -> Optional[Route]:
 
 
 def _is_stop_word(text: str) -> bool:
-    return text.strip().strip(".,!…)( ").casefold() in STOP_WORDS
+    word = text.strip().strip(".,!…)( ").casefold()
+    return word in STOP_WORDS or _says_no(text)
 
 
 def route_media(db, came: Incoming) -> Route:
@@ -1187,7 +1254,10 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
     if meal.reading_status == "pending":
         return meal_card.Screen("", None, toast=AGAIN_TOAST)
     has_words = meal.reading_status == "read" and not meal_card._unread(meal, [])
-    if crud_meal_item.live(t.db, meal.id) or has_words:
+    stands = crud_meal_item.live(t.db, meal.id)
+    if meal.reading_status == "failed" and not _own_items(meal, stands):
+        stands = []  # what was joined to it is all there is: its own read is still owed
+    if stands or has_words:
         # A record stands: only the button of M13 or M11 pays to read it anew. The
         # 🔁 Ещё раз of an old line, tapped late, costs nothing.
         if _shows_read_anew(t, meal):
@@ -1214,6 +1284,10 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
         view="pending",
         read=replace(job, line_id=t.message_id, shown=first, again=True),
     )
+
+
+def _own_items(meal: Meal, items: list) -> list:
+    return [item for item in items if item.origin_meal_id == meal.id]
 
 
 def _shows_read_anew(t, meal: Meal) -> bool:
@@ -1333,8 +1407,10 @@ def _v_it_is_food(t, data: str, sid: str) -> meal_card.Screen:
     source = _own_source(t, sid, data)
     if source.meal_id is not None:
         return meal_card._v_line(t, data, str(source.meal_id))
-    said = _said(source.text, source.kind, source.sent_at, source.forward_date, t.user)
-    name = (said.rest if said else source.text) or ""
+    # The words as they stand now, if the message was edited since.
+    words = latest_version(t.db, source).text
+    said = _said(words, source.kind, source.sent_at, source.forward_date, t.user)
+    name = (said.rest if said else words) or ""
     if not name.strip():
         return meal_card._unknown(t, data)
     new = _is_new_name(t.db, t.user, name)
@@ -1415,6 +1491,8 @@ class Read:
     replaces: bool = False  # a straggler's re-read, over a reading that stands
     alone: bool = False  # a photo split off its album: never read with it again
     anew: bool = False  # 🔁 Прочитать заново: what the person typed stays
+    last_event: int = 0  # the newest event of the meal when the read went out
+    unsent: bool = False  # Telegram took no line for it: the read owes one
 
 
 @dataclass(frozen=True)
@@ -2072,10 +2150,23 @@ meal_card.add_verbs(
 # --- M11: an edited message -----------------------------------------------------------
 
 
+def _read_anew_reads(db, meal: Meal, original: MealSource) -> bool:
+    """🔁 Прочитать заново reads the meal's own first message, or its whole album. Any
+    other message of the meal (one joined to it, words added) it would not read."""
+    own = _own_first(db, meal)
+    if own is None:
+        return False
+    if own.id == original.id:
+        return True
+    return bool(own.media_group_id) and own.media_group_id == original.media_group_id
+
+
 def edited(db, came: Incoming) -> Optional[Line]:
     """A message that changed after it was sent. What came first stays as it came, the
     new words are kept beside it, and the record waits for the person's word. None: not
     a message of a meal, or nothing new; a deleted meal keeps the words and says nothing.
+    Words that made no record can become one, and 🔁 is offered only where it reads
+    what was edited.
     """
     original = db.scalar(
         select(MealSource)
@@ -2091,7 +2182,7 @@ def edited(db, came: Incoming) -> Optional[Line]:
         return None
     user = _user(db, came)
     meal = _replied_meal(db, came.chat_id, came.message_id, user)
-    if meal is None:
+    if meal is None and original.meal_id is not None:
         return None
     latest = latest_version(db, original)
     if latest.text == came.text and latest.file_id == came.file_id:
@@ -2104,16 +2195,21 @@ def edited(db, came: Incoming) -> Optional[Line]:
         version.audio_path = original.audio_path
     db.add(version)
     db.commit()
+    if original.meal_id is None:
+        if _is_stop_word(came.text or ""):
+            return None
+        return Line(M11_NO_RECORD, _it_is_food(original.id))
+    if meal_card.waits_for_words(db, meal):
+        markup = meal_card.silent_voice_view(M11_NO_RECORD, meal.id)[1]
+        return Line(M11_NO_RECORD, markup, meal_id=meal.id, view="other")
     if meal.deleted_at is not None:
         return None
-    markup = InlineKeyboardMarkup(
-        [
-            [
-                _button(READ_ANEW, f"ml:rr:{meal.id}:r"),
-                _button(FIX, f"ml:o:{meal.id}:r"),
-            ]
-        ]
-    )
+    fix = _button(FIX, f"ml:o:{meal.id}:r")
+    if not _read_anew_reads(db, meal, original):
+        return Line(
+            M11_KEPT, InlineKeyboardMarkup([[fix]]), meal_id=meal.id, view="other"
+        )
+    markup = InlineKeyboardMarkup([[_button(READ_ANEW, f"ml:rr:{meal.id}:r"), fix]])
     return Line(M11_EDITED, markup, meal_id=meal.id, view=READ_ANEW_VIEW)
 
 
@@ -2198,6 +2294,22 @@ def _no_food(db, job: Read, meal: Meal) -> Line:
     return Line(M3A_NO_FOOD, _it_is_food(source.id))
 
 
+def _read_stands(db, meal: Meal, job: Read) -> bool:
+    """A read whose ``rev`` moved may still land: a time takes nothing from it, and what
+    was joined to it stays beside it. A re-read of an album replaces what is there, so
+    only a time leaves it room. Anything else the person did outranks it. From the
+    events, as a fill of a joined dish moves ``rev`` too and is nobody's word."""
+    if meal.deleted_at is not None or meal.reading_status != "pending":
+        return False
+    allowed = ("time",) if job.replaces and not job.anew else READ_SURVIVES
+    kinds = db.scalars(
+        select(RecordEvent.kind).where(
+            RecordEvent.meal_id == meal.id, RecordEvent.id > job.last_event
+        )
+    ).all()
+    return bool(kinds) and all(kind in allowed for kind in kinds)
+
+
 def read_done(
     db,
     job: Read,
@@ -2209,21 +2321,27 @@ def read_done(
 ) -> Done:
     meal = db.get(Meal, job.meal_id)
     meal_in = _read_in(job, meal, nutrition, resolution)
+    if (meal.rev or 0) != job.rev and _read_stands(db, meal, job):
+        job = replace(job, rev=meal.rev or 0)
     if (meal.rev or 0) != job.rev or meal.deleted_at is not None:
         # What the person did outranks a late answer. Kept, not applied.
         _store_reading(db, job, status="done", output=nutrition, model=model)
         if meal.reading_status == "pending":
             meal.reading_status = "read"
             db.commit()
-        if job.replaces and meal.deleted_at is None and _claim_view(db, job):
+        # A record that stands says so; a row with nothing on it has nothing to say.
+        stands = job.replaces or crud_meal_item.live(db, meal.id)
+        if stands and meal.deleted_at is None and _claim_view(db, job):
             return Done(_standing_line(db, meal))
         return Done()
 
     names = meal_items.names_read(meal_in)
     if names and job.anew:
         return _read_anew_done(db, job, meal, meal_in, nutrition, resolution, model)
-    if not names and job.replaces:
-        # The last photo has no food: what the others showed stands.
+    live = crud_meal_item.live(db, meal.id)
+    if not names and (job.replaces or live):
+        # The last photo has no food, or nothing was seen under the words said to it:
+        # what stands, stands.
         _store_reading(db, job, status="no_food", output=nutrition, model=model)
         meal.reading_status = "read"
         db.commit()
@@ -2235,9 +2353,15 @@ def read_done(
         line = _no_food(db, job, meal)
         return Done(line if _claim_view(db, job) else None)
 
-    meal_items.apply_read(
-        db, meal, job.rev, meal_in, source_id=job.source_id, replacing=job.replaces
-    )
+    if live and not job.replaces:
+        # The plate under what was joined to it: those lines stay and the read comes in.
+        meal_items.reread(
+            db, meal, job.rev, meal_in, source_id=job.source_id, quiet=True
+        )
+    else:
+        meal_items.apply_read(
+            db, meal, job.rev, meal_in, source_id=job.source_id, replacing=job.replaces
+        )
     _store_reading(db, job, status="done", output=nutrition, applied=True, model=model)
     user = db.get(User, meal.user_id)
     learn = {
@@ -2249,7 +2373,7 @@ def read_done(
         "canonical_name": meal_items.only_dish_name(db, meal),
     }
     target = _reply_target(db, job, meal, user)
-    if target is not None:
+    if target is not None and not _stays_its_own_draft(meal, target):
         return _join_read(db, job, meal, user, target, learn)
     if not _claim_view(db, job):
         return Done(learn=learn)
@@ -2368,7 +2492,7 @@ def read_no_speech(db, job: Read) -> Done:
         if meal.reading_status == "pending":
             meal.reading_status = "read"
             db.commit()
-        if job.replaces and _claim_view(db, job):
+        if _claim_view(db, job):
             return Done(_standing_line(db, meal))
         return Done()
     meal.reading_status = NO_SPEECH
@@ -2430,23 +2554,27 @@ def read_failed(
     *,
     status: str = FAILED,
     model: Optional[str] = None,
+    output: Optional[dict] = None,
 ) -> Done:
     """``error`` is the exception's class: a body or a transcript never goes there.
     A meal no longer waiting was answered meanwhile, by the words typed to it: a late
-    failure is kept and says nothing."""
+    failure is kept and says nothing. ``output``: an answer paid for that could not be
+    written, kept so that it need not be paid for again."""
     meal = db.get(Meal, job.meal_id)
     waited = meal.reading_status == "pending"
-    if waited and crud_meal_item.live(db, meal.id):
+    live = crud_meal_item.live(db, meal.id) if waited else []
+    if live and (job.replaces or _own_items(meal, live)):
         # A read over a record that stands, a straggler's or the person's own: the
-        # record stays. From the rows, so a sweep after a restart finds it too.
+        # record stays. From the rows, so a sweep after a restart finds it too. Words
+        # joined to a photo nobody read are no such record: the photo says it failed.
         meal.reading_status = "read"
         db.commit()
-        _store_reading(db, job, status=status, error=error, model=model)
+        _store_reading(db, job, status=status, error=error, model=model, output=output)
         return Done(_standing_line(db, meal) if _claim_view(db, job) else None)
     if waited:
         meal.reading_status = "failed"
         db.commit()
-    _store_reading(db, job, status=status, error=error, model=model)
+    _store_reading(db, job, status=status, error=error, model=model, output=output)
     if not waited:
         return Done()
     line = _failed_line(job.kind, meal)
@@ -2458,6 +2586,108 @@ def read_failed(
         # A retry that failed again: the line says it already.
         return Done()
     return Done(line)
+
+
+# --- a line that did not reach the person ---------------------------------------------
+
+
+def line_not_shown(db, job: Read, line: Line, *, owed: bool) -> None:
+    """Telegram did not take this line. What it said once in a life is said later, and a
+    line that could still take it goes on the sweep's list. ``owed`` False: it never
+    will (the message is gone).
+    """
+    user = db.scalar(select(User).where(User.telegram_id == job.telegram_id))
+    if user is not None:
+        settings = dict(user.settings or {})
+        if M1B_HINT in line.text:
+            settings.pop("capture_hint_seen", None)
+        if M4C_VOICE_HINT in line.text or M4C_DRAFT_HINT in line.text:
+            settings.pop("voice_hint_seen", None)
+        user.settings = settings
+    if owed and job.line_id is not None:
+        row = db.scalar(
+            select(MealMessage).where(
+                MealMessage.chat_id == job.chat_id,
+                MealMessage.message_id == job.line_id,
+            )
+        )
+        if row is not None and row.view == "line":
+            row.view = OWED_VIEW
+    db.commit()
+
+
+@dataclass
+class Owed:
+    chat_id: int
+    message_id: int
+    line: Line
+
+
+def _owed_line(db, meal: Meal) -> Optional[Line]:
+    """What the line of a meal whose read is over says, from the rows alone."""
+    kind = meal_card._read_kind(db, meal)
+    if meal.reading_status == "no_speech":
+        return Line(
+            *meal_card.silent_voice_view(M4E_NO_SPEECH, meal.id), meal_id=meal.id
+        )
+    if meal.reading_status == "no_food":
+        if kind == VOICE:
+            return Line(
+                *meal_card.silent_voice_view(M3A_NO_FOOD, meal.id), meal_id=meal.id
+            )
+        if kind == TEXT:
+            source = db.scalar(
+                select(MealSource)
+                .where(MealSource.origin_meal_id == meal.id)
+                .order_by(MealSource.id)
+                .limit(1)
+            )
+            return Line(M3A_NO_FOOD, _it_is_food(source.id)) if source else None
+    if meal.deleted_at is not None:
+        return None  # the person deleted it: nothing to say on that line
+    if meal.reading_status == "no_food":
+        return _no_food_photo_line(meal)
+    if meal.reading_status == "failed":
+        return _failed_line(kind, meal)
+    return _standing_line(db, meal)
+
+
+def owed_lines(db, live) -> list:
+    """The lines still on «читаю» though their read is over: Telegram was down for the
+    last word. Nothing is read or paid for here. No task holds them."""
+    rows = db.execute(
+        select(MealMessage, Meal)
+        .join(Meal, Meal.id == MealMessage.meal_id)
+        .where(MealMessage.view == OWED_VIEW, Meal.reading_status != "pending")
+        .order_by(MealMessage.id)
+        .limit(OWED_PER_SWEEP)
+    ).all()
+    owed = []
+    for row, meal in rows:
+        if meal.id in live:
+            continue
+        line = _owed_line(db, meal)
+        if line is None:
+            row.view = "line"
+            db.commit()
+        else:
+            owed.append(Owed(row.chat_id, row.message_id, line))
+    return owed
+
+
+def owed_settled(db, chat_id: int, message_id: int) -> None:
+    row = db.scalar(
+        select(MealMessage).where(
+            MealMessage.chat_id == chat_id, MealMessage.message_id == message_id
+        )
+    )
+    if row is not None and row.view == OWED_VIEW:
+        row.view = "line"
+        db.commit()
+
+
+def message_of(db, source_id: int) -> Optional[int]:
+    return db.scalar(select(MealSource.message_id).where(MealSource.id == source_id))
 
 
 # --- reading again --------------------------------------------------------------------
@@ -2475,7 +2705,16 @@ def _line_of(db, meal_id: int) -> Optional[MealMessage]:
         .order_by(MealMessage.id)
         .limit(1)
     )
-    return line if line is not None and line.view in ("pending", "line") else None
+    return line if line is not None and line.view in LINE_VIEWS else None
+
+
+def _has_line(db, meal_id: int) -> bool:
+    """Whether a line of the meal ever went out, whatever it has become since."""
+    stmt = select(MealMessage.id).where(
+        MealMessage.meal_id == meal_id,
+        MealMessage.view.not_in(("source", "other")),
+    )
+    return db.scalar(stmt.limit(1)) is not None
 
 
 def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
@@ -2490,10 +2729,14 @@ def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
     user = db.get(User, meal.user_id)
     line = _line_of(db, meal.id)
     kind = _kind_of_read(source.kind)
-    was_failed = meal.reading_status == "failed"
-    said = _said(source.text, source.kind, source.sent_at, source.forward_date, user)
-    told = said.rest if said else source.text
-    if source.kind == "text" and meal.description:
+    # A line still owed its failure has not said it: only what was shown may be spared.
+    said_failed = meal.reading_status == "failed" and not (
+        line is not None and line.view in ("pending", OWED_VIEW)
+    )
+    current = latest_version(db, source)
+    said = _said(current.text, source.kind, source.sent_at, source.forward_date, user)
+    told = said.rest if said else current.text
+    if source.kind == "text" and meal.description and current.id == source.id:
         told = meal.description  # without what was said to a meal that is gone
     return Read(
         meal_id=meal.id,
@@ -2502,21 +2745,27 @@ def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
         telegram_id=user.telegram_id,
         chat_id=source.chat_id,
         kind=kind,
-        file_id=source.file_id,
+        file_id=current.file_id,
         text=told or None,
         line_id=line.message_id if line else None,
-        shown=_failed_line(kind, meal).text if was_failed else None,
+        shown=_failed_line(kind, meal).text if said_failed else None,
         inbound_id=_inbound_of(db, user.telegram_id, source),
         automatic=automatic,
+        last_event=_last_event(db, meal),
+        unsent=not _has_line(db, meal.id),
     )
+
+
+def _own_first(db, meal: Meal) -> Optional[MealSource]:
+    sources = _originals(db, meal.id)
+    own = next((s for s in sources if s.origin_meal_id == meal.id), None)
+    return own or (sources[0] if sources else None)
 
 
 def _anew_job(db, meal: Meal, line_id: Optional[int]) -> Optional[Read]:
     """The read of 🔁 Прочитать заново: this meal's own first message, as it stands now.
     Not ``meal.description``: that is what the record says, not what was sent."""
-    sources = _originals(db, meal.id)
-    own = next((s for s in sources if s.origin_meal_id == meal.id), None)
-    own = own or (sources[0] if sources else None)
+    own = _own_first(db, meal)
     if own is None:
         return None
     user = db.get(User, meal.user_id)
@@ -2536,6 +2785,7 @@ def _anew_job(db, meal: Meal, line_id: Optional[int]) -> Optional[Read]:
         again=True,
         replaces=True,
         anew=True,
+        last_event=_last_event(db, meal),
     )
 
 

@@ -1402,7 +1402,8 @@ def test_m11_a_joined_message_answers_for_the_survivor(db, owner, reader):
     second = db.scalars(select(Meal).order_by(Meal.id.desc())).first()
     tap(f"ml:j:{first.id}:{second.id}:r")
     wire = edited({**message, "text": "творог"})
-    assert _datas(wire.sent()[-1])[0][0] == f"ml:rr:{first.id}:r"
+    # 🔁 would read the survivor's own first message, not this one: not offered.
+    assert _datas(wire.sent()[-1]) == [[f"ml:o:{first.id}:r"]]
     row = db.scalars(
         select(MealSource).where(MealSource.supersedes_id.is_not(None))
     ).one()
