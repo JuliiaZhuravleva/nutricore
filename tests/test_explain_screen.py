@@ -17,6 +17,12 @@ from app.services import food_groups, settings_screen
 from app.services import telegram as tg
 
 
+@pytest.fixture(autouse=True)
+def _no_answer_about_food(monkeypatch):
+    """No database here: nobody answered. With an answer: ``test_diet``."""
+    monkeypatch.setattr(explain, "_shows_nutrients", lambda _db, _id: True)
+
+
 def _buttons(screen):
     return [b for row in screen.markup.inline_keyboard for b in row]
 

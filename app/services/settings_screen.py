@@ -2,12 +2,15 @@
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
     [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл] [📋 Черновик: выкл]
-    [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать] [ℹ️ Как это работает]
-    [💸 Стоимость запросов: выкл]
+    [🍽 Обычная еда] [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать]
+    [ℹ️ Как это работает] [💸 Стоимость: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
       a city → <i>✓ Часовой пояс: Москва (UTC+3)</i> on top of ⚙️ Настройки
+    🍽 tap → <b>🍽 Обычная еда</b>: [🍖 Всё] [🥚 Без мяса] [🌱 Растения], [⬅️ Настройки]
+      an answer → <i>✓ Обычная еда: 🍖 Всё</i> on top of ⚙️ Настройки; no undo button,
+      since another answer is one tap away and nothing is lost
 
 A switch flips at once and says so on the next screen (no «вы уверены?»).
 The values live in ``User.settings`` (JSON), so a new one needs no migration.
@@ -27,7 +30,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.config import settings
 from app.models.user import User
-from app.services import food_lists
+from app.services import diet, food_lists
 from app.services.explain_screen import OPEN as EXPLAIN_OPEN
 from app.services.favorites import Screen
 from app.services.numbers import SHOW_NUMBERS, shows_numbers
@@ -49,6 +52,8 @@ _NUMBERS_CB = CALLBACK_PREFIX + "num"
 _ZONES_CB = CALLBACK_PREFIX + "tz"
 _PICK = _ZONES_CB + ":"  # + the zone's IANA name
 _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
+_DIET_CB = CALLBACK_PREFIX + "diet"
+_DIET_PICK = _DIET_CB + ":"  # + the answer
 
 CITIES = (
     ("Тбилиси", "Asia/Tbilisi"),
@@ -144,6 +149,7 @@ def screen(
     reliable: int = 0,
     never: int = 0,
     draft: bool = False,
+    eats: str | None = None,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -161,6 +167,7 @@ def screen(
             if draft
             else "выкл. Еда записывается сразу."
         ),
+        _diet_line(eats),
         f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
         f"🧺 Надёжная еда: {reliable or 'пока нет'} · "
         f"✋ Не предлагать: {never or 'пока нет'}",
@@ -177,16 +184,40 @@ def screen(
             _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
         ],
         [
+            _btn(diet.TITLE, _DIET_CB),
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
-            _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
         ],
         [
+            _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
             _btn("✋ Не предлагать", food_lists.NEVER_OPEN),
-            _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
         ],
-        [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
+        [
+            _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
+            _btn(f"💸 Стоимость: {'вкл' if on else 'выкл'}", _COSTS_CB),
+        ],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
+
+
+def _diet_line(eats: str | None) -> str:
+    if eats is None:
+        return f"{diet.TITLE}: не выбрано — в подсказках только растения."
+    return f"{diet.TITLE}: {diet.CHOICES[eats]} — от этого зависят только подсказки."
+
+
+def diet_row(prefix: str, eats: str | None) -> list:
+    """The three answers as one row of buttons, ``prefix`` + the answer as their data:
+    the picker here, and the first-run screen with its own prefix."""
+    return [
+        _btn(("✓ " if value == eats else "") + label, prefix + value)
+        for value, label in diet.CHOICES.items()
+    ]
+
+
+def diet_screen(eats: str | None) -> Screen:
+    text = f"<b>{diet.TITLE}</b>\n\n{diet.QUESTION}"
+    rows = [diet_row(_DIET_PICK, eats), [_btn("⬅️ Настройки", CALLBACK_PREFIX + "open")]]
+    return Screen(text, InlineKeyboardMarkup(rows))
 
 
 def _now_line(zone: str, now: datetime) -> str:
@@ -270,6 +301,7 @@ def open_view(
         reliable,
         never,
         draft_on(user),
+        diet.chosen((user.settings or {}) if user else {}),
     )
 
 
@@ -281,6 +313,14 @@ def _save(db, telegram_id: int, **values) -> None:
     # A new dict: SQLAlchemy does not see a JSON value changed in place.
     user.settings = {**(user.settings or {}), **values}
     db.commit()
+
+
+def save_diet(db, telegram_id: int, value: str) -> bool:
+    """The answer to «Что обычно ешь?», from any screen; False for an unknown one."""
+    if value not in diet.CHOICES:
+        return False
+    _save(db, telegram_id, **{diet.KEY: value})
+    return True
 
 
 def handle_callback(
@@ -313,6 +353,14 @@ def handle_callback(
             else "✓ Черновик перед записью: выкл. Еда записывается сразу."
         )
         return open_view(db, telegram_id, notice, now)
+    if data == _DIET_CB:
+        user = _user(db, telegram_id)
+        return diet_screen(diet.chosen((user.settings or {}) if user else {}))
+    if data.startswith(_DIET_PICK):
+        value = data[len(_DIET_PICK) :]
+        if save_diet(db, telegram_id, value):
+            notice = f"✓ Обычная еда: {diet.CHOICES[value]}"
+            return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:
         return zones_screen(zone, now)

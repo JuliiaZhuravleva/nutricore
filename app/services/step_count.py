@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from app.services import next_step
 from app.services.day_card import APPROX, DAY_ONLY, has_clock, local_time
-from app.services.week_card import _confirmed
+from app.services.week_card import step_groups
 
 UP, SAME, DOWN, FEW = "up", "same", "down", "few"
 ASKS = (SAME, DOWN)  # the states that offer a change
@@ -136,7 +136,7 @@ def count_days(
     wanted = next_step.FOCUSES[chosen["id"]].groups
     found = set()
     for meal in meals:
-        if meal.meal_time and wanted.intersection(_confirmed(meal)):
+        if meal.meal_time and wanted.intersection(step_groups(meal)):
             found.add(local_time(meal.meal_time, zone).date())
     return sum(1 for day in found if first <= day <= last)
 

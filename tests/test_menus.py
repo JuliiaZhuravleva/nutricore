@@ -399,17 +399,19 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "🔢 Цифры сразу: выкл",
         "🗓 Итог недели: вкл",
         "📋 Черновик: выкл",
+        "🍽 Обычная еда",
         "💊 Рутины",
         "🧺 Надёжная еда",
         "✋ Не предлагать",
         "ℹ️ Как это работает",
-        "💸 Стоимость запросов: выкл",
+        "💸 Стоимость: выкл",
     ]
     assert _callbacks(markup) == [
         "set:tz",
         "set:num",
         "set:week",
         "set:draft",
+        "set:diet",
         "rt:open",
         "fl:rel",
         "fl:nev",
@@ -434,7 +436,7 @@ def test_the_cost_switch_flips_and_says_so(Session):
     asyncio.run(tg.settings_callback(update, SimpleNamespace()))
     (text,), kwargs = query.edit_message_text.await_args
     assert text.startswith("<i>✓ Стоимость запросов включена</i>")
-    assert _labels(kwargs["reply_markup"])[-1] == "💸 Стоимость запросов: вкл"
+    assert _labels(kwargs["reply_markup"])[-1] == "💸 Стоимость: вкл"
     assert _costs_shown(Session)
     with Session() as db:
         assert db.query(User).one().settings == {"diet": "veg", "show_costs": True}

@@ -767,11 +767,11 @@ def _summary_callback(db, telegram_id: int, parts: list, now) -> Screen | None:
 
 
 def _group_days(db, user: User, today: date, zone: ZoneInfo) -> dict:
-    """Days per food group over the seven days up to today."""
+    """Days per food group over the seven days up to today, as the step reads them."""
     first = today - timedelta(days=WEEK_DAYS - 1)
     dates = [first + timedelta(days=shift) for shift in range(WEEK_DAYS)]
     days = [(day, _meals_on(db, user, day, zone)) for day in dates]
-    return dict(week_card.facts(days, [], zone).groups)
+    return week_card.step_days(days)
 
 
 def _save_settings(db, user: User, values: dict) -> None:

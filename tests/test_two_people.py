@@ -982,3 +982,19 @@ def test_a_name_the_key_folds_together_is_one_dish_by_every_way_in(
         select(PersonalFood.canonical_name).where(PersonalFood.user_id == world.a.id)
     ).all()
     assert held in names and typed not in names
+
+
+def test_one_persons_answer_about_food_is_not_the_others(db, world, model):
+    """In ``User.settings``, a JSON column: Postgres and SQLite store it apart."""
+    before = dict(world.b.settings or {})
+    shown = " ".join(body for _n, body in _shown_to(_tap(A, "set:diet:all")))
+    assert "✓ Обычная еда: 🍖 Всё" in shown, shown
+    db.expire_all()
+    assert db.get(User, world.a.id).settings["diet"] == "all"
+    assert (db.get(User, world.b.id).settings or {}) == before
+
+    # The last page of the list, where the reference and the routines stand.
+    for_a = " ".join(body for _n, body in _shown_to(_tap(A, "hw:p:1")))
+    for_b = " ".join(body for _n, body in _shown_to(_tap(B, "hw:p:1")))
+    assert "🧪" not in for_a and "💊 Рутины" in for_a
+    assert "🧪" in for_b
