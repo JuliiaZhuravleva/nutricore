@@ -365,7 +365,12 @@ def _card(
     lines = [f"<b>🍲 {_esc(_capital(dish.canonical_name))}</b>"]
     grams = None if t.simple else _usual_grams(t, dish, open_now)
     if grams:
-        lines.append(f"Обычная порция: {meal_card.num(grams, 0)} г.")
+        assumed = open_now and meal_items.dish_portion(t.db, dish).assumed
+        lines.append(
+            f"Порция не указана: считаю {meal_card.num(grams, 0)} г."
+            if assumed and not dish.usual_grams_by_user
+            else f"Обычная порция: {meal_card.num(grams, 0)} г."
+        )
     lines.append(_how_often(t, dish, together=together))
     if open_now:
         lines.extend(_numbers_block(t, dish))

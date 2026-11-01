@@ -532,9 +532,28 @@ def test_a_removed_favourite_no_longer_lends_its_numbers(db, owner, reader):
     dish = _dish(db, owner, "Самса", numbers_basis="per_portion")
     _old_favourite(db, owner, personal_food_id=dish.id, removed_at=GONE)
     send(text("самса"))
-    meal = _only_meal(db)
-    assert meal.calories is None
-    assert meal.numbers_basis == "none"
+    assert reader.text == ["самса"]  # read as any other food: nobody asked to stop
+    assert _only_meal(db).resolution_source != meal_items.EXACT_NAME_SOURCE
+
+
+def test_a_removed_favourite_of_a_dish_with_its_own_numbers_costs_no_read(
+    db, owner, reader
+):
+    dish = _dish(db, owner, "Самса", per_100g_calories=200, usual_grams=100.0)
+    _old_favourite(db, owner, personal_food_id=dish.id, removed_at=GONE)
+    send(text("самса"))
+    assert reader.text == []
+    assert _only_meal(db).calories == 200
+
+
+def test_a_known_dish_with_no_numbers_and_no_removed_favourite_costs_no_read(
+    db, owner, reader
+):
+    """The control: a name a person gave costs no read, numbers or not."""
+    _dish(db, owner, "Самса", numbers_basis="none")
+    send(text("самса"))
+    assert reader.text == []
+    assert _only_meal(db).calories is None
 
 
 def test_the_dish_s_own_portion_comes_before_the_favourite(db, owner):

@@ -232,7 +232,7 @@ def test_back_to_the_answer_while_reading_leaves_the_line_the_reads(db, owner, r
     assert view == "pending"
 
 
-# --- 🔁 Ещё раз ---------------------------------------------------------------------
+# --- 🔁 Прочитать заново ---------------------------------------------------------------------
 
 
 def test_again_reads_toasts_and_edits_the_tapped_line(db, reader):
@@ -561,7 +561,7 @@ def test_a_late_read_does_not_undo_written_words(db, reader):
     meal = _failed_photo(db, reader)
     job = None
     with tg.SessionLocal() as session:
-        # As 🔁 Ещё раз leaves it: the line says «читаю», so a failure would be news.
+        # As 🔁 Прочитать заново leaves it: the line says «читаю», so a failure would be news.
         job = replace(capture.read_again(session, meal.id), shown="читаю")
     # ✏️ on the card, so the line is still the read's to claim: only the status guards.
     _writing(db, meal, "суп", message_id=4970)

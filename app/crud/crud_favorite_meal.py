@@ -78,6 +78,13 @@ class CRUDFavoriteMeal:
         )
         return db.scalars(stmt).first()
 
+    def has_removed(self, db: Session, dish_id: int) -> bool:
+        stmt = select(FavoriteMeal.id).where(
+            FavoriteMeal.personal_food_id == dish_id,
+            FavoriteMeal.removed_at.is_not(None),
+        )
+        return db.scalars(stmt).first() is not None
+
     def create_from_meal(self, db: Session, meal: Meal, name: str) -> FavoriteMeal:
         """A whole meal: a portion with no grams of its own."""
         dish = crud_personal_food.for_favourite(db, meal.user_id, name)

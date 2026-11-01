@@ -58,6 +58,8 @@ UNDO_REFUSED = "<i>С тех пор запись менялась, поэтом�
 EXACT_NAME_SOURCE = "exact_name"
 TAG_DISH = "из твоих блюд"
 TAG_DISH_UNVERIFIED = "из твоих блюд, не проверено"
+# Numbers on 100 g with no weight anywhere count this much, until ⚖️ Порция says more.
+DEFAULT_GRAMS = 100.0
 
 FIELDS = ("calories", "proteins", "fats", "carbohydrates")
 # The same four numbers as a draft's nutrition, and so as ``nutrients``, calls them.
@@ -108,6 +110,7 @@ class Portion:
 
     numbers: Optional[dict] = None
     grams: Optional[float] = None
+    assumed: bool = False  # nobody gave these grams: DEFAULT_GRAMS, and it says so
 
 
 @dataclass
@@ -221,9 +224,24 @@ def _per_100(dish: PersonalFood) -> Optional[dict]:
 
 def numbers_checked(dish: PersonalFood, grams: Optional[float]) -> bool:
     """Whether a portion of this dish is what its checked numbers say. They are per
-    100 g, so with no weight the portion is a copy of an older one (item 86)."""
+    100 g, so a portion nobody weighed is not checked (item 86). 100 g with no usual
+    portion may be the default: «не проверено» of a real one is the safe mistake."""
     checked = dish.numbers_by_user or dish.numbers_quality in _VERIFIED
+    if grams == DEFAULT_GRAMS and not dish.usual_grams:
+        return False
     return bool(checked and grams)
+
+
+def _at_default_weight(db: Session, dish: PersonalFood, portion: Portion) -> Portion:
+    """No weight anywhere. Numbers somebody wrote count DEFAULT_GRAMS; an estimate keeps
+    the plate it came from, which says more than an assumed weight, if there is one."""
+    per_100 = _per_100(dish)
+    if portion.grams or per_100 is None or _is_plate_row(db, dish):
+        return portion
+    written = dish.numbers_by_user or dish.numbers_quality in _VERIFIED
+    if portion.numbers and not written:
+        return portion
+    return Portion(per_100, DEFAULT_GRAMS, assumed=True)
 
 
 def _scaled(numbers: dict, factor: float) -> dict:
@@ -317,10 +335,10 @@ def dish_portion(db: Session, dish: PersonalFood) -> Portion:
     )
     # Typed numbers with no weight of their own may still find one on the ⭐.
     if has_own and not (dish.numbers_by_user and own.grams is None):
-        return own
+        return _at_default_weight(db, dish, own)
     fav = crud_favorite_meal.active_of_dish(db, dish.id)
     if fav is None or all(getattr(fav, key) is None for key in FIELDS):
-        return own
+        return _at_default_weight(db, dish, own)
     return star_portion(db, dish, fav)
 
 
@@ -339,7 +357,7 @@ def star_portion(db: Session, dish: PersonalFood, fav: FavoriteMeal) -> Portion:
     """What a ⭐ logs: the portion it holds, until a person corrects its dish.
 
     One correction lives in one place (US-O4), so the favourite's copy stays and typed
-    numbers go over it, at the portion's grams. No weight anywhere: the copy serves.
+    numbers go over it, at the portion's grams. No weight anywhere: as any dish.
     """
     held = Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
     portion = _at_typed_grams(dish, held)
@@ -348,7 +366,7 @@ def star_portion(db: Session, dish: PersonalFood, fav: FavoriteMeal) -> Portion:
         grams = portion.grams or _own_portion(db, dish).grams
         if grams:
             return Portion(_scaled(per_100, grams / 100.0), grams)
-    return portion
+    return _at_default_weight(db, dish, portion)
 
 
 def star_meal_fields(db: Session, dish: PersonalFood | None, fav: FavoriteMeal) -> dict:
@@ -786,12 +804,22 @@ def exact_match(db: Session, user_id: int, text: Optional[str]) -> list:
         return []
     known = crud_personal_food.names_of(db, user_id)
     whole = known.get(wanted.lower())
-    if whole is not None:
-        return [whole]
     parts = [part.strip().lower() for part in wanted.split(",")]
-    if len(parts) < 2 or not all(part in known for part in parts):
+    if whole is not None:
+        dishes = [whole]
+    elif len(parts) >= 2 and all(part in known for part in parts):
+        dishes = [known[part] for part in parts]
+    else:
         return []
-    return [known[part] for part in parts]
+    return [] if any(_reads_as_new(db, dish) for dish in dishes) else dishes
+
+
+def _reads_as_new(db: Session, dish: PersonalFood) -> bool:
+    """A removed ⭐ was all that knew the numbers. Removing it did not ask to stop
+    counting, so the words go to the model like any food, and the dish gets its own."""
+    return dish_portion(db, dish).numbers is None and crud_favorite_meal.has_removed(
+        db, dish.id
+    )
 
 
 def _groups_of_dish(db: Session, dish_id: int, name: str) -> Optional[list]:

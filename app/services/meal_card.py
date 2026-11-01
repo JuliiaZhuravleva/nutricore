@@ -108,7 +108,7 @@ M7E_DEAD_FILE = (
 )
 WRITE = "✏️ Написать"
 WRITE_OTHER = "✏️ Написать иначе"
-AGAIN = "🔁 Ещё раз"
+AGAIN = "🔁 Прочитать заново"
 DELETE = "🗑 Удалить"
 _FAILED_COPY = {IMAGE: M7_FAILED, TEXT: M7A_FAILED, VOICE: M4D_FAILED}
 DEAD_FILE = "DeadFile"  # meal_readings.error: Telegram no longer has this photo

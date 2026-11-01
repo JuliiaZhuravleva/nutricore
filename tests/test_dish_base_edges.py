@@ -249,16 +249,57 @@ def _typed_with_no_weight(db, owner):
     return dish
 
 
-def test_a_portion_with_no_weight_is_not_called_checked_on_its_dish(db, owner):
+def test_typed_numbers_with_no_weight_count_a_hundred_grams_and_say_so(db, owner):
     dish = _typed_with_no_weight(db, owner)
+    per_100 = float(dish.per_100g_calories)
     shown = tap(f"dh:log:{dish.id}").edits()[-1]
     meal = db.get(Meal, shown_meal_id(db, owner))
     item = meal_items.crud_meal_item.live(db, meal.id)[0]
-    assert item.numbers_source == "dish" and item.base_calories == 420.0  # item 86
+    assert item.numbers_source == "dish" and item.base_calories == per_100
+    assert item.base_grams == meal_items.DEFAULT_GRAMS
     assert (
         meal_card.meal_items.TAG_DISH_UNVERIFIED[1:]
         in _shown(f"ml:i:{item.id}:r")["text"]
     )
+
+
+def test_a_typed_portion_replaces_the_default_of_a_hundred_grams(db, owner):
+    dish = _typed_with_no_weight(db, owner)
+    dish.usual_grams, dish.usual_grams_by_user = 250.0, True
+    db.commit()
+    portion = meal_items.dish_portion(db, dish)
+    assert (portion.grams, portion.assumed) == (250.0, False)
+    assert meal_items.numbers_checked(dish, portion.grams)
+
+
+def test_a_typed_hundred_grams_is_checked_and_a_default_one_is_not(db, owner):
+    dish = _typed_with_no_weight(db, owner)
+    assert not meal_items.numbers_checked(dish, meal_items.DEFAULT_GRAMS)
+    dish.usual_grams, dish.usual_grams_by_user = 100.0, True
+    assert meal_items.numbers_checked(dish, meal_items.DEFAULT_GRAMS)
+
+
+def test_an_estimated_dish_keeps_the_plate_it_was_eaten_on(db, owner):
+    """Nobody wrote these numbers: a real plate says more than an assumed 100 g."""
+    dish = _dish(db, owner, "омлет", **_per_100())
+    _eat(db, owner, dish, base_calories=420.0, numbers_source="model")
+    portion = meal_items.dish_portion(db, dish)
+    assert (portion.numbers["calories"], portion.assumed) == (420.0, False)
+
+
+def test_an_estimated_dish_with_nothing_else_counts_a_hundred_grams(db, owner):
+    dish = _dish(db, owner, "омлет", **_per_100())
+    portion = meal_items.dish_portion(db, dish)
+    assert (portion.grams, portion.assumed) == (meal_items.DEFAULT_GRAMS, True)
+
+
+def test_the_dish_card_says_the_hundred_grams_are_assumed(db, owner):
+    owner.settings = {**owner.settings, SHOW_NUMBERS: True}
+    db.commit()
+    dish = _typed_with_no_weight(db, owner)
+    card = _shown(f"dh:n:{dish.id}:1:f7")["text"]
+    assert "Порция не указана: считаю 100 г." in card
+    assert "Обычная порция" not in card
 
 
 def shown_meal_id(db, owner) -> int:
@@ -298,16 +339,16 @@ def test_a_star_with_no_weight_keeps_its_mark_where_the_numbers_show(db, owner):
         db, owner, "омлет", **_per_100(numbers_quality="user", numbers_by_user=True)
     )
     fav = _star(db, owner, dish, calories=360.0)
-    assert "≈ 360 ккал" in str(_labels(_shown("fav:p:0")))
-    assert "🔥 ≈ 360 ккал" in _shown(f"fav:o:{fav.id}:0")["text"]
-    assert "≈ 360 ккал" in tap(f"fav:l:{fav.id}:n").edits()[-1]["text"]
+    assert "≈ 180 ккал" in str(_labels(_shown("fav:p:0")))
+    assert "🔥 ≈ 180 ккал" in _shown(f"fav:o:{fav.id}:0")["text"]
+    assert "≈ 180 ккал" in tap(f"fav:l:{fav.id}:n").edits()[-1]["text"]
 
 
 def test_a_log_from_the_card_with_no_weight_keeps_its_mark(db, owner):
     owner.settings = {**owner.settings, SHOW_NUMBERS: True}
     db.commit()
     dish = _typed_with_no_weight(db, owner)
-    assert "≈ 420 ккал" in tap(f"dh:log:{dish.id}").edits()[-1]["text"]
+    assert "≈ 180 ккал" in tap(f"dh:log:{dish.id}").edits()[-1]["text"]
 
 
 def test_control_a_star_at_grams_of_a_checked_dish_has_no_mark(db, owner):

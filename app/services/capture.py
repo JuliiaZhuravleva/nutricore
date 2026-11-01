@@ -209,7 +209,7 @@ NO_CREDIT = "no_credit"  # passes only after a top-up
 NO_LIVE_READ = "NoLiveRead"  # no task holds this meal, the process went down in it
 NO_BALANCE = "NoBalance"  # not asked: the last answer said the balance is out
 
-# The reads nobody asked for. ``read_attempts`` counts them and a person's 🔁 Ещё раз
+# The reads nobody asked for. ``read_attempts`` counts them and a person's 🔁 Прочитать заново
 # (M7 writes it), and is the index here: who just tried by hand waits the longer step.
 RETRY_AFTER = (timedelta(minutes=5), timedelta(hours=1), timedelta(hours=6))
 RETRY_WINDOW = timedelta(hours=24)
@@ -1249,7 +1249,7 @@ meal_card.add_verbs(
 
 
 def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
-    """🔁 Ещё раз. A read already out is paid for, so a second tap asks nothing; the
+    """🔁 Прочитать заново. A read already out is paid for, so a second tap asks nothing; the
     message tapped is the one the answer lands on, whichever screen it was."""
     meal = meal_card._own_meal(t, int(mid), data)
     if meal.reading_status == "pending":
@@ -1260,7 +1260,7 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
         stands = []  # what was joined to it is all there is: its own read is still owed
     if stands or has_words:
         # A record stands: only the button of M13 or M11 pays to read it anew. The
-        # 🔁 Ещё раз of an old line, tapped late, costs nothing.
+        # 🔁 Прочитать заново of an old line, tapped late, costs nothing.
         if _shows_read_anew(t, meal):
             return _read_anew(t, meal)
         return meal_card._v_line(t, data, mid)
@@ -1485,7 +1485,7 @@ class Read:
     hint: bool = False  # the line carries M1b: the edit keeps it
     note: Optional[str] = None
     inbound_id: Optional[int] = None
-    again: bool = False  # 🔁 Ещё раз: a file gone by now is said to be gone
+    again: bool = False  # 🔁 Прочитать заново: a file gone by now is said to be gone
     tap: Optional[str] = None  # the callback query it answers, if it fails
     file_ids: tuple = ()  # an album: what the model is shown, in order of arrival
     source_ids: tuple = ()

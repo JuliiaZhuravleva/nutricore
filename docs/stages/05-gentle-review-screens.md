@@ -38,7 +38,7 @@ Decisions that bend a written story are marked **Decision**. Section 9 lists the
 
 **A back label for one thing says where it goes (`⬅️ К приёму`), one for a list names the list (`⬅️ Приёмы дня`).** `⬅️ Назад: сегодня` beside day arrows says «back», so it does not read as one more day, and it names the card the person came from, not the day being walked.
 
-**Verbs.** A 🗑 label names what it leaves: `🗑 Из приёма` takes a dish out of one meal, `🗑 Из списков` hides a dish from the lists, `🗑 Из избранного` takes off the ⭐. `🗑 Удалить` is for a whole meal, including a meal that holds only a photo. No screen says a bare `🗑 Убрать`. `↩️ Вернуть` undoes an edit or a removal. `↩️ Отменить` undoes a fresh favourite log. `🔁 Ещё раз` repeats a reading. `🔄 Заменить` swaps. `🔗 Объединить` joins, `➖ Отделить` separates. A line in the chat is a message, not a place, so it has no back button.
+**Verbs.** A 🗑 label names what it leaves: `🗑 Из приёма` takes a dish out of one meal, `🗑 Из списков` hides a dish from the lists, `🗑 Из избранного` takes off the ⭐. `🗑 Удалить` is for a whole meal, including a meal that holds only a photo. No screen says a bare `🗑 Убрать`. `↩️ Вернуть` undoes an edit or a removal. `↩️ Отменить` undoes a fresh favourite log. `🔁 Прочитать заново` repeats a reading. `🔄 Заменить` swaps. `🔗 Объединить` joins, `➖ Отделить` separates. A line in the chat is a message, not a place, so it has no back button.
 
 ### 2.2 Modules and callbacks
 
@@ -322,7 +322,7 @@ The dish chips open the smallest unit first. **A one-dish meal skips this card:*
 ```
 
 ```kb
-🔁 Ещё раз => ml:rr:<mid>:<b> | ✏️ Написать => ml:w:<mid>:<b>
+🔁 Прочитать заново => ml:rr:<mid>:<b> | ✏️ Написать => ml:w:<mid>:<b>
 🕐 Время => ml:t:<mid>:<b> | 🗑 Удалить => ml:d:<mid>:<b>
 ⬅️ К ответу бота => ml:r:<mid>
 ```
@@ -936,7 +936,7 @@ The person's own words appear at once, with no loader. The model splits them beh
 ```
 
 ```kb
-🔁 Ещё раз => ml:rr:<mid>:r | ✏️ Написать => ml:w:<mid>:r
+🔁 Прочитать заново => ml:rr:<mid>:r | ✏️ Написать => ml:w:<mid>:r
 ```
 
 **`M4e`** No speech. Source kept, no meal in the day.
@@ -1074,12 +1074,12 @@ R35's sentence stands as written, and the second line says what it leaves out (s
 ```
 
 ```kb
-🔁 Ещё раз => ml:rr:<mid>:r | ✏️ Написать => ml:w:<mid>:r
+🔁 Прочитать заново => ml:rr:<mid>:r | ✏️ Написать => ml:w:<mid>:r
 ```
 
 - **Trigger:** the read failed, or the sweep marked it so.
 - **In the day:** the time on the line, `13:20 · 📷 фото сохранено` on Приёмы, and `Не посчитано приёмов: 1` under numbers, so a day of one failed photo never reads as 0 ккал.
-- **`🔁 Ещё раз`:** toast `Читаю`, then the line is edited; a repeat failure gives toast `Пока не вышло, запись сохранена`.
+- **`🔁 Прочитать заново`:** toast `Читаю`, then the line is edited; a repeat failure gives toast `Пока не вышло, запись сохранена`.
 - **Reads:** meal, source. **Writes:** `reading_status`, `read_attempts`, reading.
 - **Back:** none. **Stale:** S.
 - **Hard day:** nothing to do. The retry comes by itself, and the copy holds no demand.
@@ -1092,7 +1092,7 @@ R35's sentence stands as written, and the second line says what it leaves out (s
 ```
 
 ```kb
-🔁 Ещё раз => ml:rr:<mid>:r | ✏️ Написать иначе => ml:w:<mid>:r
+🔁 Прочитать заново => ml:rr:<mid>:r | ✏️ Написать иначе => ml:w:<mid>:r
 ```
 
 **`M7b`** `✏️ Написать`, ask `meal_text`. Edits the same message. The text becomes this meal's reading and the photo stays.
@@ -2034,7 +2034,7 @@ Each default is taken, and the build goes on with it.
 27. **`🎙 Текст` reads as "type something"** (two readers). R35 names the `Текст` button. `M4c` explains it once.
 28. **`M1a` shows no time or day.** R35 fixes the one line. The day appears wherever the meal is named later (section 2.9).
 29. **`M1c`, `M1h4`: is the new meal separate?** A reader wanted «Записано отдельно». R35 fixes «Записано: …», and the join button with its day answers it. The join row stays too, though one reader felt it as an unanswered question: R35 requires a reversible `🔗 Объединить`, it joins nothing by itself, and ignoring it is fine. Hiding it by mode would make the line change shape (`M1a`).
-30. **`M7`: is this in the diary, and who retries with `🔁 Ещё раз`?** The first half is reversed by item 44. R35 fixes the copy and both button words. The toast `Читаю` answers the second one on tap, and the meal is in the day as `📷 фото сохранено`.
+30. **`M7`: is this in the diary, and who retries with `🔁 Прочитать заново`?** The first half is reversed by item 44. R35 fixes the copy and both button words. The toast `Читаю` answers the second one on tap, and the meal is in the day as `📷 фото сохранено`.
 31. **`M1d`, `M1h2`: «≈ 3000 ккал» stings.** Shown only to someone who turned numbers on, and 2.6 forbids a cap or a comment.
 32. **`M5` undo:** `➖ Отделить` stays, because R35 names it and a join's undo is a split, not a removal. `M8a` now says the result is its own meal and carries `🗑 Удалить`.
 33. **`O9`: a tap on a name logs by accident.** That is US-O4's one tap, the undo sits under the thumb, and the hint line stays.
@@ -2063,7 +2063,7 @@ Each default is taken, and the build goes on with it.
 **Fresh eyes, round 2: findings rejected, and why.** Items 27–43 stand unless named above; a repeat without new evidence stays rejected.
 
 52. **`M5` `➖ Отделить` as undo** (item 32 again, four readers). They guessed correctly that it does not delete, and `M8a` carries `🗑 Удалить`. A second line on every reply costs more reading than the guess.
-53. **`M7` `🔁 Ещё раз`: who retries.** A sentence saying it retries by itself would be false for a parse error or an empty balance (section 5.2), and one sentence serves all causes. The toast `Читаю` answers on tap.
+53. **`M7` `🔁 Прочитать заново`: who retries.** A sentence saying it retries by itself would be false for a parse error or an empty balance (section 5.2), and one sentence serves all causes. The toast `Читаю` answers on tap.
 54. **`✓ 🔢 Цифры` could mean on or off.** The shipped tri-state of `numbers.py` (section 2.6), shared with the day card.
 55. **`🗑 Удалить` beside `🗑 Из приёма` (`N1h`, `N2h`).** `🗑 Удалить приём` is over the 13-character budget at three per row. The two are on different screens, and `N6` gives the undo at once.
 56. **`M1c` join button names no food.** The label is at its budget with the day, which section 2.9 ranks first, and the line above names the new dish.
@@ -2093,7 +2093,7 @@ Each default is taken, and the build goes on with it.
 
 **Fresh eyes, round 3: findings rejected, and why.**
 
-76. **`🔁 Ещё раз` on `M7`, `M7a`, `M4d`, `N1d`: who retries, and will it double?** New evidence: all four, on a label, where item 53 rejected a sentence. Not changed, because R35 fixes both button words (item 30). **For the owner:** `🔁 Прочитать заново` fits the budget and matches `M11`, `M13`; a one-word decision.
+76. **`🔁 Прочитать заново` on `M7`, `M7a`, `M4d`, `N1d`: who retries, and will it double?** New evidence: all four, on a label, where item 53 rejected a sentence. Not changed, because R35 fixes both button words (item 30). **For the owner:** `🔁 Прочитать заново` fits the budget and matches `M11`, `M13`; a one-word decision.
 77. **`M1c`, `M1h4`: is it counted twice, can it be ignored?** All four guessed here, and one worried about a double count. A line on every join row breaks R35's one line that asks nothing, and a reassurance about tidying is itself about tidying. `M15b` carries the answer. Items 29, 62.
 78. **`N5` `Вчера, 30 окт` counted from today.** All four stumbled and then read it right, because the date saves it. `На вчера, 30 окт` is 16 characters at three per row, budget 13.
 79. **`M5d`, `M6a`: the bold question looks like a task.** Two readers. The title must say what is asked, and 2.9 puts the line that it can be left unanswered right under it. Item 37.
@@ -2104,6 +2104,7 @@ Each default is taken, and the build goes on with it.
 84. **Repeats with no new evidence:** `➖ Отделить` has no undo (32, 52), `M1d`, `M1h2` 3000 ккал (31: numbers are opt-in, 2.6), `O9` accidental log (33, see 69), rice with no amount (34), `O2` no count (35), `M14`, `O13` shipped labels (39), «Приём» (40), `Черновик`, `M10` notice above the title (41, 2.5), `PMID` (42), pager (58), `M9b` (58), `M8b` (59), `M1g` (60), `🗑 Удалить` beside `🗑 Из приёма` (55), `🎙 Текст`, ticks (27, 54), `Ещё ›` hides join (22), mock look and glare (43), `N6a` and picture placeholders (63).
 85. **A dish's own portion and groups (`O14a`, `O14b`).** The build brief for slice O asked to edit both on a dish, while `O14` and US-O3 offered neither: a portion only on a favourite (`O11a`), groups only on a meal (`M14`). So `Обычная порция` on `O3` had no writer. Decided: one more row on `O14`, a nullable column, an event kind, words reused from `O11a`, `M14` and `O5`. To drop it, remove the row; meals already logged keep what they got. A dish's portion and a ⭐'s `O11a` are one number: `O11a` writes the dish's, and the ⭐ keeps its own grams only as what its copy of the numbers scales from.
 86. **Typed numbers with no weight anywhere.** Per 100 g cannot become a portion without grams, so such a dish keeps logging its last numbers or none until `O14a` gets grams. No guess of 100 g.
+   **Owner's decision, 2026-11-01, reverses this:** numbers somebody wrote (typed, barcode, label) with no weight anywhere count `DEFAULT_GRAMS` (100 g) and stay `≈`, `из твоих блюд, не проверено`; `O3` says `Порция не указана: считаю 100 г.`; `O14a` replaces it. An estimate keeps the plate it came from, and with nothing else counts 100 g. A plate row still serves nothing. A ⭐ removed from a dish that has no numbers of its own no longer writes an empty meal: its name is read by the model like any food, and the dish then has its own numbers. A sensible default per dish (juice 200 ml) is being measured, not built. Also decided: the time chips stay as they are, `↩️ Убранное` goes to the next round, and a shorter ⭐ label is checked on a phone later.
 
 **Stories.** Slices N and O are unchanged. Where a decision bends them, this file says why. Slice M was added before slice N.
 

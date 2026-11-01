@@ -463,11 +463,11 @@ def test_a_quantity_after_such_a_weight_counts_from_the_record(db, owner):
 
 
 def test_a_dish_without_a_record_keeps_the_dish_numbers_on_one_times(db, owner):
-    # Nothing was recorded, so there is nothing to return to and nothing is wiped.
+    # No weight anywhere: 100 g of the dish, and ×1 returns to it.
     meal, _i = _one(db, owner, "суп", 100.0, None)
     dish = _per_100(db, owner, "рис", "130.00")
     item = meal_items.add_item(db, owner.id, meal.id, food_id=dish.id).items[0]
-    assert item.numbers_source == "none"
+    assert item.numbers_source == "dish" and item.base_grams == 100.0
     meal_items.set_grams(db, owner.id, item.id, 200.0)
 
     meal_items.set_quantity(db, owner.id, item.id, 1.0)

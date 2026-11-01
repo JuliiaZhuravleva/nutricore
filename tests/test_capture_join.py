@@ -1019,7 +1019,7 @@ def test_a_second_tap_while_it_reads_pays_for_nothing(db, owner, reader):
 
 
 def test_a_stale_read_button_on_a_line_costs_nothing(db, owner, reader):
-    """🔁 Ещё раз on an old M7: the meal has been read since, and nothing is asked. The
+    """🔁 Прочитать заново on an old M7: the meal has been read since, and nothing is asked. The
     known-positive is the test above that pays on M13."""
     meal = _meal_from(db, reader, "рис", ago=0)
     asked = len(reader.text)

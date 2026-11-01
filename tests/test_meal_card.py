@@ -431,7 +431,7 @@ def test_n1d_unread_says_it_is_in_the_diary_with_what(db, owner):
         ]
     )
     assert _rows(screen) == [
-        ["🔁 Ещё раз", "✏️ Написать"],
+        ["🔁 Прочитать заново", "✏️ Написать"],
         ["🕐 Время", "🗑 Удалить"],
         ["⬅️ К ответу бота"],
     ]
