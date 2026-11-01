@@ -39,7 +39,9 @@ from telegram.warnings import PTBUserWarning
 from app.core.config import settings
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
+from app.models import action_event
 from app.services import (
+    action_journal,
     ai_errors,
     capture,
     custom_emoji,
@@ -64,6 +66,7 @@ from app.services import (
 from app.services.access_control import access_gate, admin_required
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
+from app.services.attribution import attribute_to
 from app.services.card_delivery import CardDelivery
 from app.services.consult_service import consult_service
 from app.services.loader import Loader
@@ -774,8 +777,21 @@ async def _say_not_yet(bot, job: capture.Read) -> None:
 
 
 async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
-    """One read of a meal, and its line. (read, the dead model's error if that is why
-    not). Nothing here logs a message body: only the class of what went wrong."""
+    """One read of a meal, booked to the person whose meal it is, whoever started it: a
+    sweep with nobody behind it, or the owner's /reprocess."""
+    with attribute_to(job.telegram_id):
+        return await _read_and_show(bot, job, meter)
+
+
+def _note_failed(job: capture.Read) -> None:
+    # A retry nobody asked for is no new failure: the person met this one already.
+    if not job.automatic:
+        action_journal.note(job.telegram_id, action_event.FAILED, job.kind)
+
+
+async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
+    """(read, the dead model's error if that is why not). Nothing here logs a message
+    body: only the class of what went wrong."""
     try:
         nutrition, resolution = await _reading(bot, job)
     except voice.NoSpeech:
@@ -786,6 +802,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
     except Exception as e:
         error = type(e).__name__
         logger.error("Meal %s not read: %s", job.meal_id, error)
+        _note_failed(job)
         inbound_msg.mark_failed(job.inbound_id, error)
         with SessionLocal() as db:
             done = capture.read_failed(
@@ -827,6 +844,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
             os.path.basename(place.filename),
             place.lineno,
         )
+        _note_failed(job)
         with SessionLocal() as db:
             done = capture.read_failed(
                 db,
@@ -840,6 +858,8 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
         await _say_not_yet(bot, job)
         return False, None
     if done.learn:
+        # A read with no food in it, or of a meal gone meanwhile, has nothing to learn.
+        action_journal.note(job.telegram_id, action_event.SAVED, job.kind)
         _schedule_personal_food_save(**done.learn)
     await _show(bot, job, done.line)
     await _retouch(bot, job.chat_id, done.retouch)
@@ -970,6 +990,7 @@ async def _replay_pending(application: Application, meals: list) -> None:
 async def _show_given_up(application: Application, given_up: list) -> None:
     for job, done in given_up:
         if job is not None:
+            action_journal.note(job.telegram_id, action_event.FAILED, job.kind)
             await _show(application.bot, job, done.line)
 
 
@@ -1453,12 +1474,13 @@ async def _fill_typed_dish(fill: meal_card.Fill, telegram_id: int) -> None:
     """N4: a typed new name's numbers, with no new message. If this fails the name
     stays, and its screen says «Цифры не посчитаны.»."""
     try:
-        nutrition = await _analyze_and_parse(
-            kind="text",
-            payload=fill.name,
-            input_ref=fill.name,
-            telegram_id=telegram_id,
-        )
+        with attribute_to(telegram_id):
+            nutrition = await _analyze_and_parse(
+                kind="text",
+                payload=fill.name,
+                input_ref=fill.name,
+                telegram_id=telegram_id,
+            )
         with SessionLocal() as db:
             meal_items.fill_numbers(
                 db, fill.item_id, fill.rev, fill.event_id, nutrition
@@ -2119,31 +2141,33 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for row in rows:
         try:
-            if row.kind == "image":
-                if not row.photo_file_id:
-                    raise ValueError("no photo reference to re-fetch")
-                payload = await _download_image(context.bot, row.photo_file_id)
-                # Use the full pipeline so reprocessed images also benefit from
-                # barcode→OFF lookup (same quality as the live flow).
-                resolution_result = await resolve_meal_nutrition(
-                    payload,
-                    telegram_id=row.telegram_id,
-                    input_ref=row.photo_file_id,
-                    # The stored caption. /reprocess OVERWRITES ai_analysis, so
-                    # replaying without it would actively downgrade a record the
-                    # live flow got right.
-                    caption=row.content,
-                )
-                parsed = resolution_result.nutrition
-            else:
-                payload = row.content or ""
-                input_ref = row.content or ""
-                parsed = await _analyze_and_parse(
-                    kind=row.kind,
-                    payload=payload,
-                    input_ref=input_ref,
-                    telegram_id=row.telegram_id,
-                )
+            # The row's person pays for its replay, not the owner who asked for it.
+            with attribute_to(row.telegram_id):
+                if row.kind == "image":
+                    if not row.photo_file_id:
+                        raise ValueError("no photo reference to re-fetch")
+                    payload = await _download_image(context.bot, row.photo_file_id)
+                    # Use the full pipeline so reprocessed images also benefit from
+                    # barcode→OFF lookup (same quality as the live flow).
+                    resolution_result = await resolve_meal_nutrition(
+                        payload,
+                        telegram_id=row.telegram_id,
+                        input_ref=row.photo_file_id,
+                        # The stored caption. /reprocess OVERWRITES ai_analysis, so
+                        # replaying without it would actively downgrade a record the
+                        # live flow got right.
+                        caption=row.content,
+                    )
+                    parsed = resolution_result.nutrition
+                else:
+                    payload = row.content or ""
+                    input_ref = row.content or ""
+                    parsed = await _analyze_and_parse(
+                        kind=row.kind,
+                        payload=payload,
+                        input_ref=input_ref,
+                        telegram_id=row.telegram_id,
+                    )
         except ModelUnavailableError as e:
             await update.message.reply_text(stopped(e))
             return
@@ -2220,6 +2244,9 @@ def create_bot_application() -> Application:
         .post_shutdown(_on_stop)
         .build()
     )
+
+    # Whose update this is, and what they did: before anything can pay for a model.
+    application.add_handler(TypeHandler(Update, action_journal.note_update), group=-3)
 
     # Global access gate — runs before every other handler (group=-2) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.

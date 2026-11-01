@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
 
+from app.crud.crud_action_event import crud_action_event
+from app.models.action_event import CORRECTED, CORRECTION_KINDS
 from app.models.record_event import EVENT_KINDS, RecordEvent
 
 
@@ -36,6 +38,11 @@ class CRUDRecordEvent:
         )
         db.add(event)
         db.flush()
+        # Every change comes through here. An undo takes a correction back: not another.
+        if undoes_event_id is None and kind in CORRECTION_KINDS:
+            crud_action_event.add_for_user(
+                db, user_id=user_id, kind=CORRECTED, label=kind
+            )
         return event
 
 

@@ -197,6 +197,8 @@ class Settings(BaseSettings):
     # knob because these rows are user content (photo references), not just debug
     # traces; a daily Celery-beat job prunes rows older than this.
     INBOUND_MESSAGE_RETENTION_DAYS: int = 60
+    # Retention for the action_events journal (kinds and fixed names, no food text).
+    ACTION_EVENT_RETENTION_DAYS: int = 60
     # Loopback-only by default (the API is internal, not published). Prod
     # deployments behind a domain must add their host(s) via the env var.
     ALLOWED_HOSTS: List[str] = ["127.0.0.1", "localhost"]

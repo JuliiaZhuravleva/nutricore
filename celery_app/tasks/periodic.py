@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
+from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_ai_call_log import crud_ai_call_log
 from app.crud.crud_inbound_message import crud_inbound_message
 from app.db.session import SessionLocal
@@ -35,4 +36,17 @@ def purge_inbound_messages() -> int:
     logger.info(
         "purge_inbound_messages: removed %s rows older than %s", deleted, cutoff
     )
+    return deleted
+
+
+@app.task
+def purge_action_events() -> int:
+    """Delete action_events rows older than ACTION_EVENT_RETENTION_DAYS. The cost ledger
+    has no purge: it holds no text and is kept for good."""
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        days=settings.ACTION_EVENT_RETENTION_DAYS
+    )
+    with SessionLocal() as db:
+        deleted = crud_action_event.delete_older_than(db, cutoff)
+    logger.info("purge_action_events: removed %s rows older than %s", deleted, cutoff)
     return deleted

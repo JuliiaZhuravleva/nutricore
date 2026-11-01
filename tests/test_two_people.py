@@ -18,30 +18,37 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy import text as sql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import object_session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from telegram import Update
 
+import app.services.action_journal as action_journal
 import app.services.ai_call_log_service as log_service
 import app.services.inbound_message_service as inbound_service
 import app.services.model_selection as model_selection
 import app.services.telegram as tg
+import app.services.usage_ledger as usage_ledger
 from app.core.config import settings
+from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_subscription import crud_subscription
+from app.crud.crud_usage_ledger import crud_usage_ledger
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import (
+    ActionEvent,
     BodyMetric,
     FavoriteMeal,
     Meal,
@@ -51,6 +58,7 @@ from app.models import (
     PersonalFood,
     PersonalFoodEmbedding,
     RecordEvent,
+    UsageLedger,
     User,
 )
 from app.services import dishes, favorites, meal_card, meal_items, weight_screen
@@ -66,7 +74,7 @@ TZ = {"timezone": "Asia/Tbilisi"}
 LINE, CHOOSER = 7700, 7701
 _ids = iter(range(100, 10_000_000))
 # Written by the bot about what the tap itself did, for anyone: not a row of a person.
-_LOGS = {"inbound_messages", "ai_call_logs"}
+_LOGS = {"inbound_messages", "ai_call_logs", "action_events", "usage_ledger"}
 PG_URL = os.environ.get("TWO_PEOPLE_DB_URL")
 
 
@@ -98,7 +106,14 @@ def _engine():
 def Session(monkeypatch):
     engine = _engine()
     factory = sessionmaker(bind=engine)
-    for module in (tg, inbound_service, log_service, model_selection):
+    for module in (
+        tg,
+        inbound_service,
+        log_service,
+        model_selection,
+        usage_ledger,
+        action_journal,
+    ):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", str(A))
     # A person the gate lets in. Dropped there, B would pass every probe below unasked.
@@ -998,3 +1013,137 @@ def test_one_persons_answer_about_food_is_not_the_others(db, world, model):
     for_b = " ".join(body for _n, body in _shown_to(_tap(B, "hw:p:1")))
     assert "🧪" not in for_a and "💊 Рутины" in for_a
     assert "🧪" in for_b
+
+
+def test_the_ledger_adds_up_one_row_a_person_a_day(db, world, Session):
+    """The upsert on the dialect the bot runs on: to one row, by person and by day."""
+    day = date(2026, 11, 2)
+    for person, the_day, cost in (
+        (A, day, 0.25),
+        (A, day, 0.5),
+        (A, day, None),
+        (B, day, 1.0),
+        (0, day, 0.125),
+        (A, day - timedelta(days=1), 2.0),
+    ):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=person, day=the_day, cost_usd=cost
+            )
+
+    db.expire_all()
+    rows = db.execute(
+        select(UsageLedger).where(UsageLedger.telegram_id == A, UsageLedger.day == day)
+    ).scalars()
+    row = rows.one()
+    assert (row.calls, float(row.cost_usd), row.unpriced_calls) == (3, 0.75, 1)
+    assert row.created_at is not None and row.updated_at is not None
+
+    by_person = crud_usage_ledger.by_person(db)
+    assert float(by_person[A].cost_usd) == 2.75 and by_person[A].calls == 4
+    assert float(by_person[B].cost_usd) == 1.0
+    assert float(by_person[0].cost_usd) == 0.125
+    assert float(crud_usage_ledger.total(db).cost_usd) == 3.875
+    assert crud_usage_ledger.total(db, since=day).calls == 5
+    assert crud_usage_ledger.of_person(db, A, since=day).unpriced_calls == 1
+    assert crud_usage_ledger.of_person(db, 9).calls == 0
+
+
+def test_the_ledger_holds_a_very_small_price_exactly(db, world, Session):
+    """Numeric, not float: an embedding's price, added many times, stays itself."""
+    for _ in range(3):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=A, day=date(2026, 11, 2), cost_usd=0.0000002
+            )
+    db.expire_all()
+    total = crud_usage_ledger.of_person(db, A)
+    assert total.calls == 3
+    assert float(total.cost_usd) == pytest.approx(0.0000006, abs=1e-12)
+
+
+@pytest.mark.skipif(not PG_URL, reason="SQLite holds one writer at a time")
+def test_two_calls_at_once_both_count(db, world, Session):
+    """The reason for one statement rather than a read and a write."""
+
+    def one_call(_index):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=A, day=date(2026, 11, 2), cost_usd=0.5
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(one_call, range(40)))
+    total = crud_usage_ledger.of_person(db, A)
+    assert total.calls == 40 and float(total.cost_usd) == 20.0
+
+
+def _forget_the_journal(db) -> None:
+    """What building the world wrote: the saves and changes it made as its people."""
+    db.execute(delete(ActionEvent))
+    db.commit()
+
+
+def _journal(db, person: int) -> list:
+    db.expire_all()
+    return list(
+        db.execute(
+            select(ActionEvent.kind, ActionEvent.label)
+            .where(ActionEvent.telegram_id == person)
+            .order_by(ActionEvent.id)
+        )
+    )
+
+
+def test_the_journal_is_written_for_each_person_and_holds_no_food(db, world, model):
+    """On the real writer. The dish, the meal and the words all carry the marker."""
+    _forget_the_journal(db)
+    _say(B, "📊 Статистика")
+    _say(B, f"{MARK} и рис")
+    _say(B, f"/{MARK}")
+    _tap(B, f"{MARK}:1")
+    _tap(B, "st:day")
+
+    rows = _journal(db, B)
+    assert ("button", "📊 Статистика") in [tuple(row) for row in rows]
+    assert ("button", "st") in [tuple(row) for row in rows]
+    assert ("text", None) in [tuple(row) for row in rows]
+    assert ("button", None) in [tuple(row) for row in rows]  # the unknown verb
+    assert all(MARK not in repr(tuple(row)).casefold() for row in rows)
+    assert not _journal(db, A)
+
+
+def test_the_journal_answers_what_the_owner_screens_will_ask(db, world, Session):
+    _forget_the_journal(db)
+    now = datetime.now(UTC)
+    for person, kind, label, ago in (
+        (A, "photo", None, timedelta(minutes=5)),
+        (A, "saved", "image", timedelta(minutes=4)),
+        (A, "corrected", "grams", timedelta(minutes=1)),
+        (B, "text", None, timedelta(hours=2)),
+        (B, "text", None, timedelta(days=40)),
+    ):
+        crud_action_event.add(
+            db, telegram_id=person, kind=kind, label=label, at=now - ago
+        )
+    db.commit()
+
+    last = crud_action_event.last_actions(db, A, limit=2)
+    assert [row.kind for row in last] == ["saved", "corrected"]
+    since = now - timedelta(days=30)
+    assert crud_action_event.counts_by_kind(db, B, since=since) == {"text": 1}
+    assert crud_action_event.counts_by_kind(db, A, since=since) == {
+        "photo": 1,
+        "saved": 1,
+        "corrected": 1,
+    }
+    seen = crud_action_event.last_seen_all(db)
+    assert abs(seen[A] - (now - timedelta(minutes=5))) < timedelta(seconds=1)
+    assert abs(seen[B] - (now - timedelta(hours=2))) < timedelta(seconds=1)
+    flags = crud_action_event.active_days(db, B, zone=ZoneInfo("UTC"), now=now)
+    assert len(flags) == 7 and flags[-1] is True and flags[0] is False
+
+    assert crud_action_event.delete_older_than(db, since) == 1
+    assert crud_action_event.counts_by_kind(db, B, since=now - timedelta(days=99)) == {
+        "text": 1
+    }

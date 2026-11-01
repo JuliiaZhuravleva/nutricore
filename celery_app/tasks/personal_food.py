@@ -17,8 +17,10 @@ import logging
 from typing import Optional
 
 from app.crud.crud_personal_food import crud_personal_food
+from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
 from app.services import portion_suggestions
+from app.services.attribution import attribute_to
 from app.services.openai_service import OpenAIService
 from celery_app.celery_app import app
 
@@ -110,7 +112,9 @@ def embed_and_save_personal_food(
                     finally:
                         await svc.client.close()
 
-                embedding: list = asyncio.run(_embed())
+                # A worker has no update: whose food this is, it says here.
+                with attribute_to(crud_user.telegram_id_of(db, user_id)):
+                    embedding: list = asyncio.run(_embed())
                 crud_personal_food.add_embedding(
                     db,
                     personal_food_id=personal_food_id,

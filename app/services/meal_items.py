@@ -25,11 +25,13 @@ from typing import Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import NAME_MAX, crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_record_event import crud_record_event
+from app.models.action_event import SAVED
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
@@ -566,6 +568,7 @@ def save_meal(
             numbers_source=numbers_source,
             grams_by_user=grams_by_user,
         )
+        crud_action_event.add_for_user(db, user_id=user_id, kind=SAVED, label="dish")
         db.commit()
         db.refresh(meal)
         return meal
@@ -998,6 +1001,7 @@ def save_exact(
                 position=position,
                 **_with_numbers(portion),
             )
+        crud_action_event.add_for_user(db, user_id=user_id, kind=SAVED, label="dish")
         db.commit()
         db.refresh(meal)
         return meal

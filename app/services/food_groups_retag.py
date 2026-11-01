@@ -17,9 +17,11 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from app.crud.crud_user import crud_user
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.services import food_groups, usage_meter
+from app.services.attribution import attribute_to
 from app.services.product_lookup_service import parse_food_items
 
 logger = logging.getLogger(__name__)
@@ -109,8 +111,11 @@ def _write(row, items: list) -> None:
         row.updated_at = datetime.now(UTC)
 
 
-async def _tag(service, row) -> list:
-    items = parse_food_items(await service.tag_food_groups(_foods(row)))
+async def _tag(db, service, row) -> list:
+    # Whose food this is, whoever runs the script: the ledger books it to them.
+    with attribute_to(crud_user.telegram_id_of(db, row.user_id)):
+        reply = await service.tag_food_groups(_foods(row))
+    items = parse_food_items(reply)
     if not items:
         # Stored as «no groups», it would never be asked about again.
         raise ValueError("food_items reply named no foods")
@@ -130,7 +135,7 @@ async def run(db, service, *, apply: bool, limit_usd: float = LIMIT_USD) -> Repo
         first_items = None
         first_rev = _rev(rows[0])
         try:
-            first_items = await _tag(service, rows[0])
+            first_items = await _tag(db, service, rows[0])
         except Exception:
             logger.exception("retag: %s failed", labels[0])
             report.failed = 1
@@ -158,7 +163,7 @@ async def run(db, service, *, apply: bool, limit_usd: float = LIMIT_USD) -> Repo
                 break
             try:
                 rev = first_rev if index == 0 else _rev(row)
-                items = first_items if index == 0 else await _tag(service, row)
+                items = first_items if index == 0 else await _tag(db, service, row)
                 if _moved(db, row, rev):
                     db.rollback()
                     report.skipped += 1

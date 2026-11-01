@@ -33,6 +33,10 @@ app.conf.beat_schedule = {
         "task": "celery_app.tasks.periodic.purge_inbound_messages",
         "schedule": crontab(hour=3, minute=30),
     },
+    "purge-action-events": {
+        "task": "celery_app.tasks.periodic.purge_action_events",
+        "schedule": crontab(hour=4, minute=0),
+    },
     # Sunday 22:00 on each user's clock; the task itself checks who is due.
     "week-summaries": {
         "task": "celery_app.tasks.week_push.send_week_summaries",

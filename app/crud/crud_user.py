@@ -1,6 +1,7 @@
-from sqlalchemy.orm import Session
+from typing import Any, List, Optional, Type
+
 from sqlalchemy import select
-from typing import Optional, List, Type, Any
+from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
@@ -16,6 +17,9 @@ class CRUDUser:
         stmt = select(User).where(User.telegram_id == telegram_id)
         return db.execute(stmt).scalar_one_or_none()
 
+    def telegram_id_of(self, db: Session, user_id: int) -> Optional[int]:
+        return db.scalar(select(User.telegram_id).where(User.id == user_id))
+
     def create(self, db: Session, *, obj_in: UserCreate) -> User:
         """Create new user."""
         db_obj = User(
@@ -23,7 +27,7 @@ class CRUDUser:
             username=obj_in.username,
             diet_preferences=obj_in.diet_preferences,
             target_metrics=obj_in.target_metrics,
-            settings=obj_in.settings
+            settings=obj_in.settings,
         )
         db.add(db_obj)
         db.commit()
