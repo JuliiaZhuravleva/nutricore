@@ -415,11 +415,13 @@ def week_screen(
     if week_card.has_tags(week):
         lines += week_card.lines(week)
     else:
-        lines.append(week_card.NO_TAGS)
-        picture |= {
-            "emptyTitle": "Записи есть",
-            "emptyNote": "Группы в них пока не видны.",
-        }
+        foods = week_card.foods_named(days)
+        if foods:
+            lines.append(f"🍽 {week_card.FOODS_TITLE}: {html.escape(foods)}.")
+            picture |= {"emptyTitle": week_card.FOODS_TITLE, "emptyNote": foods}
+        else:
+            lines.append(f"🍽 {week_card.NO_NAMES}.")
+            picture["emptyTitle"] = week_card.NO_NAMES
     lines += ticks
     finding = week_card.finding_line(week, new_label, html.escape)
     if finding:
