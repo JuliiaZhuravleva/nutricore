@@ -1235,6 +1235,10 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         (ADR-0003 §4b).
         """
         portion_grams = signals_input.portion_grams
+        # No weight read: the dish's guess, as its card counts it. Still nobody's weight.
+        assumed = not portion_grams and bool(pf.suggested_grams) and not pf.usual_grams
+        if assumed:
+            portion_grams = pf.suggested_grams
         vision = signals_input.vision_result or {}
 
         # per_100g_* columns are Numeric(8,2) → Postgres returns Decimal. Coerce to
@@ -1282,6 +1286,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             "off_from_cache": False,
             "off_latency_ms": None,
             "portion_grams": portion_grams,
+            **({"portion_assumed": True} if assumed else {}),
             "off_missing_macros": missing,
             "confidence_tier": "medium",
             "strategy_tried": ["saved_rag"],  # runner updates this

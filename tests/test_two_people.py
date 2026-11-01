@@ -54,6 +54,7 @@ from app.models import (
     User,
 )
 from app.services import dishes, favorites, meal_card, meal_items, weight_screen
+from app.services.openai_service import OpenAIService
 from app.services.product_lookup_service import ImageSignals, SavedFoodRAGStrategy
 from tests.test_capture_router import NOW_TS, NUTRITION, Wire
 
@@ -826,6 +827,35 @@ def test_typing_as_dish_goes_to_bs_own_row_with_none_of_as_numbers(db, world, mo
     model.text.clear()
     _say(A, f"{MARK} суп")
     assert not model.text  # the known positive: for A it is the free match
+
+
+def test_a_portion_guess_stays_on_the_row_it_was_asked_for(db, world, monkeypatch):
+    """The ask follows the slot's own dish: B's slot on A's dish asks nothing about it,
+    and B's own dish of the same name takes the guess alone."""
+    asked = []
+
+    async def suggest(_self, name):
+        asked.append(name)
+        return '{"amount": 200, "unit": "ml"}'
+
+    monkeypatch.setattr(OpenAIService, "suggest_portion", suggest)
+    words = "100 10 10 10"
+    _slot(db, world.b, dishes.DISH_NUMBERS, food_id=world.soup, back="l0")
+    _say(B, words)
+    assert asked == []
+    assert db.get(PersonalFood, world.soup).suggested_grams is None
+
+    same_name = _dish(db, world.b, f"{MARK} суп")
+    _slot(db, world.b, dishes.DISH_NUMBERS, food_id=same_name.id, back="l0")
+    _say(B, words)
+    assert asked == [f"{MARK} суп"], "the known positive: B's own dish was asked about"
+    db.expire_all()
+    assert db.get(PersonalFood, same_name.id).suggested_grams == 200.0
+    assert db.get(PersonalFood, world.soup).suggested_grams is None
+    assert not meal_items.save_suggestion(
+        db, world.soup, world.b.id, f"{MARK} суп", 200.0, "ml"
+    ), "a row of A's is not B's to write"
+    assert db.get(PersonalFood, world.soup).suggested_grams is None
 
 
 async def _fake_embedding(_text):

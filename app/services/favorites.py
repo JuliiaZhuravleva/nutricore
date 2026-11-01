@@ -74,6 +74,7 @@ class Screen:
     meal_id: int | None = None  # a reply to this message means this meal
     view: str | None = None  # how the message maps: meal_messages.view, or no meal
     fill: object | None = None  # a new name's numbers, in the background
+    suggest_dish: int | None = None  # a dish to guess a portion for, in the background
     retouch: object | None = None  # the meal's original line, edited silently
     read: object | None = None  # a read to start once this screen is on the message
     split: object | None = None  # an album split: each photo's line and read to start
@@ -223,13 +224,25 @@ def open_list(db, telegram_id: int, page: int = 0, notice: str | None = None) ->
     return _list_screen(db, favs, page, notice, shows_numbers(user))
 
 
-def _portion_line(dish: PersonalFood, grams: float | None, shown: bool) -> str | None:
+def assumed_portion_line(dish: PersonalFood, grams: float) -> str:
+    """A weight nobody gave says so: «примерно» and its unit when it is the model's."""
+    if dish.suggested_grams and grams == dish.suggested_grams:
+        unit = "мл" if dish.suggested_unit == "ml" else "г"
+        return f"Порция не указана: считаю примерно {_num(grams)} {unit}."
+    return f"Порция не указана: считаю {_num(grams)} г."
+
+
+def _portion_line(
+    dish: PersonalFood, grams: float | None, shown: bool, assumed: bool = False
+) -> str | None:
     """A typed portion always shows. Any other only with the numbers open, since it is
     a detail nobody asked for."""
     if dish.usual_grams_by_user and dish.usual_grams:
         return f"Обычная порция: {_num(dish.usual_grams)} г."
     if not shown:
         return None
+    if assumed and grams:
+        return assumed_portion_line(dish, grams)
     return f"Обычная порция: {_num(grams)} г." if grams else _AS_THAT_MEAL
 
 
@@ -251,7 +264,8 @@ def item_screen(
     shown = numbers_on or opened
     numbers, grams = _numbers(t.db, fav, dish)
     lines = [f"<b>⭐ {card._esc(card._capital(dish.canonical_name))}</b>"]
-    portion = _portion_line(dish, grams, shown)
+    assumed = meal_items.star_portion(t.db, dish, fav).assumed
+    portion = _portion_line(dish, grams, shown, assumed)
     if portion:
         lines.append(portion)
     if shown:
@@ -325,7 +339,11 @@ def _log(t, fav: FavoriteMeal, dish: PersonalFood | None, name: str) -> Meal:
     # What a person corrected on the dish goes over the favourite's copy.
     fields = meal_items.star_meal_fields(t.db, dish, fav)
     grams = fields.pop("grams")
-    signals = {"favorite_id": fav.id, **({"portion_grams": grams} if grams else {})}
+    signals = {
+        "favorite_id": fav.id,
+        **({"portion_grams": grams} if grams else {}),
+        **({"portion_assumed": True} if fields.pop("assumed") else {}),
+    }
     meal_in = MealCreate(
         description=name,
         meal_time=t.now,
@@ -431,7 +449,7 @@ def _v_portion(t, data: str, fid: str) -> Screen:
     card._open_slot(t, PORTION, str(fav.id), food_id=dish.id)
     return _plain(
         f"<b>⚖️ Порция: {card._esc(dish.canonical_name)}</b>\n"
-        "Напиши граммы числом, например 200.",
+        "Напиши граммы или миллилитры числом, например 200.",
         [[_btn("⬅️ К избранному блюду", "o", fav.id, 0)]],
     )
 

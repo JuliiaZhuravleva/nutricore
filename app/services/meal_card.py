@@ -155,7 +155,7 @@ _DAY_BACK = {
     stats_screen.WEEK: "⬅️ Назад: 7 дней",
 }
 _GRAMS_TEXT = re.compile(
-    r"\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:г|гр|грамм(?:а|ов)?|g|gr|grams?)?\.?\s*",
+    r"\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:г|гр|грамм(?:а|ов)?|g|gr|grams?|мл|миллилитр(?:а|ов)?|ml)?\.?\s*",
     re.IGNORECASE,
 )
 _TIME_TEXT = re.compile(r"\s*(вчера\s+)?(\d{1,2})[:.](\d{2})\s*", re.IGNORECASE)
@@ -436,7 +436,11 @@ def _dish_tag(db, item: MealItem, meal: Meal) -> Optional[str]:
             if item.personal_food_id
             else None
         )
-        sure = dish is not None and meal_items.numbers_checked(dish, item.base_grams)
+        sure = (
+            dish is not None
+            and not item.base_grams_assumed
+            and meal_items.numbers_checked(dish, item.base_grams)
+        )
         tag = meal_items.TAG_DISH if sure else meal_items.TAG_DISH_UNVERIFIED
     elif source == "model":
         read = meal.photos and not _typed_later(db, item)
@@ -1429,7 +1433,8 @@ def _v_grams(t: _Tap, data: str, iid: str, back: str) -> Screen:
     item, meal = _own_item(t, int(iid), back, data)
     _open_slot(t, GRAMS, back, meal_id=meal.id, item_id=item.id)
     return Screen(
-        f"<b>⚖️ {_esc(_capital(item.name))}</b>\n" "Напиши граммы числом, например 150.",
+        f"<b>⚖️ {_esc(_capital(item.name))}</b>\n"
+        "Напиши граммы или миллилитры числом, например 150.",
         InlineKeyboardMarkup([_to_dish(item.id, back)]),
     )
 
@@ -1738,7 +1743,7 @@ def _v_star_dish(t: _Tap, data: str, iid: str, want: str, back: str) -> Screen:
         numbers=numbers,
         nutrients=nutrients,
         source_meal_id=meal.id,
-        usual_grams=meal_items._item_grams(item),
+        usual_grams=meal_items.weighed_grams(item),
     )
     return _dish(t, item, meal, back)
 

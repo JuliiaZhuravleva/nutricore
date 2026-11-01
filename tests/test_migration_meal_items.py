@@ -75,7 +75,7 @@ def _schema_before(conn) -> None:
 
 
 # Columns a later migration adds to a table this one creates: not this one's to write.
-_LATER = {"meal_items": {"source_id"}}
+_LATER = {"meal_items": {"source_id", "base_grams_assumed"}}
 
 
 def _gaps(conn) -> dict:

@@ -141,6 +141,11 @@ class PersonalFood(Base, BaseClass):
     usual_grams_by_user = Column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # A model's guess at a serving, for a dish nobody weighed, in "g" or "ml" (1 ml
+    # counts 1 g). Only ever a default: any real weight goes first, and it is not
+    # usual_grams, so it never reads as a person's word or as a checked portion.
+    suggested_grams = Column(Float, nullable=True)
+    suggested_unit = Column(String, nullable=True)
     # "per_100" | "per_portion" | "none".
     numbers_basis = Column(
         String, nullable=False, default="per_100", server_default="per_100"

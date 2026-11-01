@@ -147,7 +147,16 @@ class CRUDPersonalFood:
             aliases.append(old)
         dish.canonical_name = new
         dish.aliases = aliases
+        self.forget_suggestion(dish, old, new)
         db.flush()
+
+    @staticmethod
+    def forget_suggestion(dish: PersonalFood, old: str, new: str) -> None:
+        """A guess was about a name: another name is another dish to guess. The same
+        name in other letters is the same dish."""
+        if _key(old) != _key(new):
+            dish.suggested_grams = None
+            dish.suggested_unit = None
 
     def for_favourite(self, db: Session, user_id: int, name: str) -> PersonalFood:
         """The dish a new ⭐ belongs to. One it finds keeps its numbers and comes back

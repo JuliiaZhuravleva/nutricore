@@ -212,6 +212,14 @@ def effort_for(spec: ModelSpec, task: str, configured: str | None = None) -> str
     return None
 
 
+def cheapest_effort(ref: ModelRef | str) -> str | None:
+    """The lowest effort this model takes, or None when it takes none."""
+    if isinstance(ref, str):
+        ref = parse_model_ref(ref)
+    efforts = spec_for(ref).efforts
+    return next((e for e in _LOW_EFFORTS if e in efforts), None)
+
+
 def build_chat_params(
     ref: ModelRef | str,
     task: str,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -267,6 +268,14 @@ def _usual_grams(t: _Tap, dish: PersonalFood, open_now: bool) -> Optional[float]
     return meal_items.dish_portion(t.db, dish).grams if open_now else None
 
 
+def _asks_portion(t: _Tap, dish: PersonalFood, screen: Screen) -> Screen:
+    """The screen, and the dish it leaves wanting a guessed portion, if it does: the
+    model is asked once the screen is out, never in the way of it."""
+    if not meal_items.wants_suggestion(t.db, dish):
+        return screen
+    return replace(screen, suggest_dish=dish.id)
+
+
 def _hide_of(t: _Tap, dish: PersonalFood) -> Optional[RecordEvent]:
     """What hid it, if it is hidden by a button: the way back stays in reach."""
     if dish.hidden_at is None:
@@ -367,7 +376,7 @@ def _card(
     if grams:
         assumed = open_now and meal_items.dish_portion(t.db, dish).assumed
         lines.append(
-            f"Порция не указана: считаю {meal_card.num(grams, 0)} г."
+            favorites.assumed_portion_line(dish, grams)
             if assumed and not dish.usual_grams_by_user
             else f"Обычная порция: {meal_card.num(grams, 0)} г."
         )
@@ -608,7 +617,7 @@ def _v_star(t: _Tap, data: str, fid: str, want: str, back: Optional[str]) -> Scr
             "carbs": numbers["carbohydrates"],
         },
         source_meal_id=dish.meal_id,
-        usual_grams=portion.grams,
+        usual_grams=None if portion.assumed else portion.grams,
     )
     return _card(t, dish, back)
 
@@ -675,6 +684,7 @@ def _log(t: _Tap, dish: PersonalFood) -> Meal:
         return meal
     fields = meal_items.star_meal_fields(t.db, dish, fav)
     grams = fields.pop("grams")
+    assumed = fields.pop("assumed")
     meal = meal_items.save_meal(
         t.db,
         MealCreate(
@@ -682,7 +692,11 @@ def _log(t: _Tap, dish: PersonalFood) -> Meal:
             meal_time=t.now,
             **fields,
             resolution_source=FAVORITE_SOURCE,
-            resolution_signals={"favorite_id": fav.id, "portion_grams": grams},
+            resolution_signals={
+                "favorite_id": fav.id,
+                "portion_grams": grams,
+                **({"portion_assumed": True} if assumed else {}),
+            },
         ),
         t.user.id,
         names=[dish.canonical_name],
@@ -764,7 +778,7 @@ def _typed_name(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
     )
     t.db.commit()
     notice = f"<i>✓ Теперь: {_esc(name)}.</i>"
-    return _card(t, dish, back, notice=notice, undo=event.id)
+    return _asks_portion(t, dish, _card(t, dish, back, notice=notice, undo=event.id))
 
 
 def _taken(dish: PersonalFood, holder: PersonalFood, back: str) -> Screen:
@@ -850,7 +864,9 @@ def _typed_numbers(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
         after=after,
     )
     t.db.commit()
-    return _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event.id, opened=True)
+    return _asks_portion(
+        t, dish, _card(t, dish, back, notice=NUMBERS_NOTICE, undo=event.id, opened=True)
+    )
 
 
 # --- O14a the usual portion -------------------------------------------------
@@ -863,7 +879,7 @@ def _v_portion(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
     return _screen(
         [
             f"<b>⚖️ Порция: {_esc(dish.canonical_name)}</b>",
-            "Напиши граммы числом, например 200.",
+            "Напиши граммы или миллилитры числом, например 200.",
         ],
         [_to_dish(dish.id, back)],
     )
@@ -1288,6 +1304,7 @@ def _undo_rename(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> 
     )
     if _names_state(dish) != after or holder is not None:
         return _refused(t, dish, back)
+    crud_personal_food.forget_suggestion(dish, dish.canonical_name, before["name"])
     dish.canonical_name = before["name"]
     dish.aliases = list(before.get("aliases") or [])
     new = crud_record_event.add(
@@ -1300,7 +1317,7 @@ def _undo_rename(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> 
         undoes_event_id=event.id,
     )
     t.db.commit()
-    return _card(t, dish, back, notice=UNDONE, undo=new.id)
+    return _asks_portion(t, dish, _card(t, dish, back, notice=UNDONE, undo=new.id))
 
 
 def _undo_numbers(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Screen:
@@ -1318,7 +1335,7 @@ def _undo_numbers(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) ->
         undoes_event_id=event.id,
     )
     t.db.commit()
-    return _card(t, dish, back, notice=UNDONE, undo=new.id)
+    return _asks_portion(t, dish, _card(t, dish, back, notice=UNDONE, undo=new.id))
 
 
 def _undo_portion(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Screen:
@@ -1336,7 +1353,7 @@ def _undo_portion(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) ->
         undoes_event_id=event.id,
     )
     t.db.commit()
-    return _card(t, dish, back, notice=UNDONE, undo=new.id)
+    return _asks_portion(t, dish, _card(t, dish, back, notice=UNDONE, undo=new.id))
 
 
 def _v_undo(t: _Tap, data: str, eid: str, back: Optional[str]) -> Screen:

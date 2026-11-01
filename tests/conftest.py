@@ -123,3 +123,19 @@ def celery_delay(monkeypatch):
     delay = MagicMock()
     monkeypatch.setattr(embed_and_save_personal_food, "delay", delay)
     return delay
+
+
+@pytest.fixture(autouse=True)
+def no_portion_call(monkeypatch):
+    """A dish that gains numbers asks the model for a portion, in the background. No
+    test reaches it by accident: it fails as a model that is down fails. Gives the real
+    method to a test that looks at what it sends through a fake client."""
+    from app.services.openai_service import OpenAIService
+
+    real = OpenAIService.suggest_portion
+
+    async def refuse(self, name):
+        raise RuntimeError("no model in a test")
+
+    monkeypatch.setattr(OpenAIService, "suggest_portion", refuse)
+    return real

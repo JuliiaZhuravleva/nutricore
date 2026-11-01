@@ -123,7 +123,7 @@ def test_the_portion_asks_and_opening_writes_nothing(db, owner):
     dish = _dish(db, owner, "омлет с сыром")
     asked = _shown(f"dh:pg:{dish.id}")
     assert asked["text"] == (
-        "<b>⚖️ Порция: омлет с сыром</b>\nНапиши граммы числом, например 200."
+        "<b>⚖️ Порция: омлет с сыром</b>\nНапиши граммы или миллилитры числом, например 200."
     )
     assert _labels(asked) == [["⬅️ К блюду"]]
     assert _on(asked, "⬅️ К блюду") == f"dh:o:{dish.id}:l0"

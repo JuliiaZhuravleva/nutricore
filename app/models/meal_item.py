@@ -56,6 +56,11 @@ class MealItem(Base, BaseClass):
     amount_text = Column(String, nullable=True)  # the person's own words
     grams = Column(Float, nullable=True)
     base_grams = Column(Float, nullable=True)
+    # base_grams is a default nobody gave (100 g, or the dish's guess), so it says
+    # nothing about the dish's portion.
+    base_grams_assumed = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # As read. Float, while dishes keep Numeric: convert where the two meet, because
     # Decimal * float raises TypeError.
     base_calories = Column(Float, nullable=True)

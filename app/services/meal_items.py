@@ -58,7 +58,8 @@ UNDO_REFUSED = "<i>С тех пор запись менялась, поэтом�
 EXACT_NAME_SOURCE = "exact_name"
 TAG_DISH = "из твоих блюд"
 TAG_DISH_UNVERIFIED = "из твоих блюд, не проверено"
-# Numbers on 100 g with no weight anywhere count this much, until ⚖️ Порция says more.
+# Numbers on 100 g with no weight anywhere count this much, or the dish's guess if it
+# has one, until ⚖️ Порция says more.
 DEFAULT_GRAMS = 100.0
 
 FIELDS = ("calories", "proteins", "fats", "carbohydrates")
@@ -110,7 +111,7 @@ class Portion:
 
     numbers: Optional[dict] = None
     grams: Optional[float] = None
-    assumed: bool = False  # nobody gave these grams: DEFAULT_GRAMS, and it says so
+    assumed: bool = False  # nobody gave these grams: a default, and it says so
 
 
 @dataclass
@@ -227,7 +228,7 @@ def numbers_checked(dish: PersonalFood, grams: Optional[float]) -> bool:
     100 g, so a portion nobody weighed is not checked (item 86). 100 g with no usual
     portion may be the default: «не проверено» of a real one is the safe mistake."""
     checked = dish.numbers_by_user or dish.numbers_quality in _VERIFIED
-    if grams == DEFAULT_GRAMS and not dish.usual_grams:
+    if grams in (DEFAULT_GRAMS, dish.suggested_grams) and not dish.usual_grams:
         return False
     return bool(checked and grams)
 
@@ -241,7 +242,8 @@ def _at_default_weight(db: Session, dish: PersonalFood, portion: Portion) -> Por
     written = dish.numbers_by_user or dish.numbers_quality in _VERIFIED
     if portion.numbers and not written:
         return portion
-    return Portion(per_100, DEFAULT_GRAMS, assumed=True)
+    grams = dish.suggested_grams or DEFAULT_GRAMS
+    return Portion(_scaled(per_100, grams / 100.0), grams, assumed=True)
 
 
 def _scaled(numbers: dict, factor: float) -> dict:
@@ -292,6 +294,24 @@ def _item_grams(item: MealItem) -> Optional[float]:
     return None
 
 
+def weighed_grams(item: MealItem) -> Optional[float]:
+    """The item's weight, if anybody gave one: a default is no weight of the dish."""
+    if item.base_grams_assumed and not item.grams:
+        return None
+    return _item_grams(item)
+
+
+def _no_weight_read(source: Optional[str], signals: dict, grams) -> bool:
+    """A product's numbers with no weight say "100г", meaning «per 100 g». That is a
+    label's basis and not a portion, unless somebody said it. A star logged at a default
+    says so itself."""
+    if signals.get("portion_assumed"):
+        return True
+    if signals.get("portion_grams"):
+        return False
+    return source in _PRODUCT_SOURCES and grams == DEFAULT_GRAMS
+
+
 def _last_item(db: Session, dish_id: int) -> Optional[MealItem]:
     """The dish's last portion that has numbers of its own, in a meal still kept."""
     stmt = (
@@ -319,6 +339,55 @@ def _source_grams(meal: Meal) -> Optional[float]:
     )
     nutrients = meal.nutrients if isinstance(meal.nutrients, dict) else {}
     return signals.get("portion_grams") or _parse_portion_grams(nutrients)
+
+
+def _source_weight(meal: Meal) -> Optional[float]:
+    """The weight a meal's read says, if it is a weight."""
+    grams = _source_grams(meal)
+    signals = (
+        meal.resolution_signals if isinstance(meal.resolution_signals, dict) else {}
+    )
+    return None if _no_weight_read(meal.resolution_source, signals, grams) else grams
+
+
+def wants_suggestion(db: Session, dish: PersonalFood) -> bool:
+    """Whether a guess at its portion would be used: numbers on 100 g, no guess yet, and
+    no weight anywhere. A plate row, or an estimate with its plate, has no default."""
+    if (
+        _per_100(dish) is None
+        or dish.suggested_grams
+        or dish.usual_grams_by_user
+        or dish.merged_into_id
+        or dish.hidden_at
+    ):
+        return False
+    return dish_portion(db, dish).assumed
+
+
+def save_suggestion(
+    db: Session, dish_id: int, user_id: int, name: str, grams: float, unit: str
+) -> bool:
+    """A guess onto the dish it was asked for. False, and nothing written, if the dish
+    is not this person's, or was renamed, weighed or merged while the model was asked:
+    what the person did outranks a late answer."""
+    dish = db.scalars(
+        select(PersonalFood)
+        .where(PersonalFood.id == dish_id, PersonalFood.user_id == user_id)
+        .with_for_update()
+    ).first()
+    if (
+        dish is None
+        or dish.canonical_name != name
+        or dish.suggested_grams
+        or dish.usual_grams_by_user
+        or dish.merged_into_id
+    ):
+        db.rollback()
+        return False
+    dish.suggested_grams = grams
+    dish.suggested_unit = unit
+    db.commit()
+    return True
 
 
 def dish_portion(db: Session, dish: PersonalFood) -> Portion:
@@ -357,7 +426,9 @@ def star_portion(db: Session, dish: PersonalFood, fav: FavoriteMeal) -> Portion:
     """What a ⭐ logs: the portion it holds, until a person corrects its dish.
 
     One correction lives in one place (US-O4), so the favourite's copy stays and typed
-    numbers go over it, at the portion's grams. No weight anywhere: as any dish.
+    numbers go over it, at the portion's grams. A ⭐ made at a default holds no weight,
+    so a typed portion cannot scale its copy, and the dish's own numbers answer as on
+    the dish's card. No weight anywhere: as any dish.
     """
     held = Portion({key: getattr(fav, key) for key in FIELDS}, fav.usual_grams)
     portion = _at_typed_grams(dish, held)
@@ -366,6 +437,8 @@ def star_portion(db: Session, dish: PersonalFood, fav: FavoriteMeal) -> Portion:
         grams = portion.grams or _own_portion(db, dish).grams
         if grams:
             return Portion(_scaled(per_100, grams / 100.0), grams)
+    if per_100 and portion.grams and not held.grams and not _is_plate_row(db, dish):
+        return Portion(_scaled(per_100, portion.grams / 100.0), portion.grams)
     return _at_default_weight(db, dish, portion)
 
 
@@ -394,6 +467,7 @@ def star_meal_fields(db: Session, dish: PersonalFood | None, fav: FavoriteMeal) 
         "nutrients": nutrients,
         "ai_analysis": tags,
         "grams": portion.grams,
+        "assumed": portion.assumed,
     }
 
 
@@ -424,14 +498,19 @@ def _own_portion(db: Session, dish: PersonalFood) -> Portion:
     source_has_numbers = source is not None and any(
         value is not None for value in _meal_totals(source).values()
     )
-    grams = dish.usual_grams or (last and _item_grams(last))
+    grams = dish.usual_grams or (last and weighed_grams(last))
     if not grams and source_has_numbers:
-        grams = _source_grams(source)
+        grams = _source_weight(source)
     per_100 = _per_100(dish)
     if per_100 and grams:
         return Portion(_scaled(per_100, grams / 100.0), grams)
+    if per_100 and last is not None and last.base_grams_assumed:
+        return Portion()  # numbers and no weight: the default's to say
     if last is not None:
-        return _at_typed_grams(dish, Portion(_shown(last), _item_grams(last)))
+        # No numbers on 100 g left to count from: its numbers serve, and a default
+        # they were written at stays a default.
+        assumed = bool(last.base_grams_assumed and not last.grams)
+        return _at_typed_grams(dish, Portion(_shown(last), _item_grams(last), assumed))
     if source_has_numbers:
         weighed = _source_grams(source) if dish.usual_grams_by_user else grams
         return _at_typed_grams(dish, Portion(_meal_totals(source), weighed))
@@ -445,6 +524,7 @@ def _with_numbers(portion: Portion) -> dict:
     return {
         **{f"base_{key}": value for key, value in portion.numbers.items()},
         "base_grams": portion.grams,
+        "base_grams_assumed": portion.assumed,
         "numbers_source": "dish",
     }
 
@@ -540,6 +620,8 @@ def _write_reading(
             columns = {
                 **{f"base_{key}": value for key, value in totals.items()},
                 "base_grams": grams,
+                "base_grams_assumed": not grams_by_user
+                and _no_weight_read(meal_in.resolution_source, signals, grams),
                 "grams": grams if grams_by_user else None,
                 "by_user": grams_by_user,
                 "numbers_source": numbers_source
@@ -1046,6 +1128,7 @@ def _rewrite_fields(db: Session, meal: Meal, items: list, known: dict) -> None:
 def _item_state(item: MealItem) -> dict:
     return {
         **{key: getattr(item, key) for key in _ITEM_FIELDS},
+        "base_grams_assumed": item.base_grams_assumed,
         "removed": item.removed_at is not None,
     }
 
@@ -2008,6 +2091,9 @@ def _put_back(db: Session, meal: Meal, event: RecordEvent) -> None:
             continue
         for key in _ITEM_FIELDS:
             setattr(item, key, state[key])
+        # An event from before the column has no word on it, and takes nothing away.
+        if "base_grams_assumed" in state:
+            item.base_grams_assumed = state["base_grams_assumed"]
         item.personal_food_id = _live_dish_id(db, state["personal_food_id"])
         if state["removed"] != wrote["removed"]:
             item.removed_at = now if state["removed"] else None
@@ -2068,7 +2154,11 @@ def _still_holds(db: Session, meal: Meal, event: RecordEvent) -> bool:
     items = [crud_meal_item.get(db, int(key)) for key in wrote["items"]]
     if not all(items):
         return False
-    return _past_merges(db, _meal_state(meal, items)) == _past_merges(db, wrote)
+    state = _meal_state(meal, items)
+    for key, item in wrote["items"].items():
+        if "base_grams_assumed" not in item:  # written before the column
+            state["items"][key].pop("base_grams_assumed")
+    return _past_merges(db, state) == _past_merges(db, wrote)
 
 
 _NO_UNDO = ("join", "split")  # ➖ Отделить and 🔗 Объединить are their ways back

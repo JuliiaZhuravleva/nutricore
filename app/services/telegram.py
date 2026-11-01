@@ -54,6 +54,7 @@ from app.services import (
     meal_card,
     meal_draft,
     meal_items,
+    portion_suggestions,
     routines,
     settings_screen,
     stats_screen,
@@ -901,6 +902,15 @@ async def _read_meal(application: Application, job: capture.Read) -> None:
         logger.error("Meal %s read crashed: %s", job.meal_id, type(e).__name__)
 
 
+async def _suggest_portion(dish_id: int) -> None:
+    """A dish's guessed portion, behind the screen that was already sent. Nobody waits
+    for it and nobody hears of it."""
+    try:
+        await portion_suggestions.ask(SessionLocal, get_openai_service(), dish_id)
+    except Exception as e:
+        logger.warning("Portion suggestion not asked: %s", type(e).__name__)
+
+
 def _keep_task(task) -> None:
     # Held here: the event loop keeps only a weak reference to a running task.
     _meal_reads.add(task)
@@ -1354,8 +1364,11 @@ async def dishes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_id = getattr(message, "message_id", None)
     chat_id = getattr(message, "chat_id", None)
 
+    shown = []
+
     def handle(db, telegram_id: int, data: str):
         screen = dishes.handle_callback(db, telegram_id, data, message_id=message_id)
+        shown.append(screen)
         if screen.text:
             capture.tapped(db, chat_id, message_id, screen)
         return screen
@@ -1367,6 +1380,10 @@ async def dishes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Dishes",
         deliver=_card_delivery.tap,
     )
+    if shown and shown[0].suggest_dish:
+        _keep_task(
+            context.application.create_task(_suggest_portion(shown[0].suggest_dish))
+        )
 
 
 async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1544,6 +1561,10 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task = asyncio.create_task(_fill_typed_dish(typed.fill, user.id))
         _typed_fills.add(task)
         task.add_done_callback(_typed_fills.discard)
+    if typed.screen.suggest_dish:
+        _keep_task(
+            context.application.create_task(_suggest_portion(typed.screen.suggest_dish))
+        )
     raise ApplicationHandlerStop
 
 

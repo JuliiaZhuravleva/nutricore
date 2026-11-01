@@ -1777,6 +1777,8 @@ def _make_pf(**kwargs):
         "per_100g_fats": 0.5,
         "per_100g_carbs": 4.0,
         "barcode": None,
+        "usual_grams": None,
+        "suggested_grams": None,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)

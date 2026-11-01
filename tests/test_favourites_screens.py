@@ -492,7 +492,7 @@ def test_o11a_asks_with_the_exact_words_and_a_way_back(db, owner):
     _, fav = _starred(db, owner)
     shown = _shown(f"fav:g:{fav.id}")
     assert shown["text"] == (
-        "<b>⚖️ Порция: омлет с сыром</b>\nНапиши граммы числом, например 200."
+        "<b>⚖️ Порция: омлет с сыром</b>\nНапиши граммы или миллилитры числом, например 200."
     )
     assert _labels(shown) == [["⬅️ К избранному блюду"]]
     assert _data(shown) == [[f"fav:o:{fav.id}:0"]]

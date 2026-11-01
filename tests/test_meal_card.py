@@ -719,7 +719,10 @@ def test_a_plate_line_favourite_without_numbers_shows_in_the_list(db, owner):
 def test_n3_opens_the_slot_with_the_message_to_strip(db, owner):
     _meal_row, item = _one(db, owner)
     screen = _tap(db, f"ml:g:{item.id}:r", message_id=55, now=NOW)
-    assert screen.text == "<b>⚖️ Курица</b>\nНапиши граммы числом, например 150."
+    assert (
+        screen.text
+        == "<b>⚖️ Курица</b>\nНапиши граммы или миллилитры числом, например 150."
+    )
     assert _rows(screen) == [["⬅️ К блюду в приёме"]]
     db.refresh(owner)
     ask = owner.settings["ask"]
