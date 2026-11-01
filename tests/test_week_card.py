@@ -165,12 +165,46 @@ def test_a_group_the_user_unticked_hides_its_plant_too(db):
     assert "растени" not in screen.text and "овощи" not in screen.text
 
 
-def test_records_without_tags_say_so_and_never_claim_an_empty_week(db):
+def test_records_with_no_food_names_say_so_and_never_claim_an_empty_week(db):
     _meal(db, _at(24))
     screen = _week(db)
-    assert week_card.NO_TAGS in screen.text
+    assert week_card.NO_NAMES in screen.text
     assert "записей нет" not in screen.text
+    assert "Записи есть" not in screen.text
+    assert screen.picture["emptyTitle"] == week_card.NO_NAMES
     assert _rows(screen)[0] == ["🔢 Цифры", "🍽 Приёмы по дням"]  # O13a
+
+
+def test_foods_with_no_group_are_named_with_no_numbers_and_no_count_of_days(db):
+    _meal(
+        db, _at(24), _item("гречка"), _item("Гречка "), _item("<b>сыр</b>"), groups=[]
+    )
+    _meal(db, _at(26), _item("тунец"), groups=[], calories=3000)
+    screen = _week(db)
+    assert "🍽 Что было: гречка, &lt;b&gt;сыр&lt;/b&gt;, тунец." in screen.text
+    assert screen.picture["emptyTitle"] == "Что было"
+    assert screen.picture["emptyNote"] == "гречка, <b>сыр</b>, тунец"
+    assert "Записи есть" not in screen.text
+    assert "3000" not in screen.text and "ккал" not in screen.text
+    assert "дн" not in screen.text.split("Что было")[1]
+
+
+def test_an_old_record_with_only_a_list_of_foods_is_named_too(db):
+    _meal(db, _at(24), foods=["овсянка", "", 7])
+    assert "🍽 Что было: овсянка." in _week(db).text
+
+
+def test_many_foods_name_four_and_count_the_rest(db):
+    names = ["рис", "сыр", "суп", "чай", "мёд", "кефир"]
+    _meal(db, _at(24), *(_item(name) for name in names), groups=[])
+    screen = _week(db)
+    assert "🍽 Что было: рис, сыр, суп, чай и ещё 2." in screen.text
+
+
+def test_groups_still_win_over_the_named_foods(db):
+    _meal(db, _at(24), _item("брокколи", "veg"))
+    screen = _week(db)
+    assert "Что было" not in screen.text and "emptyTitle" not in screen.picture
 
 
 def test_two_records_show_the_same_shape_as_seven_and_no_empty_grid(db):

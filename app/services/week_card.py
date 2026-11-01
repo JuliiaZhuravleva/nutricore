@@ -22,7 +22,9 @@ PAUSE_DAYS = 7
 _ROW = 2  # groups on one line of the text
 _FINDING_NAME_MAX = 20  # longer, and the words after it no longer fit on the card
 _SHORT_WORDS = {"anchor": "опора", "nuts": "орехи"}  # the rest use their own word
-NO_TAGS = "🍽 Записи есть, группы в них пока не видны."
+NO_NAMES = "В записях пока нет названий еды"
+FOODS_TITLE = "Что было"
+_FOODS_NAMED = 4  # past this the rest are a count, as on the day card
 BACK_LINE = "✨ Снова с записями — после паузы"
 
 
@@ -110,6 +112,25 @@ def facts(days: list, earlier: list, zone: ZoneInfo) -> WeekFacts:
         new_food=None if back else new_food,
         back=back,
     )
+
+
+def foods_named(days: list) -> str:
+    """The foods of a week whose groups nobody knows, once each, for a card that has
+    nothing else to say about them. No numbers: those stay behind «🔢 Цифры» (G5-R01)."""
+    names = {}
+    for _day, meals in days:
+        for meal in meals:
+            found = [item["name"] for item in _items(meal)]
+            if not found and isinstance(meal.nutrients, dict):
+                foods = meal.nutrients.get("foods")
+                if isinstance(foods, list):
+                    found = [food for food in foods if isinstance(food, str)]
+            for name in found:
+                if name.strip():
+                    names.setdefault(_key(name), short(name))
+    shown = list(names.values())[:_FOODS_NAMED]
+    rest = len(names) - len(shown)
+    return ", ".join(shown) + (f" и ещё {rest}" if rest else "")
 
 
 def plants_label(count: int) -> str:
