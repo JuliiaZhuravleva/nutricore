@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # plain emoji, every message as before (app/services/custom_emoji.py).
     CUSTOM_EMOJI: Optional[str] = None
 
+    # The job directory shared with the picture renderer (render/watcher.py). No
+    # sidecar there: every card goes out as text.
+    RENDER_DIR: str = "/render"
+
     # Access control (OpenClaw-style modes). Mode: open | whitelist | closed.
     #   open      → everyone may use the bot
     #   whitelist → only admins + ALLOWED_TELEGRAM_IDS; others are dropped silently
@@ -129,6 +133,13 @@ class Settings(BaseSettings):
     # The web_search call runs INSIDE the user's photo flow; the SDK default read
     # timeout is 600s, which would hang the reply. Ceiling it.
     OPENAI_WEB_SEARCH_TIMEOUT: float = 30.0
+    # Voice notes (M4). The shared local-whisper service; empty: every note goes to the
+    # paid model below. Both optional, like the two above.
+    WHISPER_URL: str = ""
+    OPENAI_TRANSCRIBE_MODEL: str = "gpt-4o-mini-transcribe"
+    # Where a voice note's bytes stay, relative to the working directory. Production
+    # keeps this folder on the host (docker-compose.prod.yml). Gitignored.
+    AUDIO_DIR: str = "data/voice"
     # The owner can switch OPENAI_MODEL at runtime (TD-005) to a model that does
     # not support the web_search tool; pin the search model separately when that
     # happens. None → use the currently selected model.

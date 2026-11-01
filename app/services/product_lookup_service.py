@@ -32,6 +32,7 @@ from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
 from app.models.personal_food import PersonalFood
+from app.services import food_groups
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.model_registry import loads_model_json
 from app.services.open_food_facts_service import OFFLookupResult, OpenFoodFactsService
@@ -63,10 +64,22 @@ def parse_nutrition(raw: Any) -> dict:
     # Coerce elements to str: models the owner swaps in (o-series, etc.) may
     # return foods as dicts/numbers, which would blow up ", ".join(...) later.
     data["foods"] = [str(x) for x in foods]
+    if "food_items" in data:
+        data["food_items"] = food_groups.clean_items(data["food_items"])
+    else:
+        logger.warning("analysis reply has no food_items: the meal stays untagged")
     missing = [k for k in _REQUIRED_NUTRITION_KEYS if k not in data]
     if missing:
         raise ValueError(f"nutrition response missing keys: {missing}")
     return data
+
+
+def parse_food_items(raw: Any) -> list:
+    """The re-tag call's reply → clean items; a reply that is not JSON raises."""
+    data = loads_model_json(raw) if isinstance(raw, str) else raw
+    if not isinstance(data, dict) or "food_items" not in data:
+        raise ValueError("food_items reply has no food_items")
+    return food_groups.clean_items(data["food_items"])
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +129,7 @@ class ResolutionResult:
     source: str  # "barcode_off" | "name_off" | "label_ocr" | "name_web" | "vision"
     confidence_tier: str  # "high" | "medium" | "low"
     # Nutrition keys match the existing schema: calories, protein, fats, carbs,
-    # portion, foods — so _nutrition_reply and confirm_meal need no changes.
+    # portion, foods — so the read of a meal needs no changes.
     nutrition: dict
     description: Optional[str]  # human-readable name for the confirm reply
     portion_grams: Optional[float]  # gram basis used for scaling (shown in reply)
@@ -1222,6 +1235,10 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         (ADR-0003 §4b).
         """
         portion_grams = signals_input.portion_grams
+        # No weight read: the dish's guess, as its card counts it. Still nobody's weight.
+        assumed = not portion_grams and bool(pf.suggested_grams) and not pf.usual_grams
+        if assumed:
+            portion_grams = pf.suggested_grams
         vision = signals_input.vision_result or {}
 
         # per_100g_* columns are Numeric(8,2) → Postgres returns Decimal. Coerce to
@@ -1269,6 +1286,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             "off_from_cache": False,
             "off_latency_ms": None,
             "portion_grams": portion_grams,
+            **({"portion_assumed": True} if assumed else {}),
             "off_missing_macros": missing,
             "confidence_tier": "medium",
             "strategy_tried": ["saved_rag"],  # runner updates this
@@ -1317,6 +1335,7 @@ async def resolve_meal_nutrition(
     telegram_id: Optional[int] = None,
     input_ref: Optional[str] = None,
     caption: Optional[str] = None,
+    more_images: tuple = (),
 ) -> ResolutionResult:
     """Entry point for A4.  Returns the best-confidence result available.
 
@@ -1339,15 +1358,20 @@ async def resolve_meal_nutrition(
         The user's own note about the photo (Telegram caption / replayed
         ``inbound_messages.content``).  Reaches the vision call, which is where it
         can correct the food list and the eaten portion.
+    more_images:
+        The rest of an album. All of it is one vision call, and only that: one
+        product found in one photo must not stand for the whole table.
     """
+    album = {"more_images": tuple(more_images)} if more_images else {}
     with SessionLocal() as db:
         signals = await _extract_signals(
             image_data_url,
             telegram_id=telegram_id,
             input_ref=input_ref,
             caption=caption,
+            **album,
         )
-        pipeline = _build_pipeline()
+        pipeline = [VisionFallbackStrategy()] if album else _build_pipeline()
         tried: List[str] = []
         # Per-strategy outcome, so a strategy that BROKE is distinguishable from
         # one that simply found nothing. ``strategy_tried`` is kept unchanged for
@@ -1374,6 +1398,12 @@ async def resolve_meal_nutrition(
                 # one site cannot drift out of sync with a seventh strategy.
                 result.signals["caption"] = signals.caption
                 result.signals["portion_source"] = signals.portion_source
+                # Only the vision call tags food groups; a database hit keeps
+                # what it saw on the same photo. One site, as above.
+                if signals.vision_result and "food_items" not in result.nutrition:
+                    items = signals.vision_result.get("food_items")
+                    if items is not None:
+                        result.nutrition["food_items"] = items
                 # The pipeline had no INFO line at all, so at the deployed
                 # LOG_LEVEL=INFO a meal left no trace of which paths were even
                 # attempted. One line per meal, not one per strategy.
@@ -1405,6 +1435,7 @@ async def _extract_signals(
     telegram_id: Optional[int],
     input_ref: Optional[str],
     caption: Optional[str] = None,
+    more_images: tuple = (),
 ) -> ImageSignals:
     """Run barcode extraction and vision analysis concurrently.
 
@@ -1418,21 +1449,14 @@ async def _extract_signals(
     # Shared process-wide singleton — same instance the bot uses, so a runtime
     # model switch (TD-005) is honoured here too. No import of the handler layer.
     svc = get_openai_service()
+    album = {"more_images": more_images} if more_images else {}
 
-    barcode_coro = analyze_and_log(
-        svc.extract_barcode_from_image(image_data_url),
-        kind="barcode_extraction",
-        input_ref=input_ref,
-        telegram_id=telegram_id,
-        model=svc.model_for("barcode"),
-        parse=lambda raw: {"barcode": raw},
-    )
     vision_coro = analyze_and_log(
         # The caption goes to the VISION call only: it is what turns "a plate of
         # fries" into "1/3 of a plate of fries with ranch sauce". The barcode
         # reader gets the image alone — a different job, and user prose would only
         # add noise to digit reading.
-        svc.analyze_food_image(image_data_url, caption=caption),
+        svc.analyze_food_image(image_data_url, caption=caption, **album),
         kind="image",
         input_ref=input_ref,
         telegram_id=telegram_id,
@@ -1440,9 +1464,21 @@ async def _extract_signals(
         parse=parse_nutrition,
     )
 
-    barcode_log_result, vision_result = await asyncio.gather(
-        barcode_coro, vision_coro, return_exceptions=True
-    )
+    if album:
+        barcode_log_result = None
+        (vision_result,) = await asyncio.gather(vision_coro, return_exceptions=True)
+    else:
+        barcode_coro = analyze_and_log(
+            svc.extract_barcode_from_image(image_data_url),
+            kind="barcode_extraction",
+            input_ref=input_ref,
+            telegram_id=telegram_id,
+            model=svc.model_for("barcode"),
+            parse=lambda raw: {"barcode": raw},
+        )
+        barcode_log_result, vision_result = await asyncio.gather(
+            barcode_coro, vision_coro, return_exceptions=True
+        )
 
     # --- Barcode -------------------------------------------------------
     if isinstance(barcode_log_result, Exception):

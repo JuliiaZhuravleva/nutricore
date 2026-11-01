@@ -2,6 +2,9 @@
 
 Public interface:
   upsert()                — idempotent insert-or-update by (user_id, lower(canonical_name))
+  names_of()/find_by_name() — every name a dish answers to, hidden and merged included
+  list_live()             — what a list may show: neither hidden nor merged
+  rename()/holder_of_name() — old name to alias; the row a new name would collide with
   get_by_barcode()        — exact-barcode lookup (Phase A short-circuit for B3)
   find_similar()          — ANN query over personal_food_embeddings <=> cosine distance
                             THIS IS THE MOCKABLE B6 SEAM (see ADR-0003 §4d)
@@ -19,7 +22,7 @@ import datetime
 import logging
 from typing import List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -44,10 +47,157 @@ class AnnQueryError(RuntimeError):
 UTC = datetime.timezone.utc
 
 
+NO_NAME = "Блюдо"
+
+
+def _key(name: str) -> str:
+    return name.strip().lower()
+
+
+def _live(food: PersonalFood, get) -> PersonalFood:
+    """Where a merged dish ended up. A loop of merges ends instead of hanging."""
+    seen = {food.id}
+    while food.merged_into_id is not None and food.merged_into_id not in seen:
+        target = get(food.merged_into_id)
+        if target is None:
+            break
+        seen.add(target.id)
+        food = target
+    return food
+
+
+def _numbers_quality(source: Optional[str], current: Optional[str] = None) -> str:
+    """How far the numbers just written can be trusted. A reuse of the base's own
+    numbers (``saved_rag``) tells nothing new, so it keeps what the row had."""
+    if source == "barcode_off":
+        return "barcode"
+    if source == "label_ocr":
+        return "label"
+    if source == "saved_rag" and current:
+        return current
+    return "unverified"
+
+
 class CRUDPersonalFood:
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
+
+    def names_of(self, db: Session, user_id: int) -> dict:
+        """Every name the user's dishes answer to, lower-cased, and its dish.
+
+        Python-side lower() on purpose: SQLite's built-in one is ASCII-only, which
+        breaks Cyrillic. A personal DB has <1000 rows per user (ADR-0003 §1), so the
+        scan is cheap.
+
+        This is the writing side, so it is not a list: a hidden dish answers, because
+        typing its name brings it back and a new row would break the unique key. A
+        merged name answers with the dish it went into. A dish's own name beats
+        another's old name, and an old name two dishes held goes to the newer of them:
+        with no order Postgres would decide, and could change its mind.
+        """
+        stmt = (
+            select(PersonalFood)
+            .where(PersonalFood.user_id == user_id)
+            .order_by(PersonalFood.id)
+        )
+        rows = db.execute(stmt).scalars().all()
+        by_id = {food.id: food for food in rows}
+        names = {}
+        for food in rows:
+            for alias in food.aliases or []:
+                names[_key(alias)] = _live(food, by_id.get)
+        for food in rows:
+            names[_key(food.canonical_name)] = _live(food, by_id.get)
+        return names
+
+    def find_by_name(
+        self, db: Session, user_id: int, name: str
+    ) -> Optional[PersonalFood]:
+        found = self.names_of(db, user_id).get(_key(name))
+        if found is not None:
+            return found
+        held = self._held_in_the_key(db, user_id, name)
+        return self.live_of(db, held) if held is not None else None
+
+    def _held_in_the_key(
+        self, db: Session, user_id: int, name: str, without: Optional[int] = None
+    ) -> Optional[PersonalFood]:
+        """The row the database's own lower() folds this name onto. Python and Postgres
+        lower a few letters apart (Σ, İ), and the unique key is the one that decides."""
+        stmt = (
+            select(PersonalFood)
+            .where(
+                PersonalFood.user_id == user_id,
+                func.lower(PersonalFood.canonical_name) == func.lower(name.strip()),
+            )
+            .order_by(PersonalFood.id)
+        )
+        if without is not None:
+            stmt = stmt.where(PersonalFood.id != without)
+        return db.scalars(stmt).first()
+
+    def rename(self, db: Session, dish: PersonalFood, name: str) -> None:
+        """The old name becomes an alias. Only flushes, and checks nothing: a taken
+        name is the caller's to refuse first, by ``holder_of_name``."""
+        new = name.strip()
+        aliases = [a for a in dish.aliases or [] if _key(a) != _key(new)]
+        old = dish.canonical_name
+        if _key(old) != _key(new) and _key(old) not in {_key(a) for a in aliases}:
+            aliases.append(old)
+        dish.canonical_name = new
+        dish.aliases = aliases
+        self.forget_suggestion(dish, old, new)
+        db.flush()
+
+    @staticmethod
+    def forget_suggestion(dish: PersonalFood, old: str, new: str) -> None:
+        """A guess was about a name: another name is another dish to guess. The same
+        name in other letters is the same dish."""
+        if _key(old) != _key(new):
+            dish.suggested_grams = None
+            dish.suggested_unit = None
+
+    def for_favourite(self, db: Session, user_id: int, name: str) -> PersonalFood:
+        """The dish a new ⭐ belongs to. One it finds keeps its numbers and comes back
+        if hidden, since a star is asking for it. A new one has none: the favourite
+        holds them, as a portion. Only flushes: it joins the row being written."""
+        dish = self.find_by_name(db, user_id, name)
+        if dish is not None:
+            dish.hidden_at = None
+            db.flush()
+            return dish
+        dish = self.add_dish(
+            db,
+            user_id=user_id,
+            name=name.strip() or NO_NAME,
+            resolution_source="favorite",
+        )
+        dish.numbers_basis = "per_portion"
+        dish.times_used = 0
+        db.flush()
+        return dish
+
+    def add_dish(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        name: str,
+        barcode: Optional[str] = None,
+        resolution_source: Optional[str] = None,
+    ) -> PersonalFood:
+        """A new dish without numbers. Only flushes: it joins the meal being written."""
+        dish = PersonalFood(
+            user_id=user_id,
+            canonical_name=name.strip(),
+            barcode=barcode,
+            resolution_source=resolution_source,
+            numbers_basis="none",
+        )
+        db.add(dish)
+        db.flush()
+        return dish
 
     def upsert(
         self,
@@ -73,20 +223,20 @@ class CRUDPersonalFood:
           Increments times_used, refreshes last_used_at.
           Overwrites macros/barcode/resolution_source if provided (non-None).
           Does NOT overwrite with None — callers may omit unchanged fields.
+          Never overwrites macros a person typed (numbers_by_user).
 
         This method is idempotent: calling it twice for the same
         (user_id, canonical_name) pair is safe and retry-friendly (B4 Celery task).
         """
-        name_key = canonical_name.strip().lower()
-        # Use Python-side lower() for the case-insensitive match so we stay
-        # Unicode-correct on both Postgres (where SQL lower() is also fine) and
-        # SQLite (whose built-in lower() is ASCII-only, breaking Cyrillic/etc.).
-        # A personal DB has <1000 rows per user (ADR-0003 §1), so the scan is cheap.
-        all_foods_stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
-        all_foods = list(db.execute(all_foods_stmt).scalars().all())
-        existing = next(
-            (f for f in all_foods if f.canonical_name.strip().lower() == name_key),
-            None,
+        existing = self.find_by_name(db, user_id, canonical_name)
+        has_macros = any(
+            value is not None
+            for value in (
+                per_100g_calories,
+                per_100g_proteins,
+                per_100g_fats,
+                per_100g_carbs,
+            )
         )
 
         now = datetime.datetime.now(UTC)
@@ -101,23 +251,32 @@ class CRUDPersonalFood:
             if is_new_confirmation:
                 existing.times_used = (existing.times_used or 0) + 1
                 existing.last_used_at = now
+                existing.hidden_at = None  # eaten again; a retry is not that
             existing.updated_at = now
             if meal_id is not None:
                 existing.meal_id = meal_id
             if resolution_source is not None:
                 existing.resolution_source = resolution_source
-            if barcode is not None:
+            if barcode is not None and not self._merged_holds_barcode(
+                db, existing, barcode
+            ):
                 existing.barcode = barcode
             if brand is not None:
                 existing.brand = brand
-            if per_100g_calories is not None:
-                existing.per_100g_calories = per_100g_calories
-            if per_100g_proteins is not None:
-                existing.per_100g_proteins = per_100g_proteins
-            if per_100g_fats is not None:
-                existing.per_100g_fats = per_100g_fats
-            if per_100g_carbs is not None:
-                existing.per_100g_carbs = per_100g_carbs
+            if not existing.numbers_by_user:
+                if per_100g_calories is not None:
+                    existing.per_100g_calories = per_100g_calories
+                if per_100g_proteins is not None:
+                    existing.per_100g_proteins = per_100g_proteins
+                if per_100g_fats is not None:
+                    existing.per_100g_fats = per_100g_fats
+                if per_100g_carbs is not None:
+                    existing.per_100g_carbs = per_100g_carbs
+                if has_macros:
+                    existing.numbers_basis = "per_100"
+                    existing.numbers_quality = _numbers_quality(
+                        resolution_source, existing.numbers_quality
+                    )
             db.commit()
             db.refresh(existing)
             return existing
@@ -134,6 +293,8 @@ class CRUDPersonalFood:
             per_100g_proteins=per_100g_proteins,
             per_100g_fats=per_100g_fats,
             per_100g_carbs=per_100g_carbs,
+            numbers_basis="per_100" if has_macros else "none",
+            numbers_quality=_numbers_quality(resolution_source),
             times_used=1,
             last_used_at=now,
         )
@@ -188,6 +349,41 @@ class CRUDPersonalFood:
     # Read operations
     # ------------------------------------------------------------------
 
+    def list_live(self, db: Session, user_id: int) -> List[PersonalFood]:
+        """The dishes a list may show: neither hidden nor merged."""
+        stmt = select(PersonalFood).where(
+            PersonalFood.user_id == user_id,
+            PersonalFood.hidden_at.is_(None),
+            PersonalFood.merged_into_id.is_(None),
+        )
+        return list(db.execute(stmt).scalars().all())
+
+    def get_for_user(
+        self, db: Session, food_id: int, user_id: int
+    ) -> Optional[PersonalFood]:
+        """The dish if it belongs to this user, in any state."""
+        dish = db.get(PersonalFood, food_id)
+        return dish if dish is not None and dish.user_id == user_id else None
+
+    def live_of(self, db: Session, dish: PersonalFood) -> PersonalFood:
+        """The dish a merged one went into, along the chain; else the dish itself."""
+        return _live(dish, lambda food_id: db.get(PersonalFood, food_id))
+
+    def holder_of_name(
+        self, db: Session, user_id: int, name: str, without: Optional[int] = None
+    ) -> Optional[PersonalFood]:
+        """The row whose own name this is, in any state: the unique key sees them all.
+
+        A rename onto a hidden or merged row's name is an IntegrityError on Postgres,
+        while SQLite has no such key and would let it through. An alias holds no place
+        in the key. Compared in Python, as ``names_of``, then as the key does.
+        """
+        stmt = select(PersonalFood).where(PersonalFood.user_id == user_id)
+        for food in db.execute(stmt).scalars().all():
+            if food.id != without and _key(food.canonical_name) == _key(name):
+                return food
+        return self._held_in_the_key(db, user_id, name, without)
+
     def get_by_barcode(
         self,
         db: Session,
@@ -207,16 +403,36 @@ class CRUDPersonalFood:
         the same barcode can legitimately land on two rows (same product confirmed
         under two different vision-read names). Return the most-used row rather than
         raising MultipleResultsFound (F6).
+
+        A merged row's barcode answers with the dish it went into: the product is still
+        that product, and a miss would send the scan to the outside base, whose name
+        overwrites the dish or starts a new one. A hidden dish serves nothing.
         """
         stmt = (
             select(PersonalFood)
-            .where(
-                PersonalFood.user_id == user_id,
-                PersonalFood.barcode == barcode,
-            )
+            .where(PersonalFood.user_id == user_id, PersonalFood.barcode == barcode)
             .order_by(PersonalFood.times_used.desc(), PersonalFood.id.desc())
         )
-        return db.execute(stmt).scalars().first()
+        rows = db.execute(stmt).scalars().all()
+        rows = sorted(rows, key=lambda food: food.merged_into_id is not None)  # stable
+        for food in rows:
+            dish = self.live_of(db, food)
+            if dish.hidden_at is None and dish.merged_into_id is None:
+                return dish
+        return None
+
+    def _merged_holds_barcode(
+        self, db: Session, dish: PersonalFood, barcode: str
+    ) -> bool:
+        """A scan of a merged row's barcode, written back: its dish keeps its own."""
+        stmt = select(PersonalFood).where(
+            PersonalFood.user_id == dish.user_id,
+            PersonalFood.barcode == barcode,
+            PersonalFood.merged_into_id.is_not(None),
+        )
+        return any(
+            self.live_of(db, food).id == dish.id for food in db.scalars(stmt).all()
+        )
 
     def get_embeddings_for_food(
         self,
@@ -282,12 +498,13 @@ class CRUDPersonalFood:
             FROM personal_food_embeddings pfe
             JOIN personal_foods pf ON pf.id = pfe.personal_food_id
             WHERE pf.user_id = :user_id
+              AND (pf.hidden_at IS NULL OR pf.merged_into_id IS NOT NULL)
             ORDER BY cosine_distance
-            LIMIT 1
+            LIMIT 20
             """
         )
         try:
-            row = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).first()
+            rows = db.execute(stmt, {"embedding": emb_str, "user_id": user_id}).all()
         except Exception as exc:
             # A SYSTEMIC failure (pgvector missing, embedding-dimension mismatch,
             # dropped connection, a SQL bug) — NOT a routine no-match, which is the
@@ -323,17 +540,19 @@ class CRUDPersonalFood:
                 f"ANN query failed for user_id={user_id}: {exc.__class__.__name__}"
             ) from exc
 
-        if row is None:
-            return None
-
-        distance = float(row.cosine_distance)
-        if distance > threshold:
-            return None
-
-        pf = db.get(PersonalFood, row.personal_food_id)
-        if pf is None:
-            return None
-        return pf, distance
+        # A merged row's words answer with the dish it went into. Whether that one is
+        # hidden takes the chain, so it is asked here, and the next nearest gets a turn.
+        for row in rows:
+            distance = float(row.cosine_distance)
+            if distance > threshold:
+                return None
+            pf = db.get(PersonalFood, row.personal_food_id)
+            if pf is None:
+                continue
+            dish = self.live_of(db, pf)
+            if dish.hidden_at is None and dish.merged_into_id is None:
+                return dish, distance
+        return None
 
 
 crud_personal_food = CRUDPersonalFood()

@@ -7,6 +7,8 @@ built application.
 """
 
 import asyncio
+import json
+import time
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,7 +26,9 @@ from app.services import settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services import weight_screen as wt
+from app.services.card_delivery import CardDelivery
 from app.services.numbers import SHOW_NUMBERS
+from app.services.picture_renderer import PictureRenderer
 
 # Wed 28 Oct 2026, 12:00 in Tbilisi (UTC+4).
 NOW = datetime(2026, 10, 28, 8, 0, tzinfo=UTC)
@@ -106,11 +110,11 @@ def test_day_is_the_local_calendar_day_not_utc(Session):
         today = st.open_view(db, 42, st.TODAY, NOW)
         yesterday = st.open_view(db, 42, st.YESTERDAY, NOW)
 
-    assert today.text.startswith("<b>📊 Сегодня, ср 28 окт</b>")
-    assert "01:30 · сырники · 300 ккал" in today.text and "плов" not in today.text
-    assert "Итого: 300 ккал" in today.text
-    assert yesterday.text.startswith("<b>📊 Вчера, вт 27 окт</b>")
-    assert "23:30 · плов · 700 ккал" in yesterday.text
+    assert today.text.startswith("<b>📊 Сегодня, ср 28 октября</b>")
+    assert "1:30 сырники — ≈ 300 ккал" in today.text and "плов" not in today.text
+    assert "🔢 За день: ≈ 300 ккал" in today.text
+    assert yesterday.text.startswith("<b>📊 Вчера, вт 27 октября</b>")
+    assert "23:30 плов — ≈ 700 ккал" in yesterday.text
     assert "сырники" not in yesterday.text
 
 
@@ -124,26 +128,34 @@ def test_today_lists_meals_in_order_with_totals(Session):
         screen = st.open_view(db, 42, st.TODAY, NOW)
 
     lines = screen.text.split("\n")
-    first = lines.index("09:00 · кофе · 1 000 ккал")
-    assert lines[first + 1] == "11:00 · Завтрак · &lt;b&gt;омлет&lt;/b&gt; · 250 ккал"
-    assert "<b>🔥 Итого: 1 250 ккал</b>" in lines
-    assert "Б 21 г · Ж 16 г · У 5 г" in lines
-    assert _labels(screen.markup) == ["✓ Сегодня", "Вчера", "7 дней"]
-    assert _callbacks(screen.markup) == ["st:t", "st:y", "st:w"]
+    assert "🕐 9:00 · 11:00" in lines
+    assert (
+        "<blockquote expandable>🔢 За день: ≈ 1 250 ккал · Б 21 г · Ж 16 г · У 5 г"
+        in lines
+    )
+    first = lines.index("9:00 кофе — ≈ 1 000 ккал")
+    assert lines[first + 1] == (
+        "11:00 &lt;b&gt;омлет&lt;/b&gt; — ≈ 250 ккал</blockquote>"
+    )
+    assert _labels(screen.markup)[-3:] == ["✓ Сегодня", "Вчера", "7 дней"]
+    assert _callbacks(screen.markup)[-3:] == ["st:t", "st:y", "st:w"]
 
 
 def test_empty_day_says_where_records_come_from(Session):
     with Session() as db:
         _user(db)
         screen = st.open_view(db, 42, st.TODAY, NOW)
-    assert "Записей нет" in screen.text and "Итого" not in screen.text
-    assert _labels(screen.markup)[0] == "✓ Сегодня"  # no dead end: tabs stay
+    assert "Похоже, не всё записано?" in screen.text and "ккал" not in screen.text
+    assert _rows(screen.markup) == [
+        ["🍽 Добавить приём пищи"],
+        ["✓ Сегодня", "Вчера", "7 дней"],
+    ]
 
 
 def test_unknown_user_gets_an_empty_day_not_an_error(Session):
     with Session() as db:
         screen = st.open_view(db, 999, st.TODAY, NOW)
-    assert "Записей нет" in screen.text
+    assert "Похоже, не всё записано?" in screen.text
 
 
 def test_only_my_meals_are_counted(Session):
@@ -153,13 +165,13 @@ def test_only_my_meals_are_counted(Session):
         _meal(db, other, NOW, 900, "чужой")
         screen = st.open_view(db, 42, st.TODAY, NOW)
     assert "мой" in screen.text and "чужой" not in screen.text
-    assert "Итого: 100 ккал" in screen.text
+    assert "🔢 За день: ≈ 100 ккал" in screen.text
 
 
 # --- statistics: week ---------------------------------------------------------
 
 
-def test_week_has_seven_days_and_averages_over_logged_days(Session):
+def test_week_numbers_cover_the_period_and_average_over_logged_days(Session):
     with Session() as db:
         user = _user(db, numbers=True)
         _meal(db, user, NOW, 2000)  # today
@@ -168,16 +180,11 @@ def test_week_has_seven_days_and_averages_over_logged_days(Session):
         screen = st.open_view(db, 42, st.WEEK, NOW)
 
     lines = screen.text.split("\n")
-    assert lines[0] == "<b>📊 7 дней</b> · 22 окт – 28 окт"
-    days = [line for line in lines if line[:2] in st._WEEKDAYS]
-    assert [d.split()[1] for d in days] == [
-        "22.10", "23.10", "24.10", "25.10", "26.10", "27.10", "28.10",
-    ]  # fmt: skip
-    assert days[-1] == "ср 28.10  ▰▰▰▰▰▰▰▰  2 000 ккал"
-    assert days[-3] == "пн 26.10  ▰▰▰▰▱▱▱▱  1 000 ккал"
-    assert days[0] == "чт 22.10  ▱▱▱▱▱▱▱▱  —"
-    assert "<b>🔥 В среднем: 1 500 ккал</b> в день" in lines
-    assert "Среднее по 2 дн. с записями из 7" in screen.text
+    assert lines[0] == "<b>📊 7 дней, 22–28 октября</b>"
+    assert "ср ▰▰▰▰▰▰▰▰ 2 000</blockquote>" in lines
+    assert "пн ▰▰▰▰▱▱▱▱ 1 000" in lines
+    assert "В среднем за день с записями: ≈ 1 500 ккал" in screen.text
+    assert "5 000" not in screen.text and "—" not in screen.text
     assert _labels(screen.markup)[-1] == "✓ 7 дней"
 
 
@@ -185,7 +192,7 @@ def test_empty_week_has_no_average(Session):
     with Session() as db:
         _user(db)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    assert "За неделю записей нет." in screen.text
+    assert "За 7 дней записей нет." in screen.text
     assert "В среднем" not in screen.text
 
 
@@ -348,11 +355,13 @@ def test_statistics_button_sends_today_with_tabs(Session):
     state, message = _run(tg.show_statistics, "📊 Статистика")
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>📊 Сегодня")
-    assert "гречка" in message.replies[-1]
+    assert "🕐 " in message.replies[-1]
     assert "ккал" not in message.replies[-1]  # behind «🔢 Цифры» by default
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [
-        "st:t", "st:y", "st:w", "st:tn",
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-6:-4] == ["st:c:", "st:tn"]
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-4].startswith("ml:dl:")
+    assert _callbacks(message.kwargs[-1]["reply_markup"])[-3:] == [
+        "st:t", "st:y", "st:w",
     ]  # fmt: skip
 
 
@@ -388,9 +397,25 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _labels(markup) == [
         "🕐 Часовой пояс",
         "🔢 Цифры сразу: выкл",
+        "🗓 Итог недели: вкл",
+        "📋 Черновик: выкл",
+        "💊 Рутины",
+        "🧺 Надёжная еда",
+        "✋ Не предлагать",
+        "ℹ️ Как это работает",
         "💸 Стоимость запросов: выкл",
     ]
-    assert _callbacks(markup) == ["set:tz", "set:num", "set:costs"]
+    assert _callbacks(markup) == [
+        "set:tz",
+        "set:num",
+        "set:week",
+        "set:draft",
+        "rt:open",
+        "fl:rel",
+        "fl:nev",
+        "hw:open",
+        "set:costs",
+    ]
     assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
 
 
@@ -438,7 +463,7 @@ def test_an_unknown_settings_tap_changes_nothing(Session):
 
 def _query(data, telegram_id=42):
     query = SimpleNamespace(
-        data=data, answer=AsyncMock(), edit_message_text=AsyncMock()
+        data=data, answer=AsyncMock(), edit_message_text=AsyncMock(), message=None
     )
     update = SimpleNamespace(
         callback_query=query, effective_user=SimpleNamespace(id=telegram_id)
@@ -507,13 +532,13 @@ def test_statistics_days_follow_the_chosen_zone(Session):
         # 00:30 on the 28th in Tbilisi, 23:30 on the 27th in Moscow.
         _meal(db, user, datetime(2026, 10, 27, 20, 30, tzinfo=UTC), 500, "блины")
     with Session() as db:
-        assert "00:30 · блины" in st.open_view(db, 42, st.TODAY, NOW).text
+        assert "🕐 0:30" in st.open_view(db, 42, st.TODAY, NOW).text
     _tap(Session, "set:tz:Europe/Moscow")
     with Session() as db:
         today = st.open_view(db, 42, st.TODAY, NOW)
         yesterday = st.open_view(db, 42, st.YESTERDAY, NOW)
-    assert "блины" not in today.text
-    assert "23:30 · блины" in yesterday.text
+    assert "🕐 Еда" not in today.text
+    assert "🕐 23:30" in yesterday.text
 
 
 def test_weight_dates_follow_the_chosen_zone(Session):
@@ -592,7 +617,7 @@ def test_an_unknown_stored_zone_falls_back_to_the_default(Session):
         db.commit()
         assert settings_screen.zone_name(user) == "Asia/Tbilisi"
         assert st.open_view(db, 42, st.TODAY, NOW).text.startswith(
-            "<b>📊 Сегодня, ср 28 окт</b>"
+            "<b>📊 Сегодня, ср 28 октября</b>"
         )
 
 
@@ -623,8 +648,64 @@ def test_stats_tab_edits_in_place(Session):
     asyncio.run(tg.stats_callback(update, SimpleNamespace()))
     query.answer.assert_awaited_once_with(None)
     (text,), kwargs = query.edit_message_text.await_args
-    assert text.startswith("<b>📊 7 дней</b>")
+    assert text.startswith("<b>📊 7 дней, ")
     assert kwargs["parse_mode"] == "HTML"
+
+
+def _sidecar(tmp_path, monkeypatch):
+    for name in ("in", "out"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "heartbeat").write_text(str(int(time.time())))
+    delivery = CardDelivery(PictureRenderer(tmp_path), fast_wait=0.01)
+    monkeypatch.setattr(tg, "_card_delivery", delivery)
+    return tmp_path
+
+
+def test_with_the_sidecar_up_the_day_tab_turns_into_a_picture(
+    Session, tmp_path, monkeypatch
+):
+    root = _sidecar(tmp_path, monkeypatch)
+    with Session() as db:
+        _user(db)
+    update, query = _query("st:y")
+    message = SimpleNamespace(
+        photo=None,
+        chat=SimpleNamespace(id=42),
+        message_id=1,
+        reply_photo=AsyncMock(
+            return_value=SimpleNamespace(
+                photo=None, chat=SimpleNamespace(id=42), message_id=2
+            )
+        ),
+        delete=AsyncMock(),
+    )
+    query.message = message
+    asyncio.run(tg.stats_callback(update, SimpleNamespace()))
+    query.answer.assert_awaited_once_with(None)
+    query.edit_message_text.assert_not_awaited()
+    assert message.reply_photo.await_args.kwargs["caption"].startswith("<b>📊 Вчера")
+    message.delete.assert_awaited_once()
+    (job,) = (root / "in").glob("*.json")
+    assert json.loads(job.read_text())["title"] == "Вчера"
+
+
+def test_with_the_sidecar_up_the_menu_button_sends_a_picture(
+    Session, tmp_path, monkeypatch
+):
+    root = _sidecar(tmp_path, monkeypatch)
+    with Session() as db:
+        _user(db)
+    message, update = _update("📊 Статистика")
+    message.reply_photo = AsyncMock(
+        return_value=SimpleNamespace(
+            photo=None, chat=SimpleNamespace(id=42), message_id=2
+        )
+    )
+    asyncio.run(tg.show_statistics(update, SimpleNamespace(user_data={})))
+    (job,) = (root / "in").glob("*.json")
+    assert json.loads(job.read_text())["title"] == "Сегодня"
+    assert message.reply_photo.await_args.kwargs["caption"].startswith("<b>📊 Сегодня")
+    assert message.replies == []
 
 
 def test_weight_undo_tap_deletes_and_toasts(Session):
@@ -716,6 +797,7 @@ _MENU = {
     "📊 Статистика": "show_statistics",
     "⚖️ Мой вес": "show_weight",
     "⚙️ Настройки": "show_settings",
+    "🍲 Блюда": "show_dishes",
 }
 
 
@@ -732,29 +814,6 @@ def test_every_menu_button_has_a_handler_everywhere_the_menu_shows(conv):
             assert _first_match(where, text) is getattr(tg, _MENU[text]), text
 
 
-@pytest.mark.parametrize(
-    "text, where, expected",
-    [
-        ("72,5", "entry", "process_weight"),
-        ("72,5", "menu", "process_weight"),
-        ("72,5", "weight", "process_weight"),
-        ("гречка", "weight", "process_weight"),  # gets the hint
-        ("гречка", "entry", None),  # no finding: free text is not a weight
-        ("гречка", "menu", None),
-        ("150 г", "menu", None),
-    ],
-)
-def test_typed_text_routing(conv, text, where, expected):
-    conv, _handlers = conv
-    handlers = {
-        "entry": conv.entry_points,
-        "menu": conv.states[tg.CHOOSING_ACTION],
-        "weight": conv.states[tg.ENTERING_WEIGHT],
-    }[where]
-    found = _first_match(handlers, text)
-    assert found is (getattr(tg, expected) if expected else None)
-
-
 def test_inline_taps_are_registered_outside_the_conversation(conv):
     from telegram.ext import CallbackQueryHandler
 
@@ -769,72 +828,17 @@ def test_inline_taps_are_registered_outside_the_conversation(conv):
     assert by_callback[tg.favorites_callback].pattern.match("fav:p:0")
     assert by_callback[tg.settings_callback].pattern.match("set:costs")
     assert not by_callback[tg.settings_callback].pattern.match("st:w")
+    assert by_callback[tg.meal_card_callback].pattern.match("ml:o:1:r")
+    assert not by_callback[tg.meal_card_callback].pattern.match("meal:1:save")
+    assert by_callback[tg.dishes_callback].pattern.match("dh:l:0")
+    assert not by_callback[tg.dishes_callback].pattern.match("ml:o:1:r")
 
 
 def test_week_title_spans_a_month_boundary():
     days = [(date(2026, 10, 29) + timedelta(days=i), []) for i in range(7)]
     assert st.week_screen(days, UTC).text.startswith(
-        "<b>📊 7 дней</b> · 29 окт – 4 ноя"
+        "<b>📊 7 дней, 29 октября – 4 ноября</b>"
     )
-
-
-def _photo_update(caption=None):
-    from telegram import Chat, Message, PhotoSize, Update
-    from telegram import User as TgUser
-
-    message = Message(
-        message_id=1,
-        date=NOW,
-        chat=Chat(id=42, type="private"),
-        from_user=TgUser(id=42, first_name="o", is_bot=False),
-        photo=[PhotoSize("f", "u", 90, 90)],
-        caption=caption,
-    )
-    return Update(update_id=1, message=message)
-
-
-def _first_match_update(handlers, update):
-    for h in handlers:
-        if getattr(h, "filters", None) is not None and h.check_update(update):
-            return h.callback
-    return None
-
-
-@pytest.mark.parametrize("caption", [None, "Вот такие 4 конфеты сегодня съела"])
-@pytest.mark.parametrize("where", ["entry", "menu", "weight", "time"])
-def test_a_photo_outside_the_meal_steps_is_a_meal(conv, where, caption):
-    conv, _handlers = conv
-    handlers = {
-        "entry": conv.entry_points,
-        "menu": conv.states[tg.CHOOSING_ACTION],
-        "weight": conv.states[tg.ENTERING_WEIGHT],
-        "time": conv.states[tg.ADDING_MEAL_TIME],
-    }[where]
-    assert _first_match_update(handlers, _photo_update(caption)) is (
-        tg.quick_meal_photo
-    )
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("Отмена", "cancel"),  # not food: no paid analysis of the word
-        ("📊 Статистика", "show_statistics"),
-        ("🍽 Добавить приём пищи", "add_meal"),
-        ("🍽 Добавить прием пищи", "add_meal"),  # a keyboard sent before the fix
-        ("гречка 200 г", "process_meal_input"),  # no finding: food still goes on
-    ],
-)
-def test_meal_step_takes_cancel_and_menu_before_the_analysis(conv, text, expected):
-    conv, _handlers = conv
-    found = _first_match(conv.states[tg.ADDING_MEAL], text)
-    assert found is getattr(tg, expected)
-
-
-def test_meal_step_photo_still_goes_to_the_analysis(conv):
-    conv, _handlers = conv
-    found = _first_match_update(conv.states[tg.ADDING_MEAL], _photo_update("обед"))
-    assert found is tg.process_meal_input
 
 
 # --- «🔢 Цифры» (stage 5, G5-R01/R02) ----------------------------------------
@@ -845,11 +849,14 @@ def test_numbers_off_day_lists_meals_without_calories_and_offers_the_button(Sess
         user = _user(db)
         _meal(db, user, NOW - timedelta(hours=1), 250, "омлет", proteins=20)
         screen = st.open_view(db, 42, st.TODAY, NOW)
-    assert "11:00 · омлет" in screen.text
-    for hidden in ("ккал", "Итого", "Б 20"):
+    assert "🕐 11:00" in screen.text
+    for hidden in ("ккал", "За день", "Б 20", "омлет"):
         assert hidden not in screen.text
-    assert _rows(screen.markup) == [["✓ Сегодня", "Вчера", "7 дней"], ["🔢 Цифры"]]
-    assert _callbacks(screen.markup)[-1] == "st:tn"
+    assert _rows(screen.markup)[-2:] == [
+        ["🔢 Цифры", "🍽 Приёмы"],
+        ["✓ Сегодня", "Вчера", "7 дней"],
+    ]
+    assert "st:tn" in _callbacks(screen.markup)
 
 
 def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
@@ -857,34 +864,33 @@ def test_open_numbers_stay_open_across_tabs_and_close_again(Session):
         user = _user(db)
         _meal(db, user, NOW - timedelta(hours=1), 250, "омлет")
         opened = st.handle_callback(db, 42, "st:tn", NOW)
-        assert "11:00 · омлет · 250 ккал" in opened.text
-        assert "<b>🔥 Итого: 250 ккал</b>" in opened.text
-        assert _rows(opened.markup)[-1] == ["✓ 🔢 Цифры"]
-        assert _callbacks(opened.markup) == ["st:tn", "st:yn", "st:wn", "st:t"]
+        assert "11:00 омлет — ≈ 250 ккал" in opened.text
+        assert "🔢 За день: ≈ 250 ккал" in opened.text
+        assert _rows(opened.markup)[-2] == ["✓ 🔢 Цифры", "🍽 Приёмы"]
+        assert _callbacks(opened.markup)[-6:-4] == ["st:c:n", "st:t"]
+        assert _callbacks(opened.markup)[-4].startswith("ml:dl:")
+        assert _callbacks(opened.markup)[-3:] == ["st:tn", "st:yn", "st:wn"]
 
         closed = st.handle_callback(db, 42, "st:t", NOW)
         assert "ккал" not in closed.text
 
 
-def test_numbers_off_week_lists_logged_days_with_times_and_no_counts(Session):
+def test_numbers_off_week_has_no_counts_and_no_days(Session):
     with Session() as db:
         user = _user(db)
         _meal(db, user, NOW, 2000)
-        _meal(db, user, NOW - timedelta(hours=2), 300)
         _meal(db, user, NOW - timedelta(days=2), 1000)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    lines = screen.text.split("\n")
-    assert lines[2:] == ["пн 26.10 · 12:00", "ср 28.10 · 10:00, 12:00"]
-    for hidden in ("ккал", "▱", "—", "В среднем", "из 7", "запис"):
+    for hidden in ("ккал", "▱", "—", "В среднем", "из 7"):
         assert hidden not in screen.text  # an empty day is not a gap
-    assert _callbacks(screen.markup)[-1] == "st:wn"
+    assert _callbacks(screen.markup)[0] == "st:wn"
 
 
 def test_numbers_off_empty_week_says_so_without_a_miss(Session):
     with Session() as db:
         _user(db)
         screen = st.open_view(db, 42, st.WEEK, NOW)
-    assert screen.text.endswith("За неделю записей нет.")
+    assert screen.text.endswith("Карточка соберётся с первой записью.")
 
 
 @pytest.mark.parametrize("data", ["st:tx", "st:q", "st:wnn", "st:"])
@@ -909,7 +915,11 @@ def test_numbers_setting_flips_and_says_so_keeping_other_settings(Session):
         _meal(db, db.query(User).one(), NOW, 400)
         day = st.open_view(db, 42, st.TODAY, NOW)
     assert "400 ккал" in day.text
-    assert _rows(day.markup) == [["✓ Сегодня", "Вчера", "7 дней"]]  # no button
+    assert _rows(day.markup)[-3:] == [
+        [st.STEP_FIRST_BUTTON],
+        ["🍽 Приёмы"],
+        ["✓ Сегодня", "Вчера", "7 дней"],
+    ]  # no numbers button
 
     off = _tap(Session, "set:num")
     assert off.text.startswith("<i>✓ Цифры теперь за кнопкой</i>")

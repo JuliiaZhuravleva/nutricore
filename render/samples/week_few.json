@@ -1,0 +1,23 @@
+{
+ "view": "week",
+ "theme": "day",
+ "period": "24–30 октября",
+ "title": "7 дней",
+ "plants": 6,
+ "plantsLabel": "разных растений",
+ "groups": [
+  {
+   "key": "veg",
+   "days": 7
+  },
+  {
+   "key": "grain",
+   "days": 5
+  }
+ ],
+ "routines": [],
+ "win": {
+  "kick": "После паузы",
+  "text": "Снова с записями"
+ }
+}

@@ -28,7 +28,7 @@ to the tracked HANDOFF) removed, deleted `HANDOFF.md` restored, main fast-forwar
 - **TD-017** — quick-pick from saved/recent (deferred B5). Own small plan: ReplyKeyboard vs Inline.
 - **TD-013** — confidence gate (identity/portion/nutrition + quick-select). Big track, via `/plan-fixes`;
   now has the personal-DB match as its strongest identity signal.
-- **TD-010** — disk-bytes archival + `/forget` + reprocess→meal (own plan, deploy coordination).
+- **TD-010** — disk-bytes archival + `/forget` (own plan, deploy coordination); reprocess→meal done in stage 5.
 - (TD-011 stays open as an accepted residual — reviewed 2026-07-12, nothing to action.)
 
 ## Gotchas / learnings

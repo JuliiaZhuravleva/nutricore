@@ -33,6 +33,16 @@ class FavoriteMeal(Base, BaseClass):
     source_meal_id = Column(
         Integer, ForeignKey("meals.id", ondelete="SET NULL"), nullable=True
     )
+    # The dish it belongs to. Its numbers above stay its own, as a portion, and NULL
+    # grams read «Порция: как в той записи.». NULL here is a row an old container
+    # wrote: ``crud_favorite_meal.dish_of`` links it.
+    personal_food_id = Column(
+        Integer,
+        ForeignKey("personal_foods.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    usual_grams = Column(Float, nullable=True)
     use_count = Column(Integer, nullable=False, default=0)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
     removed_at = Column(DateTime(timezone=True), nullable=True)

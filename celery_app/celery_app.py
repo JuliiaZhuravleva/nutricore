@@ -11,6 +11,7 @@ app = Celery(
         "celery_app.tasks.periodic",
         "celery_app.tasks.personal_food",
         "celery_app.tasks.model_watch",
+        "celery_app.tasks.week_push",
     ],
 )
 
@@ -31,6 +32,12 @@ app.conf.beat_schedule = {
     "purge-inbound-messages": {
         "task": "celery_app.tasks.periodic.purge_inbound_messages",
         "schedule": crontab(hour=3, minute=30),
+    },
+    # Sunday 22:00 on each user's clock; the task itself checks who is due.
+    "week-summaries": {
+        "task": "celery_app.tasks.week_push.send_week_summaries",
+        "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},  # after a restart, no pile of old runs
     },
     # Weekly, Monday 06:00 UTC (10:00 Tbilisi): model shutdown dates (ADR-0004).
     "model-watch": {

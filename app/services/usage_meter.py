@@ -30,6 +30,8 @@ PRICES = {
     "gpt-5.6-luna": (0.20, 0.02, 1.20),
     "gpt-6.1-terra": (1.00, 0.05, 5.00),
     "gpt-4o-mini": (0.15, 0.075, 0.60),
+    # Audio input; the short text prompt costs a little more and is counted here too.
+    "gpt-4o-mini-transcribe": (1.25, 1.25, 5.00),
     "text-embedding-3-small": (0.02, 0.02, 0.0),
 }
 WEB_SEARCH_CALL_USD = 10.00 / 1000  # per call, on top of the tokens

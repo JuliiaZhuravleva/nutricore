@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
 from app.models.meal import Meal
+from app.models.user import User
 
 UTC = timezone.utc
 
@@ -28,6 +29,7 @@ _HEADERS = {"X-API-Token": _API_TOKEN, "X-Export-Token": _EXPORT_TOKEN}
 def client(db_session, monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", _API_TOKEN)
     monkeypatch.setattr(settings, "EXPORT_API_TOKEN", _EXPORT_TOKEN)
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "4242")
     # Route every get_db dependency at the in-memory test session.
     app.dependency_overrides[get_db] = lambda: db_session
     # localhost host header passes TrustedHostMiddleware; not a context manager →
@@ -38,8 +40,10 @@ def client(db_session, monkeypatch):
 
 @pytest.fixture
 def seeded(db_session):
-    # Insert the ORM model directly (SQLite doesn't enforce the users FK, so no
-    # user row is needed).
+    # Insert the ORM model directly; the export holds only the owner's meals.
+    owner = User(telegram_id=4242, settings={})
+    db_session.add(owner)
+    db_session.commit()
     times = [
         datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
         datetime(2026, 6, 1, 14, 0, tzinfo=UTC),
@@ -48,7 +52,7 @@ def seeded(db_session):
     for t in times:
         db_session.add(
             Meal(
-                user_id=1,
+                user_id=owner.id,
                 meal_time=t,
                 calories=300,
                 proteins=10,
@@ -87,7 +91,7 @@ def test_export_requires_export_token(client, seeded):
     )
 
 
-def test_export_returns_all_meals_in_time_order(client, seeded):
+def test_export_returns_the_owners_meals_in_time_order(client, seeded):
     resp = client.get("/api/v1/meals/export", headers=_HEADERS)
     assert resp.status_code == 200
     body = resp.json()

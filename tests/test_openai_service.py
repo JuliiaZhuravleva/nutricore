@@ -683,3 +683,34 @@ def test_an_embedding_reports_its_usage(monkeypatch, batch):
 
     assert meter.calls == 1
     assert meter.usd == pytest.approx(0.02)
+
+
+# --- food groups (stage 5, slice B) -----------------------------------------
+
+
+def _system_prompt(service) -> str:
+    return _create_kwargs(service)["messages"][0]["content"]
+
+
+def test_the_text_analysis_asks_for_food_groups_in_the_same_call():
+    service = _service_with_mock_client()
+    asyncio.run(service.analyze_food_entry("тофу с рисом"))
+    assert '"legumes"' in _system_prompt(service)
+    assert '"food_items"' in _system_prompt(service)
+    service.client.chat.completions.create.assert_awaited_once()
+
+
+def test_the_photo_analysis_asks_for_food_groups_in_the_same_call():
+    service = _service_with_mock_client()
+    asyncio.run(service.analyze_food_image("data:image/jpeg;base64,abc"))
+    assert '"legumes"' in _system_prompt(service)
+    assert '"food_items"' in _system_prompt(service)
+    service.client.chat.completions.create.assert_awaited_once()
+
+
+def test_the_retag_call_sends_only_the_foods_and_the_rule():
+    service = _service_with_mock_client()
+    asyncio.run(service.tag_food_groups(["тофу", "рис"]))
+    messages = _create_kwargs(service)["messages"]
+    assert '"legumes"' in messages[0]["content"]
+    assert messages[1]["content"] == '["тофу", "рис"]'

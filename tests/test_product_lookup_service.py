@@ -32,7 +32,6 @@ from app.services.product_lookup_service import (
     LabelOCRStrategy,
     NameOFFStrategy,
     NameWebSearchStrategy,
-    ResolutionResult,
     SavedFoodRAGStrategy,
     VisionFallbackStrategy,
     _build_pipeline,
@@ -856,84 +855,6 @@ def test_vision_fallback_signals_include_all_adr_keys(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Integration with telegram.py: resolution data stored in draft + MealCreate
-# ---------------------------------------------------------------------------
-
-
-def test_resolution_source_stored_in_draft(monkeypatch):
-    """_run_meal_analysis stores resolution_source + resolution_signals in draft."""
-    import app.services.product_lookup_service as pls
-    from app.services import telegram as tg
-
-    resolution = ResolutionResult(
-        source="barcode_off",
-        confidence_tier="high",
-        nutrition=_NUTRITION,
-        description="Чипсы Pringles Original",
-        portion_grams=150.0,
-        signals={"barcode_raw": "4607195501226", "strategy_chosen": "barcode_off"},
-    )
-    monkeypatch.setattr(
-        pls, "resolve_meal_nutrition", AsyncMock(return_value=resolution)
-    )
-    monkeypatch.setattr(
-        tg, "resolve_meal_nutrition", AsyncMock(return_value=resolution)
-    )
-
-    # Minimal fake update / context
-    from tests.test_meal_handler import _make_photo_context, _make_photo_update
-
-    update, _ = _make_photo_update()
-    context = _make_photo_context()
-
-    state = asyncio.run(
-        tg._run_meal_analysis(
-            update,
-            context,
-            kind="image",
-            input_ref="PHOTO_FILE_ID",
-            payload="data:image/jpeg;base64,abc",
-        )
-    )
-
-    assert state == tg.CONFIRMING_MEAL
-    meal = context.user_data["current_meal"]
-    assert meal["resolution_source"] == "barcode_off"
-    assert meal["resolution_signals"]["strategy_chosen"] == "barcode_off"
-
-
-def test_resolution_source_none_for_text_inputs(monkeypatch):
-    """Text inputs go through old path; resolution_source absent from draft."""
-    from app.services import telegram as tg
-
-    monkeypatch.setattr(
-        tg.telegram_service.openai_service,
-        "analyze_food_entry",
-        AsyncMock(return_value=json.dumps(_NUTRITION)),
-    )
-
-    from types import SimpleNamespace
-
-    from tests.test_meal_handler import _make_text_update
-
-    update, _ = _make_text_update("chicken breast 200g")
-    context = SimpleNamespace(user_data={})
-
-    state = asyncio.run(
-        tg._run_meal_analysis(
-            update,
-            context,
-            kind="text",
-            input_ref="chicken breast 200g",
-            payload="chicken breast 200g",
-        )
-    )
-
-    assert state == tg.CONFIRMING_MEAL
-    meal = context.user_data["current_meal"]
-    # Text path has no resolution_source field in draft
-    assert meal.get("resolution_source") is None
-
-
 # ---------------------------------------------------------------------------
 # LabelOCRStrategy (A10)
 # ---------------------------------------------------------------------------
@@ -1856,6 +1777,8 @@ def _make_pf(**kwargs):
         "per_100g_fats": 0.5,
         "per_100g_carbs": 4.0,
         "barcode": None,
+        "usual_grams": None,
+        "suggested_grams": None,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -2321,46 +2244,6 @@ def test_build_rag_query_text_filters_blank_strings():
 # ---------------------------------------------------------------------------
 # _source_badge — saved_rag case (telegram.py)
 # ---------------------------------------------------------------------------
-
-
-def test_source_badge_saved_rag():
-    """saved_rag result gets the personal-DB star badge (ADR-0003 §4b)."""
-    from app.services.telegram import _source_badge
-
-    result = ResolutionResult(
-        source="saved_rag",
-        confidence_tier="medium",
-        nutrition=_NUTRITION,
-        description="Греческий йогурт",
-        portion_grams=150.0,
-    )
-    badge = _source_badge(result)
-    assert "⭐" in badge
-    assert "базы" in badge
-
-
-def test_source_badge_saved_rag_distinct_from_off_badge():
-    """saved_rag badge is different from the generic medium-confidence OFF badge."""
-    from app.services.telegram import _source_badge
-
-    saved_result = ResolutionResult(
-        source="saved_rag",
-        confidence_tier="medium",
-        nutrition=_NUTRITION,
-        description="йогурт",
-        portion_grams=None,
-    )
-    off_result = ResolutionResult(
-        source="name_off",
-        confidence_tier="medium",
-        nutrition=_NUTRITION,
-        description="йогурт",
-        portion_grams=None,
-    )
-    assert _source_badge(saved_result) != _source_badge(off_result)
-
-
-# ---------------------------------------------------------------------------
 # B6: SavedFoodRAGStrategy — threshold config-driven (ADR-0003 §4)
 # ---------------------------------------------------------------------------
 
@@ -2813,3 +2696,46 @@ def test_parse_web_response_takes_the_first_object_of_a_list():
         ]
     )
     assert _parse_web_nutrition_response(raw)["identification"] == "Natto (generic)"
+
+
+# ---------------------------------------------------------------------------
+# Food groups survive whichever strategy wins (stage 5, slice B)
+# ---------------------------------------------------------------------------
+
+_TAGS = [{"name": "тофу", "groups": ["legumes", "anchor"]}]
+
+
+def _resolve_with(monkeypatch, off_result, vision):
+    import app.services.product_lookup_service as pls
+
+    async def fake_extract(image_data_url, *, telegram_id, input_ref, caption=None):
+        return await _build_signals("4607195501226", vision, image_data_url)
+
+    monkeypatch.setattr(pls, "_extract_signals", fake_extract)
+    monkeypatch.setattr(
+        "app.services.product_lookup_service.OpenFoodFactsService.lookup",
+        AsyncMock(return_value=off_result),
+    )
+    return asyncio.run(
+        resolve_meal_nutrition("data:image/jpeg;base64,abc", telegram_id=42)
+    )
+
+
+def test_a_database_hit_keeps_the_tags_vision_gave_the_same_photo(monkeypatch):
+    result = _resolve_with(
+        monkeypatch, _OFF_RESULT, {**_NUTRITION, "food_items": _TAGS}
+    )
+    assert result.source == "barcode_off"
+    assert result.nutrition["food_items"] == _TAGS
+
+
+def test_vision_fallback_keeps_its_own_tags(monkeypatch):
+    result = _resolve_with(monkeypatch, None, {**_NUTRITION, "food_items": _TAGS})
+    assert result.source == "vision"
+    assert result.nutrition["food_items"] == _TAGS
+
+
+def test_a_vision_reply_without_tags_leaves_a_database_hit_untagged(monkeypatch):
+    result = _resolve_with(monkeypatch, _OFF_RESULT, _NUTRITION)
+    assert result.source == "barcode_off"
+    assert "food_items" not in result.nutrition

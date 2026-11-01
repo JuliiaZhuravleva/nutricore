@@ -1,6 +1,6 @@
 """Personal food DB learning-loop write-back task (B4 / ADR-0003).
 
-Fire-and-forget: called from confirm_meal in telegram.py after the meal is
+Fire-and-forget: called from the read of a meal in telegram.py after the meal is
 saved.  Embeds the canonical food name and upserts it into personal_foods so
 the personal RAG DB grows with each confirmed meal.
 
@@ -18,10 +18,29 @@ from typing import Optional
 
 from app.crud.crud_personal_food import crud_personal_food
 from app.db.session import SessionLocal
+from app.services import portion_suggestions
 from app.services.openai_service import OpenAIService
 from celery_app.celery_app import app
 
 logger = logging.getLogger(__name__)
+
+
+def _ask_portion(dish_id: int) -> None:
+    """A dish that just gained numbers and has no weight gets a guess at its portion.
+    Outside the task's retries: a failed guess keeps 100 g, and is no failed save. Its
+    own service, for the reason in ``_embed``."""
+
+    async def ask() -> None:
+        svc = OpenAIService()
+        try:
+            await portion_suggestions.ask(SessionLocal, svc, dish_id)
+        finally:
+            await svc.client.close()
+
+    try:
+        asyncio.run(ask())
+    except Exception as e:
+        logger.warning("Portion suggestion not asked: %s", type(e).__name__)
 
 
 @app.task(bind=True, max_retries=3, default_retry_delay=30)
@@ -47,8 +66,13 @@ def embed_and_save_personal_food(
       - upsert() increments times_used on repeat call; never inserts duplicate.
       - add_embedding() is called only when canonical_name is not yet embedded.
     """
+    gained_numbers = False
+    personal_food_id = None
     try:
         with SessionLocal() as db:
+            known = crud_personal_food.find_by_name(db, user_id, canonical_name)
+            had_numbers = known is not None and known.per_100g_calories is not None
+
             # Step 1 — idempotent upsert (dedup on lower(canonical_name))
             pf = crud_personal_food.upsert(
                 db,
@@ -64,6 +88,7 @@ def embed_and_save_personal_food(
                 per_100g_carbs=per_100g_carbs,
             )
             personal_food_id = pf.id
+            gained_numbers = not had_numbers and pf.per_100g_calories is not None
 
             # Step 2 — embed canonical name (skip if already embedded for this food)
             existing = crud_personal_food.get_embeddings_for_food(
@@ -107,9 +132,15 @@ def embed_and_save_personal_food(
                     canonical_name,
                 )
 
+        if gained_numbers:
+            _ask_portion(personal_food_id)
         return personal_food_id
 
     except Exception as exc:
+        # The upsert has committed, so a retry finds the numbers already there: only
+        # this attempt knows the dish just gained them.
+        if gained_numbers:
+            _ask_portion(personal_food_id)
         if self.request.retries >= self.max_retries:
             # Retries exhausted — the confirmed food is PERMANENTLY not saved to the
             # personal DB (the whole point of this fire-and-forget task). Log at ERROR

@@ -22,14 +22,19 @@ import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import (
+    JSON,
+    Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -130,6 +135,42 @@ class PersonalFood(Base, BaseClass):
     # Usage tracking (for future quick-pick UX, B5)
     times_used = Column(Integer, nullable=False, default=1, server_default="1")
     last_used_at = Column(DateTime(timezone=True), nullable=True)
+
+    # The usual portion, and whether a person set it.
+    usual_grams = Column(Float, nullable=True)
+    usual_grams_by_user = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # A model's guess at a serving, for a dish nobody weighed, in "g" or "ml" (1 ml
+    # counts 1 g). Only ever a default: any real weight goes first, and it is not
+    # usual_grams, so it never reads as a person's word or as a checked portion.
+    suggested_grams = Column(Float, nullable=True)
+    suggested_unit = Column(String, nullable=True)
+    # "per_100" | "per_portion" | "none".
+    numbers_basis = Column(
+        String, nullable=False, default="per_100", server_default="per_100"
+    )
+    # "unverified" | "barcode" | "label" | "user". Only the last three drop the ≈.
+    numbers_quality = Column(
+        String, nullable=False, default="unverified", server_default="unverified"
+    )
+    # A person typed these numbers: upsert must not overwrite them.
+    numbers_by_user = Column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+
+    # The names it had before a rename. Typing one finds this dish. Reassign a new
+    # list to change it: an in-place change to a JSON column is not saved.
+    aliases = Column(JSON, nullable=True)
+    # The groups a person gave it: NULL says nobody did, and an empty list says none.
+    # none_as_null: no word is SQL NULL, not the JSON word null. Reassign to change it.
+    food_groups = Column(JSON(none_as_null=True), nullable=True)
+    # Hidden and merged rows leave the lists, the barcode and the ANN lookup, and keep
+    # their name in the unique key, so anything writing by name has to find them.
+    hidden_at = Column(DateTime(timezone=True), nullable=True)
+    merged_into_id = Column(
+        Integer, ForeignKey("personal_foods.id", ondelete="SET NULL"), nullable=True
+    )
 
     # NOT NULL + server_default (TD-006 lesson)
     created_at = Column(

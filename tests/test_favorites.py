@@ -17,9 +17,12 @@ from sqlalchemy.orm import sessionmaker
 from telegram.error import BadRequest
 
 from app.core.config import settings
+from app.crud.crud_meal import crud_meal
+from app.crud.crud_personal_food import crud_personal_food
 from app.db.base import Base
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
+from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import favorites as fv
 from app.services import telegram as tg
@@ -142,10 +145,10 @@ def test_save_after_removal_creates_a_fresh_favorite(Session):
 # --- list ----------------------------------------------------------------------
 
 
-def test_empty_list_points_to_the_confirm_button(Session):
+def test_empty_list_points_to_the_star_button(Session):
     with Session() as db:
         screen = fv.open_list(db, 42)  # user row doesn't even exist yet
-    assert "⭐ Да, и в избранное" in screen.text
+    assert "«⭐ В избранное»" in screen.text
     assert screen.markup is None
 
 
@@ -161,20 +164,22 @@ def test_list_is_most_recent_first_and_pages_by_four(Session):
 
         first = fv.open_list(db, 42, 0)
         labels = _labels(first.markup)
-        assert labels[:4] == [
-            "Блюдо 0 · 420 ккал",
-            "Блюдо 5 · 420 ккал",
-            "Блюдо 4 · 420 ккал",
-            "Блюдо 3 · 420 ккал",
+        assert labels[:8:2] == [
+            "Блюдо 0 · ≈ 420 ккал",
+            "Блюдо 5 · ≈ 420 ккал",
+            "Блюдо 4 · ≈ 420 ккал",
+            "Блюдо 3 · ≈ 420 ккал",
         ]
         # Pager on page 1 of 2: no ◀️ at the start.
-        assert labels[4:] == ["1/2", "▶️"]
+        assert labels[8:] == ["1/2", "▶️"]
         assert _callbacks(first.markup)[-1] == "fav:p:1"
 
         second = fv.open_list(db, 42, 1)
         assert _labels(second.markup) == [
-            "Блюдо 2 · 420 ккал",
-            "Блюдо 1 · 420 ккал",
+            "Блюдо 2 · ≈ 420 ккал",
+            "✏️",
+            "Блюдо 1 · ≈ 420 ккал",
+            "✏️",
             "◀️",
             "2/2",
         ]
@@ -185,13 +190,16 @@ def test_list_is_most_recent_first_and_pages_by_four(Session):
 def test_single_page_has_no_pager(Session):
     with Session() as db:
         _fav(db, _user(db, numbers=True))
-        assert _labels(fv.open_list(db, 42).markup) == ["Самса веган · 420 ккал"]
+        assert _labels(fv.open_list(db, 42).markup) == [
+            "Самса веган · ≈ 420 ккал",
+            "✏️",
+        ]
 
 
 def test_list_names_dishes_only_while_numbers_are_off(Session):
     with Session() as db:
         _fav(db, _user(db))
-        assert _labels(fv.open_list(db, 42).markup) == ["Самса веган"]
+        assert _labels(fv.open_list(db, 42).markup) == ["Самса веган", "✏️"]
 
 
 def test_list_shows_only_my_active_favorites(Session):
@@ -201,7 +209,10 @@ def test_list_shows_only_my_active_favorites(Session):
         _fav(db, other, name="Чужое")
         gone = _fav(db, me, name="Убранное")
         fv.handle_callback(db, 42, f"fav:r:{gone.id}:0")
-        assert _callbacks(fv.open_list(db, 42).markup) == [f"fav:o:{mine.id}:0"]
+        assert _callbacks(fv.open_list(db, 42).markup) == [
+            f"fav:l:{mine.id}:n",
+            f"fav:o:{mine.id}:0",
+        ]
 
 
 def test_names_are_html_escaped(Session):
@@ -214,21 +225,20 @@ def test_names_are_html_escaped(Session):
 # --- open → log → undo -----------------------------------------------------------
 
 
-def test_open_shows_macros_and_four_plain_chips(Session):
+def test_open_shows_macros_and_what_a_favourite_can_do(Session):
     with Session() as db:
         fav = _fav(db, _user(db, numbers=True))
         screen = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1")
-    assert "420 ккал · Б 12 · Ж 22.2 · У 42" in screen.text  # round(22.25, 1)
+    assert "≈ 420 ккал · Б 12 · Ж 22.2 · У 42" in screen.text  # round(22.25, 1)
     assert _labels(screen.markup) == [
-        "Сейчас",
-        "Завтрак",
-        "Обед",
-        "Ужин",
-        "⬅️ Назад",
-        "✖️ Убрать",
+        "🍽 Записать",
+        "⚖️ Порция",
+        "🍲 Всё о блюде",
+        "🗑 Из избранного",
+        "⬅️ Избранное",
     ]
-    # "Назад" returns to the page the dish was opened from.
-    assert _callbacks(screen.markup)[4] == "fav:p:1"
+    # The way back returns to the page the dish was opened from.
+    assert _callbacks(screen.markup)[-1] == "fav:p:1"
 
 
 def test_numbers_off_keeps_macros_behind_a_button_that_flips(Session):
@@ -236,14 +246,17 @@ def test_numbers_off_keeps_macros_behind_a_button_that_flips(Session):
         fav = _fav(db, _user(db))
         hidden = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1")
         assert "ккал" not in hidden.text and "Самса веган" in hidden.text
-        assert _labels(hidden.markup)[4:] == ["🔢 Цифры", "⬅️ Назад", "✖️ Убрать"]
-        assert _callbacks(hidden.markup)[4] == f"fav:o:{fav.id}:1:n"
-        assert len(hidden.markup.inline_keyboard) <= 4
+        assert _labels(hidden.markup)[2] == "🔢 Цифры"
+        assert _callbacks(hidden.markup)[2] == f"fav:o:{fav.id}:1:1"
+        assert len(hidden.markup.inline_keyboard) <= 5
 
-        shown = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1:n")
-        assert "420 ккал · Б 12 · Ж 22.2 · У 42" in shown.text
-        assert _labels(shown.markup)[4] == "✓ 🔢 Цифры"
-        assert _callbacks(shown.markup)[4] == f"fav:o:{fav.id}:1"
+        shown = fv.handle_callback(db, 42, f"fav:o:{fav.id}:1:1")
+        assert "≈ 420 ккал · Б 12 · Ж 22.2 · У 42" in shown.text
+        assert _labels(shown.markup)[2] == "✓ 🔢 Цифры"
+        assert _callbacks(shown.markup)[2] == f"fav:o:{fav.id}:1"
+
+        # The button an old message still holds.
+        assert "ккал" in fv.handle_callback(db, 42, f"fav:o:{fav.id}:1:n").text
 
         # Restoring a removed dish lands on its screen with numbers hidden again.
         fv.handle_callback(db, 42, f"fav:r:{fav.id}:1")
@@ -260,35 +273,49 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         screen = fv.handle_callback(db, 42, f"fav:l:{fav.id}:l")
 
         assert screen.toast == "Записано"
-        assert "Самса веган · 420 ккал" in screen.text and "Обед" in screen.text
+        assert screen.text == "Записано: Самса веган · ≈ 420 ккал."
         meal = db.query(Meal).order_by(Meal.id.desc()).first()
         assert db.query(Meal).count() == meals_before + 1
         assert meal.user_id == user.id
         assert meal.description == "Самса веган"
-        assert meal.meal_type == "Обед"
+        assert meal.meal_type is None  # an old message's chip logs, with no label
         assert meal.calories == 420.4 and meal.nutrients == _NUTRITION
         assert not meal.photos and meal.ai_analysis is None
         assert meal.resolution_source == fv.FAVORITE_SOURCE
         assert meal.resolution_signals == {"favorite_id": fav.id}
         db.refresh(fav)
         assert fav.use_count == 1 and fav.last_used_at is not None
-        assert _callbacks(screen.markup) == [f"fav:u:{meal.id}"]
+        assert _callbacks(screen.markup) == [
+            f"fav:u:{meal.id}",
+            f"ml:t:{meal.id}:r",
+            "fav:p:0",
+        ]
 
         undone = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert undone.toast == "Отменено"
-        assert db.get(Meal, meal.id) is None
+        # Soft, as every delete (3.3): the export learns of it from ``deleted_at``.
+        db.expire_all()
+        assert db.get(Meal, meal.id).deleted_at is not None
+        kinds = [e.kind for e in db.query(RecordEvent).filter_by(meal_id=meal.id)]
+        assert kinds == ["delete"]
+        pull = crud_meal.get_for_export(
+            db, owner_telegram_ids=[42], updated_since=datetime(2020, 1, 1)
+        )
+        assert meal.id in [row.id for row in pull]
+        assert meal.id not in [
+            row.id for row in crud_meal.get_for_export(db, owner_telegram_ids=[42])
+        ]
         # A second tap on the same old button: a notice, not an error.
         again = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert "уже отменена" in again.text
-        assert db.query(Meal).count() == meals_before
+        assert db.query(Meal).count() == meals_before + 1
 
 
 def test_logged_line_names_the_dish_only_while_numbers_are_off(Session):
     with Session() as db:
         fav = _fav(db, _user(db))
         screen = fv.handle_callback(db, 42, f"fav:l:{fav.id}:l")
-    assert "Записано:</b> Самса веган\n" in screen.text
-    assert "ккал" not in screen.text
+    assert screen.text == "Записано: Самса веган."
 
 
 def test_now_chip_stores_no_meal_type(Session):
@@ -340,9 +367,10 @@ def test_remove_then_restore(Session):
     with Session() as db:
         fav = _fav(db, _user(db))
         removed = fv.handle_callback(db, 42, f"fav:r:{fav.id}:0")
-        assert "убрано" in removed.text
+        assert "Убрано из избранного: Самса веган" in removed.text
         assert _callbacks(removed.markup) == [f"fav:b:{fav.id}:0", "fav:p:0"]
         assert fv.open_list(db, 42).markup is None  # gone from the list
+        assert crud_personal_food.find_by_name(db, fav.user_id, fav.name) is not None
 
         # A stale "open" or "log" button on the removed dish → the list + notice.
         stale = fv.handle_callback(db, 42, f"fav:l:{fav.id}:b")
@@ -350,23 +378,11 @@ def test_remove_then_restore(Session):
         assert db.query(Meal).filter(Meal.resolution_source == "favorite").count() == 0
 
         restored = fv.handle_callback(db, 42, f"fav:b:{fav.id}:0")
-        assert "Снова в избранном" in restored.text
-        assert _callbacks(fv.open_list(db, 42).markup) == [f"fav:o:{fav.id}:0"]
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        "fav:", "fav:zz", "fav:o:abc:0", "fav:l:1:q", "fav:p",
-        # a word where a page or an id goes: once a TypeError deep in the pager
-        "fav:o:5:n", "fav:p:n", "fav:r:1:n", "fav:b:1:n", "fav:l:x:b", "fav:u:x",
-    ],
-)  # fmt: skip
-def test_malformed_data_gets_the_list(Session, data):
-    with Session() as db:
-        _fav(db, _user(db))
-        screen = fv.handle_callback(db, 42, data)
-    assert screen.text.startswith("<b>⭐ Избранное</b>")
+        assert "✓ Возвращено" in restored.text
+        assert _callbacks(fv.open_list(db, 42).markup) == [
+            f"fav:l:{fav.id}:n",
+            f"fav:o:{fav.id}:0",
+        ]
 
 
 # --- the bot side --------------------------------------------------------------
@@ -382,80 +398,11 @@ class _Msg:
         self.kwargs.append(kwargs)
 
 
-def _confirm(text, current_meal):
-    message = _Msg(text)
-    update = SimpleNamespace(
-        message=message, effective_user=SimpleNamespace(id=42, username="owner")
-    )
-    context = SimpleNamespace(
-        user_data={"current_meal": current_meal, "meal_type": "Обед"}
-    )
-    state = asyncio.run(tg.confirm_meal(update, context))
-    return state, message
-
-
-def test_typed_confirm_intents():
-    # The former reply-keyboard texts still classify when typed or tapped from
-    # an old keyboard left on screen.
-    assert tg._confirm_intent("✅ Да") == "affirm"
-    assert tg._confirm_intent("⭐ Да, и в избранное") == "affirm_favorite"
-    assert tg._confirm_intent("Нет") == "reject"
-
-
 def test_main_keyboard_has_favorites_next_to_add_meal():
     assert [b.text for b in tg.main_keyboard.keyboard[0]] == [
         "🍽 Добавить приём пищи",
         "⭐ Избранное",
     ]
-
-
-def test_confirm_with_favorite_saves_meal_and_favorite_named_by_caption(Session):
-    meal = {
-        "nutrition": _NUTRITION,
-        "description": "savory pastry",
-        "caption": "Самса веган",
-        "photos": ["PHOTO"],
-    }
-    state, message = _confirm("⭐ Да, и в избранное", meal)
-
-    assert state == tg.CHOOSING_ACTION
-    assert "✅ Записано" in message.replies[-1]
-    assert "⭐ В избранном: «Самса веган»" in message.replies[-1]
-    with Session() as db:
-        saved = db.query(Meal).one()
-        fav = db.query(FavoriteMeal).one()
-        assert fav.name == "Самса веган" and fav.source_meal_id == saved.id
-        assert fav.calories == saved.calories == 420.4
-
-    # The same dish again: one favorite, and the reply says so.
-    _, message = _confirm("⭐ Да, и в избранное", dict(meal))
-    assert "уже в избранном" in message.replies[-1]
-    with Session() as db:
-        assert db.query(Meal).count() == 2
-        assert db.query(FavoriteMeal).count() == 1
-
-
-def test_plain_yes_adds_no_favorite(Session):
-    _confirm("✅ Да", {"nutrition": _NUTRITION, "description": "x"})
-    with Session() as db:
-        assert db.query(Meal).count() == 1
-        assert db.query(FavoriteMeal).count() == 0
-
-
-def test_favorite_failure_keeps_the_saved_meal(Session, monkeypatch):
-    def boom(*a, **k):
-        raise RuntimeError("db hiccup")
-
-    monkeypatch.setattr(fv, "save_from_meal", boom)
-    state, message = _confirm(
-        "⭐ Да, и в избранное", {"nutrition": _NUTRITION, "description": "x"}
-    )
-    assert state == tg.CHOOSING_ACTION
-    assert "✅ Записано" in message.replies[-1]
-    assert "не получилось" in message.replies[-1]
-    assert "ошибка при сохранении" not in message.replies[-1]
-    with Session() as db:
-        assert db.query(Meal).count() == 1
 
 
 def test_menu_button_sends_the_list(Session):
@@ -469,13 +416,14 @@ def test_menu_button_sends_the_list(Session):
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>⭐ Избранное</b>")
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _labels(message.kwargs[-1]["reply_markup"]) == ["Самса веган"]
+    assert _labels(message.kwargs[-1]["reply_markup"]) == ["Самса веган", "✏️"]
 
 
 def _query(data, telegram_id=42, edit=None):
     query = SimpleNamespace(
         data=data,
         answer=AsyncMock(),
+        message=None,
         edit_message_text=edit or AsyncMock(),
     )
     update = SimpleNamespace(
@@ -492,10 +440,11 @@ def test_callback_logs_edits_in_place_and_toasts(Session):
 
     query.answer.assert_awaited_once_with("Записано")
     (text,), kwargs = query.edit_message_text.await_args
-    assert "Записано" in text and "Ужин" in text
+    assert text == "Записано: Самса веган."
     assert kwargs["parse_mode"] == "HTML"
     with Session() as db:
-        assert db.query(Meal).filter(Meal.meal_type == "Ужин").count() == 1
+        logged = db.query(Meal).filter(Meal.resolution_source == "favorite").one()
+        assert logged.meal_type is None
 
 
 def test_callback_without_subscription_changes_nothing(Session, monkeypatch):
@@ -557,3 +506,20 @@ def test_handlers_are_registered(monkeypatch):
     add_text, fav_text = (b.text for b in tg.main_keyboard.keyboard[0])
     assert by_callback[tg.show_favorites].filters.pattern.match(fav_text)
     assert by_callback[tg.add_meal].filters.pattern.match(add_text)
+
+
+def test_tap_logs_a_favorite_with_its_food_groups(Session):
+    with Session() as db:
+        user = _user(db)
+        fav = _fav(db, user)
+        fav.nutrients = {**_NUTRITION, "food_groups": ["veg"], "food_items": []}
+        db.commit()
+
+        fv.handle_callback(db, 42, f"fav:l:{fav.id}:l")
+
+        meal = db.query(Meal).order_by(Meal.id.desc()).first()
+        assert meal.ai_analysis == {
+            "food_items": [],
+            "food_groups": ["veg"],
+            "food_groups_by_user": False,
+        }

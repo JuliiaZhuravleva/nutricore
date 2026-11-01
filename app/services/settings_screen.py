@@ -1,7 +1,9 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
-    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [💸 Стоимость запросов: выкл]
+    ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
+    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл] [📋 Черновик: выкл]
+    [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать] [ℹ️ Как это работает]
+    [💸 Стоимость запросов: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -25,15 +27,24 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.config import settings
 from app.models.user import User
+from app.services import food_lists
+from app.services.explain_screen import OPEN as EXPLAIN_OPEN
 from app.services.favorites import Screen
 from app.services.numbers import SHOW_NUMBERS, shows_numbers
+from app.services.routines import CALLBACK_PREFIX as ROUTINES_PREFIX
+from app.services.routines import active as active_routines
 
 logger = logging.getLogger(__name__)
 
 CALLBACK_PREFIX = "set:"
 SHOW_COSTS = "show_costs"  # the 💸 line under each analysis
 TIMEZONE = "timezone"  # an IANA name; days in 📊 and dates in ⚖️ follow it
+WEEK_PUSH = "week_push"  # False: no summary on Sunday; on unless turned off
+WEEK_PUSH_SENT = "week_push_last"  # the Monday of the last summary sent
+DRAFT_MODE = "draft_mode"  # True: food waits for «✅ Записать»; off unless turned on
 _COSTS_CB = CALLBACK_PREFIX + "costs"
+_WEEK_CB = CALLBACK_PREFIX + "week"
+_DRAFT_CB = CALLBACK_PREFIX + "draft"
 _NUMBERS_CB = CALLBACK_PREFIX + "num"
 _ZONES_CB = CALLBACK_PREFIX + "tz"
 _PICK = _ZONES_CB + ":"  # + the zone's IANA name
@@ -87,6 +98,14 @@ def user_zone(user: User | None) -> ZoneInfo:
     return ZoneInfo(zone_name(user))
 
 
+def week_push_on(user: User | None) -> bool:
+    return (user.settings or {}).get(WEEK_PUSH) is not False if user else True
+
+
+def draft_on(user: User | None) -> bool:
+    return bool((user.settings or {}).get(DRAFT_MODE)) if user else False
+
+
 def shows_costs(db, telegram_id: int) -> bool:
     user = _user(db, telegram_id)
     return bool(user and (user.settings or {}).get(SHOW_COSTS))
@@ -120,6 +139,11 @@ def screen(
     now: datetime,
     notice: str | None = None,
     numbers: bool = False,
+    routines: int = 0,
+    week_push: bool = True,
+    reliable: int = 0,
+    never: int = 0,
+    draft: bool = False,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     lines += [
@@ -129,12 +153,37 @@ def screen(
         "📊 Статистика делит дни.",
         "🔢 Калории и БЖУ: "
         + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
+        "🗓 Итог недели: "
+        + ("воскресенье, 22:00, без звука." if week_push else "не присылаю."),
+        "📋 Черновик: "
+        + (
+            "вкл. Еда попадёт в дневник после «✅ Записать»."
+            if draft
+            else "выкл. Еда записывается сразу."
+        ),
+        f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
+        f"🧺 Надёжная еда: {reliable or 'пока нет'} · "
+        f"✋ Не предлагать: {never or 'пока нет'}",
         f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
         "под каждым разбором еды.",
     ]
     rows = [
-        [_btn("🕐 Часовой пояс", _ZONES_CB)],
-        [_btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB)],
+        [
+            _btn("🕐 Часовой пояс", _ZONES_CB),
+            _btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB),
+        ],
+        [
+            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
+            _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
+        ],
+        [
+            _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
+            _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
+        ],
+        [
+            _btn("✋ Не предлагать", food_lists.NEVER_OPEN),
+            _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
+        ],
         [_btn(f"💸 Стоимость запросов: {'вкл' if on else 'выкл'}", _COSTS_CB)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
@@ -204,10 +253,23 @@ def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
 def open_view(
     db, telegram_id: int, notice: str | None = None, now: datetime | None = None
 ) -> Screen:
+    now = now or datetime.now(UTC)
     user = _user(db, telegram_id)
+    if user is not None:
+        food_lists.seed(db, user, now)
     on = bool(user and (user.settings or {}).get(SHOW_COSTS))
+    reliable, never = food_lists.counts(user)
     return screen(
-        on, zone_name(user), now or datetime.now(UTC), notice, shows_numbers(user)
+        on,
+        zone_name(user),
+        now,
+        notice,
+        shows_numbers(user),
+        len(active_routines(user)),
+        week_push_on(user),
+        reliable,
+        never,
+        draft_on(user),
     )
 
 
@@ -236,6 +298,20 @@ def handle_callback(
         on = not shows_numbers(_user(db, telegram_id))
         _save(db, telegram_id, **{SHOW_NUMBERS: on})
         notice = "✓ Цифры видны сразу" if on else "✓ Цифры теперь за кнопкой"
+        return open_view(db, telegram_id, notice, now)
+    if data == _WEEK_CB:
+        on = not week_push_on(_user(db, telegram_id))
+        _save(db, telegram_id, **{WEEK_PUSH: on})
+        notice = "✓ Итог недели включён" if on else "✓ Итог недели выключен"
+        return open_view(db, telegram_id, notice, now)
+    if data == _DRAFT_CB:
+        on = not draft_on(_user(db, telegram_id))
+        _save(db, telegram_id, **{DRAFT_MODE: on})
+        notice = (
+            "✓ Черновик перед записью: вкл. Еда попадёт в дневник после «✅ Записать»."
+            if on
+            else "✓ Черновик перед записью: выкл. Еда записывается сразу."
+        )
         return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
     if data == _ZONES_CB:

@@ -10,7 +10,12 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    ReplyKeyboardMarkup,
+)
 from telegram.error import BadRequest
 from telegram.ext import Application, ExtBot
 from telegram.request import BaseRequest
@@ -277,6 +282,28 @@ def test_a_caption_and_an_edit_are_drawn_a_toast_is_not():
     assert "entities" not in toast
 
 
+def test_a_swapped_card_keeps_the_drawn_marks_in_its_caption():
+    bot, transport = _on()
+    media = InputMediaPhoto("PHOTO_ID", caption="<b>🔥 фото</b>", parse_mode="HTML")
+
+    asyncio.run(bot.edit_message_media(media, chat_id=42, message_id=1))
+
+    endpoint, sent = _sent(transport)
+    assert endpoint == "editMessageMedia" and sent["media"]["media"] == "PHOTO_ID"
+    assert '<tg-emoji emoji-id="id-fire">' in sent["media"]["caption"]
+    assert media.caption == "<b>🔥 фото</b>"  # never modified: a refusal resends it
+
+
+def test_a_swapped_card_with_a_new_file_still_sends_the_file():
+    bot, transport = _on()
+    media = InputMediaPhoto(b"\x89PNG", caption="🔥 фото", parse_mode="HTML")
+
+    asyncio.run(bot.edit_message_media(media, chat_id=42, message_id=1))
+
+    sent = _sent(transport)[1]["media"]
+    assert sent["media"].startswith("attach://") and "tg-emoji" in sent["caption"]
+
+
 def test_at_most_a_hundred_marks_per_message():
     bot, transport = _on()
 
@@ -408,9 +435,25 @@ def test_the_application_bot_is_an_emoji_bot_with_the_builders_pools(monkeypatch
     default = Application.builder().token("123:fake").build()
 
     assert isinstance(application.bot, ce.EmojiBot)
-    assert application.post_init is tg._load_custom_emoji
     for ours, theirs in zip(application.bot._request, default.bot._request):
         assert ours._client_kwargs == theirs._client_kwargs
+
+
+def test_the_application_start_loads_the_emoji_sets(monkeypatch):
+    """Through the application's own ``post_init``, whatever else it starts."""
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "123:fake")
+    monkeypatch.setattr(settings, "CUSTOM_EMOJI", "some_set")
+    application = tg.create_bot_application()
+    load = AsyncMock()
+    monkeypatch.setattr(application.bot.emoji, "load", load)
+    monkeypatch.setattr(tg, "_pending_at_start", lambda: [])
+
+    async def run():
+        await application.post_init(application)
+        await application.post_shutdown(application)
+
+    asyncio.run(run())
+    load.assert_awaited_once_with(application.bot, "some_set")
 
 
 def test_startup_tells_the_owner_when_named_sets_cannot_be_read(monkeypatch):

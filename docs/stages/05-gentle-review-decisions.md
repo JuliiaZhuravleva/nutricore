@@ -29,6 +29,21 @@ unanswered and the stated default applies.
 | G5-R19 | **All user-facing text is gender-neutral**: the project is open source and the bot is universal. «✅ Готово», never «✅ Сделала». Enforced by a test with a positive control | all |
 | G5-R20 | Ready-made and convenience food is first-class. Steps add to it; they never "fix" or replace it | F, H |
 | G5-R21 | Future: the user can export the food diary for a period as a file to hand to a psychologist or a nutritionist (owner, 2026-10-29). Format: both — a PDF a person reads and a table (CSV) to count in (owner, 2026-10-30) | I |
+| G5-R23 | The bot also says why it lets users tick a supplement, and what studies found, with PubMed links (owner, 2026-10-30): the option came from research, so the research is shown. A reference on request, in «ℹ️ Как это работает». It still recommends nothing and names no dose (G5-R08 holds); each screen says what is unknown. Written from abstracts read in PubMed. Rule 7 («never low») is about verdicts on the user; a study's group result may say «ниже в среднем» | J |
+| G5-R24 | The product starts from how a person eats now, and hard days are the main case, not an edge (owner, 2026-10-30). The bot has three jobs: (1) keep an objective record of how the person really eats, (2) show one small thing to do now, (3) show small progress when it happens. A user must never receive a pile of reports on what is wrong. How to show this is open: research DR3 runs first, and slices G, H, I wait for it | all |
+| G5-R22 | The bot explains itself: a base of short explanations of what each feature does, how it works and where the idea comes from, reached by tapping (owner, 2026-10-30). Plain text in the repo, no model call. Each new feature adds its entry in its own slice. Text comes from `docs/researches/`, rewritten for the user: never the research documents themselves, no judging words, no eating-disorder material, no supplement advice | J, then each of D–I |
+| G5-R25 | The bot may name an absence, once a week and in one line, only when the user said the week is mostly recorded, and as a fact about the records: «В записях за неделю овощей не видно». Never on the day card, never about the person (owner, 2026-10-30, after [`hard-days-progress-evidence.md`](../researches/hard-days-progress-evidence.md)). Replaces the absolute «never say what was missing» of rule 2 | L |
+| G5-R26 | Progress compares the person with their own past: only on the chosen step, only as a count of days, and it says so plainly when the count fell. Never with an ideal. G5-R09 stands: plants have no comparison (owner, 2026-10-30) | K |
+| G5-R27 | The person chooses the step from 2–3 options drawn from their records; until they do, the card has no step, only a button. Replaces G5-R10's daily step proposed by the bot. The swap and the energy modes stay (owner, 2026-10-30) | K |
+| G5-R29 | The chosen step stays from day to day until the person changes it, or two «😴 Не сейчас» in a row bring a smaller one. A count needs the same thing to be tried for days, and a new step every morning would undo the choice. Replaces the daily rotation (project's decision, slice K) | K |
+| G5-R30 | Food goes in first and is corrected after: a photo or a text is recorded at once, and the time, weight, description and the record itself can be changed later. Several photos can describe one meal, and a photo or text can add to a saved meal. The person does as little as possible | M (next) |
+| G5-R31 | No confirmation by default: a draft step is an opt-in setting. Rough data is better than none, and the raw sources stay with the meal so it can be read again. Voice is an input like a photo. Whether new input corrects the last meal is settled by G5-R35, which replaces the silent check first written here (owner, 2026-10-30) | M |
+| G5-R32 | Voice is transcribed by the shared local-whisper service, as in the neighbouring projects; a paid API is the fallback when it is unreachable, refuses or runs out of time. `POST /jobs/upload` takes the bytes, so no shared folder is needed. `WHISPER_URL` is optional: empty goes straight to the paid API, for anyone running this without the service. If both fail, the voice message stays as the meal's source and is read again later: nothing is lost (owner, 2026-10-30) | M |
+| G5-R33 | A dish lives once. `personal_foods` (already one row per user and lower-cased name, with per-100 g numbers, barcode and use count) becomes the dish base; a new `meal_items` links a meal to its dishes with grams and its own copy of name and numbers. A correction of a dish therefore never rewrites a past meal. `meals` keeps its totals as the sum of items, so the cards, week and export read as before. A favourite (`favorite_meals`) points to a dish with a usual portion. Meals recorded earlier stay as one line: their totals cannot be split honestly, and no paid retagging is run for this (owner's question, project's decision, 2026-10-30) | N |
+| G5-R34 | Order: N (dish base and meal card) goes first, since it waits for nothing and M writes into it; then M when the input research is in; then O; then L + I and H. History and dishes come before the weekly line and the diary export, because they are the record itself (project's decision, 2026-10-30) | N, M, O |
+| G5-R35 | From the input research (2026-10-30). **A wrong merge costs more than a wrong split, so there is no silent correction by a time window.** A new message joins an existing meal only by an explicit relation: a reply to it, the same album (`media_group_id`, all photos read together, up to 10), or clear corrective words («ещё сыр», «это была индейка»). Anything else is a new meal, with a reversible `🔗 Объединить`; `Отделить` restores the originals. A second helping is a new component of the same meal, both captures kept. **The reply is one line and asks nothing:** «Записано: рис, курица и овощи.» with `Исправить` and `Время`; no Save button, no calories by default, no second push after the analysis. A failed analysis stays in the diary: «Фото сохранено, распознать еду сейчас не вышло.» with `Ещё раз` and `Написать`. **What was sent never changes; what the model read from it can:** file id, audio, text, message id, album id, reply link, `sent_at`, model output and version stay, corrections go beside them. `sent_at` and `eaten_at` are separate: `eaten_at` comes from «вчера», «ночью» or a clock time and may be marked approximate. A correction goes smallest unit first: which dish, then how much, then when; grams stay secondary. Voice ships as an experiment: audio saved first, the transcript and a `Текст` button kept, the last correction in a sentence wins («один… нет, два банана»); Russian food-word quality is measured, not assumed. Kept for later: a choice to delete media after reading, a photo-only diary mode, and the attention measure (a design target of p50 under 10 s, not a finding). EXIF and location are not kept | M, N, O |
+| G5-R36 | The custom emoji set is drawn from the cards' own marks (`render/templates/icons.js`, new ones in `render/emoji/marks.js`), so a mark in a card and in a message is one picture: colour tiles in the same earthy fills, dark ink, readable on both themes, never red. A warning is amber and a refusal is dusty. Text symbols (✓ ▰ ▱ → ─ ≈ −) stay plain: Telegram takes only an emoji as the fallback, and ✓ as a state stays lighter than ✅ as an action. A test fails when a bot string gains an emoji the set does not draw (project's decision, 2026-10-30) | all |
+| G5-R28 | The day card names what was eaten in plain words, chips included, with no verdict and no calorie line by default. It is the record (job 1), so it does not count towards rule 1's three observations. Food before 6:00 widens the day's line to start at 0:00; sleep is not called a gap, and a two-meal day gets no gap line, since the times already show it (shown to the owner on the proposal page, 2026-10-30) | J |
 
 ## Notes behind three answers
 
@@ -48,8 +63,178 @@ the NOVA classification has only moderate validity without brand data. So the pl
 It adds whole-food anchors to ready meals, such as frozen vegetables, a legume pouch or fruit. That serves
 the same goal through the "add, never restrict" route.
 
+## Screen questions for slices B–I (2026-10-30)
+
+The mocks asked 12 questions and said that silence takes the recommendation. The owner answered «давай делать»,
+so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle-review-stories.md).
+
+| # | Question | Taken |
+|---|---|---|
+| 1 | «из 7» on the week card | No. «овощи 7 дн.», present groups only |
+| 2 | Energy mode control | One cycling button |
+| 3 | Mode names | обычно / мало сил / минимум сил |
+| 4 | Routine icon | Choose one of 💊 🚶 🧘 💧 😴 on creating a routine |
+| 5 | Marks for omega-3 and anchor | 🌰 and ⚓ |
+| 6 | Custom icons on the old buttons | Yes, once the emoji set is uploaded |
+| 7 | Independent fresh-eyes round | **Open:** runs only on the owner's yes (about 260k tokens) |
+| 8 | Emoji set upload | **Open:** needs the owner's Premium account and a set name; plain emoji until then |
+| 9 | Stories in the repo | Yes |
+| 10 | «🗓 Итог недели» switch | Keep |
+| 11 | «7 дней» vs «Неделя» | Last seven days vs Monday to Sunday |
+| 12 | Size chips | «Меньше 240г · ✓ 350г · Больше 490г» (grams are rounded to tens), without waiting for a phone screenshot |
+
+## Slice B, as built
+
+- Stored in `ai_analysis` and in `nutrients` (a favorite copies `nutrients`): `food_items` is what the analysis
+  said, per item; `food_groups` is what the user confirmed; `food_groups_by_user` says whether they edited it.
+- Omega-3 is plant sources only, flax oil included (G5-R07). Fish is «anchor».
+- A meal nobody tagged carries no `food_groups` at all, so the re-tag run finds it. `[]` means «looked at, none».
+- A correction typed into the draft is a new analysis: its groups replace the earlier ticks.
+- Validation (invented meals, `tests/fixtures/food_groups_eval.json`, text analysis on gpt-6-luna, $0.0096):
+  74 of 75 required tags, no extra ones; the miss is «anchor» on ready-made nuggets. The photo path uses the same
+  rule and was not run. The owner's real meals are still to be run, through `--set`, outside the repo.
+
+## Slice D, as built (text card)
+
+- The text card is whole on its own: head with the full month, times of food, whole grains and protein anchors if they
+  were there, ticked routines, then the numbers in a collapsed quote. The picture comes on top of it and can fail
+  without taking anything away.
+- A meal's confirmed `food_groups` decide a line, not the analysis' items: a group the user took off hides its items, and
+  a group the user added with no item behind it shows the meal's own name. An untagged meal gives only its time.
+- A gap of 6 hours or more between two meals of one day gets words and no hours: «днём длинный перерыв». The threshold is
+  the project's choice; the evidence gives no exact one.
+- With no numbers open, the card does not name untagged food, as in the mock. The names are one tap away, in «🔢 Цифры».
+- Buttons, top to bottom: routine ticks, «🔢 Цифры», tabs. The tabs are always last, on the week too.
+- Empty today: the invitation and «🍽 Добавить приём пищи», which enters the keyboard button's flow. **Departs from the
+  mock:** routine ticks stay on an empty day, above that button, because slice C lets a routine be ticked with no food
+  logged. Mid-step, where the conversation does not take the tap, a toast says to finish the step first.
+- A card left open overnight shows today with a notice on top: «Это была карточка прошлого дня, вот сегодняшняя». **Departs
+  from the mock's** «вчерашняя»: the card may be older than yesterday. Malformed button data shows today with no notice.
+- The step, ✅/🔄/😴 and 🔋 belong to slice F, so the first-show line has no sentence about a step yet.
+
+## Slice C, as built
+
+- Routines live in `User.settings["routines"]`; each tick is a row in `routine_ticks` (migration `a9b8c7d6e5f4`). A day
+  without a tick leaves no row, so nothing can count it.
+- A removed routine stays stored and its ticks stay: undo restores it, and a tick on an earlier day still happened.
+- A new routine is a hidden draft from the typed name on. Leaving it halfway shows nothing, and the next new one
+  replaces it.
+- The steps run name → days → icon (screen question 4). «🔣 Значок» on one routine's screen is an addition to the mock:
+  the icon chosen at creation has to be changeable somewhere.
+- The card's day travels in the tick button. A card left open overnight ticks nothing and shows today.
+- A weekly routine shows every day of its Mon–Sun week until ticked, then only on the day of the tick.
+- A typed message ticks only when it equals a routine on today's card, ignoring case and extra spaces. Other text stays
+  ignored as before, and text being entered as a meal never reaches this check.
+- Up to 9 routines, names up to 30 characters. Button rows narrow for long names and count ✓ in advance, so a tick
+  never moves a button.
+- A tick button carries the state it asks for, so an old card or a double tap cannot flip a tick set elsewhere. A
+  routine ticked today stays on the card even if its schedule has changed since, so the tick can be taken back.
+- The name step closes on any other inline tap and after 10 minutes. Text after that is what it would be anywhere else:
+  a weight, a routine tick or nothing, never a silent rename. «➕» and «✏️» do not pull the user out of a meal being
+  entered: they answer with a short notice and the meal stays.
+- Names that read as a weight («72,5», «100») are refused, because typing one is a weigh-in. Undo from an older message
+  rechecks the name and the limit; a second tap on «🗑» keeps the undo button.
+- Known gap: the name step lives in memory like every conversation state, so a bot restart between «➕» and the typed
+  name loses it. The name then goes unanswered, and tapping «➕» again recovers.
+
+## Slice D, the picture
+
+- A sidecar draws the card (`render/`): no network, no secrets, only the `render_jobs` volume shared. The caption is the
+  whole text twin, so a stopped sidecar costs the picture and nothing else.
+
+## Slice E, as built
+
+- The tab «7 дней» is the last seven days to today; Sunday's message is Monday to Sunday and titled «Неделя». The same
+  screen builds both, and the finding's words differ: «Новое за 7 дней», «Новое на этой неделе».
+- Plants are counted by the names of tagged foods whose group the meal still confirms. A group ticked by hand has no name
+  and adds no plant. Names match after case, «ё» and spaces are evened out, and nothing more: «гречка» and «гречневая
+  каша» count as two. Merging them would take a dictionary or a paid call, and the number is a plain count with no target.
+- The finding is one at most: «Снова с записями» when 7 or more days without records came before the period's first
+  record, else the first plant food no earlier meal named. With no earlier meals nothing is «new». The 7 days are the
+  project's choice. **Departs from the design:** «three steady mornings» is not built, since the card has no way to say
+  it that is not a count of days.
+- Meals with no tags: «Записи есть, группы в них пока не отмечены», with the numbers still a tap away.
+- The picture's finding drops «— впервые в записях» after a name over 20 characters; the words did not fit on the card.
+- **Sending.** Beat runs every 15 minutes, because time zones with :30 and :45 reach 22:00 between the hours. The window
+  is all of 22:00–23:59 on Sunday, so a run lost to a restart is made up. The week is marked in `week_push_last` before
+  the send, under a row lock, because two summaries are worse than one missed. Only a connection never made
+  (`ConnectError`, `ConnectTimeout`, `PoolTimeout`), a refusal or a failure before the send clears the mark for a retry.
+  Any other network error may have arrived after Telegram took the request, so the mark stays and no text follows. A
+  worker killed between the mark and the send loses that week, and a retry after 23:59 does not happen. Both accepted.
+- The summary goes only to whoever may open the screens: access mode and an active subscription, admins always. Its
+  button would answer 🔒 to anyone else.
+- A summary goes out only once its picture is drawn or the wait ends in text, with no loader in a quiet chat. The worker
+  got the `render_jobs` volume for this.
+- The summary's only button is «🔢 Цифры», with its own Monday in the data, so it keeps its week days later. No tabs: it is
+  a message, not the screen.
+
+## Slice F, as built
+
+- `app/services/next_step.py` is pure rules with no model and no learning; `stats_screen` draws it. Order: drop what the
+  user never wants suggested, then the week's least-present group (days over the last seven), then benefit × chance ÷
+  minutes. Benefit and chance are the project's own rough marks, and no study tested this card. A step with two groups
+  counts by the rarer one.
+- **Departs from the spec:** the «regular sufficient eating» branch is not built, because the app has no rhythm setting
+  to switch it on. The 15–20 minute size is left for the ladder (slice H): normal mode offers up to 10 minutes, as the
+  mock's toast says.
+- The step is chosen once a day, on the first view of today with a meal, and stays when more meals are logged. Yesterday's
+  step is not chosen again, so «завтра будет новый» holds (until slice K, see G5-R29). An empty day has no step and no energy button; yesterday and
+  the week have neither.
+- The state lives in `User.settings["next_step"]`, the mode in `settings["energy"]`. The mode changes only by the user's
+  tap and stays across days. Changing it chooses an open step again for the new size, and leaves a step done or put off.
+- `row` counts «😴 Не сейчас» in a row: at two the next step is one size smaller, without a word. «Вернуть шаг» and undo
+  restore it, «Готово» clears it. Nothing else reads it and no screen shows it.
+- **Two sources disagree, the mock wins:** US-F1 says a put-off step is shown nowhere, the design has a «day-later» screen.
+  Built: that day's own card says «😴 Шаг отложен» with «👣 Вернуть шаг»; no other day, tab or count ever shows it.
+- The catalogue goes past the anchor list: fruit, vegetables, seeds and any nuts are the project's additions.
+- `no_suggest` and `reliable_foods` are read here and filled by slice G. A refused word also drops a step that merely
+  goes with it: refusing «хлеб» drops «хумус к хлебу». Matching is by word start with the ending cut, so it can refuse one
+  step too many. That costs a step, and the other way would suggest what was refused.
+- **Known gap:** the user model has no allergy data, so until slice G's list a nut step can reach someone allergic to
+  nuts. «🔄 Другой шаг» is the remedy until then.
+- In the lowest mode the keyboard keeps to the step, as in the mock: ticks leave the buttons, stay in the text and still
+  work by typed name.
+- A time zone change across midnight can drop that day's done or put-off mark and choose again. Rare, accepted.
+- Callback data carries the step shown, the card's day and, for energy, the mode wanted, so a double tap or an old card
+  changes nothing. A button from another day shows today's card with the usual notice.
+
 ## Facts confirmed
 
 - Cooking time: steps stay within 15–20 minutes.
 - At most one new food per week; one experiment at a time.
 - The week runs Monday to Sunday.
+
+## Slice K as built (project's decisions, within G5-R26, R27, R29)
+
+- Five answers on the choice screen: earlier, protein, plants, extras, «📋 Пока только записи». At most three directions,
+  least present first; one already there on 6 of 7 days drops out unless that leaves fewer than two. «Earlier» appears
+  only with 3+ days of records and a first food at 12:00 or later. Every existing step stays reachable through a
+  direction, so a fourth food direction («🌰») was added to the three in the mock.
+- «Earlier» steps name a moment («когда встанешь»), never an hour: an hour means nothing on a day that starts late. The
+  mock's «на завтра» and any night logic are out: a clock-based night would contradict the research.
+- The person's day runs from one `turn` to the next, `turn` being the middle of the longest stretch of hours with no food
+  over 14 days. Food at 4:00 closes the day before instead of opening a new one. The hour («Еда до 17:00», usual first
+  food minus two hours) and the turn are saved at the choice, so the count does not move with the habit.
+- The count comes from records only; «✅ Готово» does not feed it. It sits on the week tab and Sunday's message, in text
+  and picture, and never on the day card. Two weeks of zeros say nothing. Fewer than 4 days with records in either week
+  shows the count alone, no comparison. The month line appears only when the count rose.
+- Buttons «🪫 Сделать проще» and «🎯 Выбрать другое» appear with the count only when it did not rise. From Sunday's
+  message they replace that message with the choice or today's card.
+- A daily step saved before this slice is not shown until a direction is chosen.
+
+## Slice G as built (project's decisions, within G5-R12, R13)
+
+- `app/services/food_lists.py`: ⚙️ → «🧺 Надёжная еда» and «✋ Не предлагать». Both lists are names in `User.settings`,
+  read by `next_step`. Callback data carries a hash of the name, never the name.
+- Seeding: ⭐ favourites, then meals written at least 3 times in 30 days, up to 12 names. «3 times» is the project's
+  guess, no study gives a number. It runs when a list or the hub opens, when the energy mode changes and when the step
+  is drawn in a lower mode, so nobody has to open the list for it to work. Ready food counts like any other, and a
+  repeat is never reported as a problem.
+- What is removed is remembered and not seeded again, until it is brought back or typed. A removal applies at once
+  with `↩️ Вернуть`; no question, no reason. A favourite removed later stays on the list until the person removes it.
+- `✋` splits a message on commas, semicolons, line breaks and « и », so «грибы и молоко» are two refusals. `🧺` keeps a
+  dish whole. The `✋` screen keeps waiting for text and `🧺 ➕` returns to the list. A bare number stays a weigh-in.
+- A dish on the list counts for a step when one of the step's foods is in it, endings aside (`next_step._relies_on`).
+  Both lower modes read it; the usual mode does not. A dish no step names has no effect on the choice: the step falls
+  back to the rest of its pool. `✋` beats `🧺`.
+- The `✋` screen says «в шагах», not «в шагах и экспериментах»: experiments are slice H, and the text changes with it.

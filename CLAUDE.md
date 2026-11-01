@@ -366,6 +366,7 @@ Services in docker-compose:
 - `celery_worker`: Celery worker for async tasks
 - `celery_beat`: Celery beat scheduler
 - `telegram_bot`: Telegram bot polling
+- `render`: picture cards (headless Chrome, no network, no secrets; stopped, the bot answers in text)
 
 ## Working with Key Components
 

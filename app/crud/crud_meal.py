@@ -1,37 +1,86 @@
+from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.meal import Meal
+from app.models.meal_item import MealItem
+from app.models.user import User
 from app.schemas.meal import MealCreate, MealUpdate
 
 
 class CRUDMeal:
     def get(self, db: Session, meal_id: int) -> Meal | None:
+        """The meal, unless it is deleted."""
+        stmt = select(Meal).where(Meal.id == meal_id, Meal.deleted_at.is_(None))
+        return db.execute(stmt).scalar_one_or_none()
+
+    def get_written(self, db: Session, meal_id: int) -> Meal | None:
+        """The meal, unless it is deleted or still a draft: for whoever reads the diary
+        from outside. A draft is not in it, not even by its id."""
+        stmt = select(Meal).where(
+            Meal.id == meal_id, Meal.deleted_at.is_(None), Meal.is_draft.is_(False)
+        )
+        return db.execute(stmt).scalar_one_or_none()
+
+    def get_any(self, db: Session, meal_id: int) -> Meal | None:
+        """The meal, also when deleted: for undo and for a stale button's answer."""
         stmt = select(Meal).where(Meal.id == meal_id)
         return db.execute(stmt).scalar_one_or_none()
 
     def get_multi(self, db: Session, skip: int = 0, limit: int = 100) -> list[Meal]:
-        stmt = select(Meal).offset(skip).limit(limit)
+        stmt = (
+            select(Meal)
+            .where(Meal.deleted_at.is_(None), Meal.is_draft.is_(False))
+            .offset(skip)
+            .limit(limit)
+        )
         return db.scalars(stmt).all()
 
     def get_for_export(
-        self, db: Session, *, since: datetime | None = None
+        self,
+        db: Session,
+        *,
+        owner_telegram_ids: Collection[int],
+        since: datetime | None = None,
+        updated_since: datetime | None = None,
     ) -> list[Meal]:
-        """All meals in meal_time order (optionally only those at/after ``since``).
+        """These people's meals in meal_time order (optionally only those at/after
+        ``since``). No one named, no meals: the argument has no default, so a caller
+        cannot forget it and pull everyone's food.
 
         Ordered so a downstream incremental pull can page by time; no ``limit`` —
         the consumer dedups idempotently on the stable meal id.
+
+        ``updated_since`` asks what changed, so it is the one pull that holds deleted
+        meals: their ``deleted_at`` is how a consumer holding the row learns of it.
         """
-        stmt = select(Meal).order_by(Meal.meal_time)
+        if not owner_telegram_ids:
+            return []
+        owners = select(User.id).where(User.telegram_id.in_(owner_telegram_ids))
+        stmt = (
+            select(Meal)
+            .where(Meal.is_draft.is_(False), Meal.user_id.in_(owners))
+            .order_by(Meal.meal_time)
+        )
+        if updated_since is None:
+            stmt = stmt.where(Meal.deleted_at.is_(None))
+        else:
+            stmt = stmt.where(Meal.updated_at >= updated_since)
         if since is not None:
             stmt = stmt.where(Meal.meal_time >= since)
         return list(db.scalars(stmt).all())
 
     def get_user_meals(self, db: Session, user_id: int) -> list[Meal]:
         stmt = (
-            select(Meal).where(Meal.user_id == user_id).order_by(Meal.meal_time.desc())
+            select(Meal)
+            .where(
+                Meal.user_id == user_id,
+                Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(False),
+            )
+            .order_by(Meal.meal_time.desc())
         )
         return list(db.scalars(stmt).all())
 
@@ -45,13 +94,34 @@ class CRUDMeal:
                 Meal.user_id == user_id,
                 Meal.meal_time >= start,
                 Meal.meal_time < end,
+                Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(False),
             )
             .order_by(Meal.meal_time)
         )
         return list(db.scalars(stmt).all())
 
-    def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
-        db_obj = Meal(
+    def get_user_drafts_between(
+        self, db: Session, user_id: int, start: datetime, end: datetime
+    ) -> list[Meal]:
+        """The drafts with ``start <= meal_time < end``: only the day's list of meals
+        names them, and nothing counts them."""
+        stmt = (
+            select(Meal)
+            .where(
+                Meal.user_id == user_id,
+                Meal.meal_time >= start,
+                Meal.meal_time < end,
+                Meal.deleted_at.is_(None),
+                Meal.is_draft.is_(True),
+            )
+            .order_by(Meal.meal_time)
+        )
+        return list(db.scalars(stmt).all())
+
+    def build(self, obj_in: MealCreate, user_id: int) -> Meal:
+        """The row, not added and not committed: for a transaction that holds more."""
+        return Meal(
             user_id=user_id,
             description=obj_in.description,
             meal_time=obj_in.meal_time,
@@ -68,7 +138,17 @@ class CRUDMeal:
             ai_analysis=obj_in.ai_analysis,
             resolution_source=obj_in.resolution_source,
             resolution_signals=obj_in.resolution_signals,
+            # None leaves these to the column defaults.
+            sent_at=obj_in.sent_at,
+            time_precision=obj_in.time_precision,
+            time_source=obj_in.time_source,
+            time_phrase=obj_in.time_phrase,
+            numbers_basis=obj_in.numbers_basis,
+            plate_totals=obj_in.plate_totals,
         )
+
+    def create(self, db: Session, obj_in: MealCreate, user_id: int) -> Meal:
+        db_obj = self.build(obj_in, user_id)
         db.add(db_obj)
         db.commit()
         db.refresh(db_obj)
@@ -76,8 +156,11 @@ class CRUDMeal:
 
     def update(self, db: Session, db_obj: Meal, obj_in: MealUpdate) -> Meal:
         update_data = obj_in.dict(exclude_unset=True)
+        changed = any(getattr(db_obj, k) != v for k, v in update_data.items())
         for key, value in update_data.items():
             setattr(db_obj, key, value)
+        if changed:
+            db_obj.rev = (db_obj.rev or 0) + 1
         db.commit()
         return db_obj
 
@@ -85,6 +168,9 @@ class CRUDMeal:
         stmt = select(Meal).where(Meal.id == meal_id)
         obj = db.execute(stmt).scalar_one_or_none()
         if obj:
+            # Not left to the FK: SQLite ignores it and reuses the id, so another
+            # meal would inherit these items.
+            db.execute(delete(MealItem).where(MealItem.meal_id == meal_id))
             db.delete(obj)
             db.commit()
         return obj

@@ -1,0 +1,53 @@
+{
+ "view": "week",
+ "theme": "evening",
+ "period": "19–25 октября",
+ "title": "Неделя",
+ "plants": 1,
+ "plantsLabel": "растение",
+ "groups": [
+  {
+   "key": "legumes",
+   "days": 5
+  },
+  {
+   "key": "anchor",
+   "days": 6
+  },
+  {
+   "key": "veg",
+   "days": 7
+  },
+  {
+   "key": "fruit",
+   "days": 4
+  },
+  {
+   "key": "grain",
+   "days": 5
+  },
+  {
+   "key": "nuts",
+   "days": 3
+  },
+  {
+   "key": "calcium",
+   "days": 2
+  },
+  {
+   "key": "omega",
+   "days": 1
+  }
+ ],
+ "routines": [
+  "Очень длинное название рутины!",
+  "Витамин D",
+  "Прогулка",
+  "Йога",
+  "Вода"
+ ],
+ "win": {
+  "kick": "Новое на этой неделе",
+  "text": "Очень длинное название продукт…"
+ }
+}

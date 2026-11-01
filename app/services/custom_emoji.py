@@ -27,7 +27,7 @@ import logging
 import re
 from typing import Optional
 
-from telegram import InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ExtBot
 from telegram.request import HTTPXRequest
@@ -169,6 +169,15 @@ class CustomEmoji:
                     html = self._html(text)
                     if html != text:
                         update[field] = html
+        media = data.get("media")
+        if endpoint == "editMessageMedia" and isinstance(media, InputMediaPhoto):
+            # A swapped card keeps the drawn marks its caption was sent with.
+            if media.caption and media.parse_mode == "HTML":
+                caption = self._html(media.caption)
+                if caption != media.caption:
+                    update["media"] = InputMediaPhoto(
+                        media.media, caption=caption, parse_mode=media.parse_mode
+                    )
         markup = self._markup(data.get("reply_markup"))
         if markup is not None:
             update["reply_markup"] = markup
