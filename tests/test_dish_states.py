@@ -536,6 +536,24 @@ def test_a_removed_favourite_no_longer_lends_its_numbers(db, owner, reader):
     assert _only_meal(db).resolution_source != meal_items.EXACT_NAME_SOURCE
 
 
+def test_a_removed_favourite_is_read_once_and_the_dish_then_has_numbers(
+    db, owner, reader
+):
+    dish = _dish(db, owner, "Самса", numbers_basis="none")
+    _old_favourite(db, owner, personal_food_id=dish.id, removed_at=GONE)
+    reader.answer = {
+        **reader.answer,
+        "foods": ["самса"],
+        "food_items": [{"name": "самса", "groups": []}],
+    }
+    send(text("самса"))
+    send(text("самса"))
+    assert reader.text == ["самса"]
+    meals = db.scalars(select(Meal).where(Meal.user_id == owner.id)).all()
+    assert len(meals) == 2 and meals[1].calories == meals[0].calories
+    assert meals[1].calories is not None
+
+
 def test_a_removed_favourite_of_a_dish_with_its_own_numbers_costs_no_read(
     db, owner, reader
 ):
