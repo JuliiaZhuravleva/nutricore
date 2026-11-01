@@ -60,6 +60,14 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
+- [ ] **TD-226**: With no weight, the screen says «считаю 100 г» while an immediate 🍽 Записать logs the portion guess
+  - **Priority:** Low
+  - **Source:** stage 5 smart portions review; left until someone notices it
+  - **Created:** 2026-11-01
+- [ ] **TD-227**: Meal cards print г for drinks, and a failed portion ask is retried only by `scripts/suggest_portions.py`, not by the bot
+  - **Priority:** Low
+  - **Source:** stage 5 smart portions
+  - **Created:** 2026-11-01
 - [ ] **TD-021**: `brand` reaches the personal food DB but is never shown to the user.
   Every OFF-backed strategy resolves a brand, and since 2026-09-13 it is finally persisted to
   `personal_foods.brand` — but the reply shows only `Продукт: <name>`, including at the "проверь"
