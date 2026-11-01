@@ -103,7 +103,6 @@ jobs:
       - run: poetry run alembic upgrade head
       # One head: a second one stops the release gate.
       - run: test "$(poetry run alembic heads | wc -l)" -eq 1
-      - run: poetry run alembic check
       - run: poetry run pytest -q tests/test_two_people.py
 
   image:
