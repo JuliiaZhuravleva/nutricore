@@ -76,6 +76,7 @@ from app.services import (
     meal_items,
     people_screen,
     weight_screen,
+    welcome_screen,
 )
 from app.services.openai_service import OpenAIService
 from app.services.product_lookup_service import ImageSignals, SavedFoodRAGStrategy
@@ -1360,3 +1361,29 @@ def test_the_largest_id_a_button_can_hold_is_only_stale_here(db, world, data):
     """What the pattern lets through has to fit every column it is compared with."""
     shown = people_screen.handle(db, A, data)
     assert shown.text.startswith(people_screen.STALE)
+
+
+def test_the_welcome_tells_a_record_from_before_the_invitation_on_any_database(Session):
+    """Postgres keeps the zone where SQLite drops it: the comparison holds on both."""
+    with Session() as db:
+        for person, age in ((SASHA, timedelta(days=30)), (B, timedelta(0))):
+            user = _person(db, person)
+            invites.invite(db, invites.Person(person, "Саша"), by=A)
+            grant = crud_access_grant.get(db, person)
+            when = grant.created_at + (timedelta(seconds=1) - age)
+            db.add(
+                Meal(
+                    user_id=user.id,
+                    meal_type="snack",
+                    description="суп",
+                    calories=0,
+                    proteins=0,
+                    fats=0,
+                    carbohydrates=0,
+                    meal_time=when,
+                    created_at=when,
+                )
+            )
+            db.commit()
+        assert welcome_screen.opens_welcome(db, SASHA) is False  # was here before
+        assert welcome_screen.opens_welcome(db, B) is True  # wrote since, still owed

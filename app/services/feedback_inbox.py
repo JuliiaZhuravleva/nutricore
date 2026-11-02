@@ -6,8 +6,9 @@
     🎙 Голосовое, 📷 Фото → the file alone, by the id Telegram holds
 
 A message is read when it is shown. One that turned out to be food is a record now: its
-words stay off these screens, and only a count says it was there. Telegram-free apart
-from the keyboards; what goes out goes out in ``app.services.telegram``.
+words stay off these screens, and only a count says it was there. A message shows the time
+it had for its sender, as in the copy and the journal that came with it. Telegram-free
+apart from the keyboards; what goes out goes out in ``app.services.telegram``.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_user import crud_user
 from app.models.feedback import PHOTO, VOICE
-from app.services import feedback_screen, invites
+from app.services import feedback_screen, invites, settings_screen
 from app.services.admin_notify import File, Part
 from app.services.day_card import local_time
 from app.services.favorites import Screen
@@ -75,6 +76,11 @@ def who(db, telegram_id: int, grant=None) -> Who:
     return Who(telegram_id, name, username if username != name else None)
 
 
+def _sender_zone(db, telegram_id: int) -> ZoneInfo:
+    """The zone of the owner's first copy and of the journal stored with it."""
+    return settings_screen.user_zone(settings_screen._user(db, telegram_id))
+
+
 def when(moment: datetime, at_zone: ZoneInfo) -> str:
     return f"{local_time(moment, at_zone):%d.%m в %H:%M}"
 
@@ -106,8 +112,9 @@ def _words(row, room: int) -> tuple[str, bool]:
     return f"«{html.escape(kept, quote=False)}{_CUT_MARK}", False
 
 
-def _entry(db, row, at_zone: ZoneInfo, room: int) -> tuple[str, bool]:
+def _entry(db, row, room: int) -> tuple[str, bool]:
     person = who(db, row.telegram_id)
+    at_zone = _sender_zone(db, row.telegram_id)
     mark = "Новое · " if row.read_at is None else ""
     lines = [f"{mark}{html.escape(person.name)} · {when(row.created_at, at_zone)}"]
     if row.kind in _KIND_LINES:
@@ -161,7 +168,7 @@ def view(
         body = _EMPTY
     else:
         room = feedback_screen.LIMIT - feedback_screen.units(head) - _ROOM_FOR_TOP
-        body, whole = _entry(db, row, zone(), room)
+        body, whole = _entry(db, row, room)
         actions = _actions(row, person or 0, page, whole)
         if actions:
             rows.append(actions)
@@ -201,7 +208,8 @@ def resend(db, feedback_id: int, person: int, page: int) -> Optional[Resend]:
         return None
     named = who(db, row.telegram_id)
     sender = invites.Person(row.telegram_id, named.name, None, named.username)
-    parts = feedback_screen.owner_parts(row, sender, row.created_at, zone())
+    at_zone = _sender_zone(db, row.telegram_id)
+    parts = feedback_screen.owner_parts(row, sender, row.created_at, at_zone)
     return Resend(row.id, tuple(parts), _file_of(row), person, page)
 
 

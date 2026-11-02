@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import enum
 import logging
 import os
 import re
@@ -865,7 +866,7 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
     except voice.NoSpeech:
         with SessionLocal() as db:
             done = capture.read_no_speech(db, job)
-        await _show(bot, job, done.line)
+        await _tell_read(bot, job, done.line)
         return False, None
     except Exception as e:
         error = type(e).__name__
@@ -880,8 +881,7 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
                 status=capture.failure_status(e),
                 model=_model_of(job),
             )
-        await _show(bot, job, done.line)
-        await _say_not_yet(bot, job)
+        await _tell_read(bot, job, done.line, not_yet=True)
         refusal = ai_errors.out_of_credit(e)
         if refusal is not None:
             await _credit_alert(bot, refusal, job)
@@ -922,18 +922,86 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
                 model=_model_of(job),
                 output=nutrition,
             )
-        await _show(bot, job, done.line)
-        await _say_not_yet(bot, job)
+        await _tell_read(bot, job, done.line, not_yet=True)
         return False, None
     if done.learn:
         # A read with no food in it, or of a meal gone meanwhile, has nothing to learn.
         action_journal.note(job.telegram_id, action_event.SAVED, job.kind)
         _schedule_personal_food_save(**done.learn)
-    await _show(bot, job, done.line)
-    await _retouch(bot, job.chat_id, done.retouch)
-    if done.learn:
-        await _first_record_hint(bot, job)
+    await _tell_read(
+        bot, job, done.line, retouch=done.retouch, recorded=bool(done.learn)
+    )
     return True, None
+
+
+async def _tell_read(
+    bot,
+    job: capture.Read,
+    line: Optional[capture.Line],
+    *,
+    not_yet: bool = False,
+    retouch: Optional[meal_card.Retouch] = None,
+    recorded: bool = False,
+) -> None:
+    """All a finished read says to the person, and only if the door is still open: it may
+    have closed while the model was thinking. The line goes on the sweep's list, which
+    asks the door again, so a moment of a database that cannot say costs no line."""
+    try:
+        may_hear = _may_hear(job.telegram_id)
+    except Exception as e:
+        logger.error("Door not read after a read: %s", type(e).__name__)
+        may_hear = False
+    if not may_hear:
+        logger.info("Meal %s read, and its person hears nothing", job.meal_id)
+        if line is not None:
+            with SessionLocal() as db:
+                capture.line_not_shown(db, job, line, owed=True)
+        return
+    await _show(bot, job, line)
+    if not_yet:
+        await _say_not_yet(bot, job)
+    await _retouch(bot, job.chat_id, retouch)
+    if recorded:
+        await _first_record_hint(bot, job)
+    else:
+        await _menu_once(bot, job.chat_id, job.telegram_id)
+
+
+async def _menu_once(bot, chat_id: int, telegram_id: int) -> None:
+    """The main keyboard for someone who skipped the welcome's question and whose first
+    message recorded nothing, so no hint will bring it. It can cost the meal nothing."""
+    try:
+        with SessionLocal() as db:
+            words = welcome_screen.take_menu(db, telegram_id)
+        if words is not None:
+            await bot.send_message(chat_id, words, reply_markup=main_keyboard)
+    except Exception as e:
+        logger.warning("Menu not given: %s", type(e).__name__)
+
+
+async def _welcome_unasked(update: Update, context) -> None:
+    """An invited person who wrote before ever pressing /start: the food goes on as ever,
+    and the first message of the bot still says who sees what. It can cost the meal
+    nothing; one Telegram did not take stays owed."""
+    message, user = update.message, update.effective_user
+    try:
+        with SessionLocal() as db:
+            owed = welcome_screen.owed_unasked(db, user.id)
+    except Exception as e:
+        logger.error("First run not read: %s", type(e).__name__)
+        return
+    if not owed:
+        return
+    await _note_first_open(context, user.id)
+    screen = welcome_screen.welcome()
+    try:
+        await message.reply_text(
+            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+        )
+    except TelegramError as e:
+        logger.warning("Welcome not sent: %s", type(e).__name__)
+        with SessionLocal() as db:
+            welcome_screen.still_owed(db, user.id)
 
 
 async def _first_record_hint(bot, job: capture.Read) -> None:
@@ -971,7 +1039,8 @@ async def _album_went_on(bot, job: capture.Read) -> Optional[capture.Read]:
     if again is None:
         _live_reads.pop(job.meal_id, None)
         return None
-    await _retouch(bot, job.chat_id, line)
+    if _may_hear(job.telegram_id):
+        await _retouch(bot, job.chat_id, line)
     return again
 
 
@@ -986,11 +1055,16 @@ async def _read_meal(application: Application, job: capture.Read) -> None:
             async with gate:
                 with SessionLocal() as db:
                     job = capture.read_as_of_now(db, job)
+                # Closed while this waited its turn: not paid for. The sweep gives the
+                # meal up, and says nothing to its person.
+                if not _may_hear(job.telegram_id):
+                    logger.info("Meal %s not read: the door closed", job.meal_id)
+                    return
                 if job.automatic:
                     with SessionLocal() as db:
                         refused = capture.automatic_start(db, job)
                     if refused is not None:
-                        await _show(application.bot, job, refused.line)
+                        await _tell_read(application.bot, job, refused.line)
                         return
                 with metering() as meter:
                     _, dead = await _read_one(application.bot, job, meter)
@@ -1232,6 +1306,7 @@ async def _new_meal(
         _map_line(born.final, sent, "line")
         if sent is not None:
             await _rollout(message, came.telegram_id)
+        await _menu_once(context.bot, came.chat_id, came.telegram_id)
         return True
     sent = await _send_line(message, born.first)
     _map_line(born.first, sent, "pending")
@@ -1351,6 +1426,16 @@ async def _take_lines_back(bot, chat_id: int, message_ids: tuple) -> None:
             logger.warning("Meal line not removed: %s", type(e).__name__)
 
 
+class _Went(enum.Enum):
+    """What became of a message in the diary: the one thing «↩️ Это была еда» has to know.
+    REFUSED may pass on a second try; NOTHING was answered, and writes nothing however
+    many times it is tried."""
+
+    WRITTEN = "written"
+    REFUSED = "refused"
+    NOTHING = "nothing"
+
+
 async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Section 5.1: what a private message is, when no menu, command or slot took it.
 
@@ -1360,39 +1445,46 @@ async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _capture(update, context)
 
 
-async def _capture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """False when the message was refused and is not in the diary: the one thing
-    «↩️ Это была еда» has to know."""
+async def _capture(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, as_food: bool = False
+) -> _Went:
+    """``as_food``: the person has said so, and neither a final «?» nor a «спасибо» is a
+    reason to keep it out of the diary."""
     message, user = update.message, update.effective_user
     if message is None or user is None:
-        return False
+        return _Went.REFUSED
     if not await check_subscription(user.id):
         await message.reply_text(LOCK_TEXT, reply_markup=subscription_keyboard)
-        return False
-    if message.text and await _model_choice(update, context):
-        return True
+        return _Went.REFUSED
+    await _welcome_unasked(update, context)
+    if not as_food and message.text and await _model_choice(update, context):
+        return _Went.NOTHING
     came = capture.incoming(message, user)
     if came.kind is None:
         await message.reply_text(capture.M9_UNREADABLE)
-        return False
+        return _Went.REFUSED
     if capture.too_big(came):
         await message.reply_text(capture.M4F_TOO_BIG)
-        return False
+        return _Went.REFUSED
     try:
         with SessionLocal() as db:
             if capture.seen(db, came):
-                return True
+                return _Went.WRITTEN
             if came.kind == "text":
-                route = capture.route_text(db, came)
+                route = capture.route_text(db, came, as_food=as_food)
             else:
                 route = capture.route_media(db, came)
     except Exception as e:
         logger.error("Router failed: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
-        return False
+        return _Went.REFUSED
 
     if route.action == capture.NEW_MEAL:
-        return await _new_meal(update, context, came, route.note, route.words)
+        written = await _new_meal(update, context, came, route.note, route.words)
+        return _Went.WRITTEN if written else _Went.REFUSED
+    if route.action == capture.SILENT:
+        return _Went.NOTHING
+    went = _Went.WRITTEN
     if route.action == capture.LINE:
         line = route.line
         _map_line(line, await _send_line(message, line), line.view)
@@ -1400,11 +1492,15 @@ async def _capture(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         if line.fill:
             task = context.application.create_task(_fill_typed_dish(line.fill, user.id))
             _keep_task(task)
+        # A line with no meal behind it only answered: «В дневнике ничего не поменялось».
+        if line.meal_id is None:
+            went = _Went.NOTHING
     elif route.action == capture.WEIGHT:
         await process_weight(update, context)
     elif route.action == capture.TICK:
         await message.reply_text(f"✓ {route.tick}", reply_markup=_day_card_button())
-    return True
+    await _menu_once(context.bot, came.chat_id, user.id)
+    return went
 
 
 async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2225,7 +2321,9 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             for row in rows:
                 fate, written = capture.row_fate(db, row)
                 if fate == capture.REPLAY:
-                    replayed.append(row)
+                    # Stays in the queue: «↩️ Вернуть» finds it as it was.
+                    if may_receive(db, row.telegram_id):
+                        replayed.append(row)
                 elif fate == capture.SETTLED:
                     inbound_msg.mark_analyzed(row.id, written)
     except Exception as e:
@@ -2548,12 +2646,17 @@ async def _feedback_deliver(
         with SessionLocal() as db:
             row = crud_feedback.get(db, feedback_id)
             kind, file_id = row.kind, row.file_id
-        if kind == feedback_model.VOICE:
+            food = row.was_food_at is not None
+        if kind == feedback_model.VOICE and not food:
             await _feedback_heard(bot, feedback_id, file_id)
         with SessionLocal() as db:
             row = crud_feedback.get(db, feedback_id)
+            if row.was_food_at is not None:
+                # A record now, and the owner's screens hold no records. Only their
+                # count says it was there.
+                logger.info("Feedback %s turned out to be food: not sent", feedback_id)
+                return
             user = settings_screen._user(db, person.telegram_id)
-            told_food = row.was_food_at is not None
             parts = feedback_screen.owner_parts(
                 row, person, datetime.now(UTC), settings_screen.user_zone(user)
             )
@@ -2564,16 +2667,17 @@ async def _feedback_deliver(
         with SessionLocal() as db:
             crud_feedback.mark_sent(db, feedback_id)
             row = crud_feedback.get(db, feedback_id)
-            late_food = row.was_food_at is not None and not told_food
-        if late_food:  # tapped while this was on its way, too late for the words above
+            late_food = row.was_food_at is not None
+        if late_food:  # tapped while this was on its way: the words are there already
             await notify_admins(feedback_screen.food_follow_up(person), bot=bot)
     except Exception as e:
         logger.error("Feedback %s not delivered: %s", feedback_id, type(e).__name__)
 
 
 async def _feedback_was_food(update: Update, context) -> None:
-    """«↩️ Это была еда»: the same message, down the real diary path. Refused there, it
-    is not marked and the button stays, so the food can still be saved."""
+    """«↩️ Это была еда»: the same message, down the real diary path, its form no reason
+    to keep it out. Not written there, it is not marked and the button stays, so the food
+    can still be saved and the owner can still read the words."""
     query, user = update.callback_query, update.effective_user
     try:
         with SessionLocal() as db:
@@ -2592,11 +2696,16 @@ async def _feedback_was_food(update: Update, context) -> None:
         return
     try:
         message = Message.de_json(found.original, context.bot)
-        written = await _capture(Update(update.update_id, message=message), context)
+        went = await _capture(
+            Update(update.update_id, message=message), context, as_food=True
+        )
     except Exception as e:
         logger.error("Feedback replay failed: %s", type(e).__name__)
-        written = False
-    if not written:
+        went = _Went.REFUSED
+    if went == _Went.NOTHING:
+        await query.answer(feedback_screen.FOOD_NOT_WRITTEN, show_alert=True)
+        return
+    if went == _Went.REFUSED:
         await query.answer(feedback_screen.FOOD_FAILED, show_alert=True)
         return
     await query.answer()
@@ -2635,20 +2744,31 @@ def _named_person(message) -> invites.Person | None:
     return None
 
 
+async def _tell_owner(message, text: str, **options) -> None:
+    """A moment of Telegram is tried again, and past it the reply is lost, not the turn:
+    an error here would carry on past ``invite_intake`` and put what the owner forwarded
+    into the owner's diary."""
+    try:
+        await _tries(lambda: message.reply_text(text, **options))
+    except TelegramError as e:
+        logger.warning("Invitation reply not sent: %s", type(e).__name__)
+
+
 async def _let_in(message, context, person: invites.Person) -> None:
     """Every way out of here gives the main keyboard back."""
     context.user_data.pop(_INVITE_UNTIL, None)
     if person.telegram_id in settings.admin_ids:
-        await message.reply_text(people_screen.YOURSELF, reply_markup=main_keyboard)
+        await _tell_owner(message, people_screen.YOURSELF, reply_markup=main_keyboard)
         return
     try:
         with SessionLocal() as db:
             invites.invite(db, person, message.from_user.id)
     except Exception as e:
         logger.error("Invitation not written: %s", type(e).__name__)
-        await message.reply_text(people_screen.FAILED, reply_markup=main_keyboard)
+        await _tell_owner(message, people_screen.FAILED, reply_markup=main_keyboard)
         return
-    await message.reply_text(
+    await _tell_owner(
+        message,
         people_screen.notice_opened(person.name),
         parse_mode=ParseMode.HTML,
         reply_markup=main_keyboard,
@@ -2657,8 +2777,8 @@ async def _let_in(message, context, person: invites.Person) -> None:
     if settings.access_mode != "closed":
         delivered = await _invite_directly(context.bot, person.telegram_id)
     screen = people_screen.invited(context.bot.username, delivered)
-    await message.reply_text(
-        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    await _tell_owner(
+        message, screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
     )
 
 
@@ -2688,16 +2808,18 @@ async def invite_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if message.text == people_screen.CANCEL:
         if is_owner:
             context.user_data.pop(_INVITE_UNTIL, None)
-            await message.reply_text(
-                people_screen.CANCELLED, reply_markup=main_keyboard
+            await _tell_owner(
+                message, people_screen.CANCELLED, reply_markup=main_keyboard
             )
         raise ApplicationHandlerStop
     if message.text == people_screen.PICK:
         if is_owner:
             # This label arrives as text only from a client that cannot pick.
             context.user_data[_INVITE_UNTIL] = time.monotonic() + INVITE_WAIT_SECONDS
-            await message.reply_text(
-                people_screen.FALLBACK, reply_markup=people_screen.picker_keyboard()
+            await _tell_owner(
+                message,
+                people_screen.FALLBACK,
+                reply_markup=people_screen.picker_keyboard(),
             )
         raise ApplicationHandlerStop
     until = context.user_data.get(_INVITE_UNTIL)
@@ -2705,24 +2827,26 @@ async def invite_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     if time.monotonic() > until:
         context.user_data.pop(_INVITE_UNTIL, None)
-        await message.reply_text(people_screen.EXPIRED, reply_markup=main_keyboard)
+        await _tell_owner(message, people_screen.EXPIRED, reply_markup=main_keyboard)
         return
     if (message.text or "").startswith("/"):
         context.user_data.pop(_INVITE_UNTIL, None)
-        await message.reply_text(people_screen.CANCELLED, reply_markup=main_keyboard)
+        await _tell_owner(message, people_screen.CANCELLED, reply_markup=main_keyboard)
         return
     if message.forward_origin is None and message.contact is None:
         return
     person = _named_person(message)
     if person is None:
-        await message.reply_text(
-            people_screen.HIDDEN_ORIGIN, reply_markup=people_screen.picker_keyboard()
+        await _tell_owner(
+            message,
+            people_screen.HIDDEN_ORIGIN,
+            reply_markup=people_screen.picker_keyboard(),
         )
     elif isinstance(message.forward_origin, MessageOriginUser) and (
         message.forward_origin.sender_user.is_bot
     ):
-        await message.reply_text(
-            people_screen.A_BOT, reply_markup=people_screen.picker_keyboard()
+        await _tell_owner(
+            message, people_screen.A_BOT, reply_markup=people_screen.picker_keyboard()
         )
     else:
         await _let_in(message, context, person)
@@ -2734,7 +2858,7 @@ async def _picked(message, context) -> None:
     if shared.request_id != people_screen.REQUEST_ID or not shared.users:
         logger.warning("A person picked for an unknown request: %s", shared.request_id)
         context.user_data.pop(_INVITE_UNTIL, None)
-        await message.reply_text(people_screen.FAILED, reply_markup=main_keyboard)
+        await _tell_owner(message, people_screen.FAILED, reply_markup=main_keyboard)
         return
     user = shared.users[0]
     await _let_in(

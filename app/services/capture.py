@@ -1067,8 +1067,9 @@ def route_media(db, came: Incoming) -> Route:
     return Route(NEW_MEAL)
 
 
-def route_text(db, came: Incoming) -> Route:
-    """Rows 3 to 10 for a text. The first two are ahead of this handler."""
+def route_text(db, came: Incoming, as_food: bool = False) -> Route:
+    """Rows 3 to 10 for a text. The first two are ahead of this handler. ``as_food``: the
+    person said it is food, so its form does not say otherwise."""
     text = came.text
     if text.strip() in STALE_LABELS:
         return Route(LINE, Line(M9B_STALE, menu=True))
@@ -1113,6 +1114,8 @@ def route_text(db, came: Incoming) -> Route:
             return Route(LINE, line)
         logger.info("Corrective words with no meal to change: a new meal")
 
+    if as_food:
+        return Route(NEW_MEAL)
     if _is_stop_word(text):
         _keep(db, came, user)
         return Route(SILENT)

@@ -133,6 +133,7 @@ def _guest(monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "7")
     monkeypatch.setattr(settings, "ALLOWED_TELEGRAM_IDS", str(OWNER))
     monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=True))
+    monkeypatch.setattr(tg, "may_receive", lambda _db, _telegram_id: True)
 
 
 def _meal(db) -> Meal:

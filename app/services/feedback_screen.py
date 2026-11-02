@@ -58,6 +58,7 @@ FOOD_DONE = "<i>✓ Записано в дневник.</i>"
 FOOD_ALREADY = "Уже записано в дневник"
 FOOD_LOCKED = "Запись в дневник сейчас закрыта"
 FOOD_FAILED = "Не получилось, попробуй ещё раз"
+FOOD_NOT_WRITTEN = "В дневник не записано"
 NOT_YOURS = "Этого сообщения уже нет"
 CANCELLED = "✓ Фидбэк отменён"  # the hub sets a notice in italics itself
 UNSUPPORTED = "Подойдёт текст, голосовое или фото. Попробуй ещё раз."
@@ -65,7 +66,6 @@ NOT_SAVED = "Не получилось сохранить, сообщение н
 _VOICE_LINE = "🎙 голосовое (само сообщение — выше)"
 _PHOTO_LINE = "📷 фото (само сообщение — выше)"
 _NOT_HEARD = "Без расшифровки."
-_WAS_FOOD = "↩️ Это оказалась еда, записано в дневник."
 
 
 @dataclass(frozen=True)
@@ -208,8 +208,6 @@ def _top_lines(row) -> list[str]:
             lines.append(_NOT_HEARD)
     elif row.kind == PHOTO:
         lines.append(_PHOTO_LINE)
-    if row.was_food_at is not None:
-        lines.append(_WAS_FOOD)
     return lines
 
 

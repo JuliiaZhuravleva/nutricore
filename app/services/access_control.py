@@ -24,8 +24,9 @@ def is_user_allowed(telegram_id: Optional[int]) -> bool:
 
     Admins (the owner) are always allowed. In whitelist mode, admins, ALLOWED_TELEGRAM_IDS
     and active grants pass; in closed mode, only admins, so a grant does not open it; in
-    open mode, everyone. Updates with no user (e.g. channel posts) pass only in open mode.
-    The settings are read first: only someone in neither list costs a query.
+    open mode, everyone but those the owner closed by hand. Updates with no user (e.g.
+    channel posts) pass only in open mode. The settings are read first: only someone in
+    neither list costs a query.
     """
     mode = settings.access_mode
     if telegram_id is None:
@@ -33,7 +34,7 @@ def is_user_allowed(telegram_id: Optional[int]) -> bool:
     if telegram_id in settings.admin_ids:
         return True
     if mode == "open":
-        return True
+        return telegram_id in settings.allowed_ids or not _was_closed(telegram_id)
     if mode == "closed":
         return False
     # whitelist (and any unknown mode, normalized to whitelist by access_mode)
@@ -48,6 +49,20 @@ def _has_grant(telegram_id: int) -> bool:
             return crud_access_grant.is_active(db, telegram_id)
     except Exception as e:
         # The class only: a database error's text holds the query's values.
+        logger.error("Access grant of %s not read: %s", telegram_id, type(e).__name__)
+        return False
+
+
+def _was_closed(telegram_id: int) -> bool:
+    """Whether the owner closed this person's door. Past it they would be a stranger at
+    the subscription screens, which someone invited never sees: they hear nothing, as in
+    any other mode. Fails open: the mode says everyone, and only a known closing says
+    otherwise."""
+    try:
+        with SessionLocal() as db:
+            grant = crud_access_grant.get(db, telegram_id)
+            return grant is not None and grant.revoked_at is not None
+    except Exception as e:
         logger.error("Access grant of %s not read: %s", telegram_id, type(e).__name__)
         return False
 

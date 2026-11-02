@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -31,12 +32,21 @@ from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
-from app.models import ActionEvent, Feedback, Meal, MealSource, UsageLedger, User
+from app.models import (
+    ActionEvent,
+    BodyMetric,
+    Feedback,
+    Meal,
+    MealSource,
+    UsageLedger,
+    User,
+)
 from app.models.action_event import BUTTON, CORRECTED, TEXT
 from app.services import (
     action_journal,
     admin_notify,
     explain_screen,
+    feedback_inbox,
     feedback_screen,
     invites,
     meal_card,
@@ -980,7 +990,7 @@ def test_a_second_tap_writes_nothing_and_tells_nobody(db, model):
     assert answer["text"] == feedback_screen.FOOD_ALREADY
 
 
-def test_not_yet_delivered_means_no_follow_up_and_the_copy_says_it_was_food(
+def test_a_message_that_became_food_before_its_copy_went_never_reaches_the_owner(
     db, model, monkeypatch
 ):
     delivered = tg._feedback_deliver
@@ -996,7 +1006,7 @@ def test_not_yet_delivered_means_no_follow_up_and_the_copy_says_it_was_food(
     assert wire.to(OWNER) == []  # no follow-up about a copy nobody has
     assert _rows(db)[0].was_food_at is not None
 
-    # The delivery that comes after says so in the copy itself.
+    # The delivery that comes after finds a record, and owner screens hold no records.
     monkeypatch.setattr(tg, "_feedback_deliver", delivered)
     late = Desk()
 
@@ -1009,9 +1019,133 @@ def test_not_yet_delivered_means_no_follow_up_and_the_copy_says_it_was_food(
         await application.shutdown()
 
     asyncio.run(go())
-    copies = late.to(OWNER)
-    assert len(copies) == 1
-    assert "↩️ Это оказалась еда, записано в дневник." in copies[0]["text"]
+    assert [n for n, _p in late.calls if n.startswith("send")] == []
+    assert _rows(db)[0].sent_at is None
+    assert crud_feedback.count_undelivered(db, None) == 0  # and no resend is offered
+    assert (
+        crud_feedback.count_was_food(db, None) == 1
+    )  # only the count says it was there
+
+
+def test_delivery_is_still_the_rule_for_a_message_that_stayed_feedback(
+    db, model, monkeypatch
+):
+    # The control of the one above: same path, no tap, and the words arrive.
+    wire = play(command(), words("суп 200 г"))
+    assert any("суп 200 г" in p["text"] for p in wire.to(OWNER))
+
+
+def test_a_voice_that_became_food_is_not_paid_for_on_the_way_to_nobody(
+    db, model, monkeypatch, whisper
+):
+    async def not_yet(*_args):
+        return None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tg, "_feedback_deliver", not_yet)
+        play(command(), said(voice=VOICE))
+    row = _rows(db)[0]
+    crud_feedback.mark_food(db, row.id)
+    heard = []
+
+    async def listens(*args):
+        heard.append(args)
+
+    monkeypatch.setattr(tg, "_feedback_heard", listens)
+    late = Desk()
+
+    async def go():
+        application = tg.create_bot_application()
+        application.bot._request = (late, late)
+        await application.initialize()
+        person = invites.Person(SASHA, "Саша", None, "sasha_k")
+        await tg._feedback_deliver(application.bot, row.id, person, SASHA, 1)
+        await application.shutdown()
+
+    asyncio.run(go())
+    assert heard == []
+    assert late.to(OWNER) == [] and late.to(OWNER, "sendVoice") == []
+
+
+def _copy_time(wire: Desk) -> str:
+    return re.search(r"\d\d:\d\d", wire.to(OWNER)[0]["text"]).group()
+
+
+def test_one_message_has_one_time_for_the_owner_wherever_it_is_seen(
+    db, model, monkeypatch
+):
+    monkeypatch.setattr(settings, "DEFAULT_TIMEZONE", "Asia/Tbilisi")
+    user = db.scalar(select(User).where(User.telegram_id == SASHA))
+    user.settings = {"timezone": "America/New_York"}
+    db.commit()
+    wire = play(command(), words("суп 200 г"))
+    shown = _copy_time(wire)
+    row = _rows(db)[0]
+    screen = feedback_inbox.view(db)
+    assert f"в {shown}" in screen.text
+    again = feedback_inbox.resend(db, row.id, 0, 0)
+    assert shown in again.parts[0].html
+    # The ledger's zone is not the answer, or this proves nothing: seven hours apart.
+    ledger = feedback_inbox.when(row.created_at, feedback_inbox.zone())
+    assert shown not in ledger
+
+
+def test_the_ledger_screens_keep_the_ledgers_zone(monkeypatch):
+    monkeypatch.setattr(settings, "DEFAULT_TIMEZONE", "Asia/Tbilisi")
+    assert str(feedback_inbox.zone()) == "Asia/Tbilisi"
+
+
+def test_a_question_at_the_food_button_is_food_with_a_meal_behind_the_confirmation(
+    db, model
+):
+    body = "а почему суп не посчитался?"
+    play(command(), words(body))
+    row = _rows(db)[0]
+    wire = play(tap(FOOD_DATA.format(row.id)))
+    assert len(_meals(db)) == 1
+    assert model.text == [body]
+    assert _rows(db)[0].was_food_at is not None
+    assert [p for p in wire.edits() if p["text"] == feedback_screen.FOOD_DONE]
+
+
+def test_a_stop_word_at_the_food_button_is_food_too(db, model):
+    play(command(), words("спасибо"))
+    row = _rows(db)[0]
+    play(tap(FOOD_DATA.format(row.id)))
+    assert len(_meals(db)) == 1
+    assert _rows(db)[0].was_food_at is not None
+
+
+def test_the_same_question_written_to_the_diary_is_still_no_meal(db, model):
+    # A plain message keeps its old meaning: the button alone says otherwise.
+    play(words("а почему суп не посчитался?"), words("спасибо"))
+    assert _meals(db) == []
+
+
+def test_a_time_with_no_meal_is_not_confirmed_and_stays_the_owners_to_read(db, model):
+    play(command(), words("14:30"))
+    row = _rows(db)[0]
+    wire = play(tap(FOOD_DATA.format(row.id)))
+    assert _meals(db) == []
+    assert _rows(db)[0].was_food_at is None
+    assert wire.edits() == []
+    assert wire.to(OWNER) == []
+    answer = [p for n, p in wire.calls if n == "answerCallbackQuery"][0]
+    assert answer["text"] == feedback_screen.FOOD_NOT_WRITTEN
+    assert answer["show_alert"] is True
+    assert crud_feedback.count_was_food(db, None) == 0
+    # Asked again, the same words are no more written than they were.
+    second = play(tap(FOOD_DATA.format(row.id)))
+    assert _rows(db)[0].was_food_at is None
+    assert second.edits() == []
+
+
+def test_a_weight_at_the_food_button_is_written_and_confirmed(db, model):
+    play(command(), words("70.5"))
+    row = _rows(db)[0]
+    play(tap(FOOD_DATA.format(row.id)))
+    assert db.scalars(select(BodyMetric.weight)).all() == [70.5]
+    assert _rows(db)[0].was_food_at is not None
 
 
 def test_a_refused_replay_keeps_the_button_and_marks_nothing(db, model, monkeypatch):

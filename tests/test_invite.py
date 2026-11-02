@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from telegram import Update
+from telegram.error import NetworkError
 
 import app.services.access_control as access_control
 import app.services.ai_call_log_service as log_service
@@ -36,7 +37,7 @@ from app.services import (
     week_push,
     welcome_screen,
 )
-from tests.test_capture_router import NOW_TS, Wire, reader  # noqa: F401
+from tests.test_capture_router import NOW_TS, NUTRITION, Wire, reader  # noqa: F401
 
 OWNER, LISTED, SASHA, ZHENYA, MIKA = 1001, 2002, 7_000_000_003, 3003, 3004
 _ids = iter(range(100, 10_000_000))
@@ -165,9 +166,9 @@ def tap(person: int, data: str, message_id: int = 4900) -> dict:
     }
 
 
-def play(*updates, refuses=()) -> Phone:
+def play(*updates, refuses=(), wire=None) -> Phone:
     """All through one application, so a wait begun by one is seen by the next."""
-    wire = Phone(refuses)
+    wire = wire or Phone(refuses)
 
     async def steps():
         application = tg.create_bot_application()
@@ -882,10 +883,18 @@ def test_someone_already_in_the_bot_never_sees_it(db, kind):
                 fats=0,
                 carbohydrates=0,
                 meal_time=datetime.now(UTC),
+                created_at=_BEFORE,
             )
         )
     else:
-        db.add(BodyMetric(user_id=user.id, weight=70.0, timestamp=datetime.now(UTC)))
+        db.add(
+            BodyMetric(
+                user_id=user.id,
+                weight=70.0,
+                timestamp=datetime.now(UTC),
+                created_at=_BEFORE,
+            )
+        )
     db.commit()
     menu = play(say(SASHA, "/start")).to(SASHA)[0]
     assert menu["text"] == "Что делаем?"
@@ -894,6 +903,381 @@ def test_someone_already_in_the_bot_never_sees_it(db, kind):
 def test_a_listed_person_without_records_does_see_it(db):
     crud_subscription.create_subscription(db, LISTED, OWNER, months=1)
     assert "Дневник питания" in play(say(LISTED, "/start")).to(LISTED)[0]["text"]
+
+
+_BEFORE = datetime.now(UTC) - timedelta(days=30)
+
+
+def _old_meal(user: User) -> Meal:
+    return Meal(
+        user_id=user.id,
+        meal_type="snack",
+        description="суп",
+        calories=0,
+        proteins=0,
+        fats=0,
+        carbohydrates=0,
+        meal_time=_BEFORE,
+        created_at=_BEFORE,
+    )
+
+
+def _welcomes(wire: Phone) -> list:
+    return [p for p in wire.to(SASHA) if "Владелец бота видит" in p["text"]]
+
+
+def test_someone_invited_whose_first_word_is_food_still_learns_who_sees_what(
+    db,
+    reader,  # noqa: F811
+):
+    _invite(db)
+    wire = play(say(SASHA, "омлет"), say(SASHA, "кофе"))
+    assert len(_welcomes(wire)) == 1
+    assert _labels(_welcomes(wire)[0])  # the question is there to answer
+    db.expire_all()
+    assert len(db.scalars(select(Meal.id)).all()) == 2  # the food went on as ever
+    assert reader.text == ["омлет", "кофе"]
+    hints = [p for p in wire.to(SASHA) if p["text"] == welcome_screen.HINT]
+    assert len(hints) == 1 and _gives_main_keyboard(hints[0])
+    told = [p for p in wire.to(OWNER) if "Саша" in p["text"] or str(SASHA) in p["text"]]
+    assert len(told) == 1  # the first open, as if /start had been pressed
+
+
+def test_a_welcome_telegram_did_not_take_is_still_owed(db, reader):  # noqa: F811
+    _invite(db)
+
+    class NoWelcome(Phone):
+        refusing = True
+
+        async def do_request(self, url, method, request_data=None, **kwargs):
+            params = dict(request_data.parameters) if request_data else {}
+            if self.refusing and "Владелец бота видит" in params.get("text", ""):
+                body = {"ok": False, "error_code": 400, "description": "Bad Request"}
+                return 400, json.dumps(body).encode()
+            return await super().do_request(url, method, request_data, **kwargs)
+
+    wire = NoWelcome()
+    play(say(SASHA, "омлет"), wire=wire)
+    db.expire_all()
+    assert len(db.scalars(select(Meal.id)).all()) == 1  # it cost the meal nothing
+    assert _welcomes(wire) == []
+    wire.refusing = False
+    play(say(SASHA, "/start"), wire=wire)
+    assert len(_welcomes(wire)) == 1
+
+
+def test_a_record_from_before_the_invitation_means_they_were_here(
+    db,
+    reader,  # noqa: F811
+):
+    _invite(db)
+    user = db.scalar(select(User).where(User.telegram_id == SASHA))
+    db.add(_old_meal(user))
+    db.commit()
+    wire = play(say(SASHA, "омлет"), say(SASHA, "/start"))
+    assert _welcomes(wire) == []
+
+
+def test_a_listed_person_who_writes_first_is_as_before(db, reader):  # noqa: F811
+    crud_subscription.create_subscription(db, LISTED, OWNER, months=1)
+    wire = play(say(LISTED, "омлет"))
+    assert not [p for p in wire.to(LISTED) if "Владелец бота видит" in p["text"]]
+    assert reader.text == ["омлет"]  # known positive: the message did reach the diary
+
+
+def _menus(wire: Phone) -> list:
+    return [p for p in wire.to(SASHA) if p["text"] == welcome_screen.MENU]
+
+
+@pytest.mark.parametrize("trouble", ["failed", "time"])
+def test_who_skips_the_question_gets_the_menu_once_when_nothing_recorded(
+    db,
+    reader,  # noqa: F811
+    trouble,
+):
+    _invite(db)
+    if trouble == "failed":
+        reader.error = ValueError("зюзя")
+        first, second = "омлет", "кофе"
+    else:
+        first, second = "14:30", "15:30"
+    wire = play(say(SASHA, "/start"), say(SASHA, first), say(SASHA, second))
+    assert len(_menus(wire)) == 1
+    assert _gives_main_keyboard(_menus(wire)[0])
+    assert not [p for p in wire.to(SASHA) if p["text"] == welcome_screen.HINT]
+
+
+def test_the_menu_does_not_cost_the_hint_or_a_late_answer(db, reader):  # noqa: F811
+    _invite(db)
+    wire = play(say(SASHA, "/start"), say(SASHA, "14:30"), say(SASHA, "омлет"))
+    assert len(_menus(wire)) == 1
+    assert len([p for p in wire.to(SASHA) if p["text"] == welcome_screen.HINT]) == 1
+    late = play(tap(SASHA, "wl:eat:plants"))
+    assert late.to(SASHA) == []
+    db.expire_all()
+    user = db.scalar(select(User).where(User.telegram_id == SASHA))
+    assert diet.chosen(user.settings) == "plants"
+
+
+def test_no_menu_for_someone_who_answered_or_a_message_that_says_nothing(
+    db,
+    reader,  # noqa: F811
+):
+    _invite(db)
+    wire = play(say(SASHA, "/start"), say(SASHA, "спасибо"))
+    assert _menus(wire) == []  # silent stays silent
+    answered = play(tap(SASHA, "wl:later"), say(SASHA, "14:30"))
+    assert _menus(answered) == []
+
+
+# --- /reprocess and the door -------------------------------------------------------------
+
+
+def _old_row(db) -> InboundMessage:
+    row = InboundMessage(
+        telegram_id=SASHA, kind="text", content="борщ", status="failed"
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_reprocess_pays_nothing_for_someone_closed_and_keeps_the_row(
+    db,
+    reader,  # noqa: F811
+):
+    _invite(db)
+    row = _old_row(db)
+    invites.close(db, SASHA)
+    wire = play(say(OWNER, "/reprocess"))
+    assert reader.text == []
+    db.expire_all()
+    assert db.get(InboundMessage, row.id).status == "failed"
+    assert wire.to(SASHA) == []
+    assert "Нет сообщений" in wire.to(OWNER)[-1]["text"]
+    # «↩️ Вернуть»: the row is there, and now it goes.
+    invites.reopen(db, SASHA, OWNER)
+    play(say(OWNER, "/reprocess"))
+    assert reader.text == ["борщ"]
+
+
+def test_reprocess_replays_the_row_of_someone_open(db, reader):  # noqa: F811
+    _invite(db)
+    row = _old_row(db)
+    play(say(OWNER, "/reprocess"))
+    assert reader.text == ["борщ"]
+    db.expire_all()
+    assert db.get(InboundMessage, row.id).status == "analyzed"
+
+
+# --- a read that ends behind a closed door -----------------------------------------------
+
+
+def _closes_while_reading(db, monkeypatch, error=None) -> None:
+    async def analyze(*, kind, payload, input_ref, telegram_id):
+        invites.close(db, SASHA)
+        if error is not None:
+            raise error
+        return dict(NUTRITION)
+
+    monkeypatch.setattr(tg, "_analyze_and_parse", analyze)
+
+
+def _pending_only(wire: Phone) -> None:
+    """What the person saw is what they saw before the door closed."""
+    assert wire.edits() == []
+    said = [p for p in wire.to(SASHA) if "Владелец бота видит" not in p["text"]]
+    assert len(said) == 1
+
+
+def test_a_read_that_ends_behind_a_closed_door_stores_and_says_nothing(db, monkeypatch):
+    _invite(db)
+    _closes_while_reading(db, monkeypatch)
+    wire = play(say(SASHA, "омлет"))
+    _pending_only(wire)
+    db.expire_all()
+    assert db.scalars(select(Meal)).one().reading_status == "read"  # the record stands
+
+
+def test_a_failed_read_behind_a_closed_door_says_nothing_either(db, monkeypatch):
+    _invite(db)
+    _closes_while_reading(db, monkeypatch, error=ValueError("зюзя"))
+    _pending_only(play(say(SASHA, "омлет")))
+
+
+def test_the_line_of_a_closed_read_is_settled_by_the_sweep_unsaid(db, monkeypatch):
+    _invite(db)
+    _closes_while_reading(db, monkeypatch)
+    wire = play(say(SASHA, "омлет"))
+    _sweep_owed(wire)
+    _pending_only(wire)
+
+
+def _sweep_owed(wire: Phone) -> None:
+    async def steps():
+        application = tg.create_bot_application()
+        application.bot._request = (wire, wire)
+        await application.initialize()
+        await tg._show_owed(application)
+        await application.shutdown()
+
+    asyncio.run(steps())
+
+
+def test_a_read_with_the_door_open_still_speaks(db, reader):  # noqa: F811
+    _invite(db)
+    wire = play(say(SASHA, "омлет"))
+    assert any(p["text"].startswith("Записано") for p in wire.edits())
+
+
+def test_a_door_that_cannot_be_read_costs_no_line(
+    db, reader, monkeypatch
+):  # noqa: F811
+    _invite(db)
+    answers = iter([True])  # the gate before the read; the blip comes at its end
+
+    def blip(_telegram_id):
+        if next(answers, False):
+            return True
+        raise RuntimeError("no database")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tg, "_may_hear", blip)
+        wire = play(say(SASHA, "омлет"))
+    assert reader.text == ["омлет"]  # known positive: the read got as far as its end
+    assert wire.edits() == []
+    _sweep_owed(wire)  # the database is back: the line owed is shown
+    assert any(p["text"].startswith("Записано") for p in wire.edits())
+
+
+def test_a_meal_closed_while_it_waited_its_turn_is_not_paid_for(
+    db,
+    reader,  # noqa: F811
+    monkeypatch,
+):
+    _invite(db)
+    real = capture.read_as_of_now
+
+    def closes(session, job):
+        invites.close(db, SASHA)
+        return real(session, job)
+
+    monkeypatch.setattr(tg.capture, "read_as_of_now", closes)
+    wire = play(say(SASHA, "омлет"))
+    assert reader.text == []
+    _pending_only(wire)
+
+
+# --- closing in open mode ----------------------------------------------------------------
+
+
+def _open_mode_and_closed(db, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open")
+    _invite(db)
+    assert invites.close(db, SASHA) == invites.Closed.CLOSED
+
+
+def test_closing_in_open_mode_really_closes(db, monkeypatch):
+    _open_mode_and_closed(db, monkeypatch)
+    wire = play(say(SASHA, "/start"), say(SASHA, "омлет"), tap(SASHA, "wl:later"))
+    assert wire.to(SASHA) == []
+    assert not [n for n, _p in wire.calls if n == "editMessageText"]
+    db.expire_all()
+    assert db.scalars(select(Meal.id)).all() == []
+
+
+def test_reopening_in_open_mode_opens(db, monkeypatch):
+    _open_mode_and_closed(db, monkeypatch)
+    assert access_control.is_user_allowed(SASHA) is False
+    invites.reopen(db, SASHA, OWNER)
+    assert access_control.is_user_allowed(SASHA) is True
+    assert "Дневник питания" in play(say(SASHA, "/start")).to(SASHA)[0]["text"]
+
+
+def test_closing_one_in_open_mode_leaves_everyone_else(db, monkeypatch):
+    _open_mode_and_closed(db, monkeypatch)
+    assert access_control.is_user_allowed(ZHENYA) is True
+    assert play(say(ZHENYA, "/start")).to(ZHENYA)  # known positive of the silence above
+
+
+def test_open_mode_stays_open_when_the_database_cannot_say(
+    Session, monkeypatch, caplog
+):
+    monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open")
+
+    def broken():
+        raise RuntimeError("no database")
+
+    monkeypatch.setattr(access_control, "SessionLocal", broken)
+    with caplog.at_level(logging.ERROR):
+        assert access_control.is_user_allowed(SASHA) is True
+    assert "Access grant of" in caplog.text and "RuntimeError" in caplog.text
+
+
+def test_the_open_mode_words_tell_the_truth_about_closing(db, monkeypatch):
+    monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open")
+    wire = play(say(OWNER, "/invite"), picked(OWNER, SASHA), refuses=[SASHA])
+    words = wire.to(OWNER)[-1]["text"]
+    assert "открыт для всех" in words
+    assert "закрыть доступ можно" in words
+    assert "доступ здесь ничего не меняет" not in words
+
+
+# --- a moment of Telegram during the wait --------------------------------------------------
+
+
+class Outage(Phone):
+    """The owner's wait begins, and from then on every message to them dies on the way."""
+
+    async def do_request(self, url, method, request_data=None, **kwargs):
+        params = dict(request_data.parameters) if request_data else {}
+        waiting = any(n == "sendMessage" for n, _p in self.calls)
+        if (
+            waiting
+            and url.endswith("/sendMessage")
+            and int(params.get("chat_id", 0)) == OWNER
+        ):
+            self.calls.append(("lost", params))
+            raise NetworkError("Bad Gateway")
+        return await super().do_request(url, method, request_data, **kwargs)
+
+
+def test_a_forward_during_an_outage_lets_in_and_stays_out_of_the_diary(
+    db,
+    reader,  # noqa: F811
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(tg, "SHOW_PAUSE_SECONDS", 0)
+    wire = Outage()
+    with caplog.at_level(logging.WARNING):
+        play(say(OWNER, "/invite"), forward(OWNER, from_user(ZHENYA)), wire=wire)
+    assert access_control.is_user_allowed(ZHENYA) is True
+    _nothing_in_the_diary(db)
+    assert reader.text == []
+    assert [n for n, _p in wire.calls if n == "lost"]  # the outage did happen
+    assert "Invitation reply not sent" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        {"type": "hidden_user", "sender_user_name": "Женя"},
+        from_user(ZHENYA, is_bot=True),
+    ],
+)
+def test_a_refusal_lost_in_an_outage_keeps_the_forward_out_of_the_diary(
+    db,
+    reader,  # noqa: F811
+    monkeypatch,
+    origin,
+):
+    monkeypatch.setattr(tg, "SHOW_PAUSE_SECONDS", 0)
+    wire = Outage()
+    play(say(OWNER, "/invite"), forward(OWNER, origin), wire=wire)
+    assert [n for n, _p in wire.calls if n == "lost"]
+    _nothing_in_the_diary(db)
+    assert reader.text == []
 
 
 def test_someone_with_no_subscription_keeps_the_old_answer(db):
@@ -945,6 +1329,9 @@ def test_no_hint_when_the_read_failed(db, reader):  # noqa: F811
 
 def test_no_hint_for_the_owner_or_anyone_already_in(db, reader):  # noqa: F811
     _invite(db)
+    user = db.scalar(select(User).where(User.telegram_id == SASHA))
+    db.add(_old_meal(user))
+    db.commit()
     wire = play(say(OWNER, "омлет"), say(SASHA, "омлет"))
     assert not [p for p in wire.sent() if p["text"] == welcome_screen.HINT]
 
