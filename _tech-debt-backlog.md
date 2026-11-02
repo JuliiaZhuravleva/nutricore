@@ -63,6 +63,10 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Created:** 2026-11-02
 
 ## Low
+- [ ] **TD-243**: A dish named by a whole typed sentence, left by the old M7c, stays in «Блюда» (the delete is the owner's).
+  - **Priority:** Low
+  - **Source:** owner's report
+  - **Created:** 2026-11-02
 
 - [ ] **TD-226**: With no weight, the screen says «считаю 100 г» while an immediate 🍽 Записать logs the portion guess
   - **Priority:** Low

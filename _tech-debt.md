@@ -6,10 +6,6 @@ Critical / High / в работе. **Единственный файл, кото
 Остальное: `_tech-debt-backlog.md` (Medium/Low) · `_tech-debt-archive.md` (закрытое) — только грепом.
 
 ## Заметки из исходного файла
-- [ ] **TD-243**: A dish named by a whole typed sentence, left by the old M7c, stays in «Блюда» (the delete is the owner's). The empty-balance refusal it came with is fixed on this branch: `ai_errors` matches the error type, not only `code`
-  - **Priority:** Low
-  - **Source:** owner's report
-  - **Created:** 2026-11-02
 
 Track deferred improvements. Review monthly.
 
