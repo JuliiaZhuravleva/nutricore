@@ -103,6 +103,11 @@ def _button(label: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(label, callback_data=data)
 
 
+def card_button(name: str, telegram_id: int) -> InlineKeyboardButton:
+    """«👤 Саша»: their card on the owner's screens, from anywhere the owner reads them."""
+    return _button(f"👤 {name[:_NAME_CHARS]}", f"{_OPEN}{telegram_id}")
+
+
 def share_url(bot_username: str) -> str:
     """Telegram's own «кому отправить». The link names the bot and holds no token: the
     door is the person's id, so a forwarded link lets no one else in. ``url`` is required

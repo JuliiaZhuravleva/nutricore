@@ -135,12 +135,14 @@ def test_it_stands_on_the_edits_migration_and_one_head_follows():
     assert module.revision == "a7b8c9d0e1f2"
     assert module.down_revision == "f6a7b8c9d0e1"
     chain = _chain()
-    assert _heads(chain) == ["e1f2a3b4c5d6"]
+    assert _heads(chain) == ["f2a3b4c5d6e7"]
+    assert chain["f2a3b4c5d6e7"][0] == ("e1f2a3b4c5d6",)
     assert chain["e1f2a3b4c5d6"][0] == ("d0e1f2a3b4c5",)
     assert chain["d0e1f2a3b4c5"][0] == ("c9d0e1f2a3b4",)
     assert chain["c9d0e1f2a3b4"][0] == ("b8c9d0e1f2a3",)
     assert chain["b8c9d0e1f2a3"][0] == ("a7b8c9d0e1f2",)
     # Known-positive: the check would have seen the old head as a head without it.
+    del chain["f2a3b4c5d6e7"]
     del chain["e1f2a3b4c5d6"]
     del chain["d0e1f2a3b4c5"]
     del chain["c9d0e1f2a3b4"]

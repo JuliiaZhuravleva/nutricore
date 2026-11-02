@@ -6,6 +6,7 @@ from .analysis_report import AnalysisReport
 from .app_setting import AppSetting
 from .body_metric import BodyMetric
 from .favorite_meal import FavoriteMeal
+from .feedback import Feedback
 from .inbound_message import InboundMessage
 from .meal import Meal
 from .meal_item import MealItem
@@ -30,6 +31,7 @@ __all__ = [
     "MealMessage",
     "RecordEvent",
     "FavoriteMeal",
+    "Feedback",
     "RoutineTick",
     "Activity",
     "AnalysisReport",

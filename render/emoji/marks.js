@@ -22,6 +22,8 @@ Object.assign(ICONS, {
   search: '<g ' + S + ' stroke-width="2.6"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/></g>',
   // things to do with a record
   writing: '<path d="M5 16.5l1-4L15.6 3a2 2 0 0 1 2.9 0l.6.6a2 2 0 0 1 0 2.9L9.5 16z" ' + F + '/><g ' + S + '><path d="M3.5 21h17"/></g>',
+  speech: '<path d="M4 6.5A3 3 0 0 1 7 3.5h10a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-6.5L6 20.5v-4A3 3 0 0 1 4 13.5z" ' + F + '/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" ' + F + '/><circle cx="12" cy="12" r="3" fill="' + BG + '"/>',
   tap: '<path d="M10.2 3.8a1.9 1.9 0 0 1 3.8 0v6.9l4.2.9a2.4 2.4 0 0 1 1.9 2.6l-.6 4.9a2.5 2.5 0 0 1-2.5 2.2h-5.4a3 3 0 0 1-2.4-1.2l-4.3-5.2a1.7 1.7 0 0 1 2.6-2.2l2.7 2.4z" ' + F + '/>',
   person: '<circle cx="12" cy="8" r="4.5" ' + F + '/><path d="M3.5 21.5a8.5 7.5 0 0 1 17 0z" ' + F + '/>',
   people: '<circle cx="8.5" cy="8.5" r="3.8" ' + F + '/><path d="M1.5 20.5a7 6.5 0 0 1 14 0z" ' + F + '/><circle cx="17" cy="7.5" r="3" ' + F + '/><path d="M17.5 13.2a6 6 0 0 1 5 6.3h-5a9 9 0 0 0-2.4-5.6z" ' + F + '/>',
@@ -77,7 +79,7 @@ Object.assign(ICONS, {
 Object.assign(MARKS, {
   back: "#DDD7CB", undo: "#DAD3EA", prev: "#DDD7CB", next: "#DDD7CB", plus: "#CDE3C2", minus: "#E5DCCB",
   cross: "#E5DCCB", reject: "#EBC7B3", repeat: "#CFE0D9", link: "#C8D7E8", search: "#C8D7E8",
-  writing: "#F2DDA0", tap: "#F2D6A8", person: "#D9D3EA", people: "#D9D3EA", send: "#C8D7E8",
+  writing: "#F2DDA0", tap: "#F2D6A8", speech: "#C8D7E8", eye: "#CFE0D9", person: "#D9D3EA", people: "#D9D3EA", send: "#C8D7E8",
   pencil: "#F2DDA0", trash: "#E5DCCB", tag: "#E9C9A6", clipboard: "#D9D3C9", symbols: "#E2CDE6",
   warn: "#F2CF85", stop: "#EBC7B3", lock: "#D6D0C4", hourglass: "#E9D9B4", question: "#D9D3EA",
   thumb: "#CDE3C2", wave: "#F2D6A8", dizzy: "#D9D3EA", digits: "#D6D0C4",

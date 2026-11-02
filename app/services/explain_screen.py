@@ -39,6 +39,10 @@ NOP = CALLBACK_PREFIX + "nop"
 _LIST_PAGE = 6  # three rows of two, the pager and the back row: 4 + 1 (M15)
 _LIST_ROW_LABEL = 20  # the budget of a label at two per row; a longer one stands alone
 _SETTINGS = "set:open"  # settings_screen imports this module for its button
+# Here, because feedback_screen imports settings_screen, which needs these for its row.
+FEEDBACK_OPEN = "fb:open"
+FEEDBACK_TITLE = "💬 Фидбэк"
+NUTRIENTS_LIST_LABEL = "🧪 Витамины"
 
 
 @dataclass(frozen=True)
@@ -445,9 +449,12 @@ def list_screen(page: int = 0, nutrients: bool = True) -> Screen:
         for key, topic in TOPICS.items()
     ]
     if nutrients:
+        # The full title would stand alone and push the page past its five rows.
         entries.append(
-            InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN)
+            InlineKeyboardButton(NUTRIENTS_LIST_LABEL, callback_data=NUTRIENTS_OPEN)
         )
+    # Last in the list: the first page is what most people came for, and full.
+    entries.append(InlineKeyboardButton(FEEDBACK_TITLE, callback_data=FEEDBACK_OPEN))
     pages = (len(entries) + _LIST_PAGE - 1) // _LIST_PAGE
     page %= pages
     rows = _list_rows(entries[page * _LIST_PAGE : (page + 1) * _LIST_PAGE])

@@ -75,7 +75,7 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
     assert _rows(pages[1]) == [
         ["💊 Рутины", "🍽 Приём и блюда"],
         ["🕐 Время приёма", "🍲 Мои блюда"],
-        ["🧪 Витамины и минералы"],
+        ["🧪 Витамины", "💬 Фидбэк"],
         ["◀️", "2/2", "▶️"],
         ["⬅️ Настройки"],
     ]
@@ -85,7 +85,10 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
             _buttons(page)[-1].callback_data == settings_screen.CALLBACK_PREFIX + "open"
         )
     offered = [b.text for page in pages for b in _buttons(page)]
-    for label in [t.label for t in explain.TOPICS.values()] + [explain.NUTRIENTS_TITLE]:
+    for label in [t.label for t in explain.TOPICS.values()] + [
+        explain.NUTRIENTS_LIST_LABEL,
+        explain.FEEDBACK_TITLE,
+    ]:
         assert offered.count(label) == 1, label
 
 
@@ -114,8 +117,8 @@ def test_a_list_that_fits_one_page_has_no_pager(monkeypatch):
     # Control for the pager above: the same screen, few topics.
     monkeypatch.setattr(explain, "TOPICS", {"day": explain.TOPICS["day"]})
     assert _rows(_tap(explain.OPEN)) == [
-        ["📊 Карточка дня"],
-        ["🧪 Витамины и минералы"],
+        ["📊 Карточка дня", "🧪 Витамины"],
+        ["💬 Фидбэк"],
         ["⬅️ Настройки"],
     ]
 
@@ -143,7 +146,7 @@ def test_the_bot_answers_the_pager_tap_and_leaves_the_message(monkeypatch):
     middle.edit_message_text.assert_not_awaited()
     # Control: the arrow does edit, through the same handler.
     arrow = asyncio.run(tap("hw:p:1"))
-    assert "🧪 Витамины и минералы" in str(arrow.edit_message_text.await_args)
+    assert "🧪 Витамины" in str(arrow.edit_message_text.await_args)
 
 
 @pytest.mark.parametrize("data", ["hw:p:1", "hw:nop", "hw:t:meal"])

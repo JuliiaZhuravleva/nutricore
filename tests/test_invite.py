@@ -977,10 +977,10 @@ def test_a_lost_hint_costs_nothing(db, reader, caplog):  # noqa: F811
     assert db.scalars(select(Meal.id)).all()
 
 
-def test_feedback_named_by_the_hint_answers_honestly(db):
+def test_feedback_named_by_the_hint_is_there(db):
     _invite(db)
     words = play(say(SASHA, "/feedback")).to(SASHA)[0]["text"]
-    assert "тому, кто тебя пригласил" in words
+    assert words.startswith("<b>💬 Фидбэк</b>")
     assert "подписк" not in words.casefold()
 
 

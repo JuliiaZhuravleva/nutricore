@@ -25,6 +25,7 @@ PERSON_KINDS = (PHOTO, TEXT, VOICE, BUTTON, COMMAND)
 BUTTON_VERBS = (
     "dh",
     "fav",
+    "fb",
     "fl",
     "hw",
     "meal",

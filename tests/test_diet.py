@@ -371,7 +371,7 @@ def test_the_hub_has_the_row_and_keeps_its_budget(Session):
     assert _rows(markup) == [
         ["🕐 Часовой пояс", "🔢 Цифры сразу: выкл"],
         ["🗓 Итог недели: вкл", "📋 Черновик: выкл"],
-        ["🍽 Обычная еда", "💊 Рутины"],
+        ["🍽 Обычная еда", "💊 Рутины", "💬 Фидбэк"],
         ["🧺 Надёжная еда", "✋ Не предлагать"],
         ["ℹ️ Как это работает", "💸 Стоимость: выкл"],
     ]
@@ -481,7 +481,7 @@ def _all_list_labels(Session):
 def test_the_reference_stays_for_anyone_but_all(Session, value):
     if value:
         _set(Session, **{diet.KEY: value})
-    assert explain_screen.NUTRIENTS_TITLE in _all_list_labels(Session)
+    assert explain_screen.NUTRIENTS_LIST_LABEL in _all_list_labels(Session)
     routine = _explain(Session, explain_screen._TOPIC + "routines")
     assert explain_screen.NUTRIENTS_TITLE in [
         b.text for row in routine.markup.inline_keyboard for b in row
@@ -493,7 +493,7 @@ def test_the_reference_stays_for_anyone_but_all(Session, value):
 def test_all_does_not_see_the_reference_on_the_list(Session):
     _set(Session, **{diet.KEY: diet.ALL})
     labels = _all_list_labels(Session)
-    assert explain_screen.NUTRIENTS_TITLE not in labels
+    assert explain_screen.NUTRIENTS_LIST_LABEL not in labels
     assert "💊 Рутины" in labels  # the known positive: the list is there
 
 

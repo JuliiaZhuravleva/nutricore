@@ -42,6 +42,7 @@ import app.services.usage_ledger as usage_ledger
 from app.core.config import settings
 from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_action_event import crud_action_event
+from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_subscription import crud_subscription
@@ -53,6 +54,7 @@ from app.models import (
     ActionEvent,
     BodyMetric,
     FavoriteMeal,
+    Feedback,
     Meal,
     MealMessage,
     MealReading,
@@ -66,6 +68,7 @@ from app.models import (
 from app.services import (
     dishes,
     favorites,
+    feedback_screen,
     invites,
     meal_card,
     meal_items,
@@ -319,6 +322,21 @@ def _world(db) -> SimpleNamespace:
         .order_by(RecordEvent.id.desc())
     )
 
+    feedback = crud_feedback.create(
+        db,
+        telegram_id=A,
+        kind="text",
+        text=f"{MARK} суп",
+        journal="10:00 ✍️ текст",
+        original={
+            "message_id": 7999,
+            "date": int(ago(hours=1).timestamp()),
+            "chat": {"id": A, "type": "private"},
+            "from": {"id": A, "is_bot": False, "first_name": "x"},
+            "text": f"{MARK} суп",
+        },
+    )
+
     # B's own. B holds a real grant: a locked person would pass every probe here.
     crud_subscription.create_subscription(db, telegram_id=B, granted_by_telegram_id=A)
     borscht = _dish(db, b, "борщ")
@@ -346,6 +364,7 @@ def _world(db) -> SimpleNamespace:
         event=event.id,
         logged=logged.id,
         invited=7_000_000_001,
+        feedback=feedback.id,
         soup=soup.id,
         porridge=porridge.id,
         hidden=hidden.id,
@@ -492,6 +511,7 @@ def _assert_nothing_of_a(wire: Chats, person: int = B) -> None:
 
 # What each verb is given: ``w`` holds A's ids.
 PROBES = {
+    "fb:food": lambda w: f"fb:food:{w.feedback}",
     "us:p": lambda w: f"us:p:{w.invited}",
     "us:x": lambda w: f"us:x:{w.invited}",
     "us:u": lambda w: f"us:u:{w.invited}",
@@ -570,6 +590,9 @@ MIXED = {
 }
 # No id in them, or only a date: B's own screens, which must not hold A's day.
 NO_ID = {
+    "fb:open": lambda w: "fb:open",
+    "fb:see": lambda w: "fb:see",
+    "fb:x": lambda w: "fb:x",
     "us:l": lambda w: "us:l:0",
     "ml:dl": lambda w: f"ml:dl:{datetime.now(UTC):%Y%m%d}:t",
     "ml:da": lambda w: f"ml:da:{datetime.now(UTC):%Y%m%d}:t",
@@ -582,7 +605,7 @@ NO_ID = {
 def _verbs() -> set:
     """The verbs the tables hold, as ``ml:o``, read from the patterns themselves."""
     names = set()
-    for module in (meal_card, dishes, favorites, people_screen):
+    for module in (meal_card, dishes, favorites, people_screen, feedback_screen):
         for pattern, _verb in module._VERBS:
             names.add(re.match(r"[a-z]+:[a-z]*", pattern.pattern).group(0))
     return names | {"wt:u"}
@@ -648,7 +671,8 @@ def test_a_tap_mixing_ones_own_id_with_anothers_moves_nothing(db, world, verb):
 def test_a_screen_with_no_id_is_ones_own(db, world, verb):
     _assert_nothing_of_a(_tap(B, NO_ID[verb](world)))
     # The known positive: the same screen holds A's, for A.
-    if verb not in ("dh:f", "ml:da"):
+    # 💬 holds none of A's records by design, and the journal holds no name of food.
+    if verb not in ("dh:f", "ml:da", "fb:open", "fb:see", "fb:x"):
         words = " ".join(b for _n, b in _shown_to(_tap(A, NO_ID[verb](world))))
         assert MARK in words.casefold(), words
 
@@ -1219,3 +1243,47 @@ def test_a_first_start_goes_through_on_this_database(db, world):
     assert any(p["chat_id"] == SASHA and "Дневник питания" in p["text"] for p in told)
     db.expire_all()
     assert crud_access_grant.get(db, SASHA).first_opened_at is not None
+
+
+def test_feedback_keeps_its_row_and_its_stamps_on_this_database(db, world):
+    """A JSON column, two conditional stamps, and the real path from a message to a copy."""
+    made = crud_feedback.create(
+        db,
+        telegram_id=B,
+        kind="voice",
+        text=None,
+        file_id="f" * 200,
+        journal="10:00 🎙 голосовое",
+        original={"message_id": 1, "text": "зюзя «é» \U0001f600", "nested": {"a": [1]}},
+    )
+    assert crud_feedback.get_own(db, made.id, B).original["nested"] == {"a": [1]}
+    assert crud_feedback.get_own(db, made.id, A) is None
+    assert crud_feedback.mark_sent(db, made.id) is True
+    assert crud_feedback.mark_sent(db, made.id) is False
+    assert crud_feedback.mark_food(db, made.id) is True
+    assert crud_feedback.mark_food(db, made.id) is False
+    crud_feedback.set_transcript(db, made.id, "слова")
+    db.expire_all()
+    row = crud_feedback.get(db, made.id)
+    assert row.transcript == "слова" and row.sent_at and row.was_food_at
+    assert row.read_at is None and row.created_at and row.updated_at
+
+
+def test_a_feedback_message_goes_through_on_this_database(db, world):
+    entity = {"type": "bot_command", "offset": 0, "length": 9}
+    first = _as(B, text="/feedback", entities=[entity])
+    second = _as(B, text="не понятно <b>")
+    wire = _run(
+        [
+            {"update_id": first["message_id"], "message": first},
+            {"update_id": second["message_id"], "message": second},
+        ]
+    )
+    db.expire_all()
+    row = db.scalar(
+        select(Feedback).where(Feedback.telegram_id == B).order_by(Feedback.id.desc())
+    )
+    assert row.text == "не понятно <b>" and row.sent_at is not None
+    assert row.original["text"] == "не понятно <b>"
+    copies = [p for n, p in wire.calls if n == "sendMessage" and p["chat_id"] == A]
+    assert any("«не понятно &lt;b&gt;»" in p["text"] for p in copies), copies

@@ -2,7 +2,7 @@
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
     [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл] [📋 Черновик: выкл]
-    [🍽 Обычная еда] [💊 Рутины] [🧺 Надёжная еда] [✋ Не предлагать]
+    [🍽 Обычная еда] [💊 Рутины] [💬 Фидбэк] [🧺 Надёжная еда] [✋ Не предлагать]
     [ℹ️ Как это работает] [💸 Стоимость: выкл]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
@@ -31,6 +31,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from app.core.config import settings
 from app.models.user import User
 from app.services import diet, food_lists
+from app.services.explain_screen import FEEDBACK_OPEN, FEEDBACK_TITLE
 from app.services.explain_screen import OPEN as EXPLAIN_OPEN
 from app.services.favorites import Screen
 from app.services.numbers import SHOW_NUMBERS, shows_numbers
@@ -186,6 +187,7 @@ def screen(
         [
             _btn(diet.TITLE, _DIET_CB),
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
+            _btn(FEEDBACK_TITLE, FEEDBACK_OPEN),
         ],
         [
             _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
