@@ -44,6 +44,7 @@ from app.services import (
     voice,
     weight_screen,
 )
+from app.services.access_control import may_receive
 from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
@@ -2942,6 +2943,16 @@ def balance_out(db) -> bool:
     return last == NO_CREDIT
 
 
+def owner_may_receive(db, meal_id: int) -> bool:
+    """Someone whose door was closed is not paid for, or written to, behind their back."""
+    telegram_id = db.scalar(
+        select(User.telegram_id)
+        .join(Meal, Meal.user_id == User.id)
+        .where(Meal.id == meal_id)
+    )
+    return telegram_id is not None and may_receive(db, telegram_id)
+
+
 def _may_read_by_itself(db, meal: Meal) -> bool:
     """The cap holds, and dishes in the meal are the person's: a read would be paid for
     and could not apply. A voice is listened to by itself only locally (5.2), so with
@@ -2949,6 +2960,8 @@ def _may_read_by_itself(db, meal: Meal) -> bool:
     if meal.deleted_at is not None:
         return False
     if (meal.read_attempts or 0) >= len(RETRY_AFTER):
+        return False
+    if not owner_may_receive(db, meal.id):
         return False
     has_voice = db.scalar(
         select(MealSource.id)

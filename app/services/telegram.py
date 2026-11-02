@@ -17,6 +17,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
+    MessageOriginUser,
     ReplyKeyboardMarkup,
     ReplyParameters,
     Update,
@@ -37,6 +38,7 @@ from telegram.ext import (
 from telegram.warnings import PTBUserWarning
 
 from app.core.config import settings
+from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models import action_event
@@ -53,17 +55,20 @@ from app.services import (
 )
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
+    invites,
     meal_card,
     meal_draft,
     meal_items,
+    people_screen,
     portion_suggestions,
     routines,
     settings_screen,
     stats_screen,
     voice,
     weight_screen,
+    welcome_screen,
 )
-from app.services.access_control import access_gate, admin_required
+from app.services.access_control import access_gate, admin_required, may_receive
 from app.services.admin_notify import notify_admins
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.attribution import attribute_to
@@ -124,6 +129,8 @@ SHOW_WAIT_MAX_SECONDS = 5.0  # a flood wait longer than this is not waited out h
 REPLAY_LIMIT = REPROCESS_BATCH_LIMIT  # one start's pending reads; the rest wait
 SWEEP_TASK = "meal_sweep"
 REPLAY_DONE = "meal_replay_done"
+INVITE_WAIT_SECONDS = 600  # how long a forward or a contact means an invitation
+_INVITE_UNTIL = "invite_until"  # in ``user_data``
 
 # Conversation states
 (
@@ -158,6 +165,7 @@ _KEYBOARD_LABEL = re.compile(
     "🍽 Добавить при[её]м пищи|⭐ Избранное|📊 Статистика|⚖️ Мой вес|⚙️ Настройки"
     "|🍲 Блюда"
     "|❓ О боте|💎 Получить подписку|📱 Связаться с админом|Отмена"
+    "|👤 Выбрать человека|✖️ Отмена"
     "|Сейчас|Завтрак|Обед|Ужин|Назад"
 )
 
@@ -224,6 +232,7 @@ def subscription_required(func):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
+    await _note_first_open(context, update.effective_user.id)
     if not await check_subscription(update.effective_user.id):
         text = (
             "👋 Привет! Я NutriCore — дневник питания и здоровья.\n\n"
@@ -234,10 +243,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, reply_markup=subscription_keyboard)
         return SUBSCRIPTION_INQUIRY
-    else:
-        text = "✅ Подписка активна. Что делаем?"
-        await update.message.reply_text(text, reply_markup=main_keyboard)
+    try:
+        with SessionLocal() as db:
+            first_run = welcome_screen.opens_welcome(db, update.effective_user.id)
+    except Exception as e:
+        logger.error("First run not read: %s", type(e).__name__)
+        first_run = False
+    if first_run:
+        await _reply_screen(update, welcome_screen.welcome())
         return CHOOSING_ACTION
+    await update.message.reply_text("Что делаем?", reply_markup=main_keyboard)
+    return CHOOSING_ACTION
+
+
+async def _note_first_open(context, telegram_id: int) -> None:
+    """Tells the owner, once and without a sound, that an invited person came. Nothing
+    here may cost that person their /start."""
+    try:
+        with SessionLocal() as db:
+            grant = crud_access_grant.mark_opened(db, telegram_id)
+            name = grant.display_name if grant is not None else None
+    except Exception as e:
+        logger.error("First open not recorded: %s", type(e).__name__)
+        return
+    if name is None:
+        return
+    for admin_id in settings.admin_ids:
+        try:
+            await context.bot.send_message(
+                admin_id, f"👋 {name} теперь в боте.", disable_notification=True
+            )
+        except TelegramError as e:
+            logger.warning("First open not told to the owner: %s", type(e).__name__)
 
 
 def _new_meal_hint() -> dict:
@@ -634,6 +671,12 @@ async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
         capture.line_not_shown(db, job, line, owed=owed)
 
 
+def _may_hear(telegram_id: int) -> bool:
+    """For what the bot says unasked: someone whose door was closed hears nothing more."""
+    with SessionLocal() as db:
+        return may_receive(db, telegram_id)
+
+
 async def _show_owed(application: Application) -> None:
     """The lines Telegram did not take when their read ended. Nothing is read here. One
     that cannot be shown does not hold back the next."""
@@ -641,6 +684,10 @@ async def _show_owed(application: Application) -> None:
         owed = capture.owed_lines(db, _live_reads)
     for one in owed:
         try:
+            if not _may_hear(one.chat_id):
+                with SessionLocal() as db:
+                    capture.owed_settled(db, one.chat_id, one.message_id)
+                continue
             try:
                 await _edit_line(application.bot, one.chat_id, one.message_id, one.line)
             except (RetryAfter, NetworkError) as e:
@@ -863,7 +910,21 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
         _schedule_personal_food_save(**done.learn)
     await _show(bot, job, done.line)
     await _retouch(bot, job.chat_id, done.retouch)
+    if done.learn:
+        await _first_record_hint(bot, job)
     return True, None
+
+
+async def _first_record_hint(bot, job: capture.Read) -> None:
+    """One line after the first record of someone who came through the welcome, with the
+    main keyboard for whoever wrote before answering its question."""
+    try:
+        with SessionLocal() as db:
+            hint = welcome_screen.take_hint(db, job.telegram_id)
+        if hint is not None:
+            await bot.send_message(job.chat_id, hint, reply_markup=main_keyboard)
+    except Exception as e:
+        logger.warning("First record hint not sent: %s", type(e).__name__)
 
 
 async def _album_settles(job: capture.Read) -> None:
@@ -991,7 +1052,8 @@ async def _show_given_up(application: Application, given_up: list) -> None:
     for job, done in given_up:
         if job is not None:
             action_journal.note(job.telegram_id, action_event.FAILED, job.kind)
-            await _show(application.bot, job, done.line)
+            if _may_hear(job.telegram_id):
+                await _show(application.bot, job, done.line)
 
 
 async def _sweep(application: Application) -> None:
@@ -2082,6 +2144,7 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # A read already running is paid for: it is not asked twice.
             meals = capture.unread_meals(db, REPROCESS_BATCH_LIMIT)
             meals = [meal_id for meal_id in meals if meal_id not in _live_reads]
+            meals = [m for m in meals if capture.owner_may_receive(db, m)]
             jobs = [capture.read_again(db, meal_id) for meal_id in meals]
         jobs = [job for job in jobs if job is not None]
         room = REPROCESS_BATCH_LIMIT - len(jobs)
@@ -2193,6 +2256,191 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# --- letting a person in ---------------------------------------------------------------
+
+
+async def _ask_to_pick(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_INVITE_UNTIL] = time.monotonic() + INVITE_WAIT_SECONDS
+    await message.reply_text(
+        people_screen.PROMPT, reply_markup=people_screen.picker_keyboard()
+    )
+
+
+@admin_required
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/invite: Telegram's own picker; the bot learns only who was picked."""
+    await _ask_to_pick(update.message, context)
+
+
+@admin_required
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    with SessionLocal() as db:
+        screen = people_screen.hub(db)
+    await _reply_screen(update, screen)
+
+
+async def users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if (
+        query.data == people_screen.INVITE
+        and update.effective_user.id in settings.admin_ids
+    ):
+        await query.answer()
+        await _ask_to_pick(query.message, context)
+        return
+    await _screen_callback(update, people_screen.handle, "Нет доступа", "users")
+
+
+async def welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _screen_callback(
+        update,
+        welcome_screen.handle,
+        "🔒 Нужна подписка",
+        "welcome",
+        deliver=_first_record_screen,
+    )
+
+
+async def _first_record_screen(query, screen) -> None:
+    """A new message: an edited one cannot bring the main keyboard."""
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError as e:
+        logger.warning("Welcome buttons not taken off: %s", type(e).__name__)
+    await query.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard
+    )
+
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The first-record hint names /feedback: until the real one, an honest answer."""
+    await update.message.reply_text(
+        "Отзывы прямо в боте появятся совсем скоро. Пока вопросы и пожелания можно "
+        "написать тому, кто тебя пригласил."
+    )
+
+
+def _named_person(message) -> invites.Person | None:
+    """Who a forward or a contact names; None if Telegram hides them."""
+    origin = message.forward_origin
+    if isinstance(origin, MessageOriginUser):
+        user = origin.sender_user
+        return invites.Person(user.id, user.first_name, user.last_name, user.username)
+    contact = message.contact
+    if contact is not None and contact.user_id is not None:
+        return invites.Person(contact.user_id, contact.first_name, contact.last_name)
+    return None
+
+
+async def _let_in(message, context, person: invites.Person) -> None:
+    """Every way out of here gives the main keyboard back."""
+    context.user_data.pop(_INVITE_UNTIL, None)
+    if person.telegram_id in settings.admin_ids:
+        await message.reply_text(people_screen.YOURSELF, reply_markup=main_keyboard)
+        return
+    try:
+        with SessionLocal() as db:
+            invites.invite(db, person, message.from_user.id)
+    except Exception as e:
+        logger.error("Invitation not written: %s", type(e).__name__)
+        await message.reply_text(people_screen.FAILED, reply_markup=main_keyboard)
+        return
+    await message.reply_text(
+        people_screen.notice_opened(person.name),
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard,
+    )
+    delivered = False
+    if settings.access_mode != "closed":
+        delivered = await _invite_directly(context.bot, person.telegram_id)
+    screen = people_screen.invited(context.bot.username, delivered)
+    await message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+
+
+async def _invite_directly(bot, telegram_id: int) -> bool:
+    """Only Telegram knows whether this person ever pressed Start here, and asking is the
+    send itself. A refusal is the usual answer and leaves the share button."""
+    try:
+        await bot.send_message(telegram_id, people_screen.INVITATION)
+    except TelegramError as e:
+        logger.info("Invitation not delivered: %s", type(e).__name__)
+        return False
+    return True
+
+
+async def invite_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """What belongs to the invitation, before the slots, the conversation and the diary:
+    a person picked, the two labels of the picker, and while it waits a forward or a
+    contact. Anything else, food too, goes on to the diary as ever."""
+    message = update.message
+    is_owner = update.effective_user.id in settings.admin_ids
+    if message.users_shared is not None:
+        if is_owner:
+            await _picked(message, context)
+        else:
+            logger.warning("A person picked by a non-owner: ignored")
+        raise ApplicationHandlerStop
+    if message.text == people_screen.CANCEL:
+        if is_owner:
+            context.user_data.pop(_INVITE_UNTIL, None)
+            await message.reply_text(
+                people_screen.CANCELLED, reply_markup=main_keyboard
+            )
+        raise ApplicationHandlerStop
+    if message.text == people_screen.PICK:
+        if is_owner:
+            # This label arrives as text only from a client that cannot pick.
+            context.user_data[_INVITE_UNTIL] = time.monotonic() + INVITE_WAIT_SECONDS
+            await message.reply_text(
+                people_screen.FALLBACK, reply_markup=people_screen.picker_keyboard()
+            )
+        raise ApplicationHandlerStop
+    until = context.user_data.get(_INVITE_UNTIL)
+    if until is None or not is_owner:
+        return
+    if time.monotonic() > until:
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await message.reply_text(people_screen.EXPIRED, reply_markup=main_keyboard)
+        return
+    if (message.text or "").startswith("/"):
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await message.reply_text(people_screen.CANCELLED, reply_markup=main_keyboard)
+        return
+    if message.forward_origin is None and message.contact is None:
+        return
+    person = _named_person(message)
+    if person is None:
+        await message.reply_text(
+            people_screen.HIDDEN_ORIGIN, reply_markup=people_screen.picker_keyboard()
+        )
+    elif isinstance(message.forward_origin, MessageOriginUser) and (
+        message.forward_origin.sender_user.is_bot
+    ):
+        await message.reply_text(
+            people_screen.A_BOT, reply_markup=people_screen.picker_keyboard()
+        )
+    else:
+        await _let_in(message, context, person)
+    raise ApplicationHandlerStop
+
+
+async def _picked(message, context) -> None:
+    shared = message.users_shared
+    if shared.request_id != people_screen.REQUEST_ID or not shared.users:
+        logger.warning("A person picked for an unknown request: %s", shared.request_id)
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await message.reply_text(people_screen.FAILED, reply_markup=main_keyboard)
+        return
+    user = shared.users[0]
+    await _let_in(
+        message,
+        context,
+        invites.Person(user.user_id, user.first_name, user.last_name, user.username),
+    )
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel and end the conversation."""
     await update.message.reply_text(
@@ -2246,11 +2494,19 @@ def create_bot_application() -> Application:
     )
 
     # Whose update this is, and what they did: before anything can pay for a model.
-    application.add_handler(TypeHandler(Update, action_journal.note_update), group=-3)
+    application.add_handler(TypeHandler(Update, action_journal.note_update), group=-4)
 
-    # Global access gate — runs before every other handler (group=-2) and drops
+    # Global access gate — runs before every other handler (group=-3) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.
-    application.add_handler(TypeHandler(Update, access_gate), group=-2)
+    application.add_handler(TypeHandler(Update, access_gate), group=-3)
+
+    # A person picked, and the picker's labels: never food, never a slot's answer.
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE, invite_intake
+        ),
+        group=-2,
+    )
 
     # The card's typed slot answers before the conversation sees the text; with no
     # slot it does nothing and the update goes on.
@@ -2441,6 +2697,21 @@ def create_bot_application() -> Application:
 
     # Add subscription management commands
     application.add_handler(CommandHandler("grant_sub", grant_subscription))
+
+    # Letting people in, and the first run (owner only, but for the first run).
+    application.add_handler(CommandHandler("invite", invite_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("feedback", feedback_command))
+    application.add_handler(
+        CallbackQueryHandler(
+            users_callback, pattern=f"^{people_screen.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            welcome_callback, pattern=f"^{welcome_screen.CALLBACK_PREFIX}"
+        )
+    )
 
     # Consult relay → my-health hub
     application.add_handler(CommandHandler("consult", consult))

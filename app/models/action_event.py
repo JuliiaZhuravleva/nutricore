@@ -22,7 +22,20 @@ PERSON_KINDS = (PHOTO, TEXT, VOICE, BUTTON, COMMAND)
 # Everything a label may ever be. No food: a label read from a message, a markup or a
 # command's arguments could carry a dish's name, so none of them is ever stored as it
 # came. A button is its callback's verb, the text before the first colon.
-BUTTON_VERBS = ("dh", "fav", "fl", "hw", "meal", "ml", "rt", "set", "st", "wt")
+BUTTON_VERBS = (
+    "dh",
+    "fav",
+    "fl",
+    "hw",
+    "meal",
+    "ml",
+    "rt",
+    "set",
+    "st",
+    "us",
+    "wl",
+    "wt",
+)
 # The reply keyboard's labels (``telegram.main_keyboard``); a test holds the two equal.
 MENU_LABELS = (
     "🍽 Добавить приём пищи",
@@ -33,7 +46,17 @@ MENU_LABELS = (
     "🍲 Блюда",
 )
 # The registered commands; a test holds the two equal.
-COMMANDS = ("cancel", "consult", "grant_sub", "models", "reprocess", "start")
+COMMANDS = (
+    "cancel",
+    "consult",
+    "feedback",
+    "grant_sub",
+    "invite",
+    "models",
+    "reprocess",
+    "start",
+    "users",
+)
 # What was read, or that a known dish was logged with no read at all.
 READ_LABELS = ("image", "text", "voice", "dish")
 # ``record_events`` kinds that are a person setting a record right. Not a delete (it

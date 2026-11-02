@@ -32,6 +32,7 @@ from sqlalchemy.orm import object_session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from telegram import Update
 
+import app.services.access_control as access_control
 import app.services.action_journal as action_journal
 import app.services.ai_call_log_service as log_service
 import app.services.inbound_message_service as inbound_service
@@ -39,6 +40,7 @@ import app.services.model_selection as model_selection
 import app.services.telegram as tg
 import app.services.usage_ledger as usage_ledger
 from app.core.config import settings
+from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
@@ -61,12 +63,21 @@ from app.models import (
     UsageLedger,
     User,
 )
-from app.services import dishes, favorites, meal_card, meal_items, weight_screen
+from app.services import (
+    dishes,
+    favorites,
+    invites,
+    meal_card,
+    meal_items,
+    people_screen,
+    weight_screen,
+)
 from app.services.openai_service import OpenAIService
 from app.services.product_lookup_service import ImageSignals, SavedFoodRAGStrategy
 from tests.test_capture_router import NOW_TS, NUTRITION, Wire
 
 A, B = 1001, 2002
+_COMMAND = {"type": "bot_command", "offset": 0, "length": 6}
 MARK = "зюзя"  # in every name of A's, and nowhere else
 A_FILE = "zyuzya-file"
 A_KCAL = 613
@@ -113,6 +124,7 @@ def Session(monkeypatch):
         model_selection,
         usage_ledger,
         action_journal,
+        access_control,
     ):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", str(A))
@@ -211,6 +223,7 @@ def _world(db) -> SimpleNamespace:
     """A's life in rows, one for each thing a verb can want. B has a little of their own,
     so that B's fallback screens are not empty ones."""
     a, b = _person(db, A), _person(db, B)
+    crud_access_grant.grant(db, 7_000_000_001, f"{MARK} Мика", None, granted_by=A)
     now = datetime.now(UTC)
     ago = lambda **kw: now - timedelta(**kw)  # noqa: E731
     soup = _dish(db, a, f"{MARK} суп", barcode="4600000000001")
@@ -332,6 +345,7 @@ def _world(db) -> SimpleNamespace:
         remove=remove.id,
         event=event.id,
         logged=logged.id,
+        invited=7_000_000_001,
         soup=soup.id,
         porridge=porridge.id,
         hidden=hidden.id,
@@ -478,6 +492,9 @@ def _assert_nothing_of_a(wire: Chats, person: int = B) -> None:
 
 # What each verb is given: ``w`` holds A's ids.
 PROBES = {
+    "us:p": lambda w: f"us:p:{w.invited}",
+    "us:x": lambda w: f"us:x:{w.invited}",
+    "us:u": lambda w: f"us:u:{w.invited}",
     "ml:r": lambda w: f"ml:r:{w.lunch}",
     "ml:o": lambda w: f"ml:o:{w.lunch}:r",
     "ml:op": lambda w: f"ml:op:{w.lunch}:0:r",
@@ -553,6 +570,7 @@ MIXED = {
 }
 # No id in them, or only a date: B's own screens, which must not hold A's day.
 NO_ID = {
+    "us:l": lambda w: "us:l:0",
     "ml:dl": lambda w: f"ml:dl:{datetime.now(UTC):%Y%m%d}:t",
     "ml:da": lambda w: f"ml:da:{datetime.now(UTC):%Y%m%d}:t",
     "dh:l": lambda w: "dh:l:0",
@@ -564,7 +582,7 @@ NO_ID = {
 def _verbs() -> set:
     """The verbs the tables hold, as ``ml:o``, read from the patterns themselves."""
     names = set()
-    for module in (meal_card, dishes, favorites):
+    for module in (meal_card, dishes, favorites, people_screen):
         for pattern, _verb in module._VERBS:
             names.add(re.match(r"[a-z]+:[a-z]*", pattern.pattern).group(0))
     return names | {"wt:u"}
@@ -1115,7 +1133,8 @@ def test_the_journal_is_written_for_each_person_and_holds_no_food(db, world, mod
 
 def test_the_journal_answers_what_the_owner_screens_will_ask(db, world, Session):
     _forget_the_journal(db)
-    now = datetime.now(UTC)
+    # Noon: "two hours ago" is the same day whatever hour this runs at.
+    now = datetime.now(UTC).replace(hour=12)
     for person, kind, label, ago in (
         (A, "photo", None, timedelta(minutes=5)),
         (A, "saved", "image", timedelta(minutes=4)),
@@ -1147,3 +1166,56 @@ def test_the_journal_answers_what_the_owner_screens_will_ask(db, world, Session)
     assert crud_action_event.counts_by_kind(db, B, since=now - timedelta(days=99)) == {
         "text": 1
     }
+
+
+# -- the people let in by hand ----------------------------------------------------------
+
+SASHA = 7_000_000_002  # past 32 bits, as a real id is
+
+
+def test_a_grant_opens_closes_and_opens_again_on_one_row(db, world):
+    sasha = invites.Person(SASHA, "Саша", "К", "sasha_k")
+    assert access_control.is_user_allowed(SASHA) is False  # the control
+
+    invites.invite(db, sasha, by=A)
+    assert access_control.is_user_allowed(SASHA) is True
+    assert crud_subscription.is_active_subscription(db, SASHA) is True
+
+    assert invites.close(db, SASHA) is invites.Closed.CLOSED
+    assert access_control.is_user_allowed(SASHA) is False
+    assert crud_subscription.is_active_subscription(db, SASHA) is False
+
+    assert invites.reopen(db, SASHA, by=A) is invites.Reopened.REOPENED
+    assert access_control.is_user_allowed(SASHA) is True
+
+    invites.close(db, SASHA)
+    renamed = invites.Person(SASHA, "Александр", None, None)
+    invites.invite(db, renamed, by=A)  # the upsert, on the same unique key
+    rows = crud_access_grant.everyone(db)
+    assert [r.display_name for r in rows if r.telegram_id == SASHA] == ["Александр"]
+    assert crud_access_grant.get(db, SASHA).revoked_at is None
+
+
+def test_only_one_of_two_first_opens_tells_the_owner(db, world):
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    assert crud_access_grant.mark_opened(db, SASHA).display_name == "Саша"
+    assert crud_access_grant.mark_opened(db, SASHA) is None
+    assert crud_access_grant.mark_opened(db, SASHA + 1) is None  # nobody's
+    # A second invitation does not make them new again.
+    invites.close(db, SASHA)
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    assert crud_access_grant.get(db, SASHA).first_opened_at is not None
+    assert crud_access_grant.mark_opened(db, SASHA) is None
+
+
+def test_a_first_start_goes_through_on_this_database(db, world):
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    message = _as(SASHA, text="/start", entities=[_COMMAND])
+    wire = _run([{"update_id": message["message_id"], "message": message}])
+    told = [p for name, p in wire.calls if name == "sendMessage"]
+    assert any(
+        p["chat_id"] == A and p["text"] == "👋 Саша теперь в боте." for p in told
+    ), told
+    assert any(p["chat_id"] == SASHA and "Дневник питания" in p["text"] for p in told)
+    db.expire_all()
+    assert crud_access_grant.get(db, SASHA).first_opened_at is not None

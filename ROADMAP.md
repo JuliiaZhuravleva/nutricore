@@ -8,7 +8,8 @@ index: [`docs/README.md`](docs/README.md).
 ## What Nutricore is
 
 A **personal** nutrition tracker on Telegram — capture meals with minimal friction
-(text/photo → КБЖУ via OpenAI) and chat about food. It is **not** a multi-user product.
+(text/photo → КБЖУ via OpenAI) and chat about food. It is for its owner and the people the
+owner invites by hand; it is **not** an open product with a sign-up.
 
 **Ecosystem boundary:** `my-health` = brain / data / guardrails; **nutricore = capture +
 chat surface.** Nutrition/food coaching uses nutricore's own OpenAI; medical/health
@@ -73,7 +74,8 @@ self-heal refactor/coverage (TD-007/008), inbound persistence (TD-009).
 This is a personal tool. The following — carried over from an earlier, product-oriented
 draft of this roadmap — are **not** planned:
 
-- Multi-user onboarding funnels, paywall/subscription polish for strangers.
+- An open onboarding funnel, a paywall or subscription polish for strangers. People come in
+  one way: the owner picks them by hand (`/invite`), and everyone else gets silence.
 - Companion mobile app, web dashboard, cross-platform sync.
 - Third-party API/webhook platform, community/social features, enterprise/wellness
   programs, anonymized data marketplace.

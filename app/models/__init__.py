@@ -1,3 +1,4 @@
+from .access_grant import AccessGrant
 from .action_event import ActionEvent
 from .activity import Activity
 from .ai_call_log import AiCallLog
@@ -33,6 +34,7 @@ __all__ = [
     "Activity",
     "AnalysisReport",
     "Subscription",
+    "AccessGrant",
     "AiCallLog",
     "ActionEvent",
     "UsageLedger",

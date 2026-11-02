@@ -17,6 +17,7 @@ from telegram.error import BadRequest, Forbidden, NetworkError, TimedOut
 
 from app.core.config import settings
 from app.crud.crud_routine_tick import crud_routine_tick
+from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
 from app.models.meal import Meal
 from app.models.user import User
@@ -38,7 +39,7 @@ MONDAY = date(2026, 10, 19)
 @pytest.fixture
 def db(monkeypatch):
     monkeypatch.setattr(
-        week_push.crud_subscription, "is_active_subscription", lambda _db, _id: True
+        crud_subscription, "is_active_subscription", lambda _db, _id: True
     )
     monkeypatch.setattr(settings, "DEFAULT_TIMEZONE", "Asia/Tbilisi")
     monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open", raising=False)
@@ -712,7 +713,7 @@ def test_one_users_bad_data_costs_nobody_else_their_summary(db, monkeypatch):
 
 def test_no_subscription_no_summary_as_with_the_screens_themselves(db, monkeypatch):
     monkeypatch.setattr(
-        week_push.crud_subscription, "is_active_subscription", lambda _db, _id: False
+        crud_subscription, "is_active_subscription", lambda _db, _id: False
     )
     _meal(db, _at(19), _item("овёс", "grain"))
     assert week_push.users_due(db, SUNDAY) == []

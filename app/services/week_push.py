@@ -14,11 +14,9 @@ from datetime import UTC, date, datetime, timedelta
 from sqlalchemy import select
 from telegram.error import Forbidden
 
-from app.core.config import settings
 from app.crud.crud_meal import crud_meal
-from app.crud.crud_subscription import crud_subscription
 from app.models.user import User
-from app.services.access_control import is_user_allowed
+from app.services.access_control import may_receive
 from app.services.card_delivery import may_have_arrived
 from app.services.day_card import local_time
 from app.services.settings_screen import WEEK_PUSH_SENT, user_zone, week_push_on
@@ -38,13 +36,7 @@ def due_monday(moment: datetime) -> date | None:
 
 
 def _may_receive(db, user: User) -> bool:
-    """As for the bot's own screens: its button would answer 🔒 to anyone else."""
-    telegram_id = user.telegram_id
-    if not is_user_allowed(telegram_id):
-        return False
-    return telegram_id in settings.admin_ids or (
-        crud_subscription.is_active_subscription(db, telegram_id)
-    )
+    return may_receive(db, user.telegram_id)
 
 
 def _due_week(db, user: User, now: datetime) -> date | None:

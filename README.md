@@ -1,6 +1,6 @@
 # Nutricore
 
-Nutricore is a **personal** Telegram bot for tracking nutrition — capture meals with minimal friction (text or photo → calories + macros via OpenAI) and chat about food. It is a single-user tool (public here as a portfolio piece), **not** a multi-user product.
+Nutricore is a **personal** Telegram bot for tracking nutrition — capture meals with minimal friction (text or photo → calories + macros via OpenAI) and chat about food. It is a small tool for its owner and the people the owner invites by hand (public here as a portfolio piece), **not** an open product: there is no sign-up and strangers get silence.
 
 **Ecosystem boundary:** nutricore is the *capture + chat surface* of a hub-and-spoke setup — a separate project, `my-health`, owns all medical data and reasoning. Food questions use nutricore's own OpenAI; health/medical questions relay to the hub via `/consult`. No medical logic or medical data lives in the bot.
 
