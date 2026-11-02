@@ -1200,12 +1200,15 @@ _COMMANDS = (
     BotCommand("start", "Открыть меню"),
     BotCommand("feedback", "Написать владельцу бота"),
 )
-_OWNER_COMMANDS = (BotCommand("users", "Кто пользуется и сколько это стоит"),)
+_OWNER_COMMANDS = (
+    BotCommand("invite", "Пригласить человека"),
+    BotCommand("users", "Кто пользуется и сколько это стоит"),
+)
 
 
 async def _set_commands(application: Application) -> None:
-    """The command menu. A convenience: without it the bot starts all the same. /users is
-    in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
+    """The command menu. A convenience: without it the bot starts all the same. /invite and
+    /users are in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
     refuses costs that admin the entry and no one else theirs."""
     try:
         await application.bot.set_my_commands(_COMMANDS)
@@ -2191,14 +2194,18 @@ async def grant_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
         with SessionLocal() as db:
-            subscription = crud_subscription.create_subscription(
-                db, user_id, admin_id, months
-            )
+            try:
+                invites.by_id(db, user_id, admin_id, months)
+                granted = True
+            except invites.GrantFailed:
+                granted = False
 
-        if subscription:
+        if granted:
             logger.info(f"Successfully granted subscription to user {user_id}")
             await update.message.reply_text(
-                f"✅ Подписка выдана пользователю {user_id} на {months} месяцев"
+                f"✅ Доступ открыт: {user_id}, срок {people_screen.term_words(months)}. "
+                "Человек теперь в /users. Сам бот написать не сможет, пока этот "
+                "человек его не открыл: ссылку на бота отправь сам."
             )
         else:
             logger.error(
@@ -2478,7 +2485,9 @@ async def users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     below = (query.data or "").startswith(owner_buttons.CARD_HERE)
     await _screen_callback(
         update,
-        people_screen.handle,
+        lambda db, person, data: people_screen.handle(
+            db, person, data, context.bot.username
+        ),
         None,
         "users",
         deliver=_users_below if below else None,
@@ -2776,7 +2785,7 @@ async def _let_in(message, context, person: invites.Person) -> None:
     delivered = False
     if settings.access_mode != "closed":
         delivered = await _invite_directly(context.bot, person.telegram_id)
-    screen = people_screen.invited(context.bot.username, delivered)
+    screen = people_screen.invited(context.bot.username, delivered, person)
     await _tell_owner(
         message, screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
     )
@@ -2786,7 +2795,8 @@ async def _invite_directly(bot, telegram_id: int) -> bool:
     """Only Telegram knows whether this person ever pressed Start here, and asking is the
     send itself. A refusal is the usual answer and leaves the share button."""
     try:
-        await bot.send_message(telegram_id, people_screen.INVITATION)
+        words = people_screen.invitation(invites.DEFAULT_MONTHS)
+        await bot.send_message(telegram_id, words)
     except TelegramError as e:
         logger.info("Invitation not delivered: %s", type(e).__name__)
         return False

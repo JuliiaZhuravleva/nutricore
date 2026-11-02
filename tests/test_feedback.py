@@ -322,7 +322,7 @@ def test_the_prompt_says_the_designs_words_and_has_its_two_buttons(db):
 def test_the_row_in_settings_opens_it_and_the_hub_keeps_its_budget(db):
     hub = settings_screen.open_view(db, SASHA)
     labels = _labels(hub.markup)
-    assert labels[2] == ["🍽 Обычная еда", "💊 Рутины", "💬 Фидбэк"]
+    assert labels[3] == ["🕐 Пояс", "💊 Рутины", "💬 Фидбэк"]
     _within_limits(labels)
     wire = play(tap("set:open"), tap(_datas_of(hub, "💬 Фидбэк")))
     assert wire.edits()[-1]["text"].startswith("<b>💬 Фидбэк</b>")

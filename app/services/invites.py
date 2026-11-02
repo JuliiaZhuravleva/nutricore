@@ -1,8 +1,8 @@
 """Who the owner lets in by hand: the grant, its subscription, closing and reopening.
 
 No Telegram here. The subscription is why the bot's screens open for an invited person,
-who never sees the word; its period only has to outlast the bot, so it cannot lapse
-silently. Closing the door keeps every record of the person.
+and it runs for the term the owner chose. Closing the door keeps every record of the
+person.
 """
 
 import enum
@@ -18,7 +18,8 @@ from app.services.access_control import in_the_settings
 
 logger = logging.getLogger(__name__)
 
-SUBSCRIPTION_MONTHS = 1200  # a hundred years
+DEFAULT_MONTHS = 12
+TERMS = (3, 6, 12)  # months, as the owner's buttons offer them
 
 
 @dataclass(frozen=True)
@@ -54,17 +55,42 @@ class Reopened(enum.Enum):
     UNKNOWN = "unknown"
 
 
-def invite(db: Session, person: Person, by: int) -> None:
+def invite(db: Session, person: Person, by: int, months: int = DEFAULT_MONTHS) -> None:
     """Lets the person in, or back in. The subscription first: a grant without one would
     pass the gate and meet a padlock. Raises ``GrantFailed``."""
     made = crud_subscription.create_subscription(
-        db, person.telegram_id, by, months=SUBSCRIPTION_MONTHS
+        db, person.telegram_id, by, months=months
     )
     if made is None:
         raise GrantFailed
     crud_access_grant.grant(
         db, person.telegram_id, person.name, person.username, granted_by=by
     )
+
+
+def by_id(db: Session, telegram_id: int, by: int, months: int) -> None:
+    """/grant_sub: a subscription alone would leave the person outside the gate and off
+    the owner's list. Someone already known keeps their name. Raises ``GrantFailed``."""
+    known = crud_access_grant.get(db, telegram_id)
+    person = (
+        Person(telegram_id, known.display_name, username=known.username)
+        if known is not None
+        else Person(telegram_id)
+    )
+    invite(db, person, by, months)
+
+
+def set_term(db: Session, telegram_id: int, by: int, months: int) -> bool:
+    """The term from today, for someone let in here whose door is open. False for anyone
+    else; a failed write raises ``GrantFailed``."""
+    if not crud_access_grant.is_active(db, telegram_id):
+        return False
+    if (
+        crud_subscription.create_subscription(db, telegram_id, by, months=months)
+        is None
+    ):
+        raise GrantFailed
+    return True
 
 
 def close(db: Session, telegram_id: int) -> Closed:
@@ -88,7 +114,7 @@ def reopen(db: Session, telegram_id: int, by: int) -> Reopened:
     if grant.revoked_at is None:
         return Reopened.ALREADY
     made = crud_subscription.create_subscription(
-        db, telegram_id, by, months=SUBSCRIPTION_MONTHS
+        db, telegram_id, by, months=DEFAULT_MONTHS
     )
     if made is None:
         raise GrantFailed

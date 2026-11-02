@@ -338,7 +338,7 @@ def test_the_hub_counts_routines_and_opens_them(Session):
     _tap(Session, f"rt:rm:{other['id']}")
     with Session() as db:
         screen = settings_screen.open_view(db, TG)
-    assert "💊 Рутины: 1 — отмечаются на карточке дня." in screen.text
+    assert "💊 Рутины: 1\n" in screen.text
     assert _data(screen, "💊 Рутины") == "rt:open"
 
 

@@ -422,7 +422,7 @@ def test_the_hub_counts_both_lists_and_opens_them(Session):
     _put(Session, **{ns.NO_SUGGEST: ["грибы", "молоко"]})
     with Session() as db:
         screen = settings_screen.open_view(db, TG, now=NOW)
-    assert "🧺 Надёжная еда: 1 · ✋ Не предлагать: 2" in screen.text
+    assert "🧺 Надёжная еда: 1\n✋ Не предлагать: 2" in screen.text
     assert _data(screen, "🧺 Надёжная еда") == fl.RELIABLE_OPEN
     assert _data(screen, "✋ Не предлагать") == fl.NEVER_OPEN
     assert len(screen.markup.inline_keyboard) <= 5
@@ -431,7 +431,7 @@ def test_the_hub_counts_both_lists_and_opens_them(Session):
 def test_the_hub_says_when_the_lists_are_empty(Session):
     with Session() as db:
         screen = settings_screen.open_view(db, TG, now=NOW)
-    assert "🧺 Надёжная еда: пока нет · ✋ Не предлагать: пока нет" in screen.text
+    assert "🧺 Надёжная еда: пока нет\n✋ Не предлагать: пока нет" in screen.text
 
 
 # --- the typed step, through the real ConversationHandler --------------------

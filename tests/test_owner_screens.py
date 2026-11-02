@@ -184,7 +184,9 @@ def test_the_command_is_in_each_admins_menu_and_nobody_elses(monkeypatch):
 
     assert names(sent_menus[0]) == ["start", "feedback"]
     assert scope(sent_menus[0]) is None
-    assert [names(p) for p in sent_menus[1:]] == [["start", "feedback", "users"]] * 2
+    assert [names(p) for p in sent_menus[1:]] == [
+        ["start", "feedback", "invite", "users"]
+    ] * 2
     assert [scope(p) for p in sent_menus[1:]] == [
         {"type": "chat", "chat_id": 1001},
         {"type": "chat", "chat_id": 1002},
@@ -371,7 +373,7 @@ def test_the_sum_with_no_person_has_its_line_only_when_there_is_one(db):
     assert "За 30 дней: 💸 $0.15" in text
     assert "Без человека: $0.05" in text
     # Not a person: no line of its own and no button.
-    assert all("0 · " not in line for line in text.split("\n"))
+    assert not any(line.startswith("0 · ") for line in text.split("\n"))
     assert ["0"] not in _labels(hub())
 
 
@@ -492,6 +494,10 @@ def test_stale_or_malformed_data_leads_to_the_list_with_a_notice(db, data):
 # --- the card ----------------------------------------------------------------------------
 
 
+def _sub_end(db):
+    return crud_subscription.get_by_telegram_id(db, SASHA).end_date
+
+
 def test_the_card_as_in_the_design(db):
     db.add(User(telegram_id=SASHA, username="old_name"))
     db.commit()
@@ -518,6 +524,7 @@ def test_the_card_as_in_the_design(db):
         "<b>👤 Саша · @sasha_k</b>",
         f"В боте с {now().astimezone(zone()):%d.%m}, последний раз сегодня "
         f"в {noon().astimezone(zone()):%H:%M}",
+        f"🗓 Подписка до {_sub_end(db):%d.%m.%Y}. Новый срок, считая от сегодня:",
         "▱▰▰▰▱▰▰ 5 из 7 дней",
         "За 30 дней: 📷 5 · ✍️ 3 · 🎙 1",
         "✏️ Исправлений: 2 · ⚠️ Сбоев: 1",
@@ -527,10 +534,12 @@ def test_the_card_as_in_the_design(db):
     ]
     assert _labels(shown) == [
         ["🗒 Фидбэк", "⛔ Закрыть доступ"],
+        ["3 мес", "6 мес", "12 мес"],
         ["⬅️ Пользователи"],
     ]
     assert _datas(shown) == [
         [f"usr:fp:{SASHA}:0", f"usr:x:{SASHA}"],
+        [f"usr:tc:{SASHA}:{months}" for months in (3, 6, 12)],
         ["usr:l:0"],
     ]
     _fits(shown)
@@ -631,7 +640,11 @@ def test_closing_applies_at_once_and_offers_undo_and_undo_works(db):
     assert "⛔ доступ закрыт" in closed["text"]
     assert _labels(closed) == [["↩️ Вернуть"], ["⬅️ Пользователи"]]
     assert back["text"].startswith("<i>✓ Саша: доступ снова открыт.</i>")
-    assert _labels(back) == [["⛔ Закрыть доступ"], ["⬅️ Пользователи"]]
+    assert _labels(back) == [
+        ["⛔ Закрыть доступ"],
+        ["3 мес", "6 мес", "12 мес"],
+        ["⬅️ Пользователи"],
+    ]
     assert access_control.is_user_allowed(SASHA) is True
 
 
@@ -896,7 +909,11 @@ def test_a_card_with_no_feedback_has_no_feedback_button(db):
     _invite(db)
     shown = card(SASHA)
     assert "💬 Фидбэк: 0" in shown["text"]
-    assert _labels(shown) == [["⛔ Закрыть доступ"], ["⬅️ Пользователи"]]
+    assert _labels(shown) == [
+        ["⛔ Закрыть доступ"],
+        ["3 мес", "6 мес", "12 мес"],
+        ["⬅️ Пользователи"],
+    ]
 
 
 def test_a_persons_feedback_is_theirs_and_goes_back_to_their_card(db):

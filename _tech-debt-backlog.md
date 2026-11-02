@@ -191,3 +191,7 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/people
   - **Created:** 2026-11-02
+- [ ] **TD-237**: An invited person's subscription now really ends (12 months by default). The end shows only on the person card: no mark in /users, no note to the owner before it, and the person meets the old padlock text about getting a subscription.
+  - **Priority:** Medium (first possible end is a year from the first such invite)
+  - **Source:** fix/settings-and-clock-test
+  - **Created:** 2026-11-02

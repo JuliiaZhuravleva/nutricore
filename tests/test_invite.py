@@ -314,36 +314,108 @@ def test_a_person_picked_is_let_in(db, reader):  # noqa: F811
     assert notice["text"] == "<i>✓ Саша: доступ открыт.</i>"
     assert _gives_main_keyboard(notice)
     assert answer["text"] == (
-        "Telegram не даёт боту написать первым, поэтому приглашение отправляешь ты. "
+        "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить. "
         "Ссылка работает только у этого человека: у других бот молчит."
     )
-    assert _labels(answer) == [["📤 Отправить приглашение"], ["⬅️ Пользователи"]]
+    assert _labels(answer) == [
+        ["📤 Написать: Саша"],
+        ["3 мес", "6 мес", "✓ 12 мес"],
+        ["⬅️ Пользователи"],
+    ]
     _fits(answer)
     grant = crud_access_grant.get(db, SASHA)
     assert (grant.display_name, grant.username) == ("Саша", "sasha_k")
     assert grant.granted_by == OWNER and grant.first_opened_at is None
     assert access_control.is_user_allowed(SASHA) is True
     # The door is the id and nothing else: the link holds no token.
-    url = _markup(answer)["inline_keyboard"][0][0]["url"]
-    query = parse_qs(urlparse(url).query)
-    assert url.startswith("https://t.me/share/url?")
-    assert query["url"] == ["https://t.me/b"]
-    assert query["text"] == ["Попробуй мой дневник питания: t.me/b"]
+    button = _markup(answer)["inline_keyboard"][0][0]
+    assert button["text"] == "📤 Написать: Саша"
+    url = button["url"]
+    assert url.startswith("https://t.me/sasha_k?text=") and "+" not in url
+    text = parse_qs(urlparse(url).query)["text"][0]
+    assert text.startswith("Привет! Попробуй мой дневник питания")
+    assert text.endswith(": t.me/b") and text.count("t.me") == 1
     assert reader.text == [] and reader.image == []
     _nothing_in_the_diary(db)
 
 
-def test_the_subscription_of_a_picked_person_does_not_lapse(db):
+def test_a_person_with_no_username_gets_the_chat_picker_and_one_link(db):
+    wire = play(picked(OWNER, SASHA, username=None), refuses=[SASHA])
+    answer = wire.to(OWNER)[1]
+    assert "Кнопка предложит выбрать чат" in answer["text"]
+    button = _markup(answer)["inline_keyboard"][0][0]
+    assert button["text"] == "📤 Отправить приглашение"
+    query = parse_qs(urlparse(button["url"]).query)
+    assert button["url"].startswith("https://t.me/share/url?")
+    assert query["url"] == ["https://t.me/b"]
+    # Telegram prints ``url`` above the text: the text does not carry it a second time.
+    assert "t.me" not in query["text"][0]
+
+
+def _months_left(db, person: int = SASHA) -> int:
+    db.expire_all()
+    sub = crud_subscription.get_by_telegram_id(db, person)
+    assert sub.is_active
+    return round((sub.end_date - datetime.now()).days / 30.4)
+
+
+def test_a_picked_person_gets_twelve_months_and_the_words_say_so(db):
+    wire = play(picked(OWNER, SASHA), refuses=[SASHA])
+    assert _months_left(db) == 12
+    answer = wire.to(OWNER)[1]
+    assert _labels(answer)[1] == ["3 мес", "6 мес", "✓ 12 мес"]
+    url = _markup(answer)["inline_keyboard"][0][0]["url"]
+    assert "на 12 месяцев" in parse_qs(urlparse(url).query)["text"][0]
+
+
+def test_the_term_changes_the_subscription_and_the_words_before_sending(db):
+    wire = play(picked(OWNER, SASHA), refuses=[SASHA])
+    tapped = _markup(wire.to(OWNER)[1])["inline_keyboard"][1][0]["callback_data"]
+    wire = play(tap(OWNER, tapped))
+    assert _months_left(db) == 3
+    edit = wire.edits()[-1]
+    assert _labels(edit)[1] == ["✓ 3 мес", "6 мес", "12 мес"]
+    url = _markup(edit)["inline_keyboard"][0][0]["url"]
+    words = parse_qs(urlparse(url).query)["text"][0]
+    assert "на 3 месяца" in words and "12" not in words
+    assert url.startswith("https://t.me/sasha_k?")
+
+
+def test_the_card_shows_the_date_and_sets_a_new_term(db):
     play(picked(OWNER, SASHA))
-    sub = crud_subscription.get_by_telegram_id(db, SASHA)
-    assert sub.is_active and sub.end_date > datetime.now() + timedelta(days=365 * 50)
+    wire = play(tap(OWNER, f"usr:p:{SASHA}"))
+    card = wire.edits()[-1]
+    assert "🗓 Подписка до " in card["text"]
+    assert ["3 мес", "6 мес", "12 мес"] in _labels(card)
+    wire = play(tap(OWNER, f"usr:tc:{SASHA}:6"))
+    assert "✓ Срок: 6 месяцев, считая от сегодня." in wire.edits()[-1]["text"]
+    assert _months_left(db) == 6
+
+
+def test_no_term_for_someone_outside_or_a_term_the_buttons_do_not_offer(db):
+    play(picked(OWNER, SASHA))
+    play(tap(OWNER, f"usr:tc:{SASHA}:99"))
+    assert _months_left(db) == 12
+    play(tap(OWNER, f"usr:x:{SASHA}"))
+    play(tap(OWNER, f"usr:tc:{SASHA}:3"))
+    db.expire_all()
+    assert crud_subscription.get_by_telegram_id(db, SASHA).is_active is False
+
+
+def test_nobody_else_can_change_a_term(db):
+    play(picked(OWNER, SASHA))
+    play(tap(SASHA, f"usr:tc:{SASHA}:3"))
+    play(tap(SASHA, f"usr:ti:{SASHA}:3"))
+    assert _months_left(db) == 12
 
 
 def test_someone_who_opened_the_bot_gets_the_invitation_directly(db):
     wire = play(picked(OWNER, SASHA))
-    assert [p["text"] for p in wire.to(SASHA)] == [people_screen.INVITATION]
+    assert [p["text"] for p in wire.to(SASHA)] == [
+        "👋 Тебя пригласили в дневник питания на 12 месяцев. Нажми /start, чтобы начать."
+    ]
     answer = wire.to(OWNER)[1]
-    assert _labels(answer) == [["⬅️ Пользователи"]]
+    assert _labels(answer) == [["👤 Саша"], ["⬅️ Пользователи"]]
     assert "отправил сам" in answer["text"]
 
 
@@ -353,7 +425,7 @@ def test_a_refused_invitation_is_normal_and_leaves_the_share(db, caplog):
     assert wire.to(SASHA) == []
     assert ("refused" in [n for n, _ in wire.calls]) is True
     assert "Invitation not delivered: Forbidden" in caplog.text
-    assert _labels(wire.to(OWNER)[1])[0] == ["📤 Отправить приглашение"]
+    assert _labels(wire.to(OWNER)[1])[0] == ["📤 Написать: Саша"]
 
 
 def test_closed_mode_says_plainly_the_grant_opens_nothing(db, monkeypatch):
@@ -559,8 +631,24 @@ def test_undo_opens_the_door_again(db, reader):  # noqa: F811
     )
     shown = wire.edits()[1]
     assert shown["text"].startswith("<i>✓ Саша: доступ снова открыт.</i>")
-    assert _labels(shown) == [["⛔ Закрыть доступ"], ["⬅️ Пользователи"]]
+    assert _labels(shown) == [
+        ["⛔ Закрыть доступ"],
+        ["3 мес", "6 мес", "12 мес"],
+        ["⬅️ Пользователи"],
+    ]
     assert reader.text == ["суп"]
+
+
+def test_grant_sub_opens_the_door_and_puts_the_person_on_the_list(
+    db, reader
+):  # noqa: F811
+    """Two people given /grant_sub met a silent bot and were missing from /users."""
+    assert access_control.is_user_allowed(SASHA) is False
+    play(say(OWNER, f"/grant_sub {SASHA} 6"), say(SASHA, "суп"))
+    assert access_control.is_user_allowed(SASHA) is True
+    assert _months_left(db) == 6
+    assert reader.text == ["суп"]
+    assert str(SASHA) in people_screen.hub(db).text
 
 
 def test_inviting_again_reactivates(db):
@@ -1307,9 +1395,12 @@ def test_the_hint_comes_once_after_the_first_record(db, reader):  # noqa: F811
     hints = [p for p in wire.to(SASHA) if p["text"] == welcome_screen.HINT]
     assert len(hints) == 1
     assert hints[0]["text"] == (
-        "Записано. Вопросы и пожелания — /feedback, объяснения — "
-        "ℹ️ Как это работает в ⚙️ Настройках."
+        "Дальше так же: фото, текст или голосовое.\n\n"
+        "💬 Вопросы и пожелания: /feedback\n"
+        "ℹ️ Объяснения: ⚙️ Настройки → ℹ️ Как это работает"
     )
+    # The card above it has just said «Записано».
+    assert "Записано" not in hints[0]["text"]
     assert _gives_main_keyboard(hints[0])
     assert reader.text == ["омлет", "кофе"]
 

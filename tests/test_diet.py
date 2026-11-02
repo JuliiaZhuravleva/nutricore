@@ -369,14 +369,28 @@ def _within_limits(markup):
 def test_the_hub_has_the_row_and_keeps_its_budget(Session):
     text, markup = _tap_settings("set:open")
     assert _rows(markup) == [
-        ["🕐 Часовой пояс", "🔢 Цифры сразу: выкл"],
-        ["🗓 Итог недели: вкл", "📋 Черновик: выкл"],
-        ["🍽 Обычная еда", "💊 Рутины", "💬 Фидбэк"],
+        ["🔢 Цифры сразу: выкл", "📋 Черновик: выкл"],
+        ["🗓 Итог недели: вкл", "💸 Стоимость: выкл"],
         ["🧺 Надёжная еда", "✋ Не предлагать"],
-        ["ℹ️ Как это работает", "💸 Стоимость: выкл"],
+        ["🕐 Пояс", "💊 Рутины", "💬 Фидбэк"],
+        ["🍽 Обычная еда", "ℹ️ Как это работает"],
     ]
     _within_limits(markup)
     assert "🍽 Обычная еда: не выбрано" in text
+
+
+def test_no_label_on_the_hub_is_long_enough_for_telegram_to_cut():
+    # «🍽 Обычная еда» third in a row came out as «Об…ая еда» on a phone.
+    hub = settings_screen.screen(True, "Asia/Tbilisi", NOW, draft=True)
+    three = [row for row in hub.markup.inline_keyboard if len(row) == 3]
+    assert three and all(len(b.text) <= 12 for row in three for b in row), three
+
+
+def test_the_hub_says_each_thing_on_a_line_of_its_own_and_explains_nothing():
+    hub = settings_screen.screen(True, "Asia/Tbilisi", NOW, draft=True)
+    lines = hub.text.split("\n")
+    assert len(lines) <= 9 and all(len(line) <= 40 for line in lines), lines
+    assert "🔢" not in hub.text and "📋" not in hub.text and "💸" not in hub.text
 
 
 def test_every_two_button_label_on_the_hub_fits_the_row():

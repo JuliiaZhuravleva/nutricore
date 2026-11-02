@@ -83,9 +83,9 @@ def test_the_grant_ends_in_the_target_month(
 
     wire = _grant(f"{GRANTEE} {months}")
 
-    assert wire.seen() == [
-        f"✅ Подписка выдана пользователю {GRANTEE} на {months} месяцев"
-    ]
+    (reply,) = wire.seen()
+    assert reply.startswith(f"✅ Доступ открыт: {GRANTEE}, срок {months} месяц")
+    assert "/users" in reply
     granted = _subscription(db)
     assert granted.is_active and granted.start_date == today
     assert granted.end_date == ends
@@ -118,3 +118,13 @@ def test_a_bad_argument_still_gets_the_format_message(
 
     assert wire.seen() == [FORMAT]
     assert _subscription(db) is None
+
+
+def test_a_grant_by_id_keeps_the_name_of_someone_known(db, reader):
+    from app.crud.crud_access_grant import crud_access_grant
+
+    crud_access_grant.grant(db, GRANTEE, "Саша", "sasha_k", granted_by=1)
+    _grant(f"{GRANTEE} 3")
+    db.expire_all()
+    grant = crud_access_grant.get(db, GRANTEE)
+    assert (grant.display_name, grant.username) == ("Саша", "sasha_k")
