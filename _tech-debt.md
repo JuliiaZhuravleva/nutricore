@@ -6,7 +6,7 @@ Critical / High / в работе. **Единственный файл, кото
 Остальное: `_tech-debt-backlog.md` (Medium/Low) · `_tech-debt-archive.md` (закрытое) — только грепом.
 
 ## Заметки из исходного файла
-- [ ] **TD-243**: One real photo failed the read every time (first send and several 🔁, 2026-11-02). Cause not proven: prod logs were out of reach from that session. To tell apart: a model refusal or empty answer, or a parse/write error in the read. Look at `Meal N not read` / `not written` in the bot's log and `ai_call_logs` for that window. Also left by the old M7c: a dish named by a whole typed sentence stays in «Блюда»
+- [ ] **TD-243**: The read failures of 2026-11-02 were the OpenAI balance: 429 «You have no credits remaining» in `ai_call_logs` on every call in the window. Open: (1) whether `ai_errors.out_of_credit` knew this refusal, since it matches `code == insufficient_quota` only; any other code counts as a passing rate limit, so no 💳 alert and automatic retries; the real code and the `meal_readings` status are needed to tell. (2) A dish named by a whole typed sentence, left by the old M7c, stays in «Блюда»
   - **Priority:** High
   - **Source:** owner's report
   - **Created:** 2026-11-02
