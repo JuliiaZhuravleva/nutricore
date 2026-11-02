@@ -36,6 +36,7 @@ from app.models.personal_food import PersonalFood
 from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import meal_items
+from app.services.close_row import ok_row
 from app.services.numbers import shows_numbers, toggle_label
 
 logger = logging.getLogger(__name__)
@@ -407,6 +408,7 @@ def _v_log(t, data: str, fid: str, chip: str) -> Screen:
     name = dish.canonical_name if dish is not None else fav.name
     meal = _log(t, fav, dish, name)
     rows = [
+        ok_row(),
         [
             _btn("↩️ Отменить", "u", meal.id),
             InlineKeyboardButton("🕐 Время", callback_data=f"ml:t:{meal.id}:r"),

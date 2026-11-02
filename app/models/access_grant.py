@@ -13,7 +13,8 @@ class AccessGrant(Base, BaseClass):
 
     Keyed by telegram_id with no foreign key: the gate reads it before any user row
     exists. ``revoked_at`` closes the door and keeps the row, so «↩️ Вернуть» and a
-    second invitation find it. ``first_opened_at`` is set once, by their first /start.
+    second invitation find it. ``first_opened_at`` is set once, by their first /start;
+    ``closed_told_at`` once per closing, when they hear the door is closed.
     """
 
     __tablename__ = "access_grants"
@@ -26,6 +27,7 @@ class AccessGrant(Base, BaseClass):
     granted_at = Column(DateTime(timezone=True), nullable=False)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     first_opened_at = Column(DateTime(timezone=True), nullable=True)
+    closed_told_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

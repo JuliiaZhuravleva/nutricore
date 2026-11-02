@@ -241,7 +241,7 @@ def test_with_no_subscription_nothing_is_written(db, owner, reader, monkeypatch)
     monkeypatch.setattr(tg, "check_subscription", locked)
     wire = send(text("суп"))
     assert _meal_on_day(db, owner) == []
-    assert any(tg.LOCK_TEXT == said for said in wire.seen())
+    assert tg.NO_ACCESS in wire.seen() or tg.TERM_ENDED in wire.seen()
 
 
 def test_the_same_message_delivered_again_is_one_meal(db, owner, reader):

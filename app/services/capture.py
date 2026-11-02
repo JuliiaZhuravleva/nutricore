@@ -45,6 +45,7 @@ from app.services import (
     weight_screen,
 )
 from app.services.access_control import may_receive
+from app.services.close_row import ok_row
 from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
@@ -510,7 +511,10 @@ def _reading_markup(meal_id: int, join: Optional[list] = None) -> InlineKeyboard
 
 def _undo_markup(meal_id: int, event_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[_button(UNDO, f"ml:u:{event_id}:r"), _button(FIX, f"ml:o:{meal_id}:r")]]
+        [
+            ok_row(),
+            [_button(UNDO, f"ml:u:{event_id}:r"), _button(FIX, f"ml:o:{meal_id}:r")],
+        ]
     )
 
 
@@ -520,7 +524,10 @@ def _fix_markup(meal_id: int) -> InlineKeyboardMarkup:
 
 def _split_markup(source_id: int, meal_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        [[_button(SPLIT, f"ml:z:{source_id}:r"), _button(FIX, f"ml:o:{meal_id}:r")]]
+        [
+            ok_row(),
+            [_button(SPLIT, f"ml:z:{source_id}:r"), _button(FIX, f"ml:o:{meal_id}:r")],
+        ]
     )
 
 
@@ -1900,7 +1907,9 @@ def _v_split_do(t, data: str, mid: str) -> meal_card.Screen:
         jobs.append((source.message_id, replace(job, alone=True)))
     return meal_card.Screen(
         meal_card.photos_pending(len(sources), meal.is_draft),
-        InlineKeyboardMarkup([[meal_card._undo_button(change.event.id, "r")]]),
+        InlineKeyboardMarkup(
+            [ok_row(), [meal_card._undo_button(change.event.id, "r")]]
+        ),
         meal_id=meal.id,
         view="other",  # not this meal's line: that one is sent now
         split=Split(change.event.id, tuple(jobs)),

@@ -57,6 +57,10 @@ Medium / Low / без приоритета, открытые. Не читать 
     `tests/conftest.py`; `test_save_button_saves_what_is_on_screen` asserts the enqueue and its
     per-100g kwargs. Full suite ~4 s instead of 3 min 51 s. Only the prod half stays open.
   - **Priority:** Medium · **Source:** feat/favorites-menu full gate run · **Created:** 2026-10-28
+- [ ] **TD-238**: The new-person walkthrough left findings open. Worst: an open dish or time screen does not hold the next text, so a typed correction becomes a new record. Also: silence on «привет» and /help, an empty stats picture that sounds like a reproach, three instructions after the first record, a long voice notice, a dish screen and settings over the row limit, three taps to delete, a dense ℹ️, an invitation that does not say who invites, a crowded person card.
+  - **Priority:** Medium (each needs the owner's yes)
+  - **Source:** fix/access-end-and-welcome
+  - **Created:** 2026-11-02
 
 ## Low
 
@@ -191,7 +195,23 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/people
   - **Created:** 2026-11-02
-- [ ] **TD-237**: An invited person's subscription now really ends (12 months by default). The end shows only on the person card: no mark in /users, no note to the owner before it, and the person meets the old padlock text about getting a subscription.
+- [ ] **TD-237**: An invited person's subscription now really ends (12 months by default). The end shows only on the person card: no mark in /users, and no note to the owner before it. The person now meets one calm line that the term ended and who can renew it.
   - **Priority:** Medium (first possible end is a year from the first such invite)
   - **Source:** fix/settings-and-clock-test
+  - **Created:** 2026-11-02
+- [ ] **TD-239**: Tap refusals always say the term ended, while message refusals tell a person who never had a term that apart. Reachable only in the open mode, with an old button.
+  - **Priority:** Low
+  - **Source:** fix/access-end-and-welcome
+  - **Created:** 2026-11-02
+- [ ] **TD-240**: TELEGRAM_ADMIN_USERNAME has no reader since the padlock screen went. Remove it with its default, once no env map sets it.
+  - **Priority:** Low
+  - **Source:** fix/access-end-and-welcome
+  - **Created:** 2026-11-02
+- [ ] **TD-241**: A closed person's tap is not answered by the gate, so the button spins until Telegram gives up. The line still arrives on the first tap.
+  - **Priority:** Low
+  - **Source:** fix/access-end-and-welcome
+  - **Created:** 2026-11-02
+- [ ] **TD-242**: Whether someone with the draft mode on before the first record gets the first-day hint and the zone line has no test of its own.
+  - **Priority:** Low
+  - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02

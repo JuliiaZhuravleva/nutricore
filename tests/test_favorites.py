@@ -24,6 +24,7 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.record_event import RecordEvent
 from app.models.user import User
+from app.services import close_row
 from app.services import favorites as fv
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
@@ -286,6 +287,7 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         db.refresh(fav)
         assert fav.use_count == 1 and fav.last_used_at is not None
         assert _callbacks(screen.markup) == [
+            close_row.CALLBACK,
             f"fav:u:{meal.id}",
             f"ml:t:{meal.id}:r",
             "fav:p:0",
@@ -455,7 +457,7 @@ def test_callback_without_subscription_changes_nothing(Session, monkeypatch):
     update, query = _query(f"fav:l:{fav.id}:d")
     asyncio.run(tg.favorites_callback(update, SimpleNamespace()))
 
-    assert "подпиской" in query.answer.await_args.args[0]
+    assert query.answer.await_args.args[0] == tg.TERM_ENDED
     query.edit_message_text.assert_not_awaited()
     with Session() as db:
         assert db.query(Meal).filter(Meal.resolution_source == "favorite").count() == 0

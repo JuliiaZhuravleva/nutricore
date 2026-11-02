@@ -26,6 +26,7 @@ from app import main as app_main
 from app.core.config import settings
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import Meal, MealItem, MealMessage, MealSource, RecordEvent, User
+from app.services import close_row
 from app.services import (
     capture,
     explain_screen,
@@ -283,8 +284,11 @@ def test_m8_the_earlier_meal_survives_with_both_lists_in_one_message(db, owner, 
     assert screen["message_id"] == 4900
     assert screen["text"] == ("Объединено с приёмом пн 26 октября, 13:00: рис и сыр.")
     source = _only_source(db, second.id)
-    assert _datas(screen) == [[f"ml:z:{source.id}:r", f"ml:o:{first.id}:r"]]
-    assert _labels(screen) == [["➖ Отделить", "✏️ Исправить"]]
+    assert _datas(screen) == [
+        [close_row.CALLBACK],
+        [f"ml:z:{source.id}:r", f"ml:o:{first.id}:r"],
+    ]
+    assert _labels(screen) == [[close_row.LABEL], ["➖ Отделить", "✏️ Исправить"]]
     assert second.merged_into_id == first.id
     assert second.meal_time is not None
     assert source.meal_id == first.id
@@ -521,7 +525,7 @@ def test_a_reply_joined_with_its_own_message_comes_back(db, owner, reader):
         )
     )
     assert wire.sent()[-1]["text"].startswith("Добавлено к приёму")
-    data = _datas(wire.sent()[-1])[0][0]
+    data = _datas(wire.sent()[-1])[1][0]
     assert data.startswith("ml:z:")
     screen = _screen(tap(data))
     assert screen["text"].startswith("Отделено: сыр.")
@@ -936,8 +940,8 @@ def test_read_again_replaces_what_was_read_and_keeps_what_was_typed(db, owner, r
     last = [edit for edit in wire.edits() if edit["message_id"] == 4800][-1]
     assert last["text"] == "Записано: гречка, салат, курица и кетчуп."
     event = db.scalars(select(RecordEvent).where(RecordEvent.kind == "reread")).one()
-    assert _datas(last)[0][0] == f"ml:u:{event.id}:r"
-    assert _labels(last)[0] == ["↩️ Вернуть", "✏️ Исправить"]
+    assert _datas(last)[1][0] == f"ml:u:{event.id}:r"
+    assert _labels(last)[1] == ["↩️ Вернуть", "✏️ Исправить"]
     assert _get(db, meal.id).reading_status == "read"
 
 

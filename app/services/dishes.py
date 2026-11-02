@@ -30,6 +30,7 @@ from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
 from app.services import favorites, food_groups, meal_card, meal_items, stats_screen
+from app.services.close_row import ok_row
 from app.services.day_card import local_time
 from app.services.favorites import BUTTON_NAME_MAX, FAVORITE_SOURCE, Screen
 from app.services.meal_card import (
@@ -715,6 +716,7 @@ def _v_log(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
     meal = _log(t, dish)
     t.db.refresh(dish)
     rows = [
+        ok_row(),
         [
             _button("↩️ Отменить", f"{favorites.CALLBACK_PREFIX}u:{meal.id}"),
             _button("🕐 Время", f"ml:t:{meal.id}:r"),

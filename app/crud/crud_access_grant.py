@@ -48,6 +48,7 @@ class CRUDAccessGrant:
             "granted_by": granted_by,
             "granted_at": now,
             "revoked_at": None,
+            "closed_told_at": None,
             "updated_at": now,
         }
         insert = _INSERT[db.get_bind().dialect.name]
@@ -65,10 +66,30 @@ class CRUDAccessGrant:
         db.execute(
             update(AccessGrant)
             .where(AccessGrant.telegram_id == telegram_id)
-            .values(revoked_at=now if revoked else None, updated_at=now)
+            .values(
+                revoked_at=now if revoked else None,
+                closed_told_at=None,
+                updated_at=now,
+            )
         )
         db.commit()
         db.expire_all()
+
+    def take_closed_notice(self, db: Session, telegram_id: int) -> bool:
+        """Whether this call is the one that may tell them the door is closed. One
+        UPDATE, so of two messages at once only one hears it."""
+        now = datetime.datetime.now(UTC)
+        result = db.execute(
+            update(AccessGrant)
+            .where(
+                AccessGrant.telegram_id == telegram_id,
+                AccessGrant.revoked_at.is_not(None),
+                AccessGrant.closed_told_at.is_(None),
+            )
+            .values(closed_told_at=now, updated_at=now)
+        )
+        db.commit()
+        return result.rowcount == 1
 
     def mark_opened(self, db: Session, telegram_id: int) -> Optional[AccessGrant]:
         """The grant, if this call is the one that set ``first_opened_at``. One UPDATE,

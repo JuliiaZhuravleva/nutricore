@@ -23,6 +23,7 @@ import app.services.product_lookup_service as pls
 from app.core.config import settings
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import Meal, MealItem, MealMessage, MealReading, MealSource, RecordEvent
+from app.services import close_row
 from app.services import capture, meal_items
 from app.services import telegram as tg
 from app.services.openai_service import OpenAIService
@@ -707,15 +708,15 @@ def test_the_tapped_message_counts_the_photos_and_offers_the_way_back(db, soup):
     screen = wire.edits()[0]
     event = db.scalars(select(RecordEvent).where(RecordEvent.kind == "split")).one()
     assert screen["text"] == "3 фото в дневнике, читаю…"
-    assert _kb(screen) == [[f"ml:u:{event.id}:r"]]
-    assert _labels(screen)[0][0]["text"] == "↩️ Вернуть"
+    assert _kb(screen) == [[close_row.CALLBACK], [f"ml:u:{event.id}:r"]]
+    assert _labels(screen)[1][0]["text"] == "↩️ Вернуть"
     assert event.meal_id == meal.id
     # And no line stays on «читаю»: once the reads end it says what is there, and the
     # way back is still on it.
     settled = wire.edits()[-1]
     assert settled["message_id"] == screen["message_id"]
     assert settled["text"] == "Записано: кусок."
-    assert f"ml:u:{event.id}:r" in _kb(settled)[0]
+    assert f"ml:u:{event.id}:r" in _kb(settled)[1]
 
 
 def test_a_second_tap_pays_nothing(db, soup):

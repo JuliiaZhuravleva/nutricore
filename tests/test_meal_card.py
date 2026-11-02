@@ -24,6 +24,7 @@ from app.crud.crud_personal_food import crud_personal_food
 from app.db.base import Base
 from app.models import Meal, MealItem, PersonalFood, RecordEvent, User
 from app.schemas.meal import MealCreate
+from app.services import close_row
 from app.services import favorites, meal_card, meal_items, next_step, stats_screen
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
@@ -1229,7 +1230,7 @@ def test_removing_the_last_dish_is_n6(db, owner):
     meal, item = _one(db, owner)
     screen = _tap(db, f"ml:x:{item.id}:t")
     assert screen.text.startswith("<b>🗑 Приём удалён</b>")
-    assert _rows(screen)[0] == ["↩️ Вернуть"]
+    assert _rows(screen)[1] == ["↩️ Вернуть"]
     db.refresh(meal)
     assert meal.deleted_at is not None
 
@@ -1245,16 +1246,16 @@ def test_n6_is_the_spec_screen_and_back_follows_the_origin(db, owner):
         ]
     )
     event = db.scalars(select(RecordEvent).order_by(RecordEvent.id.desc())).first()
-    assert _data(screen) == [[f"ml:u:{event.id}:t"], ["ml:dl:20261026:t"]]
-    assert _rows(screen)[1] == ["⬅️ Приёмы дня"]
+    assert _data(screen) == [[close_row.CALLBACK], [f"ml:u:{event.id}:t"], ["ml:dl:20261026:t"]]
+    assert _rows(screen)[2] == ["⬅️ Приёмы дня"]
     assert meal.calories == 620.0
 
 
 def test_n6_from_the_line_leads_to_the_day_card(db, owner):
     meal, _item = _one(db, owner)
     screen = _tap(db, f"ml:d:{meal.id}:r")
-    assert _rows(screen)[1] == ["📊 Карточка дня"]
-    assert _data(screen)[1] == ["st:t"]
+    assert _rows(screen)[2] == ["📊 Карточка дня"]
+    assert _data(screen)[2] == ["st:t"]
 
 
 def test_undo_restores_exactly_a_second_tap_opens_the_card(db, owner):

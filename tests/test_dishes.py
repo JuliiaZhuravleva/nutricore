@@ -20,6 +20,7 @@ from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.models import FavoriteMeal, Meal, MealItem, PersonalFood, RecordEvent, User
+from app.services import close_row
 from app.services import capture, dishes, meal_card, meal_items, next_step
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
@@ -1562,8 +1563,9 @@ def test_o10_logs_a_portion_free_and_goes_back_to_the_dish(db, owner, reader):
     assert _toast(wire) == "Записано"
     meals = _meals(db, owner)
     assert len(meals) == 1
-    assert _labels(shown) == [["↩️ Отменить", "🕐 Время"], ["⬅️ К блюду"]]
+    assert _labels(shown) == [[close_row.LABEL], ["↩️ Отменить", "🕐 Время"], ["⬅️ К блюду"]]
     assert _data(shown) == [
+        [close_row.CALLBACK],
         [f"fav:u:{meals[0].id}", f"ml:t:{meals[0].id}:r"],
         [f"dh:o:{dish.id}:l2"],
     ]
@@ -1587,7 +1589,7 @@ def test_o10_of_a_starred_dish_is_a_favourite_log_with_a_soft_undo(db, owner, re
     db.expire_all()
     assert db.get(FavoriteMeal, fav.id).use_count == 1
 
-    tap(_data(wire.edits()[-1])[0][0])
+    tap(_data(wire.edits()[-1])[1][0])
     db.expire_all()
     assert db.get(Meal, meal.id).deleted_at is not None  # soft
     assert reader.text == []

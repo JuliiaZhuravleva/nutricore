@@ -57,7 +57,12 @@ def test_allowed_ids_tolerates_malformed(monkeypatch):
 
 
 def _make_update(user_id):
-    return SimpleNamespace(effective_user=SimpleNamespace(id=user_id))
+    return SimpleNamespace(
+        effective_user=SimpleNamespace(id=user_id),
+        effective_chat=None,
+        message=None,
+        callback_query=None,
+    )
 
 
 def test_gate_drops_non_allowed(access):

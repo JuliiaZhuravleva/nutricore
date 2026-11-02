@@ -407,8 +407,8 @@ def test_the_wait_takes_the_next_message_ahead_of_the_diary(db, model):
     assert model.text == []
     last = wire.to(SASHA)[-1]
     assert last["text"] == "<i>✓ Отправлено. Спасибо!</i>"
-    assert _labels(last["reply_markup"]) == [["↩️ Это была еда: записать"]]
-    assert _datas(last["reply_markup"]) == [[f"fb:food:{rows[0].id}"]]
+    assert _labels(last["reply_markup"]) == [["✅ ОК"], ["↩️ Это была еда: записать"]]
+    assert _datas(last["reply_markup"]) == [["ok:close"], [f"fb:food:{rows[0].id}"]]
 
 
 def test_only_the_next_message_goes_the_one_after_is_food(db, model):
@@ -477,8 +477,7 @@ def test_a_menu_button_cancels_at_once_and_does_its_own_work(db, model, label):
 
 def test_every_menu_label_is_known_to_the_wait():
     main = {b.text for row in tg.main_keyboard.keyboard for b in row}
-    locked = {b.text for row in tg.subscription_keyboard.keyboard for b in row}
-    assert (main | locked) <= tg._FEEDBACK_LEAVES
+    assert (main | set(tg._OLD_LOCK_LABELS)) <= tg._FEEDBACK_LEAVES
 
 
 def test_a_word_that_is_only_like_a_label_is_still_feedback(db):
