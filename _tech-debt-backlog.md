@@ -145,3 +145,49 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/request-cost (released 2703865)
   - **Created:** 2026-10-29
+
+
+- [ ] **TD-228**: alembic check is red on main: models and migrations disagree on nullable created_at/updated_at (meal_messages, meal_readings, meal_sources) and hand-written indexes on personal_foods and personal_food_embeddings. Removed from CI so it would not paint every branch red; the four tables added by feat/people show no drift. Reconcile, then add the check back.
+  - **Priority:** Medium
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-229**: Custom emoji set is behind the code: marks 🍖 🥚 👤 👥 📤 💬 👁 🗒, writing and tap are drawn in render/emoji or listed for it, none uploaded. INFERRED from custom_emoji.py: stock emoji show until the set is rebuilt. Never seen in a real chat.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-230**: /grant_sub on an invited person can shorten their 1200-month subscription: create_subscription overwrites end_date.
+  - **Priority:** Medium
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-231**: Old records and saved dishes with fatty fish keep stored groups without omega: no paid retag ran. Omega-3 days from fish appear only for meals read after feat/people.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-232**: If the model tags fatty fish with omega but not anchor, or a plate as one item (salad with salmon), week_card._fish_omega does not recognise it and it can inflate «🌱 Разные растения». The 12-dish real check did not hit it; plates like that were not in the set.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-233**: Ledger counts one call per SDK call: internal SDK retries the provider may bill are invisible. Not measured. app/api/v1/ai.py is unmounted but holds paid-call code: mount or remove.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-234**: feedback rows have no retention rule and each keeps the whole original message.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-235**: Inbox: a delivery still in flight can show as undelivered, so a re-send could send a second copy. /reprocess: a closed person's rows take slots in REPROCESS_BATCH_LIMIT before filtering.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
+
+- [ ] **TD-236**: Album tests other than test_the_read_waits_for_the_last_photo_not_the_first keep the 0.5 s wall-clock margin that failed on a busy CI runner.
+  - **Priority:** Low
+  - **Source:** feat/people
+  - **Created:** 2026-11-02
