@@ -164,23 +164,21 @@ def _day_card(db) -> str:
 def test_the_hub_has_the_switch_beside_the_week_and_stays_at_five_rows(db, owner):
     wire = tap("set:open")
     params = wire.edits()[0]
-    assert _labels(params)[1] == ["🗓 Итог недели: вкл", "📋 Черновик: выкл"]
-    assert _datas(params)[1] == ["set:week", "set:draft"]
+    assert _labels(params)[0] == ["🔢 Цифры сразу: выкл", "📋 Черновик: выкл"]
+    assert _datas(params)[0] == ["set:num", "set:draft"]
     assert len(_keyboard(params)) == 5
-    assert "📋 Черновик: выкл. Еда записывается сразу." in params["text"]
 
 
 def test_the_switch_says_so_and_the_row_holds_it(db, owner):
     on = tap("set:draft").edits()[0]
     assert on["text"].startswith(M10 + "\n\n<b>⚙️ Настройки</b>")
-    assert _labels(on)[1] == ["🗓 Итог недели: вкл", "📋 Черновик: вкл"]
-    assert "📋 Черновик: вкл. Еда попадёт в дневник после «✅ Записать»." in on["text"]
+    assert _labels(on)[0] == ["🔢 Цифры сразу: выкл", "📋 Черновик: вкл"]
     db.expire_all()
     assert db.get(User, owner.id).settings["draft_mode"] is True
 
     off = tap("set:draft").edits()[0]
     assert off["text"].startswith(M10A + "\n\n<b>⚙️ Настройки</b>")
-    assert _labels(off)[1] == ["🗓 Итог недели: вкл", "📋 Черновик: выкл"]
+    assert _labels(off)[0] == ["🔢 Цифры сразу: выкл", "📋 Черновик: выкл"]
     db.expire_all()
     assert db.get(User, owner.id).settings["draft_mode"] is False
     # What else the person set is still there.

@@ -314,23 +314,39 @@ def test_a_person_picked_is_let_in(db, reader):  # noqa: F811
     assert notice["text"] == "<i>✓ Саша: доступ открыт.</i>"
     assert _gives_main_keyboard(notice)
     assert answer["text"] == (
-        "Telegram не даёт боту написать первым, поэтому приглашение отправляешь ты. "
+        "Telegram не даёт боту написать первым. "
+        "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить. "
         "Ссылка работает только у этого человека: у других бот молчит."
     )
-    assert _labels(answer) == [["📤 Отправить приглашение"], ["⬅️ Пользователи"]]
+    assert _labels(answer) == [["📤 Написать: Саша"], ["⬅️ Пользователи"]]
     _fits(answer)
     grant = crud_access_grant.get(db, SASHA)
     assert (grant.display_name, grant.username) == ("Саша", "sasha_k")
     assert grant.granted_by == OWNER and grant.first_opened_at is None
     assert access_control.is_user_allowed(SASHA) is True
     # The door is the id and nothing else: the link holds no token.
-    url = _markup(answer)["inline_keyboard"][0][0]["url"]
-    query = parse_qs(urlparse(url).query)
-    assert url.startswith("https://t.me/share/url?")
-    assert query["url"] == ["https://t.me/b"]
-    assert query["text"] == ["Попробуй мой дневник питания: t.me/b"]
+    button = _markup(answer)["inline_keyboard"][0][0]
+    assert button["text"] == "📤 Написать: Саша"
+    url = button["url"]
+    assert url.startswith("https://t.me/sasha_k?text=") and "+" not in url
+    text = parse_qs(urlparse(url).query)["text"][0]
+    assert text.startswith("Привет! Попробуй мой дневник питания")
+    assert text.endswith(": t.me/b") and text.count("t.me") == 1
     assert reader.text == [] and reader.image == []
     _nothing_in_the_diary(db)
+
+
+def test_a_person_with_no_username_gets_the_chat_picker_and_one_link(db):
+    wire = play(picked(OWNER, SASHA, username=None), refuses=[SASHA])
+    answer = wire.to(OWNER)[1]
+    assert "Кнопка предложит выбрать чат" in answer["text"]
+    button = _markup(answer)["inline_keyboard"][0][0]
+    assert button["text"] == "📤 Отправить приглашение"
+    query = parse_qs(urlparse(button["url"]).query)
+    assert button["url"].startswith("https://t.me/share/url?")
+    assert query["url"] == ["https://t.me/b"]
+    # Telegram prints ``url`` above the text: the text does not carry it a second time.
+    assert "t.me" not in query["text"][0]
 
 
 def test_the_subscription_of_a_picked_person_does_not_lapse(db):
@@ -353,7 +369,7 @@ def test_a_refused_invitation_is_normal_and_leaves_the_share(db, caplog):
     assert wire.to(SASHA) == []
     assert ("refused" in [n for n, _ in wire.calls]) is True
     assert "Invitation not delivered: Forbidden" in caplog.text
-    assert _labels(wire.to(OWNER)[1])[0] == ["📤 Отправить приглашение"]
+    assert _labels(wire.to(OWNER)[1])[0] == ["📤 Написать: Саша"]
 
 
 def test_closed_mode_says_plainly_the_grant_opens_nothing(db, monkeypatch):
@@ -1307,9 +1323,12 @@ def test_the_hint_comes_once_after_the_first_record(db, reader):  # noqa: F811
     hints = [p for p in wire.to(SASHA) if p["text"] == welcome_screen.HINT]
     assert len(hints) == 1
     assert hints[0]["text"] == (
-        "Записано. Вопросы и пожелания — /feedback, объяснения — "
-        "ℹ️ Как это работает в ⚙️ Настройках."
+        "Дальше так же: фото, текст или голосовое.\n\n"
+        "💬 Вопросы и пожелания: /feedback\n"
+        "ℹ️ Объяснения: ⚙️ Настройки → ℹ️ Как это работает"
     )
+    # The card above it has just said «Записано».
+    assert "Записано" not in hints[0]["text"]
     assert _gives_main_keyboard(hints[0])
     assert reader.text == ["омлет", "кофе"]
 

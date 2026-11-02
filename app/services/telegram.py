@@ -1200,12 +1200,15 @@ _COMMANDS = (
     BotCommand("start", "Открыть меню"),
     BotCommand("feedback", "Написать владельцу бота"),
 )
-_OWNER_COMMANDS = (BotCommand("users", "Кто пользуется и сколько это стоит"),)
+_OWNER_COMMANDS = (
+    BotCommand("invite", "Пригласить человека"),
+    BotCommand("users", "Кто пользуется и сколько это стоит"),
+)
 
 
 async def _set_commands(application: Application) -> None:
-    """The command menu. A convenience: without it the bot starts all the same. /users is
-    in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
+    """The command menu. A convenience: without it the bot starts all the same. /invite and
+    /users are in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
     refuses costs that admin the entry and no one else theirs."""
     try:
         await application.bot.set_my_commands(_COMMANDS)
@@ -2776,7 +2779,9 @@ async def _let_in(message, context, person: invites.Person) -> None:
     delivered = False
     if settings.access_mode != "closed":
         delivered = await _invite_directly(context.bot, person.telegram_id)
-    screen = people_screen.invited(context.bot.username, delivered)
+    screen = people_screen.invited(
+        context.bot.username, delivered, person.name, person.username
+    )
     await _tell_owner(
         message, screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
     )

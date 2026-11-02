@@ -727,14 +727,14 @@ def test_no_subscription_no_summary_as_with_the_screens_themselves(db, monkeypat
 
 def test_settings_turn_the_summary_off_with_one_tap_and_back(db):
     screen = settings_screen.open_view(db, 42)
-    assert "🗓 Итог недели: воскресенье, 22:00, без звука." in screen.text
+    assert "🗓 Итог недели: вс, 22:00\n" in screen.text
     labels = [b.text for row in screen.markup.inline_keyboard for b in row]
     assert "🗓 Итог недели: вкл" in labels
     assert len(screen.markup.inline_keyboard) <= 5
 
     off = settings_screen.handle_callback(db, 42, "set:week")
     assert off.text.startswith("<i>✓ Итог недели выключен</i>")
-    assert "🗓 Итог недели: не присылаю." in off.text
+    assert "🗓 Итог недели: не присылаю\n" in off.text
     assert _user(db).settings[WEEK_PUSH] is False
     on = settings_screen.handle_callback(db, 42, "set:week")
     assert on.text.startswith("<i>✓ Итог недели включён</i>")

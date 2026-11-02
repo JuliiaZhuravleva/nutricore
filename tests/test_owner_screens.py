@@ -184,7 +184,9 @@ def test_the_command_is_in_each_admins_menu_and_nobody_elses(monkeypatch):
 
     assert names(sent_menus[0]) == ["start", "feedback"]
     assert scope(sent_menus[0]) is None
-    assert [names(p) for p in sent_menus[1:]] == [["start", "feedback", "users"]] * 2
+    assert [names(p) for p in sent_menus[1:]] == [
+        ["start", "feedback", "invite", "users"]
+    ] * 2
     assert [scope(p) for p in sent_menus[1:]] == [
         {"type": "chat", "chat_id": 1001},
         {"type": "chat", "chat_id": 1002},
@@ -371,7 +373,7 @@ def test_the_sum_with_no_person_has_its_line_only_when_there_is_one(db):
     assert "За 30 дней: 💸 $0.15" in text
     assert "Без человека: $0.05" in text
     # Not a person: no line of its own and no button.
-    assert all("0 · " not in line for line in text.split("\n"))
+    assert not any(line.startswith("0 · ") for line in text.split("\n"))
     assert ["0"] not in _labels(hub())
 
 

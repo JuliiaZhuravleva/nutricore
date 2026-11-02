@@ -21,7 +21,7 @@ import logging
 import re
 from datetime import UTC, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from telegram import (
     InlineKeyboardButton,
@@ -123,17 +123,29 @@ def picker_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+_INVITE_WORDS = (
+    "Привет! Попробуй мой дневник питания: записывает еду по фото, тексту и голосу. "
+    "Доступ для тебя уже открыт"
+)
+
+
+def _query(**values: str) -> str:
+    # %20, not «+»: a chat's draft link is read by the app, not by a web page.
+    return urlencode(values, quote_via=quote)
+
+
+def draft_url(username: str, bot_username: str) -> str:
+    """The chat with this person, the owner's message waiting in the input field: it goes
+    from the owner, who still reads it and presses send. The link names the bot and holds
+    no token: the door is the person's id, so a forwarded link lets no one else in."""
+    text = f"{_INVITE_WORDS}: t.me/{bot_username}"
+    return f"https://t.me/{username}?{_query(text=text)}"
+
+
 def share_url(bot_username: str) -> str:
-    """Telegram's own «кому отправить». The link names the bot and holds no token: the
-    door is the person's id, so a forwarded link lets no one else in. ``url`` is required
-    by that address, and the words are the owner's to edit before sending."""
-    link = f"t.me/{bot_username}"
-    query = urlencode(
-        {
-            "url": f"https://{link}",
-            "text": f"Попробуй мой дневник питания: {link}",
-        }
-    )
+    """Telegram's own «кому отправить», for a person with no username. That address
+    requires ``url`` and puts it above the text, so the text does not repeat it."""
+    query = _query(url=f"https://t.me/{bot_username}", text=f"{_INVITE_WORDS}.")
     return f"https://t.me/share/url?{query}"
 
 
@@ -141,7 +153,12 @@ def notice_opened(name: str) -> str:
     return f"<i>✓ {html.escape(name)}: доступ открыт.</i>"
 
 
-def invited(bot_username: str, delivered: bool = False) -> Screen:
+def invited(
+    bot_username: str,
+    delivered: bool = False,
+    name: str | None = None,
+    username: str | None = None,
+) -> Screen:
     """What follows the notice, whichever way the invitation goes."""
     mode = settings.access_mode
     if mode == "closed":
@@ -149,13 +166,19 @@ def invited(bot_username: str, delivered: bool = False) -> Screen:
     if delivered:
         words = "Приглашение бот отправил сам: этот человек уже открывал бота."
         return Screen(words, InlineKeyboardMarkup([back_to_list()]))
-    words = (
-        "Telegram не даёт боту написать первым, поэтому приглашение отправляешь ты. "
-        + (_OPEN_MODE if mode == "open" else _ONLY_THEM)
-    )
-    share = InlineKeyboardButton(
-        "📤 Отправить приглашение", url=share_url(bot_username)
-    )
+    first = "Telegram не даёт боту написать первым. "
+    if username:
+        how = "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить. "
+        share = InlineKeyboardButton(
+            f"📤 Написать: {name}" if name else "📤 Отправить приглашение",
+            url=draft_url(username, bot_username),
+        )
+    else:
+        how = "Кнопка предложит выбрать чат и подставит готовый текст. "
+        share = InlineKeyboardButton(
+            "📤 Отправить приглашение", url=share_url(bot_username)
+        )
+    words = first + how + (_OPEN_MODE if mode == "open" else _ONLY_THEM)
     return Screen(words, InlineKeyboardMarkup([[share], back_to_list()]))
 
 

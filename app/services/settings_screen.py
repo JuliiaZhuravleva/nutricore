@@ -1,9 +1,11 @@
 """⚙️ Настройки: what the bot runs with, and the switches the user can flip.
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
-    [🕐 Часовой пояс] [🔢 Цифры сразу: выкл] [🗓 Итог недели: вкл] [📋 Черновик: выкл]
-    [🍽 Обычная еда] [💊 Рутины] [💬 Фидбэк] [🧺 Надёжная еда] [✋ Не предлагать]
-    [ℹ️ Как это работает] [💸 Стоимость: выкл]
+    [🔢 Цифры сразу: выкл] [📋 Черновик: выкл]
+    [🗓 Итог недели: вкл] [💸 Стоимость: выкл]
+    [🧺 Надёжная еда] [✋ Не предлагать]
+    [🕐 Пояс] [💊 Рутины] [💬 Фидбэк]
+    [🍽 Обычная еда] [ℹ️ Как это работает]
     💸 tap → <i>✓ Стоимость запросов включена</i> on top, the same screen below
     🔢 tap → <i>✓ Цифры видны сразу</i>: calories and macros on every screen
     🕐 tap → <b>🕐 Часовой пояс</b>: nine cities, [🌐 Другой: UTC±], [⬅️ Настройки]
@@ -153,58 +155,46 @@ def screen(
     eats: str | None = None,
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
+    # One short line each, in two groups. A switch's state is on its button; what a
+    # setting means is said when it is flipped, not on every visit.
     lines += [
         "<b>⚙️ Настройки</b>",
         "",
-        f"🕐 Часовой пояс: {zone_label(zone, now)} — по нему "
-        "📊 Статистика делит дни.",
-        "🔢 Калории и БЖУ: "
-        + ("видны сразу." if numbers else "под кнопкой «🔢 Цифры» на экранах."),
-        "🗓 Итог недели: "
-        + ("воскресенье, 22:00, без звука." if week_push else "не присылаю."),
-        "📋 Черновик: "
-        + (
-            "вкл. Еда попадёт в дневник после «✅ Записать»."
-            if draft
-            else "выкл. Еда записывается сразу."
-        ),
+        f"🕐 Часовой пояс: {zone_label(zone, now)}",
         _diet_line(eats),
-        f"💊 Рутины: {routines or 'пока нет'} — отмечаются на карточке дня.",
-        f"🧺 Надёжная еда: {reliable or 'пока нет'} · "
+        "🗓 Итог недели: " + ("вс, 22:00" if week_push else "не присылаю"),
+        "",
+        f"💊 Рутины: {routines or 'пока нет'}",
+        f"🧺 Надёжная еда: {reliable or 'пока нет'}",
         f"✋ Не предлагать: {never or 'пока нет'}",
-        f"💸 Стоимость запросов: {'показываю' if on else 'не показываю'} "
-        "под каждым разбором еды.",
     ]
+    # Eleven buttons in five rows: the one row of three takes the shortest labels, and
+    # «🕐 Пояс» is short for the line above. Longer ones Telegram cuts on a phone.
     rows = [
         [
-            _btn("🕐 Часовой пояс", _ZONES_CB),
             _btn(f"🔢 Цифры сразу: {'вкл' if numbers else 'выкл'}", _NUMBERS_CB),
-        ],
-        [
-            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
             _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
         ],
         [
-            _btn(diet.TITLE, _DIET_CB),
-            _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
-            _btn(FEEDBACK_TITLE, FEEDBACK_OPEN),
+            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
+            _btn(f"💸 Стоимость: {'вкл' if on else 'выкл'}", _COSTS_CB),
         ],
         [
             _btn("🧺 Надёжная еда", food_lists.RELIABLE_OPEN),
             _btn("✋ Не предлагать", food_lists.NEVER_OPEN),
         ],
         [
-            _btn("ℹ️ Как это работает", EXPLAIN_OPEN),
-            _btn(f"💸 Стоимость: {'вкл' if on else 'выкл'}", _COSTS_CB),
+            _btn("🕐 Пояс", _ZONES_CB),
+            _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
+            _btn(FEEDBACK_TITLE, FEEDBACK_OPEN),
         ],
+        [_btn(diet.TITLE, _DIET_CB), _btn("ℹ️ Как это работает", EXPLAIN_OPEN)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
 def _diet_line(eats: str | None) -> str:
-    if eats is None:
-        return f"{diet.TITLE}: не выбрано — в подсказках только растения."
-    return f"{diet.TITLE}: {diet.CHOICES[eats]} — от этого зависят только подсказки."
+    return f"{diet.TITLE}: {diet.CHOICES[eats] if eats else 'не выбрано'}"
 
 
 def diet_row(prefix: str, eats: str | None) -> list:

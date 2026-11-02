@@ -395,30 +395,30 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert "🕐 Часовой пояс: Тбилиси (UTC+4)" in message.replies[-1]
     markup = message.kwargs[-1]["reply_markup"]
     assert _labels(markup) == [
-        "🕐 Часовой пояс",
         "🔢 Цифры сразу: выкл",
-        "🗓 Итог недели: вкл",
         "📋 Черновик: выкл",
-        "🍽 Обычная еда",
-        "💊 Рутины",
-        "💬 Фидбэк",
+        "🗓 Итог недели: вкл",
+        "💸 Стоимость: выкл",
         "🧺 Надёжная еда",
         "✋ Не предлагать",
+        "🕐 Пояс",
+        "💊 Рутины",
+        "💬 Фидбэк",
+        "🍽 Обычная еда",
         "ℹ️ Как это работает",
-        "💸 Стоимость: выкл",
     ]
     assert _callbacks(markup) == [
-        "set:tz",
         "set:num",
-        "set:week",
         "set:draft",
-        "set:diet",
-        "rt:open",
-        "fb:open",
+        "set:week",
+        "set:costs",
         "fl:rel",
         "fl:nev",
+        "set:tz",
+        "rt:open",
+        "fb:open",
+        "set:diet",
         "hw:open",
-        "set:costs",
     ]
     assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
 
@@ -438,7 +438,7 @@ def test_the_cost_switch_flips_and_says_so(Session):
     asyncio.run(tg.settings_callback(update, SimpleNamespace()))
     (text,), kwargs = query.edit_message_text.await_args
     assert text.startswith("<i>✓ Стоимость запросов включена</i>")
-    assert _labels(kwargs["reply_markup"])[-1] == "💸 Стоимость: вкл"
+    assert "💸 Стоимость: вкл" in _labels(kwargs["reply_markup"])
     assert _costs_shown(Session)
     with Session() as db:
         assert db.query(User).one().settings == {"diet": "veg", "show_costs": True}
