@@ -267,7 +267,11 @@ def test_swap_keeps_the_size_and_says_so(db):
 
 def test_swap_goes_through_every_step_of_the_mode_and_then_again():
     settings = ns.current({ns.ENERGY: ns.SIMPLE}, DAY, lambda: {})
-    quick = {step.id for step in ns.STEPS if step.minutes <= 1 and not step.cue}
+    quick = {
+        step.id
+        for step in ns.STEPS
+        if step.minutes <= 1 and not step.cue and not step.diets
+    }
     seen = set()
     for _ in range(len(quick) * 2 + 1):
         shown = settings[ns.STATE]["step"]

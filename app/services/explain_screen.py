@@ -2,7 +2,8 @@
 
     ⚙️ Настройки → [ℹ️ Как это работает] → a list of topics → one topic's screen:
     what it is, how it works, where the idea comes from. Beside the topics, a reference
-    on vitamins and minerals: what the studies found, with links (G5-R23).
+    on vitamins and minerals: what the studies found, with links (G5-R23). It is nearly
+    all about vegans, so a person who answered «🍖 Всё» does not get it.
 
 Plain text in the repo: no model call, the same answer for everyone, and the
 banned-words scan reads it like any other bot string. Each new feature adds its
@@ -15,10 +16,12 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.models.user import User
+from app.services import diet
 from app.services.favorites import Screen
 from app.services.food_groups import GROUPS
 
@@ -36,6 +39,10 @@ NOP = CALLBACK_PREFIX + "nop"
 _LIST_PAGE = 6  # three rows of two, the pager and the back row: 4 + 1 (M15)
 _LIST_ROW_LABEL = 20  # the budget of a label at two per row; a longer one stands alone
 _SETTINGS = "set:open"  # settings_screen imports this module for its button
+# Here, because feedback_screen imports settings_screen, which needs these for its row.
+FEEDBACK_OPEN = "fb:open"
+FEEDBACK_TITLE = "💬 Фидбэк"
+NUTRIENTS_LIST_LABEL = "🧪 Витамины"
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,10 @@ class Nutrient:
 
 
 _GROUP_WORDS = ", ".join(f"{mark} {word}" for mark, _label, word in GROUPS.values())
+_ROUTINES_REFERENCE = (
+    "Что об этих веществах пишут исследования, собрано в справке ниже. "
+)
+_ROUTINES_SOURCE_ALONE = "у самой отметки исследования нет."
 
 TOPICS = {
     "day": Topic(
@@ -134,6 +145,9 @@ TOPICS = {
             "⭐ Избранное и то, что в записях было от трёх раз за месяц, готовая еда "
             "наравне с любой. Список правишь ты. Еда из «✋ Не предлагать» в шаги не "
             "попадает.\n"
+            "Творог, йогурт и яйцо бот предлагает только при «🍖 Всё» и «🥚 Без мяса», "
+            "консервированную рыбу только при «🍖 Всё». Выбор живёт в ⚙️ Настройках, "
+            "и пока его нет, шаги только из растений.\n"
             "Счёт на неделе — это дни, когда выбранное есть в записях, рядом те же дни "
             "неделей раньше. «✅ Готово» в него не идёт. Цели и серий нет, прерваться "
             "нечему. Когда дней меньше, бот так и говорит."
@@ -161,8 +175,9 @@ TOPICS = {
             "под приёмом их правит «✏️ Исправить», затем «Ещё ›» и «🏷 Группы», "
             "и бот запоминает твой выбор. Если блюдо в приёме одно, перед «Ещё ›» нажми "
             "«⬅️ К приёму».\n"
-            "Опора — заметный источник белка в этом приёме еды. Омега-3 считается "
-            "только из растений: лён, чиа, конопля, грецкие орехи.\n"
+            "Опора — заметный источник белка в этом приёме еды. Омега-3 считается из "
+            "жирной рыбы (лосось, форель, скумбрия, сельдь, сардины) и из растений: "
+            "лён, чиа, конопля, грецкие орехи.\n"
             "Отметка говорит, что было. Чего не было, бот не называет, и норм здесь нет."
         ),
         why=(
@@ -240,9 +255,9 @@ TOPICS = {
         why=(
             "B12, йод и витамин D по записям еды не оценить: их не видно ни на фото, "
             "ни в названии блюда. А регулярность видно по отметке, и она не зависит от "
-            "точности разбора. Что об этих веществах пишут исследования, собрано в "
-            "справке ниже. Сама отметка — решение проекта, отдельно её никто не "
-            "проверял, и день без отметки ошибкой не считается."
+            "точности разбора. " + _ROUTINES_REFERENCE + "Сама отметка — решение "
+            "проекта, отдельно её никто не проверял, и день без отметки ошибкой не "
+            "считается."
         ),
         source="у самой отметки исследования нет, у веществ — в справке.",
         more=True,
@@ -427,13 +442,19 @@ def _list_rows(buttons: list) -> list:
     return rows
 
 
-def list_screen(page: int = 0) -> Screen:
+def list_screen(page: int = 0, nutrients: bool = True) -> Screen:
     text = "<b>ℹ️ Как это работает</b>"
     entries = [
         InlineKeyboardButton(topic.label, callback_data=_TOPIC + key)
         for key, topic in TOPICS.items()
     ]
-    entries.append(InlineKeyboardButton(NUTRIENTS_TITLE, callback_data=NUTRIENTS_OPEN))
+    if nutrients:
+        # The full title would stand alone and push the page past its five rows.
+        entries.append(
+            InlineKeyboardButton(NUTRIENTS_LIST_LABEL, callback_data=NUTRIENTS_OPEN)
+        )
+    # Last in the list: the first page is what most people came for, and full.
+    entries.append(InlineKeyboardButton(FEEDBACK_TITLE, callback_data=FEEDBACK_OPEN))
     pages = (len(entries) + _LIST_PAGE - 1) // _LIST_PAGE
     page %= pages
     rows = _list_rows(entries[page * _LIST_PAGE : (page + 1) * _LIST_PAGE])
@@ -449,7 +470,19 @@ def list_screen(page: int = 0) -> Screen:
     return Screen(text, InlineKeyboardMarkup(rows))
 
 
-def topic_screen(topic: Topic) -> Screen:
+def _without_reference(topic: Topic) -> Topic:
+    """The topic with no word about a reference this person does not get."""
+    return replace(
+        topic,
+        why=topic.why.replace(_ROUTINES_REFERENCE, ""),
+        source=_ROUTINES_SOURCE_ALONE,
+        more=False,
+    )
+
+
+def topic_screen(topic: Topic, nutrients: bool = True) -> Screen:
+    if topic.more and not nutrients:
+        topic = _without_reference(topic)
     privacy = f"<b>Приватность.</b> {topic.privacy}\n\n" if topic.privacy else ""
     text = (
         f"<b>{topic.label}</b>\n\n"
@@ -505,14 +538,26 @@ def nutrient_screen(item: Nutrient) -> Screen:
     return Screen(text, InlineKeyboardMarkup([[back]]))
 
 
+def _shows_nutrients(db, telegram_id: int) -> bool:
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    return diet.shows_nutrients((user.settings or {}) if user else {})
+
+
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
+    nutrients = _shows_nutrients(db, telegram_id)
     if data == OPEN:
-        return list_screen()
+        return list_screen(nutrients=nutrients)
     if data == NOP:
         return Screen("", None)  # the pager's middle: nothing to do
     turned = _PAGE_DATA.fullmatch(data)
     if turned:
-        return list_screen(int(turned.group(1)))
+        return list_screen(int(turned.group(1)), nutrients)
+    reference = data == NUTRIENTS_OPEN or data.startswith(_NUTRIENT)
+    if reference and not nutrients:
+        # A button from before the answer changed.
+        screen = list_screen(nutrients=False)
+        screen.toast = "Этой справки здесь нет, вот список"
+        return screen
     if data == NUTRIENTS_OPEN:
         return nutrients_screen()
     if data.startswith(_NUTRIENT) and data[len(_NUTRIENT) :] in NUTRIENTS:
@@ -521,7 +566,7 @@ def handle_callback(db, telegram_id: int, data: str) -> Screen:
     if topic is None:
         # A topic renamed in a release leaves old buttons behind.
         logger.warning("explain: unknown callback data %r", data)
-        screen = list_screen()
+        screen = list_screen(nutrients=nutrients)
         screen.toast = "Этой темы уже нет, вот список"
         return screen
-    return topic_screen(topic)
+    return topic_screen(topic, nutrients)

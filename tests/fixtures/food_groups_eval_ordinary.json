@@ -1,0 +1,14 @@
+[
+ {"text": "куриная грудка с гречкой и огурцом", "must": ["anchor","grain","veg"], "maybe": []},
+ {"text": "борщ со сметаной и куском чёрного хлеба", "must": ["veg"], "maybe": ["anchor","grain","calcium"]},
+ {"text": "пельмени со сметаной", "must": ["anchor"], "maybe": ["calcium"]},
+ {"text": "омлет из двух яиц с сыром", "must": ["anchor"], "maybe": ["calcium"]},
+ {"text": "творог с бананом", "must": ["anchor","calcium","fruit"], "maybe": []},
+ {"text": "запечённый лосось с брокколи", "must": ["anchor","omega","veg"], "maybe": []},
+ {"text": "бутерброд с сельдью на белом хлебе", "must": ["anchor","omega"], "maybe": []},
+ {"text": "макароны с сосисками", "must": ["anchor"], "maybe": []},
+ {"text": "котлета с картофельным пюре", "must": ["anchor"], "maybe": ["calcium"]},
+ {"text": "пицца с ветчиной и сыром, два куска", "must": ["anchor","calcium"], "maybe": ["veg"]},
+ {"text": "греческий йогурт с мёдом", "must": ["calcium","anchor"], "maybe": []},
+ {"text": "треска на пару с белым рисом", "must": ["anchor"], "maybe": []}
+]

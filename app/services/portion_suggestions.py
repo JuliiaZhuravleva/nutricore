@@ -17,8 +17,10 @@ from typing import Optional
 
 from sqlalchemy import select
 
+from app.crud.crud_user import crud_user
 from app.models.personal_food import PersonalFood
 from app.services import meal_items, usage_meter
+from app.services.attribution import attribute_to
 from app.services.meal_card import GRAMS_MAX, GRAMS_MIN
 from app.services.model_registry import loads_model_json
 
@@ -68,7 +70,8 @@ async def ask(session_factory, service, dish_id: int) -> bool:
             if dish is None or not meal_items.wants_suggestion(db, dish):
                 return False
             name, user_id = dish.canonical_name, dish.user_id
-        with usage_meter.metering() as meter:
+            person = crud_user.telegram_id_of(db, user_id)
+        with attribute_to(person), usage_meter.metering() as meter:
             guess = await _guess(service, name)
         logger.info("Portion suggestion: dish %s, $%.5f", dish_id, meter.usd)
         if guess is None:
@@ -150,7 +153,10 @@ async def run(
                 report.stopped = f"spent the limit of ${limit_usd:.2f}"
                 break
             try:
-                guess = await _guess(service, name)
+                with session_factory() as db:
+                    person = crud_user.telegram_id_of(db, user_id)
+                with attribute_to(person):
+                    guess = await _guess(service, name)
             except Exception as e:
                 logger.warning(
                     "Portion suggestion failed for dish %s: %s",

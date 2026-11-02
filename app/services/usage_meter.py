@@ -5,9 +5,10 @@
     meter.line()  →  "💸 Запрос: $0.0012 · 3 вызова ИИ"
 
 Every model call goes through ``openai_service``, which ``record``s the
-response's ``usage`` here; outside a meter that is a no-op. The meter lives in
-a ContextVar, so the pipeline's concurrent tasks (copies of the context) add
-to the same meter.
+response's ``usage`` here. That one call goes to the lasting ledger, for the person it
+is attributed to, always; and to the meter, only if one is open. The meter lives in a
+ContextVar, so the pipeline's concurrent tasks (copies of the context) add to the same
+meter.
 
 The price is an estimate from the token counts and ``PRICES`` (OpenAI's
 standard tier, checked 2026-10-28 on developers.openai.com/api/docs/pricing);
@@ -19,8 +20,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+
+from app.services import usage_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +48,14 @@ class Meter:
     unpriced: list[str] = field(default_factory=list)
 
     def add(self, model: str, usage, *, web_searches: int = 0) -> None:
+        self.took(model, price(model, usage, web_searches=web_searches))
+
+    def took(self, model: str, usd: float | None) -> None:
         self.calls += 1
-        cost = _reported_cost(usage)
-        if cost is None:
-            cost = _estimate(model, usage)
-        if cost is None:
+        if usd is None:
             self.unpriced.append(model)
-            return
-        self.usd += cost + web_searches * WEB_SEARCH_CALL_USD
+        else:
+            self.usd += usd
 
     def line(self) -> str:
         if not self.calls:
@@ -77,14 +81,27 @@ def metering():
 
 def record(model: str, usage, *, web_searches: int = 0) -> None:
     """One model call's ``usage``; never raises (a meter must not break a call)."""
-    meter = _current.get()
-    if meter is None:
-        return
     try:
-        meter.add(model, usage, web_searches=web_searches)
+        usd = price(model, usage, web_searches=web_searches)
     except Exception as e:
-        logger.warning("Could not meter a %s call: %s", model, e)
-        meter.unpriced.append(model)
+        logger.warning("Could not price a %s call: %s", model, e)
+        usd = None
+    usage_ledger.charge(usd)
+    meter = _current.get()
+    if meter is not None:
+        meter.took(model, usd)
+
+
+def price(model: str, usage, *, web_searches: int = 0) -> float | None:
+    """What one call cost in USD; None when that is not known. Never a guess, and never
+    a number that would poison a sum."""
+    cost = _reported_cost(usage)
+    if cost is None:
+        cost = _estimate(model, usage)
+    if cost is None:
+        return None
+    total = cost + web_searches * WEB_SEARCH_CALL_USD
+    return total if math.isfinite(total) and total >= 0 else None
 
 
 def _calls(n: int) -> str:
@@ -107,7 +124,9 @@ def _get(obj, name: str):
 
 def _reported_cost(usage) -> float | None:
     cost = _get(usage, "cost")
-    return float(cost) if isinstance(cost, (int, float)) else None
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return None
+    return float(cost)
 
 
 def _count(usage, *names: str) -> int | None:

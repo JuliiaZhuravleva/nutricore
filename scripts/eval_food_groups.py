@@ -7,6 +7,7 @@ own call and parser (stage 5, slice B). Needs a real OPENAI_API_KEY; paid.
 
 "must" is what a reply has to name; "maybe" is arguable and not scored either way.
 Meals here are invented: a personal set stays out of the repo, passed by --set.
+Ordinary eating, meat and fish included: --set tests/fixtures/food_groups_eval_ordinary.json
 """
 
 import argparse

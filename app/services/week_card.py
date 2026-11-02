@@ -18,6 +18,7 @@ from app.services import food_groups
 from app.services.day_card import local_time, short, tags
 
 PLANT_GROUPS = frozenset({"legumes", "veg", "fruit", "grain", "nuts", "omega"})
+_OMEGA = "omega"
 PAUSE_DAYS = 7
 _ROW = 2  # groups on one line of the text
 _FINDING_NAME_MAX = 20  # longer, and the words after it no longer fit on the card
@@ -57,14 +58,38 @@ def _confirmed(meal: Meal) -> list:
     return groups if isinstance(groups, list) else []
 
 
+def _fish_omega(item: dict) -> bool:
+    """Fatty fish: omega-3 and a protein anchor, and no plant group besides. Flax oil
+    has no anchor; hemp seeds have one, and «nuts» beside it. Tags are all there is to
+    go on: a plate tagged as one item with a vegetable reads as a plant."""
+    groups = set(item.get("groups") or [])
+    return (
+        _OMEGA in groups
+        and "anchor" in groups
+        and not groups.intersection(PLANT_GROUPS - {_OMEGA})
+    )
+
+
 def _plant_names(meal: Meal) -> list:
-    """The plant foods the meal still confirms: a group unticked by hand hides them."""
+    """The plant foods the meal still confirms: a group unticked by hand hides them.
+    Fatty fish counts as omega-3 and is still no plant."""
     confirmed = PLANT_GROUPS.intersection(_confirmed(meal))
     return [
         item["name"]
         for item in _items(meal)
-        if confirmed.intersection(item.get("groups") or [])
+        if confirmed.intersection(item.get("groups") or []) and not _fish_omega(item)
     ]
+
+
+def step_groups(meal: Meal) -> list:
+    """The meal's groups as the step reads them: the step's omega foods are flax and
+    walnuts, in the direction of nuts and grains, so salmon says nothing about those.
+    An omega with no tagged food behind it was ticked by hand and stays."""
+    groups = _confirmed(meal)
+    sources = [i for i in _items(meal) if _OMEGA in (i.get("groups") or [])]
+    if _OMEGA in groups and sources and all(_fish_omega(i) for i in sources):
+        return [group for group in groups if group != _OMEGA]
+    return groups
 
 
 def _known_names(meals: list) -> set:
@@ -112,6 +137,17 @@ def facts(days: list, earlier: list, zone: ZoneInfo) -> WeekFacts:
         new_food=None if back else new_food,
         back=back,
     )
+
+
+def step_days(days: list) -> dict:
+    """Days per group for the step; ``days`` as in ``facts``."""
+    found: dict = {}
+    for day, meals in days:
+        for meal in meals:
+            for key in step_groups(meal):
+                if key in food_groups.GROUPS:
+                    found.setdefault(key, set()).add(day)
+    return {key: len(dates) for key, dates in found.items()}
 
 
 def foods_named(days: list) -> str:

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import enum
 import logging
 import os
 import re
@@ -14,9 +15,13 @@ from typing import Dict, Optional
 import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
+    Message,
+    MessageOriginUser,
     ReplyKeyboardMarkup,
     ReplyParameters,
     Update,
@@ -37,33 +42,45 @@ from telegram.ext import (
 from telegram.warnings import PTBUserWarning
 
 from app.core.config import settings
+from app.crud.crud_access_grant import crud_access_grant
+from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
+from app.models import action_event
+from app.models import feedback as feedback_model
 from app.services import (
+    action_journal,
     ai_errors,
     capture,
     custom_emoji,
     dishes,
     explain_screen,
     favorites,
+    feedback_inbox,
+    feedback_screen,
     food_lists,
     image_clean,
 )
 from app.services import inbound_message_service as inbound_msg
 from app.services import (
+    invites,
     meal_card,
     meal_draft,
     meal_items,
+    owner_buttons,
+    people_screen,
     portion_suggestions,
     routines,
     settings_screen,
     stats_screen,
     voice,
     weight_screen,
+    welcome_screen,
 )
-from app.services.access_control import access_gate, admin_required
-from app.services.admin_notify import notify_admins
+from app.services.access_control import access_gate, admin_required, may_receive
+from app.services.admin_notify import deliver_to_admins, deliver_to_one, notify_admins
 from app.services.ai_call_log_service import analyze_and_log
+from app.services.attribution import attribute_to
 from app.services.card_delivery import CardDelivery
 from app.services.consult_service import consult_service
 from app.services.loader import Loader
@@ -121,6 +138,13 @@ SHOW_WAIT_MAX_SECONDS = 5.0  # a flood wait longer than this is not waited out h
 REPLAY_LIMIT = REPROCESS_BATCH_LIMIT  # one start's pending reads; the rest wait
 SWEEP_TASK = "meal_sweep"
 REPLAY_DONE = "meal_replay_done"
+INVITE_WAIT_SECONDS = 600  # how long a forward or a contact means an invitation
+_INVITE_UNTIL = "invite_until"  # in ``user_data``
+FEEDBACK_WAIT_SECONDS = 900  # how long the next message means the owner, not the diary
+FEEDBACK_ALBUM_SECONDS = 60  # the rest of an album, which Telegram sends one by one
+_FEEDBACK_UNTIL = "feedback_until"  # in ``user_data``
+_FEEDBACK_PROMPT = "feedback_prompt"  # the screen that asked: it loses its buttons
+_FEEDBACK_ALBUM = "feedback_album"  # (media_group_id, until)
 
 # Conversation states
 (
@@ -151,10 +175,19 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 # What a reply keyboard sends: never the answer to a typed slot.
+# What a menu button sends: it ends the wait for a feedback message at once. A bare
+# «Сейчас» or «Обед» is no menu button, and may be just what someone has to say.
+_FEEDBACK_LEAVES = frozenset(action_event.MENU_LABELS) | {
+    "🍽 Добавить прием пищи",  # the label keyboards already on phones still carry
+    "❓ О боте",
+    "💎 Получить подписку",
+    "📱 Связаться с админом",
+}
 _KEYBOARD_LABEL = re.compile(
     "🍽 Добавить при[её]м пищи|⭐ Избранное|📊 Статистика|⚖️ Мой вес|⚙️ Настройки"
     "|🍲 Блюда"
     "|❓ О боте|💎 Получить подписку|📱 Связаться с админом|Отмена"
+    "|👤 Выбрать человека|✖️ Отмена"
     "|Сейчас|Завтрак|Обед|Ужин|Назад"
 )
 
@@ -221,6 +254,7 @@ def subscription_required(func):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
+    await _note_first_open(context, update.effective_user.id)
     if not await check_subscription(update.effective_user.id):
         text = (
             "👋 Привет! Я NutriCore — дневник питания и здоровья.\n\n"
@@ -231,10 +265,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, reply_markup=subscription_keyboard)
         return SUBSCRIPTION_INQUIRY
-    else:
-        text = "✅ Подписка активна. Что делаем?"
-        await update.message.reply_text(text, reply_markup=main_keyboard)
+    try:
+        with SessionLocal() as db:
+            first_run = welcome_screen.opens_welcome(db, update.effective_user.id)
+    except Exception as e:
+        logger.error("First run not read: %s", type(e).__name__)
+        first_run = False
+    if first_run:
+        await _reply_screen(update, welcome_screen.welcome())
         return CHOOSING_ACTION
+    await update.message.reply_text("Что делаем?", reply_markup=main_keyboard)
+    return CHOOSING_ACTION
+
+
+async def _note_first_open(context, telegram_id: int) -> None:
+    """Tells the owner, once and without a sound, that an invited person came. Nothing
+    here may cost that person their /start."""
+    try:
+        with SessionLocal() as db:
+            grant = crud_access_grant.mark_opened(db, telegram_id)
+            name = grant.display_name if grant is not None else None
+    except Exception as e:
+        logger.error("First open not recorded: %s", type(e).__name__)
+        return
+    if name is None:
+        return
+    for admin_id in settings.admin_ids:
+        try:
+            await context.bot.send_message(
+                admin_id, f"👋 {name} теперь в боте.", disable_notification=True
+            )
+        except TelegramError as e:
+            logger.warning("First open not told to the owner: %s", type(e).__name__)
 
 
 def _new_meal_hint() -> dict:
@@ -631,6 +693,12 @@ async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
         capture.line_not_shown(db, job, line, owed=owed)
 
 
+def _may_hear(telegram_id: int) -> bool:
+    """For what the bot says unasked: someone whose door was closed hears nothing more."""
+    with SessionLocal() as db:
+        return may_receive(db, telegram_id)
+
+
 async def _show_owed(application: Application) -> None:
     """The lines Telegram did not take when their read ended. Nothing is read here. One
     that cannot be shown does not hold back the next."""
@@ -638,6 +706,10 @@ async def _show_owed(application: Application) -> None:
         owed = capture.owed_lines(db, _live_reads)
     for one in owed:
         try:
+            if not _may_hear(one.chat_id):
+                with SessionLocal() as db:
+                    capture.owed_settled(db, one.chat_id, one.message_id)
+                continue
             try:
                 await _edit_line(application.bot, one.chat_id, one.message_id, one.line)
             except (RetryAfter, NetworkError) as e:
@@ -774,18 +846,32 @@ async def _say_not_yet(bot, job: capture.Read) -> None:
 
 
 async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
-    """One read of a meal, and its line. (read, the dead model's error if that is why
-    not). Nothing here logs a message body: only the class of what went wrong."""
+    """One read of a meal, booked to the person whose meal it is, whoever started it: a
+    sweep with nobody behind it, or the owner's /reprocess."""
+    with attribute_to(job.telegram_id):
+        return await _read_and_show(bot, job, meter)
+
+
+def _note_failed(job: capture.Read) -> None:
+    # A retry nobody asked for is no new failure: the person met this one already.
+    if not job.automatic:
+        action_journal.note(job.telegram_id, action_event.FAILED, job.kind)
+
+
+async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
+    """(read, the dead model's error if that is why not). Nothing here logs a message
+    body: only the class of what went wrong."""
     try:
         nutrition, resolution = await _reading(bot, job)
     except voice.NoSpeech:
         with SessionLocal() as db:
             done = capture.read_no_speech(db, job)
-        await _show(bot, job, done.line)
+        await _tell_read(bot, job, done.line)
         return False, None
     except Exception as e:
         error = type(e).__name__
         logger.error("Meal %s not read: %s", job.meal_id, error)
+        _note_failed(job)
         inbound_msg.mark_failed(job.inbound_id, error)
         with SessionLocal() as db:
             done = capture.read_failed(
@@ -795,8 +881,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
                 status=capture.failure_status(e),
                 model=_model_of(job),
             )
-        await _show(bot, job, done.line)
-        await _say_not_yet(bot, job)
+        await _tell_read(bot, job, done.line, not_yet=True)
         refusal = ai_errors.out_of_credit(e)
         if refusal is not None:
             await _credit_alert(bot, refusal, job)
@@ -827,6 +912,7 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
             os.path.basename(place.filename),
             place.lineno,
         )
+        _note_failed(job)
         with SessionLocal() as db:
             done = capture.read_failed(
                 db,
@@ -836,14 +922,98 @@ async def _read_one(bot, job: capture.Read, meter: Meter) -> tuple:
                 model=_model_of(job),
                 output=nutrition,
             )
-        await _show(bot, job, done.line)
-        await _say_not_yet(bot, job)
+        await _tell_read(bot, job, done.line, not_yet=True)
         return False, None
     if done.learn:
+        # A read with no food in it, or of a meal gone meanwhile, has nothing to learn.
+        action_journal.note(job.telegram_id, action_event.SAVED, job.kind)
         _schedule_personal_food_save(**done.learn)
-    await _show(bot, job, done.line)
-    await _retouch(bot, job.chat_id, done.retouch)
+    await _tell_read(
+        bot, job, done.line, retouch=done.retouch, recorded=bool(done.learn)
+    )
     return True, None
+
+
+async def _tell_read(
+    bot,
+    job: capture.Read,
+    line: Optional[capture.Line],
+    *,
+    not_yet: bool = False,
+    retouch: Optional[meal_card.Retouch] = None,
+    recorded: bool = False,
+) -> None:
+    """All a finished read says to the person, and only if the door is still open: it may
+    have closed while the model was thinking. The line goes on the sweep's list, which
+    asks the door again, so a moment of a database that cannot say costs no line."""
+    try:
+        may_hear = _may_hear(job.telegram_id)
+    except Exception as e:
+        logger.error("Door not read after a read: %s", type(e).__name__)
+        may_hear = False
+    if not may_hear:
+        logger.info("Meal %s read, and its person hears nothing", job.meal_id)
+        if line is not None:
+            with SessionLocal() as db:
+                capture.line_not_shown(db, job, line, owed=True)
+        return
+    await _show(bot, job, line)
+    if not_yet:
+        await _say_not_yet(bot, job)
+    await _retouch(bot, job.chat_id, retouch)
+    if recorded:
+        await _first_record_hint(bot, job)
+    else:
+        await _menu_once(bot, job.chat_id, job.telegram_id)
+
+
+async def _menu_once(bot, chat_id: int, telegram_id: int) -> None:
+    """The main keyboard for someone who skipped the welcome's question and whose first
+    message recorded nothing, so no hint will bring it. It can cost the meal nothing."""
+    try:
+        with SessionLocal() as db:
+            words = welcome_screen.take_menu(db, telegram_id)
+        if words is not None:
+            await bot.send_message(chat_id, words, reply_markup=main_keyboard)
+    except Exception as e:
+        logger.warning("Menu not given: %s", type(e).__name__)
+
+
+async def _welcome_unasked(update: Update, context) -> None:
+    """An invited person who wrote before ever pressing /start: the food goes on as ever,
+    and the first message of the bot still says who sees what. It can cost the meal
+    nothing; one Telegram did not take stays owed."""
+    message, user = update.message, update.effective_user
+    try:
+        with SessionLocal() as db:
+            owed = welcome_screen.owed_unasked(db, user.id)
+    except Exception as e:
+        logger.error("First run not read: %s", type(e).__name__)
+        return
+    if not owed:
+        return
+    await _note_first_open(context, user.id)
+    screen = welcome_screen.welcome()
+    try:
+        await message.reply_text(
+            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+        )
+    except TelegramError as e:
+        logger.warning("Welcome not sent: %s", type(e).__name__)
+        with SessionLocal() as db:
+            welcome_screen.still_owed(db, user.id)
+
+
+async def _first_record_hint(bot, job: capture.Read) -> None:
+    """One line after the first record of someone who came through the welcome, with the
+    main keyboard for whoever wrote before answering its question."""
+    try:
+        with SessionLocal() as db:
+            hint = welcome_screen.take_hint(db, job.telegram_id)
+        if hint is not None:
+            await bot.send_message(job.chat_id, hint, reply_markup=main_keyboard)
+    except Exception as e:
+        logger.warning("First record hint not sent: %s", type(e).__name__)
 
 
 async def _album_settles(job: capture.Read) -> None:
@@ -869,7 +1039,8 @@ async def _album_went_on(bot, job: capture.Read) -> Optional[capture.Read]:
     if again is None:
         _live_reads.pop(job.meal_id, None)
         return None
-    await _retouch(bot, job.chat_id, line)
+    if _may_hear(job.telegram_id):
+        await _retouch(bot, job.chat_id, line)
     return again
 
 
@@ -884,11 +1055,16 @@ async def _read_meal(application: Application, job: capture.Read) -> None:
             async with gate:
                 with SessionLocal() as db:
                     job = capture.read_as_of_now(db, job)
+                # Closed while this waited its turn: not paid for. The sweep gives the
+                # meal up, and says nothing to its person.
+                if not _may_hear(job.telegram_id):
+                    logger.info("Meal %s not read: the door closed", job.meal_id)
+                    return
                 if job.automatic:
                     with SessionLocal() as db:
                         refused = capture.automatic_start(db, job)
                     if refused is not None:
-                        await _show(application.bot, job, refused.line)
+                        await _tell_read(application.bot, job, refused.line)
                         return
                 with metering() as meter:
                     _, dead = await _read_one(application.bot, job, meter)
@@ -970,7 +1146,9 @@ async def _replay_pending(application: Application, meals: list) -> None:
 async def _show_given_up(application: Application, given_up: list) -> None:
     for job, done in given_up:
         if job is not None:
-            await _show(application.bot, job, done.line)
+            action_journal.note(job.telegram_id, action_event.FAILED, job.kind)
+            if _may_hear(job.telegram_id):
+                await _show(application.bot, job, done.line)
 
 
 async def _sweep(application: Application) -> None:
@@ -1017,6 +1195,31 @@ async def _sweep_loop(application: Application, meals: list) -> None:
             logger.error("Meal sweep failed: %s", type(e).__name__)
 
 
+# The few of every day; the rest stay out of the way, and the owner's get their own scope.
+_COMMANDS = (
+    BotCommand("start", "Открыть меню"),
+    BotCommand("feedback", "Написать владельцу бота"),
+)
+_OWNER_COMMANDS = (BotCommand("users", "Кто пользуется и сколько это стоит"),)
+
+
+async def _set_commands(application: Application) -> None:
+    """The command menu. A convenience: without it the bot starts all the same. /users is
+    in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
+    refuses costs that admin the entry and no one else theirs."""
+    try:
+        await application.bot.set_my_commands(_COMMANDS)
+    except Exception as e:
+        logger.warning("Command menu not set: %s", type(e).__name__)
+    for admin_id in settings.admin_ids:
+        try:
+            await application.bot.set_my_commands(
+                (*_COMMANDS, *_OWNER_COMMANDS), scope=BotCommandScopeChat(admin_id)
+            )
+        except Exception as e:
+            logger.warning("Owner's command menu not set: %s", type(e).__name__)
+
+
 async def _on_start(application: Application) -> None:
     # Not ``application.create_task``: not running yet, it would only warn, and made
     # while running ``stop()`` would wait for this one for ever.
@@ -1025,6 +1228,7 @@ async def _on_start(application: Application) -> None:
     application.bot_data[SWEEP_TASK] = asyncio.create_task(
         _sweep_loop(application, meals)
     )
+    await _set_commands(application)
     await _load_custom_emoji(application)
 
 
@@ -1071,8 +1275,8 @@ async def _new_meal(
     note: Optional[str],
     words: Optional[str] = None,
     day=None,
-) -> None:
-    """Row 10: the record first, then the line, then the read."""
+) -> bool:
+    """Row 10: the record first, then the line, then the read. False if no record."""
     message = update.message
     try:
         with SessionLocal() as db:
@@ -1080,12 +1284,12 @@ async def _new_meal(
     except Exception as e:
         logger.error("Meal not written: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
-        return
+        return False
     if born is None:
-        return
+        return True
     if born.joined:
         await _album_grew(context.application, came, born)
-        return
+        return True
     # The diagnostic row that /reprocess replays; a voice has its meal for that.
     inbound_id = None
     if came.kind != "voice":
@@ -1102,7 +1306,8 @@ async def _new_meal(
         _map_line(born.final, sent, "line")
         if sent is not None:
             await _rollout(message, came.telegram_id)
-        return
+        await _menu_once(context.bot, came.chat_id, came.telegram_id)
+        return True
     sent = await _send_line(message, born.first)
     _map_line(born.first, sent, "pending")
     job = replace(
@@ -1114,6 +1319,7 @@ async def _new_meal(
     _start_read(context.application, job)
     if sent is not None:
         await _rollout(message, came.telegram_id)
+    return True
 
 
 async def _rollout(message, telegram_id: int) -> None:
@@ -1220,53 +1426,81 @@ async def _take_lines_back(bot, chat_id: int, message_ids: tuple) -> None:
             logger.warning("Meal line not removed: %s", type(e).__name__)
 
 
+class _Went(enum.Enum):
+    """What became of a message in the diary: the one thing «↩️ Это была еда» has to know.
+    REFUSED may pass on a second try; NOTHING was answered, and writes nothing however
+    many times it is tried."""
+
+    WRITTEN = "written"
+    REFUSED = "refused"
+    NOTHING = "nothing"
+
+
 async def capture_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Section 5.1: what a private message is, when no menu, command or slot took it.
 
     Outside the conversation, so no state ever eats food. The handler returns before
     the read ends.
     """
+    await _capture(update, context)
+
+
+async def _capture(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, as_food: bool = False
+) -> _Went:
+    """``as_food``: the person has said so, and neither a final «?» nor a «спасибо» is a
+    reason to keep it out of the diary."""
     message, user = update.message, update.effective_user
     if message is None or user is None:
-        return
+        return _Went.REFUSED
     if not await check_subscription(user.id):
         await message.reply_text(LOCK_TEXT, reply_markup=subscription_keyboard)
-        return
-    if message.text and await _model_choice(update, context):
-        return
+        return _Went.REFUSED
+    await _welcome_unasked(update, context)
+    if not as_food and message.text and await _model_choice(update, context):
+        return _Went.NOTHING
     came = capture.incoming(message, user)
     if came.kind is None:
         await message.reply_text(capture.M9_UNREADABLE)
-        return
+        return _Went.REFUSED
     if capture.too_big(came):
         await message.reply_text(capture.M4F_TOO_BIG)
-        return
+        return _Went.REFUSED
     try:
         with SessionLocal() as db:
             if capture.seen(db, came):
-                return
+                return _Went.WRITTEN
             if came.kind == "text":
-                route = capture.route_text(db, came)
+                route = capture.route_text(db, came, as_food=as_food)
             else:
                 route = capture.route_media(db, came)
     except Exception as e:
         logger.error("Router failed: %s", type(e).__name__)
         await message.reply_text(capture.M7F_REFUSED)
-        return
+        return _Went.REFUSED
 
     if route.action == capture.NEW_MEAL:
-        await _new_meal(update, context, came, route.note, route.words)
-    elif route.action == capture.LINE:
+        written = await _new_meal(update, context, came, route.note, route.words)
+        return _Went.WRITTEN if written else _Went.REFUSED
+    if route.action == capture.SILENT:
+        return _Went.NOTHING
+    went = _Went.WRITTEN
+    if route.action == capture.LINE:
         line = route.line
         _map_line(line, await _send_line(message, line), line.view)
         await _retouch(context.bot, came.chat_id, line.retouch)
         if line.fill:
             task = context.application.create_task(_fill_typed_dish(line.fill, user.id))
             _keep_task(task)
+        # A line with no meal behind it only answered: «В дневнике ничего не поменялось».
+        if line.meal_id is None:
+            went = _Went.NOTHING
     elif route.action == capture.WEIGHT:
         await process_weight(update, context)
     elif route.action == capture.TICK:
         await message.reply_text(f"✓ {route.tick}", reply_markup=_day_card_button())
+    await _menu_once(context.bot, came.chat_id, user.id)
+    return went
 
 
 async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1453,12 +1687,13 @@ async def _fill_typed_dish(fill: meal_card.Fill, telegram_id: int) -> None:
     """N4: a typed new name's numbers, with no new message. If this fails the name
     stays, and its screen says «Цифры не посчитаны.»."""
     try:
-        nutrition = await _analyze_and_parse(
-            kind="text",
-            payload=fill.name,
-            input_ref=fill.name,
-            telegram_id=telegram_id,
-        )
+        with attribute_to(telegram_id):
+            nutrition = await _analyze_and_parse(
+                kind="text",
+                payload=fill.name,
+                input_ref=fill.name,
+                telegram_id=telegram_id,
+            )
         with SessionLocal() as db:
             meal_items.fill_numbers(
                 db, fill.item_id, fill.rev, fill.event_id, nutrition
@@ -1578,7 +1813,12 @@ async def meal_slot_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def _screen_callback(
-    update: Update, handle, locked: str, what: str, deliver=None, before_answer=None
+    update: Update,
+    handle,
+    locked: Optional[str],
+    what: str,
+    deliver=None,
+    before_answer=None,
 ):
     """A tap on a screen's inline button: ``handle(db, telegram_id, data)``
     gives the next screen, which replaces the message in place.
@@ -1587,7 +1827,8 @@ async def _screen_callback(
     whole step, so it works in any conversation state and after a restart.
     """
     query = update.callback_query
-    if not await check_subscription(update.effective_user.id):
+    # ``locked`` None: a screen that is open whatever the subscription says.
+    if locked is not None and not await check_subscription(update.effective_user.id):
         await query.answer(locked, show_alert=True)
         return
     try:
@@ -2060,6 +2301,7 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # A read already running is paid for: it is not asked twice.
             meals = capture.unread_meals(db, REPROCESS_BATCH_LIMIT)
             meals = [meal_id for meal_id in meals if meal_id not in _live_reads]
+            meals = [m for m in meals if capture.owner_may_receive(db, m)]
             jobs = [capture.read_again(db, meal_id) for meal_id in meals]
         jobs = [job for job in jobs if job is not None]
         room = REPROCESS_BATCH_LIMIT - len(jobs)
@@ -2079,7 +2321,9 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             for row in rows:
                 fate, written = capture.row_fate(db, row)
                 if fate == capture.REPLAY:
-                    replayed.append(row)
+                    # Stays in the queue: «↩️ Вернуть» finds it as it was.
+                    if may_receive(db, row.telegram_id):
+                        replayed.append(row)
                 elif fate == capture.SETTLED:
                     inbound_msg.mark_analyzed(row.id, written)
     except Exception as e:
@@ -2119,31 +2363,33 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for row in rows:
         try:
-            if row.kind == "image":
-                if not row.photo_file_id:
-                    raise ValueError("no photo reference to re-fetch")
-                payload = await _download_image(context.bot, row.photo_file_id)
-                # Use the full pipeline so reprocessed images also benefit from
-                # barcode→OFF lookup (same quality as the live flow).
-                resolution_result = await resolve_meal_nutrition(
-                    payload,
-                    telegram_id=row.telegram_id,
-                    input_ref=row.photo_file_id,
-                    # The stored caption. /reprocess OVERWRITES ai_analysis, so
-                    # replaying without it would actively downgrade a record the
-                    # live flow got right.
-                    caption=row.content,
-                )
-                parsed = resolution_result.nutrition
-            else:
-                payload = row.content or ""
-                input_ref = row.content or ""
-                parsed = await _analyze_and_parse(
-                    kind=row.kind,
-                    payload=payload,
-                    input_ref=input_ref,
-                    telegram_id=row.telegram_id,
-                )
+            # The row's person pays for its replay, not the owner who asked for it.
+            with attribute_to(row.telegram_id):
+                if row.kind == "image":
+                    if not row.photo_file_id:
+                        raise ValueError("no photo reference to re-fetch")
+                    payload = await _download_image(context.bot, row.photo_file_id)
+                    # Use the full pipeline so reprocessed images also benefit from
+                    # barcode→OFF lookup (same quality as the live flow).
+                    resolution_result = await resolve_meal_nutrition(
+                        payload,
+                        telegram_id=row.telegram_id,
+                        input_ref=row.photo_file_id,
+                        # The stored caption. /reprocess OVERWRITES ai_analysis, so
+                        # replaying without it would actively downgrade a record the
+                        # live flow got right.
+                        caption=row.content,
+                    )
+                    parsed = resolution_result.nutrition
+                else:
+                    payload = row.content or ""
+                    input_ref = row.content or ""
+                    parsed = await _analyze_and_parse(
+                        kind=row.kind,
+                        payload=payload,
+                        input_ref=input_ref,
+                        telegram_id=row.telegram_id,
+                    )
         except ModelUnavailableError as e:
             await update.message.reply_text(stopped(e))
             return
@@ -2166,6 +2412,459 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"Повторная обработка ({len(jobs) + len(rows)}): "
         f"успешно {analyzed}, с ошибкой {failed}."
+    )
+
+
+# --- letting a person in ---------------------------------------------------------------
+
+
+async def _ask_to_pick(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[_INVITE_UNTIL] = time.monotonic() + INVITE_WAIT_SECONDS
+    await message.reply_text(
+        people_screen.PROMPT, reply_markup=people_screen.picker_keyboard()
+    )
+
+
+@admin_required
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/invite: Telegram's own picker; the bot learns only who was picked."""
+    await _ask_to_pick(update.message, context)
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Silent to anyone else: the screen is not advertised, and a refusal would be."""
+    if update.effective_user.id not in settings.admin_ids:
+        logger.warning("/users by %s: refused", update.effective_user.id)
+        return
+    with SessionLocal() as db:
+        screen = people_screen.hub(db)
+    await _reply_screen(update, screen)
+
+
+async def _users_send(bot, admin_id: int, screen):
+    """A re-send goes out before the screen is drawn, which then says how it went."""
+    if not isinstance(screen, feedback_inbox.Resend):
+        return screen
+    whole = await deliver_to_one(
+        admin_id, list(screen.parts), file=screen.file, bot=bot
+    )
+    with SessionLocal() as db:
+        return feedback_inbox.after_send(db, screen, whole)
+
+
+async def _users_below(query, screen) -> None:
+    """A new message: the one tapped holds a person's words, not a screen."""
+    await query.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+
+
+async def users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Checked here and again in ``people_screen.handle``: for anyone else a tap answers
+    the same words whatever it names, and nothing is read or sent."""
+    query, admin_id = update.callback_query, update.effective_user.id
+    if admin_id not in settings.admin_ids:
+        logger.warning("people: %r by %s: unknown or foreign", query.data, admin_id)
+        await query.answer(people_screen.NOT_YOURS)
+        return
+    if query.data == people_screen.INVITE:
+        await query.answer()
+        await _ask_to_pick(query.message, context)
+        return
+
+    async def send(screen):
+        return await _users_send(context.bot, admin_id, screen)
+
+    below = (query.data or "").startswith(owner_buttons.CARD_HERE)
+    await _screen_callback(
+        update,
+        people_screen.handle,
+        None,
+        "users",
+        deliver=_users_below if below else None,
+        before_answer=send,
+    )
+
+
+async def welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _screen_callback(
+        update,
+        welcome_screen.handle,
+        "🔒 Нужна подписка",
+        "welcome",
+        deliver=_first_record_screen,
+    )
+
+
+async def _first_record_screen(query, screen) -> None:
+    """A new message: an edited one cannot bring the main keyboard."""
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError as e:
+        logger.warning("Welcome buttons not taken off: %s", type(e).__name__)
+    await query.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard
+    )
+
+
+def _feedback_arm(context, prompt_id: Optional[int]) -> None:
+    """The next message is the owner's. No other wait outlives this promise."""
+    context.user_data[_FEEDBACK_UNTIL] = time.monotonic() + FEEDBACK_WAIT_SECONDS
+    context.user_data[_FEEDBACK_PROMPT] = prompt_id
+    context.user_data.pop(_INVITE_UNTIL, None)
+
+
+def _feedback_disarm(context) -> None:
+    context.user_data.pop(_FEEDBACK_UNTIL, None)
+    context.user_data.pop(_FEEDBACK_PROMPT, None)
+
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open to anyone through the gate: a locked diary is a thing to write about."""
+    user = update.effective_user
+    context.user_data.pop("routine_asked_at", None)
+    context.user_data.pop("food_asked_at", None)
+    try:
+        with SessionLocal() as db:
+            meal_card.leave_slot(db, user.id)
+    except Exception as e:
+        logger.error("Meal slot not closed: %s", type(e).__name__)
+    screen = feedback_screen.prompt_screen()
+    sent = await update.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+    _feedback_arm(context, sent.message_id)
+
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A tap on ``fb:…``. 👁 leaves the wait as it is: it is a look, not a way out."""
+    query = update.callback_query
+    data = query.data or ""
+    if data.startswith(feedback_screen.CALLBACK_PREFIX + "food:"):
+        await _feedback_was_food(update, context)
+        return
+    await _screen_callback(update, feedback_screen.handle, None, "Feedback")
+    if data == feedback_screen.OPEN:
+        _feedback_arm(context, getattr(query.message, "message_id", None))
+    elif data == feedback_screen.CANCEL:
+        _feedback_disarm(context)
+
+
+async def feedback_left_by_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Any other inline tap, in its own group: the person has moved on."""
+    _feedback_disarm(context)
+
+
+async def feedback_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The message the 💬 screen promised, ahead of the slots and the diary. With no
+    wait, past the wait, or for a command or a menu button, it goes on as ever: a wait
+    never eats food. The row is written before anything is sent."""
+    message, user = update.message, update.effective_user
+    wait = context.user_data
+    album = wait.get(_FEEDBACK_ALBUM)
+    if (
+        album is None
+        or message.media_group_id != album[0]
+        or time.monotonic() >= album[1]
+    ):
+        until = wait.get(_FEEDBACK_UNTIL)
+        if until is None:
+            return
+        if (
+            time.monotonic() >= until
+            or message.text in _FEEDBACK_LEAVES
+            or filters.COMMAND.check_update(update)
+        ):
+            _feedback_disarm(context)
+            return
+    came = capture.incoming(message, user)
+    if came.kind is None:
+        await message.reply_text(feedback_screen.UNSUPPORTED)
+        raise ApplicationHandlerStop
+    try:
+        with SessionLocal() as db:
+            row = feedback_screen.take(db, came, message.to_dict())
+            feedback_id = row.id
+    except Exception as e:
+        # A database error's text holds the row: the words. The wait stays.
+        logger.error("Feedback not saved: %s", type(e).__name__)
+        await message.reply_text(feedback_screen.NOT_SAVED)
+        raise ApplicationHandlerStop
+    prompt_id = wait.get(_FEEDBACK_PROMPT)
+    _feedback_disarm(context)
+    if message.media_group_id:
+        wait[_FEEDBACK_ALBUM] = (
+            message.media_group_id,
+            time.monotonic() + FEEDBACK_ALBUM_SECONDS,
+        )
+    if prompt_id:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=came.chat_id, message_id=prompt_id, reply_markup=None
+            )
+        except TelegramError as e:
+            logger.info("Feedback: the old keyboard stays: %s", type(e).__name__)
+    screen = feedback_screen.sent_screen(feedback_id)
+    try:
+        await message.reply_text(
+            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+        )
+    except TelegramError as e:
+        logger.warning("Feedback: no answer sent: %s", type(e).__name__)
+    person = invites.Person(user.id, user.first_name, user.last_name, user.username)
+    # Local whisper may take its two minutes, and this handler holds up the next update.
+    _keep_task(
+        context.application.create_task(
+            _feedback_deliver(
+                context.bot, feedback_id, person, came.chat_id, came.message_id
+            )
+        )
+    )
+    raise ApplicationHandlerStop
+
+
+async def _feedback_heard(bot, feedback_id: int, file_id: str) -> None:
+    """The free door only: no ``paid`` is handed to ``voice.hear``, so there is none.
+    Whatever goes wrong here costs the owner the text, never the voice itself."""
+    try:
+        file = await bot.get_file(file_id)
+        audio = bytes(await file.download_as_bytearray())
+        heard = await voice.hear(audio, local_only=True, prompt=voice.GENERAL_PROMPT)
+        with SessionLocal() as db:
+            crud_feedback.set_transcript(db, feedback_id, heard.text)
+    except (voice.NotHeard, voice.NoSpeech) as e:
+        logger.info("Feedback voice not heard: %s", type(e).__name__)
+    except Exception as e:
+        logger.warning("Feedback voice failed: %s", type(e).__name__)
+
+
+async def _feedback_deliver(
+    bot, feedback_id: int, person, chat_id: int, message_id: int
+) -> None:
+    """The owner's copy. A failure leaves ``sent_at`` empty, and the row says so."""
+    try:
+        with SessionLocal() as db:
+            row = crud_feedback.get(db, feedback_id)
+            kind, file_id = row.kind, row.file_id
+            food = row.was_food_at is not None
+        if kind == feedback_model.VOICE and not food:
+            await _feedback_heard(bot, feedback_id, file_id)
+        with SessionLocal() as db:
+            row = crud_feedback.get(db, feedback_id)
+            if row.was_food_at is not None:
+                # A record now, and the owner's screens hold no records. Only their
+                # count says it was there.
+                logger.info("Feedback %s turned out to be food: not sent", feedback_id)
+                return
+            user = settings_screen._user(db, person.telegram_id)
+            parts = feedback_screen.owner_parts(
+                row, person, datetime.now(UTC), settings_screen.user_zone(user)
+            )
+        forward = None if kind == feedback_model.TEXT else (chat_id, message_id)
+        if not await deliver_to_admins(parts, forward=forward, bot=bot):
+            logger.warning("Feedback %s stays undelivered", feedback_id)
+            return
+        with SessionLocal() as db:
+            crud_feedback.mark_sent(db, feedback_id)
+            row = crud_feedback.get(db, feedback_id)
+            late_food = row.was_food_at is not None
+        if late_food:  # tapped while this was on its way: the words are there already
+            await notify_admins(feedback_screen.food_follow_up(person), bot=bot)
+    except Exception as e:
+        logger.error("Feedback %s not delivered: %s", feedback_id, type(e).__name__)
+
+
+async def _feedback_was_food(update: Update, context) -> None:
+    """«↩️ Это была еда»: the same message, down the real diary path, its form no reason
+    to keep it out. Not written there, it is not marked and the button stays, so the food
+    can still be saved and the owner can still read the words."""
+    query, user = update.callback_query, update.effective_user
+    try:
+        with SessionLocal() as db:
+            found = feedback_screen.handle(db, user.id, query.data)
+    except Exception as e:
+        logger.error("Feedback tap failed: %s", type(e).__name__)
+        await query.answer(feedback_screen.FOOD_FAILED, show_alert=True)
+        return
+    if not isinstance(found, feedback_screen.Replay):
+        await query.answer(found.toast)
+        if found.text:
+            await _feedback_retitle(query, found)
+        return
+    if not await check_subscription(user.id):
+        await query.answer(feedback_screen.FOOD_LOCKED, show_alert=True)
+        return
+    try:
+        message = Message.de_json(found.original, context.bot)
+        went = await _capture(
+            Update(update.update_id, message=message), context, as_food=True
+        )
+    except Exception as e:
+        logger.error("Feedback replay failed: %s", type(e).__name__)
+        went = _Went.REFUSED
+    if went == _Went.NOTHING:
+        await query.answer(feedback_screen.FOOD_NOT_WRITTEN, show_alert=True)
+        return
+    if went == _Went.REFUSED:
+        await query.answer(feedback_screen.FOOD_FAILED, show_alert=True)
+        return
+    await query.answer()
+    try:
+        with SessionLocal() as db:
+            first = crud_feedback.mark_food(db, found.feedback_id)
+            sent = crud_feedback.get(db, found.feedback_id).sent_at is not None
+    except Exception as e:
+        # The meal stands, and a second tap finds it seen: nothing is written twice.
+        logger.error("Feedback not marked as food: %s", type(e).__name__)
+        return
+    await _feedback_retitle(query, feedback_screen.food_done_screen())
+    if first and sent:
+        person = invites.Person(user.id, user.first_name, user.last_name, user.username)
+        await notify_admins(feedback_screen.food_follow_up(person), bot=context.bot)
+
+
+async def _feedback_retitle(query, screen) -> None:
+    try:
+        await query.edit_message_text(
+            screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+        )
+    except TelegramError as e:
+        logger.info("Feedback: the answer stays as it was: %s", type(e).__name__)
+
+
+def _named_person(message) -> invites.Person | None:
+    """Who a forward or a contact names; None if Telegram hides them."""
+    origin = message.forward_origin
+    if isinstance(origin, MessageOriginUser):
+        user = origin.sender_user
+        return invites.Person(user.id, user.first_name, user.last_name, user.username)
+    contact = message.contact
+    if contact is not None and contact.user_id is not None:
+        return invites.Person(contact.user_id, contact.first_name, contact.last_name)
+    return None
+
+
+async def _tell_owner(message, text: str, **options) -> None:
+    """A moment of Telegram is tried again, and past it the reply is lost, not the turn:
+    an error here would carry on past ``invite_intake`` and put what the owner forwarded
+    into the owner's diary."""
+    try:
+        await _tries(lambda: message.reply_text(text, **options))
+    except TelegramError as e:
+        logger.warning("Invitation reply not sent: %s", type(e).__name__)
+
+
+async def _let_in(message, context, person: invites.Person) -> None:
+    """Every way out of here gives the main keyboard back."""
+    context.user_data.pop(_INVITE_UNTIL, None)
+    if person.telegram_id in settings.admin_ids:
+        await _tell_owner(message, people_screen.YOURSELF, reply_markup=main_keyboard)
+        return
+    try:
+        with SessionLocal() as db:
+            invites.invite(db, person, message.from_user.id)
+    except Exception as e:
+        logger.error("Invitation not written: %s", type(e).__name__)
+        await _tell_owner(message, people_screen.FAILED, reply_markup=main_keyboard)
+        return
+    await _tell_owner(
+        message,
+        people_screen.notice_opened(person.name),
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard,
+    )
+    delivered = False
+    if settings.access_mode != "closed":
+        delivered = await _invite_directly(context.bot, person.telegram_id)
+    screen = people_screen.invited(context.bot.username, delivered)
+    await _tell_owner(
+        message, screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+
+
+async def _invite_directly(bot, telegram_id: int) -> bool:
+    """Only Telegram knows whether this person ever pressed Start here, and asking is the
+    send itself. A refusal is the usual answer and leaves the share button."""
+    try:
+        await bot.send_message(telegram_id, people_screen.INVITATION)
+    except TelegramError as e:
+        logger.info("Invitation not delivered: %s", type(e).__name__)
+        return False
+    return True
+
+
+async def invite_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """What belongs to the invitation, before the slots, the conversation and the diary:
+    a person picked, the two labels of the picker, and while it waits a forward or a
+    contact. Anything else, food too, goes on to the diary as ever."""
+    message = update.message
+    is_owner = update.effective_user.id in settings.admin_ids
+    if message.users_shared is not None:
+        if is_owner:
+            await _picked(message, context)
+        else:
+            logger.warning("A person picked by a non-owner: ignored")
+        raise ApplicationHandlerStop
+    if message.text == people_screen.CANCEL:
+        if is_owner:
+            context.user_data.pop(_INVITE_UNTIL, None)
+            await _tell_owner(
+                message, people_screen.CANCELLED, reply_markup=main_keyboard
+            )
+        raise ApplicationHandlerStop
+    if message.text == people_screen.PICK:
+        if is_owner:
+            # This label arrives as text only from a client that cannot pick.
+            context.user_data[_INVITE_UNTIL] = time.monotonic() + INVITE_WAIT_SECONDS
+            await _tell_owner(
+                message,
+                people_screen.FALLBACK,
+                reply_markup=people_screen.picker_keyboard(),
+            )
+        raise ApplicationHandlerStop
+    until = context.user_data.get(_INVITE_UNTIL)
+    if until is None or not is_owner:
+        return
+    if time.monotonic() > until:
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await _tell_owner(message, people_screen.EXPIRED, reply_markup=main_keyboard)
+        return
+    if (message.text or "").startswith("/"):
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await _tell_owner(message, people_screen.CANCELLED, reply_markup=main_keyboard)
+        return
+    if message.forward_origin is None and message.contact is None:
+        return
+    person = _named_person(message)
+    if person is None:
+        await _tell_owner(
+            message,
+            people_screen.HIDDEN_ORIGIN,
+            reply_markup=people_screen.picker_keyboard(),
+        )
+    elif isinstance(message.forward_origin, MessageOriginUser) and (
+        message.forward_origin.sender_user.is_bot
+    ):
+        await _tell_owner(
+            message, people_screen.A_BOT, reply_markup=people_screen.picker_keyboard()
+        )
+    else:
+        await _let_in(message, context, person)
+    raise ApplicationHandlerStop
+
+
+async def _picked(message, context) -> None:
+    shared = message.users_shared
+    if shared.request_id != people_screen.REQUEST_ID or not shared.users:
+        logger.warning("A person picked for an unknown request: %s", shared.request_id)
+        context.user_data.pop(_INVITE_UNTIL, None)
+        await _tell_owner(message, people_screen.FAILED, reply_markup=main_keyboard)
+        return
+    user = shared.users[0]
+    await _let_in(
+        message,
+        context,
+        invites.Person(user.user_id, user.first_name, user.last_name, user.username),
     )
 
 
@@ -2221,9 +2920,29 @@ def create_bot_application() -> Application:
         .build()
     )
 
-    # Global access gate — runs before every other handler (group=-2) and drops
+    # Whose update this is, and what they did: before anything can pay for a model.
+    application.add_handler(TypeHandler(Update, action_journal.note_update), group=-5)
+
+    # Global access gate — runs before every other handler (group=-4) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.
-    application.add_handler(TypeHandler(Update, access_gate), group=-2)
+    application.add_handler(TypeHandler(Update, access_gate), group=-4)
+
+    # A person picked, and the picker's labels: never food, never a slot's answer.
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE, invite_intake
+        ),
+        group=-3,
+    )
+
+    # The message the 💬 screen asked for. In its own group, ahead of the slot's: only
+    # the first matching handler of a group runs, and the slot's matches every message.
+    application.add_handler(
+        MessageHandler(
+            filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE, feedback_intake
+        ),
+        group=-2,
+    )
 
     # The card's typed slot answers before the conversation sees the text; with no
     # slot it does nothing and the update goes on.
@@ -2404,6 +3123,12 @@ def create_bot_application() -> Application:
         ),
         group=3,
     )
+    application.add_handler(
+        CallbackQueryHandler(
+            feedback_left_by_tap, pattern=f"^(?!{feedback_screen.CALLBACK_PREFIX})"
+        ),
+        group=4,
+    )
 
     # Buttons of the retired draft, still on someone's screen.
     application.add_handler(
@@ -2414,6 +3139,26 @@ def create_bot_application() -> Application:
 
     # Add subscription management commands
     application.add_handler(CommandHandler("grant_sub", grant_subscription))
+
+    # Letting people in, and the first run (owner only, but for the first run).
+    application.add_handler(CommandHandler("invite", invite_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("feedback", feedback_command))
+    application.add_handler(
+        CallbackQueryHandler(
+            feedback_callback, pattern=f"^{feedback_screen.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            users_callback, pattern=f"^{people_screen.CALLBACK_PREFIX}"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            welcome_callback, pattern=f"^{welcome_screen.CALLBACK_PREFIX}"
+        )
+    )
 
     # Consult relay → my-health hub
     application.add_handler(CommandHandler("consult", consult))

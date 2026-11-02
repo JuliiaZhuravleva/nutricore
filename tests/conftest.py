@@ -109,6 +109,64 @@ def _hermetic_voice(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _hermetic_ledger_and_journal(monkeypatch):
+    """Any test that reaches a paid call or an update writes the cost ledger and the
+    action journal. Unless it looks at them itself, that goes to a database of this test's
+    own, made on first use, and never towards a real Postgres."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.models.action_event import ActionEvent
+    from app.models.usage_ledger import UsageLedger
+    from app.services import action_journal, usage_ledger
+
+    made = {}
+
+    def factory():
+        if "sessions" not in made:
+            engine = create_engine(
+                "sqlite://",
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+            UsageLedger.__table__.create(engine)
+            ActionEvent.__table__.create(engine)
+            made["sessions"] = sessionmaker(bind=engine)
+        return made["sessions"]()
+
+    monkeypatch.setattr(usage_ledger, "SessionLocal", factory)
+    monkeypatch.setattr(action_journal, "SessionLocal", factory)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_access_grants(monkeypatch):
+    """Whoever is in neither list makes the gate look for a grant. Unless a test looks at
+    grants itself, that finds none in a database of its own, never a real Postgres."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.models.access_grant import AccessGrant
+    from app.services import access_control
+
+    made = {}
+
+    def factory():
+        if "sessions" not in made:
+            engine = create_engine(
+                "sqlite://",
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+            AccessGrant.__table__.create(engine)
+            made["sessions"] = sessionmaker(bind=engine)
+        return made["sessions"]()
+
+    monkeypatch.setattr(access_control, "SessionLocal", factory)
+
+
+@pytest.fixture(autouse=True)
 def celery_delay(monkeypatch):
     """TD-025: saving a meal enqueues the personal-food task with ``.delay``,
     which publishes to Redis synchronously. With no broker that publish blocks

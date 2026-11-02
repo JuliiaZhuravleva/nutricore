@@ -29,7 +29,9 @@ So release work is **not** merged to main from this side — it is handed off as
 2. Verify locally: `./scripts/test.sh` green (cache-venv wrapper, TD-001 — never `poetry run`).
 3. Review as warranted: `/review-deep`, `/review-security`.
 4. Migrations: **single linear head**, reversible. `.env.example` updated for any new var.
-5. **Push the branch. Do NOT merge to main.**
+5. **Push the branch. Do NOT merge to main.** Every pushed branch runs `.github/workflows/ci.yml`
+   (lint, tests, migrations and two-people cases on Postgres, image build); read it before the
+   hand-off. It informs and does not gate: the release gate on the mini is what stops a release.
 6. Hand off: **"готово, ветка X"** + a release note (template below).
 
 **Deploy lane vs direct merge** — the lane is triggered by *"does this run differently on

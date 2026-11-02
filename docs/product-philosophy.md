@@ -7,7 +7,8 @@
 ## What Nutricore is
 
 A **personal** nutrition tracker on Telegram: capture meals with minimal friction
-(text/photo → КБЖУ via AI) and chat about food. It is **not** a multi-user product — though
+(text/photo → КБЖУ via AI) and chat about food. It is for its owner and the people the owner
+invites by hand, **not** an open product — though
 the repo is **public** (a showcase/portfolio), so docs and README are kept presentable for
 an outside reader.
 
@@ -90,7 +91,8 @@ flow.
 ## Non-goals (what this philosophy is *not* a license for)
 
 - Not a reason to add friction "for safety" — transparency is shown, not interrogated.
-- Not multi-user product polish (onboarding funnels, paywalls for strangers, dashboards).
+- Not an open product (no funnel for strangers, no paywall, no dashboards). People are invited
+  by hand, one at a time, and get a short first run; nobody else is answered.
   See ROADMAP "Non-goals".
 - Not a place for medical logic — that boundary belongs to my-health.
 

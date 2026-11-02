@@ -18,32 +18,44 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy import text as sql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import object_session, sessionmaker
 from sqlalchemy.pool import StaticPool
 from telegram import Update
 
+import app.services.access_control as access_control
+import app.services.action_journal as action_journal
 import app.services.ai_call_log_service as log_service
 import app.services.inbound_message_service as inbound_service
 import app.services.model_selection as model_selection
 import app.services.telegram as tg
+import app.services.usage_ledger as usage_ledger
 from app.core.config import settings
+from app.crud.crud_access_grant import crud_access_grant
+from app.crud.crud_action_event import crud_action_event
+from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_subscription import crud_subscription
+from app.crud.crud_usage_ledger import crud_usage_ledger
+from app.crud.crud_user import crud_user
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import (
+    ActionEvent,
     BodyMetric,
     FavoriteMeal,
+    Feedback,
     Meal,
     MealMessage,
     MealReading,
@@ -51,14 +63,27 @@ from app.models import (
     PersonalFood,
     PersonalFoodEmbedding,
     RecordEvent,
+    UsageLedger,
     User,
 )
-from app.services import dishes, favorites, meal_card, meal_items, weight_screen
+from app.services import (
+    dishes,
+    favorites,
+    feedback_inbox,
+    feedback_screen,
+    invites,
+    meal_card,
+    meal_items,
+    people_screen,
+    weight_screen,
+    welcome_screen,
+)
 from app.services.openai_service import OpenAIService
 from app.services.product_lookup_service import ImageSignals, SavedFoodRAGStrategy
 from tests.test_capture_router import NOW_TS, NUTRITION, Wire
 
 A, B = 1001, 2002
+_COMMAND = {"type": "bot_command", "offset": 0, "length": 6}
 MARK = "зюзя"  # in every name of A's, and nowhere else
 A_FILE = "zyuzya-file"
 A_KCAL = 613
@@ -66,7 +91,7 @@ TZ = {"timezone": "Asia/Tbilisi"}
 LINE, CHOOSER = 7700, 7701
 _ids = iter(range(100, 10_000_000))
 # Written by the bot about what the tap itself did, for anyone: not a row of a person.
-_LOGS = {"inbound_messages", "ai_call_logs"}
+_LOGS = {"inbound_messages", "ai_call_logs", "action_events", "usage_ledger"}
 PG_URL = os.environ.get("TWO_PEOPLE_DB_URL")
 
 
@@ -98,7 +123,15 @@ def _engine():
 def Session(monkeypatch):
     engine = _engine()
     factory = sessionmaker(bind=engine)
-    for module in (tg, inbound_service, log_service, model_selection):
+    for module in (
+        tg,
+        inbound_service,
+        log_service,
+        model_selection,
+        usage_ledger,
+        action_journal,
+        access_control,
+    ):
         monkeypatch.setattr(module, "SessionLocal", factory)
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", str(A))
     # A person the gate lets in. Dropped there, B would pass every probe below unasked.
@@ -196,6 +229,7 @@ def _world(db) -> SimpleNamespace:
     """A's life in rows, one for each thing a verb can want. B has a little of their own,
     so that B's fallback screens are not empty ones."""
     a, b = _person(db, A), _person(db, B)
+    crud_access_grant.grant(db, 7_000_000_001, f"{MARK} Мика", None, granted_by=A)
     now = datetime.now(UTC)
     ago = lambda **kw: now - timedelta(**kw)  # noqa: E731
     soup = _dish(db, a, f"{MARK} суп", barcode="4600000000001")
@@ -291,6 +325,30 @@ def _world(db) -> SimpleNamespace:
         .order_by(RecordEvent.id.desc())
     )
 
+    feedback = crud_feedback.create(
+        db,
+        telegram_id=A,
+        kind="text",
+        text=f"{MARK} суп",
+        journal="10:00 ✍️ текст",
+        original={
+            "message_id": 7999,
+            "date": int(ago(hours=1).timestamp()),
+            "chat": {"id": A, "type": "private"},
+            "from": {"id": A, "is_bot": False, "first_name": "x"},
+            "text": f"{MARK} суп",
+        },
+    )
+
+    voice_feedback = crud_feedback.create(
+        db,
+        telegram_id=A,
+        kind="voice",
+        text=f"{MARK} голосом",
+        file_id=A_FILE,
+        original={"message_id": 7998, "voice": {"file_id": A_FILE}},
+    )
+
     # B's own. B holds a real grant: a locked person would pass every probe here.
     crud_subscription.create_subscription(db, telegram_id=B, granted_by_telegram_id=A)
     borscht = _dish(db, b, "борщ")
@@ -317,6 +375,9 @@ def _world(db) -> SimpleNamespace:
         remove=remove.id,
         event=event.id,
         logged=logged.id,
+        invited=7_000_000_001,
+        feedback=feedback.id,
+        voice_feedback=voice_feedback.id,
         soup=soup.id,
         porridge=porridge.id,
         hidden=hidden.id,
@@ -463,6 +524,14 @@ def _assert_nothing_of_a(wire: Chats, person: int = B) -> None:
 
 # What each verb is given: ``w`` holds A's ids.
 PROBES = {
+    "fb:food": lambda w: f"fb:food:{w.feedback}",
+    "usr:p": lambda w: f"usr:p:{w.invited}",
+    "usr:c": lambda w: f"usr:c:{w.invited}",
+    "usr:x": lambda w: f"usr:x:{w.invited}",
+    "usr:u": lambda w: f"usr:u:{w.invited}",
+    "usr:fp": lambda w: f"usr:fp:{A}:0",
+    "usr:fr": lambda w: f"usr:fr:{w.feedback}:0:0",
+    "usr:ff": lambda w: f"usr:ff:{w.voice_feedback}:0:0",
     "ml:r": lambda w: f"ml:r:{w.lunch}",
     "ml:o": lambda w: f"ml:o:{w.lunch}:r",
     "ml:op": lambda w: f"ml:op:{w.lunch}:0:r",
@@ -538,6 +607,11 @@ MIXED = {
 }
 # No id in them, or only a date: B's own screens, which must not hold A's day.
 NO_ID = {
+    "fb:open": lambda w: "fb:open",
+    "fb:see": lambda w: "fb:see",
+    "fb:x": lambda w: "fb:x",
+    "usr:l": lambda w: "usr:l:0",
+    "usr:f": lambda w: "usr:f:0",
     "ml:dl": lambda w: f"ml:dl:{datetime.now(UTC):%Y%m%d}:t",
     "ml:da": lambda w: f"ml:da:{datetime.now(UTC):%Y%m%d}:t",
     "dh:l": lambda w: "dh:l:0",
@@ -549,7 +623,7 @@ NO_ID = {
 def _verbs() -> set:
     """The verbs the tables hold, as ``ml:o``, read from the patterns themselves."""
     names = set()
-    for module in (meal_card, dishes, favorites):
+    for module in (meal_card, dishes, favorites, people_screen, feedback_screen):
         for pattern, _verb in module._VERBS:
             names.add(re.match(r"[a-z]+:[a-z]*", pattern.pattern).group(0))
     return names | {"wt:u"}
@@ -615,7 +689,8 @@ def test_a_tap_mixing_ones_own_id_with_anothers_moves_nothing(db, world, verb):
 def test_a_screen_with_no_id_is_ones_own(db, world, verb):
     _assert_nothing_of_a(_tap(B, NO_ID[verb](world)))
     # The known positive: the same screen holds A's, for A.
-    if verb not in ("dh:f", "ml:da"):
+    # 💬 holds none of A's records by design, and the journal holds no name of food.
+    if verb not in ("dh:f", "ml:da", "fb:open", "fb:see", "fb:x"):
         words = " ".join(b for _n, b in _shown_to(_tap(A, NO_ID[verb](world))))
         assert MARK in words.casefold(), words
 
@@ -982,3 +1057,333 @@ def test_a_name_the_key_folds_together_is_one_dish_by_every_way_in(
         select(PersonalFood.canonical_name).where(PersonalFood.user_id == world.a.id)
     ).all()
     assert held in names and typed not in names
+
+
+def test_one_persons_answer_about_food_is_not_the_others(db, world, model):
+    """In ``User.settings``, a JSON column: Postgres and SQLite store it apart."""
+    before = dict(world.b.settings or {})
+    shown = " ".join(body for _n, body in _shown_to(_tap(A, "set:diet:all")))
+    assert "✓ Обычная еда: 🍖 Всё" in shown, shown
+    db.expire_all()
+    assert db.get(User, world.a.id).settings["diet"] == "all"
+    assert (db.get(User, world.b.id).settings or {}) == before
+
+    # The last page of the list, where the reference and the routines stand.
+    for_a = " ".join(body for _n, body in _shown_to(_tap(A, "hw:p:1")))
+    for_b = " ".join(body for _n, body in _shown_to(_tap(B, "hw:p:1")))
+    assert "🧪" not in for_a and "💊 Рутины" in for_a
+    assert "🧪" in for_b
+
+
+def test_the_ledger_adds_up_one_row_a_person_a_day(db, world, Session):
+    """The upsert on the dialect the bot runs on: to one row, by person and by day."""
+    day = date(2026, 11, 2)
+    for person, the_day, cost in (
+        (A, day, 0.25),
+        (A, day, 0.5),
+        (A, day, None),
+        (B, day, 1.0),
+        (0, day, 0.125),
+        (A, day - timedelta(days=1), 2.0),
+    ):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=person, day=the_day, cost_usd=cost
+            )
+
+    db.expire_all()
+    rows = db.execute(
+        select(UsageLedger).where(UsageLedger.telegram_id == A, UsageLedger.day == day)
+    ).scalars()
+    row = rows.one()
+    assert (row.calls, float(row.cost_usd), row.unpriced_calls) == (3, 0.75, 1)
+    assert row.created_at is not None and row.updated_at is not None
+
+    by_person = crud_usage_ledger.by_person(db)
+    assert float(by_person[A].cost_usd) == 2.75 and by_person[A].calls == 4
+    assert float(by_person[B].cost_usd) == 1.0
+    assert float(by_person[0].cost_usd) == 0.125
+    assert float(crud_usage_ledger.total(db).cost_usd) == 3.875
+    assert crud_usage_ledger.total(db, since=day).calls == 5
+    assert crud_usage_ledger.of_person(db, A, since=day).unpriced_calls == 1
+    assert crud_usage_ledger.of_person(db, 9).calls == 0
+
+
+def test_the_ledger_holds_a_very_small_price_exactly(db, world, Session):
+    """Numeric, not float: an embedding's price, added many times, stays itself."""
+    for _ in range(3):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=A, day=date(2026, 11, 2), cost_usd=0.0000002
+            )
+    db.expire_all()
+    total = crud_usage_ledger.of_person(db, A)
+    assert total.calls == 3
+    assert float(total.cost_usd) == pytest.approx(0.0000006, abs=1e-12)
+
+
+@pytest.mark.skipif(not PG_URL, reason="SQLite holds one writer at a time")
+def test_two_calls_at_once_both_count(db, world, Session):
+    """The reason for one statement rather than a read and a write."""
+
+    def one_call(_index):
+        with Session() as session:
+            crud_usage_ledger.add(
+                session, telegram_id=A, day=date(2026, 11, 2), cost_usd=0.5
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(one_call, range(40)))
+    total = crud_usage_ledger.of_person(db, A)
+    assert total.calls == 40 and float(total.cost_usd) == 20.0
+
+
+def _forget_the_journal(db) -> None:
+    """What building the world wrote: the saves and changes it made as its people."""
+    db.execute(delete(ActionEvent))
+    db.commit()
+
+
+def _journal(db, person: int) -> list:
+    db.expire_all()
+    return list(
+        db.execute(
+            select(ActionEvent.kind, ActionEvent.label)
+            .where(ActionEvent.telegram_id == person)
+            .order_by(ActionEvent.id)
+        )
+    )
+
+
+def test_the_journal_is_written_for_each_person_and_holds_no_food(db, world, model):
+    """On the real writer. The dish, the meal and the words all carry the marker."""
+    _forget_the_journal(db)
+    _say(B, "📊 Статистика")
+    _say(B, f"{MARK} и рис")
+    _say(B, f"/{MARK}")
+    _tap(B, f"{MARK}:1")
+    _tap(B, "st:day")
+
+    rows = _journal(db, B)
+    assert ("button", "📊 Статистика") in [tuple(row) for row in rows]
+    assert ("button", "st") in [tuple(row) for row in rows]
+    assert ("text", None) in [tuple(row) for row in rows]
+    assert ("button", None) in [tuple(row) for row in rows]  # the unknown verb
+    assert all(MARK not in repr(tuple(row)).casefold() for row in rows)
+    assert not _journal(db, A)
+
+
+def test_the_journal_answers_what_the_owner_screens_will_ask(db, world, Session):
+    _forget_the_journal(db)
+    # Noon: "two hours ago" is the same day whatever hour this runs at.
+    now = datetime.now(UTC).replace(hour=12)
+    for person, kind, label, ago in (
+        (A, "photo", None, timedelta(minutes=5)),
+        (A, "saved", "image", timedelta(minutes=4)),
+        (A, "corrected", "grams", timedelta(minutes=1)),
+        (B, "text", None, timedelta(hours=2)),
+        (B, "text", None, timedelta(days=40)),
+    ):
+        crud_action_event.add(
+            db, telegram_id=person, kind=kind, label=label, at=now - ago
+        )
+    db.commit()
+
+    last = crud_action_event.last_actions(db, A, limit=2)
+    assert [row.kind for row in last] == ["saved", "corrected"]
+    since = now - timedelta(days=30)
+    assert crud_action_event.counts_by_kind(db, B, since=since) == {"text": 1}
+    assert crud_action_event.counts_by_kind(db, A, since=since) == {
+        "photo": 1,
+        "saved": 1,
+        "corrected": 1,
+    }
+    seen = crud_action_event.last_seen_all(db)
+    assert abs(seen[A] - (now - timedelta(minutes=5))) < timedelta(seconds=1)
+    assert abs(seen[B] - (now - timedelta(hours=2))) < timedelta(seconds=1)
+    flags = crud_action_event.active_days(db, B, zone=ZoneInfo("UTC"), now=now)
+    assert len(flags) == 7 and flags[-1] is True and flags[0] is False
+
+    assert crud_action_event.delete_older_than(db, since) == 1
+    assert crud_action_event.counts_by_kind(db, B, since=now - timedelta(days=99)) == {
+        "text": 1
+    }
+
+
+# -- the people let in by hand ----------------------------------------------------------
+
+SASHA = 7_000_000_002  # past 32 bits, as a real id is
+
+
+def test_a_grant_opens_closes_and_opens_again_on_one_row(db, world):
+    sasha = invites.Person(SASHA, "Саша", "К", "sasha_k")
+    assert access_control.is_user_allowed(SASHA) is False  # the control
+
+    invites.invite(db, sasha, by=A)
+    assert access_control.is_user_allowed(SASHA) is True
+    assert crud_subscription.is_active_subscription(db, SASHA) is True
+
+    assert invites.close(db, SASHA) is invites.Closed.CLOSED
+    assert access_control.is_user_allowed(SASHA) is False
+    assert crud_subscription.is_active_subscription(db, SASHA) is False
+
+    assert invites.reopen(db, SASHA, by=A) is invites.Reopened.REOPENED
+    assert access_control.is_user_allowed(SASHA) is True
+
+    invites.close(db, SASHA)
+    renamed = invites.Person(SASHA, "Александр", None, None)
+    invites.invite(db, renamed, by=A)  # the upsert, on the same unique key
+    rows = crud_access_grant.everyone(db)
+    assert [r.display_name for r in rows if r.telegram_id == SASHA] == ["Александр"]
+    assert crud_access_grant.get(db, SASHA).revoked_at is None
+
+
+def test_only_one_of_two_first_opens_tells_the_owner(db, world):
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    assert crud_access_grant.mark_opened(db, SASHA).display_name == "Саша"
+    assert crud_access_grant.mark_opened(db, SASHA) is None
+    assert crud_access_grant.mark_opened(db, SASHA + 1) is None  # nobody's
+    # A second invitation does not make them new again.
+    invites.close(db, SASHA)
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    assert crud_access_grant.get(db, SASHA).first_opened_at is not None
+    assert crud_access_grant.mark_opened(db, SASHA) is None
+
+
+def test_a_first_start_goes_through_on_this_database(db, world):
+    invites.invite(db, invites.Person(SASHA, "Саша"), by=A)
+    message = _as(SASHA, text="/start", entities=[_COMMAND])
+    wire = _run([{"update_id": message["message_id"], "message": message}])
+    told = [p for name, p in wire.calls if name == "sendMessage"]
+    assert any(
+        p["chat_id"] == A and p["text"] == "👋 Саша теперь в боте." for p in told
+    ), told
+    assert any(p["chat_id"] == SASHA and "Дневник питания" in p["text"] for p in told)
+    db.expire_all()
+    assert crud_access_grant.get(db, SASHA).first_opened_at is not None
+
+
+def test_feedback_keeps_its_row_and_its_stamps_on_this_database(db, world):
+    """A JSON column, two conditional stamps, and the real path from a message to a copy."""
+    made = crud_feedback.create(
+        db,
+        telegram_id=B,
+        kind="voice",
+        text=None,
+        file_id="f" * 200,
+        journal="10:00 🎙 голосовое",
+        original={"message_id": 1, "text": "зюзя «é» \U0001f600", "nested": {"a": [1]}},
+    )
+    assert crud_feedback.get_own(db, made.id, B).original["nested"] == {"a": [1]}
+    assert crud_feedback.get_own(db, made.id, A) is None
+    assert crud_feedback.mark_sent(db, made.id) is True
+    assert crud_feedback.mark_sent(db, made.id) is False
+    assert crud_feedback.mark_food(db, made.id) is True
+    assert crud_feedback.mark_food(db, made.id) is False
+    crud_feedback.set_transcript(db, made.id, "слова")
+    db.expire_all()
+    row = crud_feedback.get(db, made.id)
+    assert row.transcript == "слова" and row.sent_at and row.was_food_at
+    assert row.read_at is None and row.created_at and row.updated_at
+
+
+def test_a_feedback_message_goes_through_on_this_database(db, world):
+    entity = {"type": "bot_command", "offset": 0, "length": 9}
+    first = _as(B, text="/feedback", entities=[entity])
+    second = _as(B, text="не понятно <b>")
+    wire = _run(
+        [
+            {"update_id": first["message_id"], "message": first},
+            {"update_id": second["message_id"], "message": second},
+        ]
+    )
+    db.expire_all()
+    row = db.scalar(
+        select(Feedback).where(Feedback.telegram_id == B).order_by(Feedback.id.desc())
+    )
+    assert row.text == "не понятно <b>" and row.sent_at is not None
+    assert row.original["text"] == "не понятно <b>"
+    copies = [p for n, p in wire.calls if n == "sendMessage" and p["chat_id"] == A]
+    assert any("«не понятно &lt;b&gt;»" in p["text"] for p in copies), copies
+
+
+def test_the_owners_screens_read_on_this_database(db, world):
+    """The sums, the zone's days and the page: every statement /users and its card run."""
+    now = datetime.now(UTC)
+    for days_ago in (0, 0, 1, 3):
+        crud_action_event.add(
+            db, telegram_id=A, kind="photo", at=now - timedelta(days=days_ago)
+        )
+    crud_action_event.add(db, telegram_id=B, kind="text", at=now)
+    db.commit()
+    day = usage_ledger.today()
+    crud_usage_ledger.add(db, telegram_id=A, day=day, cost_usd=0.25)
+    crud_usage_ledger.add(db, telegram_id=A, day=day, cost_usd=None)
+    crud_usage_ledger.add(db, telegram_id=0, day=day - timedelta(days=2), cost_usd=0.05)
+    zone = ZoneInfo("Asia/Tbilisi")
+    flags = crud_action_event.active_days_all(db, [A, B, 42], zone=zone)
+    assert set(flags) == {A, B}
+    assert sum(flags[A]) >= 3 and flags[A][-1] and sum(flags[B]) == 1
+    assert crud_user.usernames(db, [A, B, 42]).keys() <= {A, B}
+
+    hub = people_screen.hub(db)
+    assert "$0.30" in hub.text and "Без человека: $0.05" in hub.text
+    assert "⚠️ Запросов без известной цены: 1. В суммах их нет." in hub.text
+    assert f"{MARK} Мика" in hub.text
+
+    card = people_screen.handle(db, A, f"usr:p:{A}")
+    assert "📷 4" in card.text and "$0.25 · 2 запроса · 1 без цены" in card.text
+    assert "💬 Фидбэк: 2" in card.text
+
+    assert crud_feedback.count_new(db) == 2
+    newest = feedback_inbox.view(db)
+    assert f"{MARK} голосом" in newest.text  # the second row made
+    older = feedback_inbox.view(db, 1, A)
+    assert f"{MARK} суп" in older.text
+    db.expire_all()
+    assert crud_feedback.count_new(db) == 0
+    assert crud_feedback.get(db, world.feedback).read_at is not None
+    assert crud_feedback.nth_for_owner(db, 2) is None
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "usr:p:999999999999999999",
+        "usr:x:999999999999999999",
+        "usr:u:999999999999999999",
+        "usr:fp:999999999999999999:0",
+        "usr:fr:999999999999999999:0:0",
+        "usr:ff:999999999999999999:0:0",
+    ],
+)
+def test_the_largest_id_a_button_can_hold_is_only_stale_here(db, world, data):
+    """What the pattern lets through has to fit every column it is compared with."""
+    shown = people_screen.handle(db, A, data)
+    assert shown.text.startswith(people_screen.STALE)
+
+
+def test_the_welcome_tells_a_record_from_before_the_invitation_on_any_database(Session):
+    """Postgres keeps the zone where SQLite drops it: the comparison holds on both."""
+    with Session() as db:
+        for person, age in ((SASHA, timedelta(days=30)), (B, timedelta(0))):
+            user = _person(db, person)
+            invites.invite(db, invites.Person(person, "Саша"), by=A)
+            grant = crud_access_grant.get(db, person)
+            when = grant.created_at + (timedelta(seconds=1) - age)
+            db.add(
+                Meal(
+                    user_id=user.id,
+                    meal_type="snack",
+                    description="суп",
+                    calories=0,
+                    proteins=0,
+                    fats=0,
+                    carbohydrates=0,
+                    meal_time=when,
+                    created_at=when,
+                )
+            )
+            db.commit()
+        assert welcome_screen.opens_welcome(db, SASHA) is False  # was here before
+        assert welcome_screen.opens_welcome(db, B) is True  # wrote since, still owed

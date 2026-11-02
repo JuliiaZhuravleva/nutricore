@@ -16,7 +16,11 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from app.db.base import Base
-from app.models import FavoriteMeal, PersonalFood  # noqa: F401 (registers the tables)
+from app.models import (  # noqa: F401 (registers the tables)
+    AccessGrant,
+    FavoriteMeal,
+    PersonalFood,
+)
 from tests.test_migrations import _chain, _heads
 
 _PATH = (
@@ -131,10 +135,16 @@ def test_it_stands_on_the_edits_migration_and_one_head_follows():
     assert module.revision == "a7b8c9d0e1f2"
     assert module.down_revision == "f6a7b8c9d0e1"
     chain = _chain()
-    assert _heads(chain) == ["c9d0e1f2a3b4"]
+    assert _heads(chain) == ["f2a3b4c5d6e7"]
+    assert chain["f2a3b4c5d6e7"][0] == ("e1f2a3b4c5d6",)
+    assert chain["e1f2a3b4c5d6"][0] == ("d0e1f2a3b4c5",)
+    assert chain["d0e1f2a3b4c5"][0] == ("c9d0e1f2a3b4",)
     assert chain["c9d0e1f2a3b4"][0] == ("b8c9d0e1f2a3",)
     assert chain["b8c9d0e1f2a3"][0] == ("a7b8c9d0e1f2",)
     # Known-positive: the check would have seen the old head as a head without it.
+    del chain["f2a3b4c5d6e7"]
+    del chain["e1f2a3b4c5d6"]
+    del chain["d0e1f2a3b4c5"]
     del chain["c9d0e1f2a3b4"]
     del chain["b8c9d0e1f2a3"]
     assert _heads(chain) == ["a7b8c9d0e1f2"]
@@ -332,3 +342,32 @@ def test_postgres_renders_real_foreign_keys_and_says_the_backfill_did_not_run():
     assert sql.count("ON DELETE SET NULL") == 2
     assert "CREATE INDEX ix_favorite_meals_personal_food_id" in sql
     assert "backfill needs a live connection" in sql
+
+
+# --- access_grants, the same way -------------------------------------------------------
+
+_GRANTS = _PATH.parent / "e1f2a3b4c5d6_access_grants.py"
+
+
+def _grants_migration():
+    spec = importlib.util.spec_from_file_location("access_grants_migration", _GRANTS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_access_grants_goes_up_as_the_model_and_comes_back_down(conn):
+    module = _grants_migration()
+    _run(conn, "upgrade", module)
+    found = {c["name"]: c for c in sa.inspect(conn).get_columns("access_grants")}
+    model = Base.metadata.tables["access_grants"]
+    assert set(found) == {c.name for c in model.columns}
+    assert isinstance(found["telegram_id"]["type"], sa.BigInteger)
+    for column in model.columns:
+        assert found[column.name]["nullable"] == column.nullable, column.name
+    indexes = {i["name"]: i for i in sa.inspect(conn).get_indexes("access_grants")}
+    assert indexes["ix_access_grants_telegram_id"]["unique"] == 1
+    assert {i.name for i in model.indexes} == set(indexes)
+
+    _run(conn, "downgrade", module)
+    assert "access_grants" not in sa.inspect(conn).get_table_names()

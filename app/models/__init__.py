@@ -1,9 +1,12 @@
+from .access_grant import AccessGrant
+from .action_event import ActionEvent
 from .activity import Activity
 from .ai_call_log import AiCallLog
 from .analysis_report import AnalysisReport
 from .app_setting import AppSetting
 from .body_metric import BodyMetric
 from .favorite_meal import FavoriteMeal
+from .feedback import Feedback
 from .inbound_message import InboundMessage
 from .meal import Meal
 from .meal_item import MealItem
@@ -15,6 +18,7 @@ from .product_cache import ProductCache
 from .record_event import RecordEvent
 from .routine_tick import RoutineTick
 from .subscription import Subscription
+from .usage_ledger import UsageLedger
 from .user import User
 
 __all__ = [
@@ -27,11 +31,15 @@ __all__ = [
     "MealMessage",
     "RecordEvent",
     "FavoriteMeal",
+    "Feedback",
     "RoutineTick",
     "Activity",
     "AnalysisReport",
     "Subscription",
+    "AccessGrant",
     "AiCallLog",
+    "ActionEvent",
+    "UsageLedger",
     "AppSetting",
     "InboundMessage",
     "PersonalFood",

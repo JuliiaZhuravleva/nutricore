@@ -29,6 +29,8 @@ LOCAL_NO_SPEECH = 422
 
 # For both services: the words of the meal, heard as food.
 FOOD_PROMPT = "Дневник питания: блюда, продукты, порции и граммы."
+# For a message to the owner: the words about the bot, not about a meal.
+GENERAL_PROMPT = "Отзыв о боте дневника питания: что было непонятно и чего не хватает."
 
 LAST_CORRECTION_RULE = (
     "This entry is a voice note, spoken as it came. The last correction in a sentence "
@@ -103,7 +105,7 @@ async def kept(name: Optional[str]) -> Optional[bytes]:
         return None
 
 
-async def _local(audio: bytes, filename: str) -> Optional[str]:
+async def _local(audio: bytes, filename: str, prompt: str) -> Optional[str]:
     """The service's words; None if it was no answer. Silence raises."""
     url = settings.WHISPER_URL.rstrip("/") + LOCAL_DOOR
     try:
@@ -116,7 +118,7 @@ async def _local(audio: bytes, filename: str) -> Optional[str]:
                 files={"file": (filename, audio)},
                 data={
                     "language": "ru",
-                    "prompt": FOOD_PROMPT,
+                    "prompt": prompt,
                     "response_format": "json",
                 },
             )
@@ -143,15 +145,17 @@ async def _local(audio: bytes, filename: str) -> Optional[str]:
 async def hear(
     audio: bytes,
     *,
-    paid: Callable[[bytes, str], Awaitable[Heard]],
+    paid: Optional[Callable[[bytes, str], Awaitable[Heard]]] = None,
     local_only: bool = False,
+    prompt: str = FOOD_PROMPT,
 ) -> Heard:
-    """``local_only``: nobody asked for this read, so nothing is paid for it (5.2)."""
+    """``local_only``: nobody asked for this read, so nothing is paid for it (5.2). With
+    no ``paid`` there is no door to pay at, whatever else is asked."""
     filename = f"voice.{extension(audio)}"
     if settings.WHISPER_URL:
-        text = await _local(audio, filename)
+        text = await _local(audio, filename, prompt)
         if text is not None:
             return Heard(text, LOCAL)
-    if local_only:
+    if local_only or paid is None:
         raise NotHeard()
     return await paid(audio, filename)

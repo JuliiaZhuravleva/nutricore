@@ -1,0 +1,115 @@
+# The checks every branch gets, without a real secret or a paid call. Fake settings only.
+#
+# Every branch push runs, because release work here is handed off as a pushed branch and is
+# merged by nutricore-release, usually with no pull request. A pull request runs only from a
+# fork: a branch of this repository has already run on its push.
+#
+# Nothing here blocks that release yet: its own gate runs on the mini. See docs/RELEASE.md.
+#
+# Actions are pinned by commit SHA (the tag each SHA was resolved from is in the comment).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  POETRY_VERSION: "2.2.1" # the version that wrote poetry.lock
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx install "poetry==$POETRY_VERSION"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: poetry
+      # pyproject.toml and poetry.lock disagreeing breaks the image build, not the tests.
+      - run: poetry check --lock
+      - run: poetry install --no-interaction
+      # Real errors only: the repository is not uniformly style-clean, and formatting is
+      # kept to the files a change touches.
+      - run: poetry run flake8 --select=E9,F63,F7,F82 app tests celery_app alembic bot.py
+
+  test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx install "poetry==$POETRY_VERSION"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: poetry
+      - run: poetry install --no-interaction
+      - run: poetry run pytest -q
+
+  # SQLite passes what Postgres refuses, so the migrations and the two-people cases run on
+  # the production database image too. Its tables are emptied: this one is throwaway.
+  postgres:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_SERVER: localhost
+      POSTGRES_USER: ci
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: ci
+      POSTGRES_PORT: "5432"
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      SECRET_KEY: ci-secret-key
+      TELEGRAM_BOT_TOKEN: ci-bot-token
+      OPENAI_API_KEY: ci-openai-key
+      TWO_PEOPLE_DB_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pipx install "poetry==$POETRY_VERSION"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: poetry
+      - run: poetry install --no-interaction
+      - run: poetry run alembic upgrade head
+      # One head: a second one stops the release gate.
+      - run: test "$(poetry run alembic heads | wc -l)" -eq 1
+      - run: poetry run pytest -q tests/test_two_people.py
+
+  image:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build --tag nutricore-ci .

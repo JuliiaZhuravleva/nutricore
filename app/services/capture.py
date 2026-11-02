@@ -44,6 +44,7 @@ from app.services import (
     voice,
     weight_screen,
 )
+from app.services.access_control import may_receive
 from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
@@ -1066,8 +1067,9 @@ def route_media(db, came: Incoming) -> Route:
     return Route(NEW_MEAL)
 
 
-def route_text(db, came: Incoming) -> Route:
-    """Rows 3 to 10 for a text. The first two are ahead of this handler."""
+def route_text(db, came: Incoming, as_food: bool = False) -> Route:
+    """Rows 3 to 10 for a text. The first two are ahead of this handler. ``as_food``: the
+    person said it is food, so its form does not say otherwise."""
     text = came.text
     if text.strip() in STALE_LABELS:
         return Route(LINE, Line(M9B_STALE, menu=True))
@@ -1112,6 +1114,8 @@ def route_text(db, came: Incoming) -> Route:
             return Route(LINE, line)
         logger.info("Corrective words with no meal to change: a new meal")
 
+    if as_food:
+        return Route(NEW_MEAL)
     if _is_stop_word(text):
         _keep(db, came, user)
         return Route(SILENT)
@@ -2942,6 +2946,16 @@ def balance_out(db) -> bool:
     return last == NO_CREDIT
 
 
+def owner_may_receive(db, meal_id: int) -> bool:
+    """Someone whose door was closed is not paid for, or written to, behind their back."""
+    telegram_id = db.scalar(
+        select(User.telegram_id)
+        .join(Meal, Meal.user_id == User.id)
+        .where(Meal.id == meal_id)
+    )
+    return telegram_id is not None and may_receive(db, telegram_id)
+
+
 def _may_read_by_itself(db, meal: Meal) -> bool:
     """The cap holds, and dishes in the meal are the person's: a read would be paid for
     and could not apply. A voice is listened to by itself only locally (5.2), so with
@@ -2949,6 +2963,8 @@ def _may_read_by_itself(db, meal: Meal) -> bool:
     if meal.deleted_at is not None:
         return False
     if (meal.read_attempts or 0) >= len(RETRY_AFTER):
+        return False
+    if not owner_may_receive(db, meal.id):
         return False
     has_voice = db.scalar(
         select(MealSource.id)

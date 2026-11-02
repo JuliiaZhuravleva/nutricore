@@ -15,12 +15,20 @@ that counter drives nothing else: a step not done is not counted or shown anywhe
 Pure, no Telegram and no database: these functions take ``User.settings`` and return
 a new dict. The screen is ``stats_screen``. ``NO_SUGGEST`` and ``RELIABLE`` are read
 here and filled by ``food_lists``.
+
+A step of animal food names who it is for in ``diets``, and nobody else sees it: not a
+person who answered «🌱 Растения», and not one who gave no answer. Those who did ask see
+these steps first inside a direction, because the rule by group would otherwise open
+with hummus for most ordinary eating, where legumes are the rarest group. Everything
+else stays behind «🔄 Другой шаг».
 """
 
 import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Optional
+
+from app.services import diet as diets
 
 STATE = "next_step"  # in ``User.settings``: today's one step
 ENERGY = "energy"  # in ``User.settings``; absent means normal
@@ -69,6 +77,7 @@ class Step:
     benefit: int = 2
     chance: int = 2
     cue: bool = False  # tied to a moment of the day, the «earlier» direction's
+    diets: tuple = ()  # who it is offered to; empty: anyone
 
     @property
     def rank(self) -> float:
@@ -77,7 +86,20 @@ class Step:
 
 # Most are the low-effort anchors of docs/researches/vegan-slices-evidence.md §8. Fruit,
 # vegetables, seeds and any nuts are the project's additions: that list has no such items.
+# So are the animal foods, listed first: of equal rank, they come before the plant ones.
+# Tinned fish stays out of "omega": that group brings the nuts and grains direction.
+_ANIMAL = (diets.ALL, diets.NO_MEAT)
 STEPS = (
+    Step("cottage", ("anchor", "calcium"), 1, "творог к завтраку или перекусу",
+         "", ("творог", "молочное"), 3, 3, diets=_ANIMAL),
+    Step("yogurt", ("calcium", "anchor"), 1, "йогурт к завтраку или перекусу",
+         "", ("йогурт", "молочное"), 3, 3, diets=_ANIMAL),
+    Step("tinned_fish", ("anchor",), 2, "консервированная рыба к хлебу или гарниру",
+         "Открыть банку — и готово.", ("рыба", "консервы", "тунец", "сардины"), 3, 2,
+         diets=(diets.ALL,)),
+    Step("egg", ("anchor",), 5, "яйцо к завтраку или к тарелке",
+         "Готовое из магазина — тоже считается.", ("яйцо", "яйца", "омлет"), 3, 3,
+         diets=_ANIMAL),
     Step("hummus", ("legumes", "anchor"), 1, "готовый хумус к хлебу",
          "Из магазина — тоже считается.", ("хумус", "нут"), 3, 3),
     Step("soy", ("calcium", "anchor"), 1, "стакан соевого напитка с кальцием",
@@ -206,6 +228,10 @@ def _list(settings: dict, key: str) -> list:
     return [entry for entry in value if isinstance(entry, str)]
 
 
+def _allowed(step: Step, settings: dict) -> bool:
+    return not step.diets or diets.chosen(settings) in step.diets
+
+
 def _refused(step: Step, settings: dict) -> bool:
     return any(_names(step, food) for food in _list(settings, NO_SUGGEST))
 
@@ -259,7 +285,10 @@ def options(settings: dict, days: dict, early: bool) -> list:
 
     def possible(wanted: Focus) -> bool:
         return any(
-            _in_focus(step, wanted) and not _refused(step, settings) for step in STEPS
+            _in_focus(step, wanted)
+            and _allowed(step, settings)
+            and not _refused(step, settings)
+            for step in STEPS
         )
 
     foods = [f for f in FOCUSES.values() if not f.cue and possible(f)]
@@ -297,6 +326,7 @@ def _select(
         and step.minutes <= limit
         and step.id not in skip
         and (minutes is None or step.minutes == minutes)
+        and _allowed(step, settings)
         and not _refused(step, settings)
     ]
     if mode in (LOW, SIMPLE):
@@ -308,7 +338,12 @@ def _select(
         return None
     # min() keeps the first of equals, so the same week always gives the same step.
     return min(
-        pool, key=lambda step: (min(days.get(g, 0) for g in step.groups), -step.rank)
+        pool,
+        key=lambda step: (
+            not step.diets,
+            min(days.get(g, 0) for g in step.groups),
+            -step.rank,
+        ),
     )
 
 
@@ -352,6 +387,7 @@ def _pick(settings: dict, day: str, days: dict, row: int, last) -> dict:
 def _still_fits(step: Step, settings: dict, row: int) -> bool:
     return (
         _in_focus(step, focus(settings))
+        and _allowed(step, settings)
         and not _refused(step, settings)
         and step.minutes <= _limit(energy(settings), row)
     )

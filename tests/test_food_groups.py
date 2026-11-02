@@ -103,6 +103,7 @@ def test_an_analysis_without_tags_says_so_in_the_log(caplog):
     assert "no food_items" in caplog.text
 
 
-def test_omega_is_plant_sources_only():
-    assert "plant omega-3 sources only" in _FOOD_GROUPS_RULE
-    assert "fish" not in _FOOD_GROUPS_RULE.split('"omega"')[1].split("\n")[0]
+def test_omega_names_fatty_fish_and_plant_sources():
+    rule = _FOOD_GROUPS_RULE.split('"omega"')[1]
+    assert "fatty fish" in rule and "salmon" in rule
+    assert "flax" in rule and "walnuts" in rule
