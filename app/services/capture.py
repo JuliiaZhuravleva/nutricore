@@ -132,7 +132,11 @@ M9B_STALE = "Это кнопка старого меню, в дневник не
 
 AGAIN_TOAST = "Читаю"
 AGAIN_FAILED_TOAST = "Пока не вышло, запись сохранена"
-M7B_ASK = "<b>✏️ Что было?</b>\nНапиши одним сообщением."
+M7B_ASK = (
+    "<b>✏️ Что было?</b>\n"
+    "Напиши одним сообщением, что и примерно сколько, "
+    "например «суп с курицей, тарелка». Калории и БЖУ посчитаются по этим словам."
+)
 M8_JOINED = "Объединено с приёмом {when}: {what}."
 M8_TOGETHER_TOAST = "Уже вместе"
 M8A_APART = "Отделено: {what}. Теперь это отдельный приём, {when}."
@@ -1351,8 +1355,11 @@ def _v_write(t, data: str, mid: str, back: str) -> meal_card.Screen:
 
 def _typed_meal_text(t, ask: dict, text: str) -> Optional[meal_card.Screen]:
     """M7c: the words are this meal's reading, and what it came with stays. Words that
-    failed are no dish beside these, and /reprocess pays for nothing here any more."""
+    failed are no dish beside these, and /reprocess pays for nothing here any more.
+    A dish already known is free; new words are read like any text sent as food."""
     meal = meal_card.own_or_waiting(t, ask["meal_id"], "slot")
+    if t.said and _is_new_name(t.db, t.user, text):
+        return _words_to_read(t, meal, text)
     gone_at = meal.deleted_at
     meal.deleted_at = None  # a voice that waited for words: they came
     t.db.flush()
@@ -1411,6 +1418,69 @@ def _typed_meal_text(t, ask: dict, text: str) -> Optional[meal_card.Screen]:
         meal_id=meal.id,
         view="line",
     )
+
+
+def _words_to_read(t, meal: Meal, text: str) -> meal_card.Screen:
+    """M7c for new words: no dish named by a whole sentence. The model splits them into
+    foods with their numbers, and the answer edits the line sent here."""
+    chat_id, message_id, sent_at = t.said
+    first_source = _originals(t.db, meal.id)[0]
+    meal.deleted_at = None  # a voice that waited for words: they came
+    if not crud_meal_item.live(t.db, meal.id):
+        meal.description = text
+    meal.reading_status = "pending"
+    source = MealSource(
+        user_id=t.user.id,
+        meal_id=meal.id,
+        origin_meal_id=meal.id,
+        kind="text",
+        chat_id=chat_id,
+        message_id=message_id,
+        sent_at=sent_at,
+        text=text,
+    )
+    t.db.add(source)
+    t.db.commit()
+    map_message(t.db, chat_id, message_id, meal.id, "source")
+    row = _inbound_of(t.db, t.user.telegram_id, first_source)
+    if row is not None:
+        crud_inbound_message.mark_analyzed(t.db, row, {"meal": meal.id})
+    note = M7_NOTE if meal.photos else None
+    shown = _record_text(t.db, meal, t.user, note=note)
+    return meal_card.Screen(
+        shown,
+        _first_markup(t.db, meal),
+        meal_id=meal.id,
+        view="pending",
+        read=Read(
+            meal_id=meal.id,
+            rev=meal.rev or 0,
+            source_id=source.id,
+            telegram_id=t.user.telegram_id,
+            chat_id=chat_id,
+            kind=TEXT,
+            file_id=None,
+            text=text,
+            shown=shown,
+            note=note,
+            typed=True,
+            last_event=_last_event(t.db, meal),
+        ),
+    )
+
+
+def _typed_words_stand(db, job: "Read", meal: Meal, nutrition: dict, model) -> Line:
+    """The model saw no food in words typed to a meal: the person knows better. They
+    stay as written, with no numbers, and the photo stays beside them."""
+    _store_reading(db, job, status="no_food", output=nutrition, model=model)
+    user = db.get(User, meal.user_id)
+    if not crud_meal_item.live(db, meal.id):
+        meal.description = None  # or the same words open as a line of their own
+    meal_items.add_item(db, user.id, meal.id, name=job.text)
+    meal.reading_status = "read"
+    db.commit()
+    text = _record_text(db, meal, user, note=job.note)
+    return Line(text, meal_card.line_markup(db, meal), meal_id=meal.id)
 
 
 def _v_it_is_food(t, data: str, sid: str) -> meal_card.Screen:
@@ -1505,6 +1575,9 @@ class Read:
     anew: bool = False  # 🔁 Прочитать заново: what the person typed stays
     last_event: int = 0  # the newest event of the meal when the read went out
     unsent: bool = False  # Telegram took no line for it: the read owes one
+    typed: bool = (
+        False  # words typed to a meal (M7c): they stand even if no food is seen
+    )
 
 
 @dataclass(frozen=True)
@@ -2378,6 +2451,9 @@ def read_done(
         meal.reading_status = "read"
         db.commit()
         return Done(_standing_line(db, meal) if _claim_view(db, job) else None)
+    if not names and job.typed:
+        line = _typed_words_stand(db, job, meal, nutrition, model)
+        return Done(line if _claim_view(db, job) else None)
     if not names:
         _store_reading(
             db, job, status="no_food", output=nutrition, applied=True, model=model
@@ -2751,6 +2827,21 @@ def _has_line(db, meal_id: int) -> bool:
     return db.scalar(stmt.limit(1)) is not None
 
 
+def _failed_words(db, meal: Meal) -> Optional[MealSource]:
+    """M7c: the words whose read failed last. The retry reads them, not the photo."""
+    reading = db.scalar(
+        select(MealReading)
+        .where(MealReading.meal_id == meal.id)
+        .order_by(MealReading.id.desc())
+        .limit(1)
+    )
+    if reading is None or reading.status == "done" or not reading.source_ids:
+        return None
+    if reading.kind != _READING_KIND[TEXT]:
+        return None
+    return db.get(MealSource, reading.source_ids[0])
+
+
 def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
     source = db.scalar(
         select(MealSource)
@@ -2762,6 +2853,9 @@ def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
         return None
     user = db.get(User, meal.user_id)
     line = _line_of(db, meal.id)
+    words = _failed_words(db, meal) if source.kind != "text" else None
+    typed = words is not None
+    source = words or source
     kind = _kind_of_read(source.kind)
     # A line still owed its failure has not said it: only what was shown may be spared.
     said_failed = meal.reading_status == "failed" and not (
@@ -2787,6 +2881,8 @@ def _job_of(db, meal: Meal, *, automatic: bool = False) -> Optional[Read]:
         automatic=automatic,
         last_event=_last_event(db, meal),
         unsent=not _has_line(db, meal.id),
+        typed=typed,
+        note=M7_NOTE if typed and meal.photos else None,
     )
 
 

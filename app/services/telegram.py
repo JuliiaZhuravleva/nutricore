@@ -1793,6 +1793,10 @@ async def meal_slot_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             capture.tapped(db, message.chat_id, sent.message_id, typed.screen)
     except Exception as e:
         logger.error("Meal slot: the answer's id was not kept: %s", e, exc_info=True)
+    if typed.screen.read:
+        _start_read(
+            context.application, replace(typed.screen.read, line_id=sent.message_id)
+        )
     if typed.fill:
         task = asyncio.create_task(_fill_typed_dish(typed.fill, user.id))
         _typed_fills.add(task)
