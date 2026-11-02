@@ -38,6 +38,7 @@ from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import favorites, food_groups, meal_items, next_step, stats_screen
+from app.services.close_row import ok_row
 from app.services.day_card import APPROX, DAY_ONLY
 from app.services.day_card import clock as _clock
 from app.services.day_card import local_time, plain_time
@@ -1455,7 +1456,7 @@ def _removed_screen(t: _Tap, meal: Meal, event_id: int, back: str) -> Screen:
                 "Вернуть можно и позже, пока эта кнопка на экране.",
             ]
         ),
-        InlineKeyboardMarkup([[_undo_button(event_id, back)], leave]),
+        InlineKeyboardMarkup([ok_row(), [_undo_button(event_id, back)], leave]),
     )
 
 

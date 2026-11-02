@@ -24,6 +24,7 @@ from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.record_event import RecordEvent
 from app.models.user import User
+from app.services import close_row
 from app.services import favorites as fv
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
@@ -286,6 +287,7 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         db.refresh(fav)
         assert fav.use_count == 1 and fav.last_used_at is not None
         assert _callbacks(screen.markup) == [
+            close_row.CALLBACK,
             f"fav:u:{meal.id}",
             f"ml:t:{meal.id}:r",
             "fav:p:0",

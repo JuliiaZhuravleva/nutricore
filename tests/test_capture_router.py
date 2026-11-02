@@ -820,7 +820,7 @@ def test_row_8_remove_on_a_stem(db, owner, reader, clock):
     assert _item_names(db, meal) == ["суп"]
     assert wire.seen()[0].startswith("Убрано из приёма пн 26 октября, ")
     assert wire.seen()[0].endswith(": сыр.")
-    event_kb = _kb(wire.sent()[0])[0]
+    event_kb = _kb(wire.sent()[0])[1]
     assert event_kb[0].startswith("ml:u:")
     assert event_kb[1] == f"ml:o:{meal.id}:r"
 

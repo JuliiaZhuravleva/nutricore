@@ -13,6 +13,7 @@ from telegram import Update
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import BodyMetric, Meal, MealItem, MealMessage, MealSource, RecordEvent
+from app.services import close_row
 from app.services import capture, meal_items
 from app.services import telegram as tg
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
@@ -477,7 +478,7 @@ def test_an_add_is_born_as_its_own_meal_then_joined(db, owner, reader, clock):
     db.expire_all()
     assert meal.description == "суп, сыр"
     assert _item_names(db, meal) == ["суп", "сыр"]
-    assert _kb(wire.sent()[0]) == [[f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(wire.sent()[0]) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
 
 
 def test_the_born_meal_counts_in_no_reader(db, owner, reader, clock):
@@ -651,8 +652,8 @@ def test_m6a_a_chip_replaces_that_dish(db, owner, reader, clock):
     shown = wire.edits()[0]
     assert shown["text"].startswith("Заменено в приёме пн 26 октября, ")
     assert shown["text"].endswith(": курица → индейка.")
-    assert _kb(shown)[0][0].startswith("ml:u:")
-    assert _kb(shown)[0][1] == f"ml:o:{meal.id}:r"
+    assert _kb(shown)[1][0].startswith("ml:u:")
+    assert _kb(shown)[1][1] == f"ml:o:{meal.id}:r"
     db.expire_all()
     assert db.get(MealSource, source.id).meal_id == meal.id
 
@@ -700,7 +701,7 @@ def test_m6a_second_helping_of_one_dish_and_of_the_whole_meal(db, owner, reader,
     assert wire.edits()[0]["text"].endswith(": суп.")
     assert wire.edits()[0]["text"].startswith("Добавлено к приёму пн 26 октября, ")
     db.expire_all()
-    assert _kb(wire.edits()[0])[0][0] == f"ml:z:{source.id}:r"
+    assert _kb(wire.edits()[0])[1][0] == f"ml:z:{source.id}:r"
     assert db.get(MealSource, source.id).meal_id == meal.id
 
 
@@ -823,7 +824,7 @@ def test_removing_the_last_dish_takes_the_meal_softly_and_comes_back(
     assert meal.deleted_at is not None
     assert wire.sent()[0]["text"].startswith("Убрано из приёма пн 26 октября, ")
     assert wire.sent()[0]["text"].endswith(": сыр.")
-    undo = _kb(wire.sent()[0])[0][0]
+    undo = _kb(wire.sent()[0])[1][0]
     assert undo.startswith("ml:u:")
     tap(undo, 5001)
     db.expire_all()
@@ -839,7 +840,7 @@ def test_a_reply_finds_the_meal_by_any_of_its_messages(db, owner, reader, clock,
     wire = send(text("оливковое масло", reply_to_message=_mapped(db, meal, view=view)))
     assert _item_names(db, meal) == ["суп", "оливковое масло"]
     assert wire.sent()[0]["text"].endswith(": оливковое масло.")
-    assert _kb(wire.sent()[0])[0][0].startswith("ml:z:")
+    assert _kb(wire.sent()[0])[1][0].startswith("ml:z:")
 
 
 def test_a_reply_to_the_persons_own_real_message(db, owner, reader, clock):
@@ -1092,8 +1093,8 @@ def test_m5b_a_replacement_in_a_reply(db, owner, reader, clock):
     wire = send(text("не курица, а индейка", reply_to_message=_mapped(db, meal)))
     assert wire.sent()[0]["text"].startswith("Заменено в приёме пн 26 октября, ")
     assert wire.sent()[0]["text"].endswith(": курица → индейка.")
-    assert _kb(wire.sent()[0])[0][0].startswith("ml:u:")
-    assert _kb(wire.sent()[0])[0][1] == f"ml:o:{meal.id}:r"
+    assert _kb(wire.sent()[0])[1][0].startswith("ml:u:")
+    assert _kb(wire.sent()[0])[1][1] == f"ml:o:{meal.id}:r"
 
 
 def test_m5c_undo_and_the_screen(db, owner, reader, clock):
@@ -1101,8 +1102,8 @@ def test_m5c_undo_and_the_screen(db, owner, reader, clock):
     wire = send(text("200", reply_to_message=_mapped(db, meal)))
     assert wire.sent()[0]["text"].startswith("Рис в приёме пн 26 октября, ")
     assert wire.sent()[0]["text"].endswith(": 200 г.")
-    assert _kb(wire.sent()[0])[0][1] == f"ml:o:{meal.id}:r"
-    tap(_kb(wire.sent()[0])[0][0], 5001)
+    assert _kb(wire.sent()[0])[1][1] == f"ml:o:{meal.id}:r"
+    tap(_kb(wire.sent()[0])[1][0], 5001)
     item = db.scalars(select(MealItem)).one()
     db.refresh(item)
     assert item.grams is None
@@ -1123,8 +1124,8 @@ def test_m5d_a_chip_applies_the_typed_grams_and_gives_m5c(db, owner, reader, clo
     shown = wire.edits()[0]
     assert shown["text"].startswith("Курица в приёме пн 26 октября, ")
     assert shown["text"].endswith(": 200 г.")
-    assert _kb(shown)[0][0].startswith("ml:u:")
-    assert _kb(shown)[0][1] == f"ml:o:{meal.id}:r"
+    assert _kb(shown)[1][0].startswith("ml:u:")
+    assert _kb(shown)[1][1] == f"ml:o:{meal.id}:r"
 
 
 def test_m5d_fractional_grams_survive_the_chip(db, owner, reader, clock):
@@ -1164,7 +1165,7 @@ def test_m5e_a_bare_time_in_a_reply_is_a_time_and_no_dish(
     assert meal.time_source == "edited"
     assert _item_names(db, meal) == ["суп"]
     assert wire.sent()[0]["text"] == f"Время приёма теперь пн 26 октября, {head}: суп."
-    assert _kb(wire.sent()[0])[0][0].startswith("ml:u:")
+    assert _kb(wire.sent()[0])[1][0].startswith("ml:u:")
 
 
 def test_m5e_yesterday_alone_in_a_reply_takes_the_clock_away(db, owner, reader, clock):
@@ -1214,7 +1215,7 @@ def test_a_photo_in_reply_joins_when_it_is_read(db, owner, reader, clock):
     assert source.meal_id == meal.id
     assert source.origin_meal_id == born.id
     assert born.merged_into_id == meal.id
-    assert _kb(line) == [[f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(line) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
     # And the original line, with the new list.
     assert wire.edits()[1]["message_id"] == 700
     assert wire.edits()[1]["text"] == "Записано: суп, рис и курица."

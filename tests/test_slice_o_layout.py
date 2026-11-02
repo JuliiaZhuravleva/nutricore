@@ -16,6 +16,7 @@ import pytest
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import FavoriteMeal, Meal, PersonalFood
+from app.services import close_row
 from app.services import dishes, favorites, meal_card, next_step
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     Session,
@@ -210,7 +211,7 @@ def _has_a_verb(data: str) -> bool:
     if data.startswith("st:"):
         return True  # the tabs' own tests read these
     return (
-        data in (meal_card.NOP, favorites.NOP)
+        data in (meal_card.NOP, favorites.NOP, close_row.CALLBACK)
         or dishes.is_known_shape(data)
         or any(pattern.fullmatch(data) for pattern, _ in meal_card._VERBS)
         or any(pattern.fullmatch(data) for pattern, _ in favorites._VERBS)

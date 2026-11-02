@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import FavoriteMeal, Meal, MealMessage, PersonalFood, RecordEvent
+from app.services import close_row
 from app.services import favorites, meal_card, meal_items
 from app.services.numbers import SHOW_NUMBERS
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
@@ -196,8 +197,9 @@ def test_o10_a_row_logs_at_now_with_one_item_and_no_model(db, owner, reader):
     assert shown["text"] == "Записано: омлет с сыром."
     assert _toast(wire) == "Записано"
     meal = _newest(db, owner)
-    assert _labels(shown) == [["↩️ Отменить", "🕐 Время"], ["⬅️ Избранное"]]
+    assert _labels(shown) == [[close_row.LABEL], ["↩️ Отменить", "🕐 Время"], ["⬅️ Избранное"]]
     assert _data(shown) == [
+        [close_row.CALLBACK],
         [f"fav:u:{meal.id}", f"ml:t:{meal.id}:r"],
         ["fav:p:0"],
     ]

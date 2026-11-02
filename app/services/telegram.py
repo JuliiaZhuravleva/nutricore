@@ -52,6 +52,7 @@ from app.services import (
     action_journal,
     ai_errors,
     capture,
+    close_row,
     custom_emoji,
     dishes,
     explain_screen,
@@ -1912,6 +1913,16 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def close_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """✅ ОК: the buttons leave the message, its text stays. Nothing else changes."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError as e:
+        logger.warning("ok: buttons stayed on the message: %s", e)
+
+
 async def weight_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """The weight screen's undo (``wt:…``)."""
     await _screen_callback(
@@ -3063,6 +3074,11 @@ def create_bot_application() -> Application:
             filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & ~filters.COMMAND,
             capture_message,
         )
+    )
+
+    # ✅ ОК under a finished result: takes that message's buttons away.
+    application.add_handler(
+        CallbackQueryHandler(close_buttons, pattern=close_row.PATTERN)
     )
 
     # Favorites inline buttons (stateless; see favorites_callback).

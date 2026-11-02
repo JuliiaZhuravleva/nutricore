@@ -3,7 +3,7 @@
     /feedback, ⚙️ Настройки or ℹ️ → <b>💬 Фидбэк</b> [👁 Что уйдёт] [✖️ Отмена]
     👁 tap → <b>👁 Что уйдёт</b>: the journal in the owner's words, [⬅️ Фидбэк]
     ✖️ tap → <i>✓ Фидбэк отменён</i> on top of ⚙️ Настройки
-    the next message → <i>✓ Отправлено. Спасибо!</i> [↩️ Это была еда: записать]
+    the next message → <i>✓ Отправлено. Спасибо!</i> [✅ ОК] [↩️ Это была еда: записать]
 
 Plain data, free of Telegram apart from the keyboard. The row comes first and the owner's
 copy after it, in ``app.services.telegram``. Everything a person wrote or is called goes
@@ -25,6 +25,7 @@ from app.crud.crud_feedback import crud_feedback
 from app.models.feedback import PHOTO, TEXT, VOICE
 from app.services import action_journal, invites, settings_screen
 from app.services.admin_notify import Part
+from app.services.close_row import ok_row
 from app.services.day_card import local_time
 from app.services.explain_screen import FEEDBACK_OPEN as OPEN
 from app.services.explain_screen import FEEDBACK_TITLE as TITLE
@@ -145,7 +146,7 @@ def _title_words() -> str:
 
 def sent_screen(feedback_id: int) -> Screen:
     button = InlineKeyboardButton(FOOD_BUTTON, callback_data=f"{_FOOD}{feedback_id}")
-    return Screen(SENT, InlineKeyboardMarkup([[button]]))
+    return Screen(SENT, InlineKeyboardMarkup([ok_row(), [button]]))
 
 
 def food_done_screen() -> Screen:

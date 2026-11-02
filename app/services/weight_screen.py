@@ -2,7 +2,7 @@
 
     ⚖️ Мой вес → <b>⚖️ Вес</b> 72,4 кг · вт 28 окт — the history, then
     «Напиши вес, например 72,5»
-    72,5 → ✅ Записано: 72,5 кг  [↩️ Отменить]
+    72,5 → ✅ Записано: 72,5 кг  [✅ ОК] [↩️ Отменить]
 
 No goal and no chart yet (Stage 2 adds them). Undo instead of «вы уверены?»:
 the record is saved at once and the button takes it back; a stale undo gets a
@@ -22,6 +22,7 @@ from app.crud.crud_body_metric import crud_body_metric
 from app.models.body_metric import BodyMetric
 from app.models.user import User
 from app.schemas.body_metric import BodyMetricCreate
+from app.services.close_row import ok_row
 from app.services.favorites import Screen
 from app.services.meal_draft import num
 from app.services.settings_screen import user_zone
@@ -106,9 +107,8 @@ def saved_screen(metric: BodyMetric, previous: BodyMetric | None) -> Screen:
     text = f"✅ <b>Записано:</b> {_kg(metric.weight)}"
     if previous is not None:
         text += f"\nС прошлого раза: {_delta(metric.weight - previous.weight)}"
-    return Screen(
-        text, InlineKeyboardMarkup([[_btn("↩️ Отменить", "u", metric.id)]]), "Записано"
-    )
+    rows = [ok_row(), [_btn("↩️ Отменить", "u", metric.id)]]
+    return Screen(text, InlineKeyboardMarkup(rows), "Записано")
 
 
 # --- operations -------------------------------------------------------------

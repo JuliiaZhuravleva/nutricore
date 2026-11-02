@@ -22,6 +22,7 @@ from app.db.base import Base
 from app.models.body_metric import BodyMetric
 from app.models.meal import Meal
 from app.models.user import User
+from app.services import close_row
 from app.services import settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
@@ -249,7 +250,7 @@ def test_record_saves_now_and_offers_undo(Session):
 
     assert screen.text == "✅ <b>Записано:</b> 72,4 кг\nС прошлого раза: −0,6 кг"
     assert screen.toast == "Записано"
-    assert _callbacks(screen.markup) == [f"wt:u:{saved.id}"]
+    assert _callbacks(screen.markup) == [close_row.CALLBACK, f"wt:u:{saved.id}"]
     assert saved.metrics == {"source": "bot"}
 
 
@@ -377,7 +378,7 @@ def test_weight_button_then_typed_weight_saves_with_undo(Session):
     with Session() as db:
         (metric,) = db.query(BodyMetric).all()
     assert metric.weight == 72.5
-    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [f"wt:u:{metric.id}"]
+    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [close_row.CALLBACK, f"wt:u:{metric.id}"]
 
 
 def test_not_a_weight_gets_the_hint_and_saves_nothing(Session):
