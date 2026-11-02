@@ -33,6 +33,7 @@ from telegram import (
 
 from app.core.config import settings
 from app.crud.crud_access_grant import crud_access_grant
+from app.crud.crud_subscription import crud_subscription
 from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_usage_ledger import Totals, crud_usage_ledger
@@ -43,6 +44,7 @@ from app.services import feedback_inbox, invites, usage_ledger
 from app.services.access_control import in_the_settings
 from app.services.day_card import local_time
 from app.services.favorites import Screen
+from app.services.invites import Person
 from app.services.feedback_inbox import NOT_SENT, Who, who, zone  # noqa: F401
 from app.services.owner_buttons import (
     CALLBACK_PREFIX,
@@ -74,9 +76,9 @@ YOURSELF = "Это ты: у владельца доступ есть всегд�
 CANCELLED = "Приглашение отменено."
 EXPIRED = "Приглашение отменено: время вышло. Начать заново — /invite."
 FAILED = "Не получилось открыть доступ. Попробуй ещё раз: /invite."
+FAILED_TERM = "Срок не изменился: не получилось записать. Попробуй ещё раз."
 NOT_YOURS = "Это только для владельца бота."
 # To someone with a chat here already. Their name would be no news to them.
-INVITATION = "👋 Тебя пригласили в дневник питания. Нажми /start, чтобы начать."
 
 STALE = "<i>Этой кнопки больше нет, вот список.</i>"
 OWNER_LINE = "Владелец бота: доступ есть всегда."
@@ -87,6 +89,8 @@ CLOSED = "⛔ доступ закрыт"
 INVITE = CALLBACK_PREFIX + "inv"
 _CLOSE = CALLBACK_PREFIX + "x:"  # + the telegram id
 _REOPEN = CALLBACK_PREFIX + "u:"
+_TERM_INVITED = CALLBACK_PREFIX + "ti:"  # + the telegram id : months, before it is sent
+_TERM_CARD = CALLBACK_PREFIX + "tc:"  # the same on the person's card
 PAGE = 6  # two rows of three
 DAYS = 7
 WINDOW_DAYS = 30
@@ -123,10 +127,23 @@ def picker_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-_INVITE_WORDS = (
-    "Привет! Попробуй мой дневник питания: записывает еду по фото, тексту и голосу. "
-    "Доступ для тебя уже открыт"
-)
+def term_words(months: int) -> str:
+    return f"{months} {_plural(months, 'месяц', 'месяца', 'месяцев')}"
+
+
+def invitation(months: int) -> str:
+    """What the bot itself sends to someone who has already opened it."""
+    return (
+        f"👋 Тебя пригласили в дневник питания на {term_words(months)}. "
+        "Нажми /start, чтобы начать."
+    )
+
+
+def _invite_words(months: int) -> str:
+    return (
+        "Привет! Попробуй мой дневник питания: записывает еду по фото, тексту и голосу. "
+        f"Доступ для тебя открыт на {term_words(months)}"
+    )
 
 
 def _query(**values: str) -> str:
@@ -134,18 +151,20 @@ def _query(**values: str) -> str:
     return urlencode(values, quote_via=quote)
 
 
-def draft_url(username: str, bot_username: str) -> str:
+def draft_url(
+    username: str, bot_username: str, months: int = invites.DEFAULT_MONTHS
+) -> str:
     """The chat with this person, the owner's message waiting in the input field: it goes
     from the owner, who still reads it and presses send. The link names the bot and holds
     no token: the door is the person's id, so a forwarded link lets no one else in."""
-    text = f"{_INVITE_WORDS}: t.me/{bot_username}"
+    text = f"{_invite_words(months)}: t.me/{bot_username}"
     return f"https://t.me/{username}?{_query(text=text)}"
 
 
-def share_url(bot_username: str) -> str:
+def share_url(bot_username: str, months: int = invites.DEFAULT_MONTHS) -> str:
     """Telegram's own «кому отправить», for a person with no username. That address
     requires ``url`` and puts it above the text, so the text does not repeat it."""
-    query = _query(url=f"https://t.me/{bot_username}", text=f"{_INVITE_WORDS}.")
+    query = _query(url=f"https://t.me/{bot_username}", text=f"{_invite_words(months)}.")
     return f"https://t.me/share/url?{query}"
 
 
@@ -153,33 +172,53 @@ def notice_opened(name: str) -> str:
     return f"<i>✓ {html.escape(name)}: доступ открыт.</i>"
 
 
+def _term_row(verb: str, telegram_id: int, chosen: int | None = None) -> list:
+    return [
+        button(
+            f"✓ {months} мес" if months == chosen else f"{months} мес",
+            f"{verb}{telegram_id}:{months}",
+        )
+        for months in invites.TERMS
+    ]
+
+
 def invited(
     bot_username: str,
     delivered: bool = False,
-    name: str | None = None,
-    username: str | None = None,
+    person: Person | None = None,
+    months: int = invites.DEFAULT_MONTHS,
 ) -> Screen:
-    """What follows the notice, whichever way the invitation goes."""
+    """What follows the notice, whichever way the invitation goes. Until it is sent the
+    term can change, and the words with it; once the bot has sent it, the card can."""
     mode = settings.access_mode
     if mode == "closed":
         return Screen(_CLOSED_MODE, InlineKeyboardMarkup([back_to_list()]))
     if delivered:
         words = "Приглашение бот отправил сам: этот человек уже открывал бота."
-        return Screen(words, InlineKeyboardMarkup([back_to_list()]))
-    first = "Telegram не даёт боту написать первым. "
-    if username:
-        how = "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить. "
+        rows = [back_to_list()]
+        if person is not None:
+            card = button(
+                f"👤 {person.name[:NAME_CHARS]}", f"{CARD}{person.telegram_id}"
+            )
+            rows.insert(0, [card])
+        return Screen(words, InlineKeyboardMarkup(rows))
+    if person is not None and person.username:
+        how = "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить."
         share = InlineKeyboardButton(
-            f"📤 Написать: {name}" if name else "📤 Отправить приглашение",
-            url=draft_url(username, bot_username),
+            f"📤 Написать: {person.name}",
+            url=draft_url(person.username, bot_username, months),
         )
     else:
-        how = "Кнопка предложит выбрать чат и подставит готовый текст. "
+        how = "Кнопка предложит выбрать чат и подставит готовый текст."
         share = InlineKeyboardButton(
-            "📤 Отправить приглашение", url=share_url(bot_username)
+            "📤 Отправить приглашение", url=share_url(bot_username, months)
         )
-    words = first + how + (_OPEN_MODE if mode == "open" else _ONLY_THEM)
-    return Screen(words, InlineKeyboardMarkup([[share], back_to_list()]))
+    words = f"{how} {_OPEN_MODE if mode == 'open' else _ONLY_THEM}"
+    rows = [[share]]
+    if person is not None:
+        rows.append(_term_row(_TERM_INVITED, person.telegram_id, months))
+    rows.append(back_to_list())
+    return Screen(words, InlineKeyboardMarkup(rows))
 
 
 def _mode_line() -> str:
@@ -382,6 +421,17 @@ def _when_line(person: int, grant, user, last, at_zone) -> list[str]:
     return [f"В боте с {local_time(joined, at_zone):%d.%m}, {seen}"]
 
 
+def _term_line(subscription) -> str:
+    """The buttons under it set a term from today. The door stays open past the date; the
+    bot's screens are what lock, so the owner reads it here."""
+    if subscription is None or subscription.end_date is None:
+        return "⏳ Подписки нет: задать срок можно кнопками ниже"
+    until = f"{subscription.end_date:%d.%m.%Y}"
+    if subscription.is_active and subscription.end_date > datetime.utcnow():
+        return f"🗓 Подписка до {until}. Новый срок, считая от сегодня:"
+    return f"⏳ Подписка кончилась {until}. Новый срок, считая от сегодня:"
+
+
 def _card(db, telegram_id: int, notice: str | None = None) -> Screen | None:
     """None for someone nothing is known about."""
     if telegram_id == NO_PERSON:
@@ -420,6 +470,8 @@ def _card(db, telegram_id: int, notice: str | None = None) -> Screen | None:
     ]
     if grant is not None and grant.revoked_at is not None:
         lines.append(CLOSED)
+    elif grant is not None and not (is_owner or listed):
+        lines.append(_term_line(crud_subscription.get_by_telegram_id(db, telegram_id)))
     lines += [
         _strip(flags),
         f"За {WINDOW_DAYS} дней: 📷 {count(action_event.PHOTO)} · "
@@ -442,6 +494,8 @@ def _card(db, telegram_id: int, notice: str | None = None) -> Screen | None:
     elif grant is not None:
         action.append(button("⛔ Закрыть доступ", f"{_CLOSE}{telegram_id}"))
     rows = [action] if action else []
+    if grant is not None and grant.revoked_at is None and not (is_owner or listed):
+        rows.append(_term_row(_TERM_CARD, telegram_id))
     rows.append(back_to_list())
     top = f"{notice}\n\n" if notice else ""
     return Screen(top + "\n".join(lines), InlineKeyboardMarkup(rows))
@@ -493,6 +547,45 @@ def _v_reopen(db, by, telegram_id: str) -> Screen:
     return _card_or_stale(db, data, person, f"<i>✓ {name}: доступ снова открыт.</i>")
 
 
+def _changed_term(db, by, person: int, months: str) -> bool | None:
+    """True when written, False when this person's door is not open here any more, and
+    None when the write failed. Only the terms the buttons offer."""
+    if int(months) not in invites.TERMS:
+        return False
+    try:
+        return invites.set_term(db, person, by, int(months))
+    except invites.GrantFailed:
+        return None
+
+
+def _v_term_card(db, by, telegram_id: str, months: str) -> Screen:
+    person, data = int(telegram_id), f"{_TERM_CARD}{telegram_id}:{months}"
+    changed = _changed_term(db, by, person, months)
+    if changed is False:
+        return _stale(db, data)
+    notice = (
+        f"<i>✓ Срок: {term_words(int(months))}, считая от сегодня.</i>"
+        if changed
+        else f"<i>{FAILED_TERM}</i>"
+    )
+    return _card_or_stale(db, data, person, notice)
+
+
+def _v_term_invited(db, by, telegram_id: str, months: str, bot_username: str) -> Screen:
+    person, data = int(telegram_id), f"{_TERM_INVITED}{telegram_id}:{months}"
+    changed = _changed_term(db, by, person, months)
+    if changed is False:
+        return _stale(db, data)
+    if changed is None:
+        return _card_or_stale(db, data, person, f"<i>{FAILED_TERM}</i>")
+    grant = crud_access_grant.get(db, person)
+    return invited(
+        bot_username,
+        person=Person(person, grant.display_name, username=grant.username),
+        months=int(months),
+    )
+
+
 def _v_inbox(db, _by, page: str) -> Screen:
     return feedback_inbox.view(db, int(page))
 
@@ -520,6 +613,8 @@ _VERBS = (
     (re.compile(r"usr:c:(\d{1,18})"), _v_open_below),
     (re.compile(r"usr:x:(\d{1,18})"), _v_close),
     (re.compile(r"usr:u:(\d{1,18})"), _v_reopen),
+    (re.compile(r"usr:tc:(\d{1,18}):(\d{1,3})"), _v_term_card),
+    (re.compile(r"usr:ti:(\d{1,18}):(\d{1,3})"), _v_term_invited),
     (re.compile(r"usr:f:(\d{1,4})"), _v_inbox),
     (re.compile(r"usr:fp:(\d{1,18}):(\d{1,4})"), _v_inbox_of),
     (re.compile(r"usr:fr:(\d{1,18}):(\d{1,18}):(\d{1,4})"), _v_resend),
@@ -527,7 +622,7 @@ _VERBS = (
 )
 
 
-def handle(db, telegram_id: int, data: str):
+def handle(db, telegram_id: int, data: str, bot_username: str = ""):
     """The next screen, or a ``Resend`` for the handler. A tap by anyone but the owner
     reads nothing, whatever it names; a stale or malformed one leads to the list."""
     if telegram_id not in settings.admin_ids:
@@ -535,6 +630,8 @@ def handle(db, telegram_id: int, data: str):
         return Screen("", None, toast=NOT_YOURS)
     for pattern, verb in _VERBS:
         match = pattern.fullmatch(data)
+        if match is not None and verb is _v_term_invited:
+            return verb(db, telegram_id, *match.groups(), bot_username)
         if match is not None:
             return verb(db, telegram_id, *match.groups())
     logger.warning("people: unknown callback %r", data)

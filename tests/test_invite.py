@@ -314,11 +314,14 @@ def test_a_person_picked_is_let_in(db, reader):  # noqa: F811
     assert notice["text"] == "<i>✓ Саша: доступ открыт.</i>"
     assert _gives_main_keyboard(notice)
     assert answer["text"] == (
-        "Telegram не даёт боту написать первым. "
         "Кнопка откроет чат с этим человеком и готовым текстом. Останется отправить. "
         "Ссылка работает только у этого человека: у других бот молчит."
     )
-    assert _labels(answer) == [["📤 Написать: Саша"], ["⬅️ Пользователи"]]
+    assert _labels(answer) == [
+        ["📤 Написать: Саша"],
+        ["3 мес", "6 мес", "✓ 12 мес"],
+        ["⬅️ Пользователи"],
+    ]
     _fits(answer)
     grant = crud_access_grant.get(db, SASHA)
     assert (grant.display_name, grant.username) == ("Саша", "sasha_k")
@@ -349,17 +352,70 @@ def test_a_person_with_no_username_gets_the_chat_picker_and_one_link(db):
     assert "t.me" not in query["text"][0]
 
 
-def test_the_subscription_of_a_picked_person_does_not_lapse(db):
+def _months_left(db, person: int = SASHA) -> int:
+    db.expire_all()
+    sub = crud_subscription.get_by_telegram_id(db, person)
+    assert sub.is_active
+    return round((sub.end_date - datetime.now()).days / 30.4)
+
+
+def test_a_picked_person_gets_twelve_months_and_the_words_say_so(db):
+    wire = play(picked(OWNER, SASHA), refuses=[SASHA])
+    assert _months_left(db) == 12
+    answer = wire.to(OWNER)[1]
+    assert _labels(answer)[1] == ["3 мес", "6 мес", "✓ 12 мес"]
+    url = _markup(answer)["inline_keyboard"][0][0]["url"]
+    assert "на 12 месяцев" in parse_qs(urlparse(url).query)["text"][0]
+
+
+def test_the_term_changes_the_subscription_and_the_words_before_sending(db):
+    wire = play(picked(OWNER, SASHA), refuses=[SASHA])
+    tapped = _markup(wire.to(OWNER)[1])["inline_keyboard"][1][0]["callback_data"]
+    wire = play(tap(OWNER, tapped))
+    assert _months_left(db) == 3
+    edit = wire.edits()[-1]
+    assert _labels(edit)[1] == ["✓ 3 мес", "6 мес", "12 мес"]
+    url = _markup(edit)["inline_keyboard"][0][0]["url"]
+    words = parse_qs(urlparse(url).query)["text"][0]
+    assert "на 3 месяца" in words and "12" not in words
+    assert url.startswith("https://t.me/sasha_k?")
+
+
+def test_the_card_shows_the_date_and_sets_a_new_term(db):
     play(picked(OWNER, SASHA))
-    sub = crud_subscription.get_by_telegram_id(db, SASHA)
-    assert sub.is_active and sub.end_date > datetime.now() + timedelta(days=365 * 50)
+    wire = play(tap(OWNER, f"usr:p:{SASHA}"))
+    card = wire.edits()[-1]
+    assert "🗓 Подписка до " in card["text"]
+    assert ["3 мес", "6 мес", "12 мес"] in _labels(card)
+    wire = play(tap(OWNER, f"usr:tc:{SASHA}:6"))
+    assert "✓ Срок: 6 месяцев, считая от сегодня." in wire.edits()[-1]["text"]
+    assert _months_left(db) == 6
+
+
+def test_no_term_for_someone_outside_or_a_term_the_buttons_do_not_offer(db):
+    play(picked(OWNER, SASHA))
+    play(tap(OWNER, f"usr:tc:{SASHA}:99"))
+    assert _months_left(db) == 12
+    play(tap(OWNER, f"usr:x:{SASHA}"))
+    play(tap(OWNER, f"usr:tc:{SASHA}:3"))
+    db.expire_all()
+    assert crud_subscription.get_by_telegram_id(db, SASHA).is_active is False
+
+
+def test_nobody_else_can_change_a_term(db):
+    play(picked(OWNER, SASHA))
+    play(tap(SASHA, f"usr:tc:{SASHA}:3"))
+    play(tap(SASHA, f"usr:ti:{SASHA}:3"))
+    assert _months_left(db) == 12
 
 
 def test_someone_who_opened_the_bot_gets_the_invitation_directly(db):
     wire = play(picked(OWNER, SASHA))
-    assert [p["text"] for p in wire.to(SASHA)] == [people_screen.INVITATION]
+    assert [p["text"] for p in wire.to(SASHA)] == [
+        "👋 Тебя пригласили в дневник питания на 12 месяцев. Нажми /start, чтобы начать."
+    ]
     answer = wire.to(OWNER)[1]
-    assert _labels(answer) == [["⬅️ Пользователи"]]
+    assert _labels(answer) == [["👤 Саша"], ["⬅️ Пользователи"]]
     assert "отправил сам" in answer["text"]
 
 
@@ -575,8 +631,24 @@ def test_undo_opens_the_door_again(db, reader):  # noqa: F811
     )
     shown = wire.edits()[1]
     assert shown["text"].startswith("<i>✓ Саша: доступ снова открыт.</i>")
-    assert _labels(shown) == [["⛔ Закрыть доступ"], ["⬅️ Пользователи"]]
+    assert _labels(shown) == [
+        ["⛔ Закрыть доступ"],
+        ["3 мес", "6 мес", "12 мес"],
+        ["⬅️ Пользователи"],
+    ]
     assert reader.text == ["суп"]
+
+
+def test_grant_sub_opens_the_door_and_puts_the_person_on_the_list(
+    db, reader
+):  # noqa: F811
+    """Two people given /grant_sub met a silent bot and were missing from /users."""
+    assert access_control.is_user_allowed(SASHA) is False
+    play(say(OWNER, f"/grant_sub {SASHA} 6"), say(SASHA, "суп"))
+    assert access_control.is_user_allowed(SASHA) is True
+    assert _months_left(db) == 6
+    assert reader.text == ["суп"]
+    assert str(SASHA) in people_screen.hub(db).text
 
 
 def test_inviting_again_reactivates(db):
