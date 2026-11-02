@@ -23,12 +23,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from app.crud.crud_action_event import crud_action_event
 from app.crud.crud_feedback import crud_feedback
 from app.models.feedback import PHOTO, TEXT, VOICE
-from app.services import action_journal, invites, people_screen, settings_screen
+from app.services import action_journal, invites, settings_screen
 from app.services.admin_notify import Part
 from app.services.day_card import local_time
 from app.services.explain_screen import FEEDBACK_OPEN as OPEN
 from app.services.explain_screen import FEEDBACK_TITLE as TITLE
 from app.services.favorites import Screen
+from app.services.owner_buttons import card_below
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,7 @@ def owner_parts(
         htmls[-1] += "\n\n" + quote(fitting)
     markup = None
     if button:
-        card = people_screen.card_button(person.name, row.telegram_id)
+        card = card_below(person.name, row.telegram_id)
         markup = InlineKeyboardMarkup([[card]])
     parts = [Part(h, p) for h, p in zip(htmls, plains)]
     parts[-1] = Part(htmls[-1], plains[-1], markup)

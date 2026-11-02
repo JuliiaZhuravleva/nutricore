@@ -41,6 +41,14 @@ class Part:
     markup: Any = None
 
 
+@dataclass(frozen=True)
+class File:
+    """A file Telegram already holds, sent again by its id."""
+
+    kind: str  # voice, photo or document: Telegram refuses an id under another kind
+    file_id: str
+
+
 @asynccontextmanager
 async def _client(bot: Optional[Bot]):
     """The caller's bot if it has one running; a worker has none, and gets its own."""
@@ -94,9 +102,24 @@ async def _send_part(client, admin_id: int, part: Part) -> None:
         )
 
 
-async def _deliver_one(client, admin_id: int, parts, forward) -> bool:
+async def _send_file(client, admin_id: int, file: File) -> None:
+    send = {
+        "voice": client.send_voice,
+        "photo": client.send_photo,
+        "document": client.send_document,
+    }[file.kind]
+    await send(admin_id, file.file_id)
+
+
+async def _deliver_one(client, admin_id: int, parts, forward, file=None) -> bool:
     """True only for a whole copy: the file, if there is one, and every part."""
     whole = True
+    if file is not None:
+        try:
+            await _send_file(client, admin_id, file)
+        except Exception as exc:
+            logger.warning("deliver_to_admins: file: %s", type(exc).__name__)
+            whole = False
     if forward is not None:
         try:
             await client.forward_message(
@@ -137,3 +160,16 @@ async def deliver_to_admins(
     except Exception as exc:  # bad token, network down at initialize()
         logger.warning("deliver_to_admins: no client: %s", type(exc).__name__)
     return delivered > 0
+
+
+async def deliver_to_one(
+    admin_id: int, parts: list[Part], *, file: Optional[File] = None, bot: Optional[Bot]
+) -> bool:
+    """To the one admin who asked: the file, then ``parts``. True for a whole copy. Never
+    raises, and logs no text."""
+    try:
+        async with _client(bot) as client:
+            return await _deliver_one(client, admin_id, parts, None, file)
+    except Exception as exc:
+        logger.warning("deliver_to_one: no client: %s", type(exc).__name__)
+        return False

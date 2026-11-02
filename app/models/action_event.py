@@ -33,7 +33,7 @@ BUTTON_VERBS = (
     "rt",
     "set",
     "st",
-    "us",
+    "usr",
     "wl",
     "wt",
 )

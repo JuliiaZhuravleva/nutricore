@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Type
+from typing import Any, Iterable, List, Optional, Type
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +16,15 @@ class CRUDUser:
         """Get user by telegram_id."""
         stmt = select(User).where(User.telegram_id == telegram_id)
         return db.execute(stmt).scalar_one_or_none()
+
+    def usernames(self, db: Session, telegram_ids: Iterable[int]) -> dict[int, str]:
+        """{telegram_id: username} for those of them who have one, in one statement."""
+        rows = db.execute(
+            select(User.telegram_id, User.username).where(
+                User.telegram_id.in_(list(telegram_ids)), User.username.is_not(None)
+            )
+        )
+        return {telegram_id: username for telegram_id, username in rows}
 
     def telegram_id_of(self, db: Session, user_id: int) -> Optional[int]:
         return db.scalar(select(User.telegram_id).where(User.id == user_id))

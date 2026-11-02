@@ -1,9 +1,9 @@
 import datetime
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.models.action_event import (
@@ -119,22 +119,52 @@ class CRUDActionEvent:
         days: int = 7,
         now: Optional[datetime.datetime] = None,
     ) -> list[bool]:
-        """One flag a day, oldest first, the last being today on the person's clock:
-        ▰▰▱▰▰▰▱. In Python, because a day's edge is a zone's and the two databases
-        share no way of saying that."""
+        """One flag a day, oldest first, the last being today in ``zone``: ▰▰▱▰▰▰▱."""
+        found = self.active_days_all(db, [telegram_id], zone=zone, days=days, now=now)
+        return found.get(telegram_id, [False] * days)
+
+    def active_days_all(
+        self,
+        db: Session,
+        people: Iterable[int],
+        *,
+        zone: ZoneInfo,
+        days: int = 7,
+        now: Optional[datetime.datetime] = None,
+    ) -> dict[int, list[bool]]:
+        """{telegram_id: flags} for those of ``people`` with any, in one statement of at
+        most people × days rows, however long the journal is. A day's edge is a zone's and
+        the two databases share no way of saying that, so the edges are worked out here
+        and the database only sorts each row between them."""
         today = (now or datetime.datetime.now(UTC)).astimezone(zone).date()
-        first = today - datetime.timedelta(days=days - 1)
-        # A wide net in UTC; the exact day of each row is decided below.
-        since = datetime.datetime.combine(first, datetime.time.min, tzinfo=UTC)
-        moments = db.scalars(
-            select(ActionEvent.at).where(
-                ActionEvent.telegram_id == telegram_id,
-                ActionEvent.kind.in_(PERSON_KINDS),
-                ActionEvent.at >= since - datetime.timedelta(days=1),
+        edges = [
+            datetime.datetime.combine(
+                today - datetime.timedelta(days=days - 1 - index),
+                datetime.time.min,
+                tzinfo=zone,
+            ).astimezone(UTC)
+            for index in range(days)
+        ]
+        newest_first = reversed(list(enumerate(edges)))
+        day = case(
+            *(
+                (ActionEvent.at >= edge, literal_column(str(i)))
+                for i, edge in newest_first
             )
         )
-        seen = {_utc(moment).astimezone(zone).date() for moment in moments}
-        return [first + datetime.timedelta(days=i) in seen for i in range(days)]
+        rows = db.execute(
+            select(ActionEvent.telegram_id, day)
+            .where(
+                ActionEvent.telegram_id.in_(list(people)),
+                ActionEvent.kind.in_(PERSON_KINDS),
+                ActionEvent.at >= edges[0],
+            )
+            .distinct()
+        )
+        found: dict[int, list[bool]] = {}
+        for person, index in rows:
+            found.setdefault(person, [False] * days)[index] = True
+        return found
 
     def delete_older_than(self, db: Session, cutoff: datetime.datetime) -> int:
         result = db.execute(

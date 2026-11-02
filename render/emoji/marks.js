@@ -28,6 +28,7 @@ Object.assign(ICONS, {
   person: '<circle cx="12" cy="8" r="4.5" ' + F + '/><path d="M3.5 21.5a8.5 7.5 0 0 1 17 0z" ' + F + '/>',
   people: '<circle cx="8.5" cy="8.5" r="3.8" ' + F + '/><path d="M1.5 20.5a7 6.5 0 0 1 14 0z" ' + F + '/><circle cx="17" cy="7.5" r="3" ' + F + '/><path d="M17.5 13.2a6 6 0 0 1 5 6.3h-5a9 9 0 0 0-2.4-5.6z" ' + F + '/>',
   send: '<path d="M4 13.5h16V20a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20z" ' + F + '/><g ' + S + ' stroke-width="2.6"><path d="M12 15.5V3.5"/><path d="M7.5 8L12 3.5 16.5 8"/></g>',
+  note: '<path d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 20V6A1.5 1.5 0 0 1 5 4.5z" ' + F + '/><path d="M7.5 10.5h9M7.5 14h9M7.5 17.5h5" ' + CUT + '/><g ' + S + '><path d="M8 2.5v4M16 2.5v4"/></g>',
   pencil: '<path d="M4 20l1.2-4.8L16.4 4a2.1 2.1 0 0 1 3 0l.6.6a2.1 2.1 0 0 1 0 3L8.8 18.8z" ' + F + '/><path d="M14.5 6l3.5 3.5" ' + CUT + '/>',
   trash: '<g ' + S + '><path d="M4 6.5h16"/><path d="M9 6V3.8h6V6"/></g><path d="M6 8.8h12l-1 11.4a1.5 1.5 0 0 1-1.5 1.3h-7A1.5 1.5 0 0 1 7 20.2z" ' + F + '/>',
   tag: '<path d="M3 5a2 2 0 0 1 2-2h7.2a2 2 0 0 1 1.4.6l7.3 7.3a2 2 0 0 1 0 2.8l-7.2 7.2a2 2 0 0 1-2.8 0L3.6 13.6A2 2 0 0 1 3 12.2z" ' + F + '/><circle cx="7.8" cy="7.8" r="1.8" fill="' + BG + '"/>',
@@ -79,7 +80,7 @@ Object.assign(ICONS, {
 Object.assign(MARKS, {
   back: "#DDD7CB", undo: "#DAD3EA", prev: "#DDD7CB", next: "#DDD7CB", plus: "#CDE3C2", minus: "#E5DCCB",
   cross: "#E5DCCB", reject: "#EBC7B3", repeat: "#CFE0D9", link: "#C8D7E8", search: "#C8D7E8",
-  writing: "#F2DDA0", tap: "#F2D6A8", speech: "#C8D7E8", eye: "#CFE0D9", person: "#D9D3EA", people: "#D9D3EA", send: "#C8D7E8",
+  writing: "#F2DDA0", tap: "#F2D6A8", speech: "#C8D7E8", eye: "#CFE0D9", person: "#D9D3EA", people: "#D9D3EA", send: "#C8D7E8", note: "#D9D3C9",
   pencil: "#F2DDA0", trash: "#E5DCCB", tag: "#E9C9A6", clipboard: "#D9D3C9", symbols: "#E2CDE6",
   warn: "#F2CF85", stop: "#EBC7B3", lock: "#D6D0C4", hourglass: "#E9D9B4", question: "#D9D3EA",
   thumb: "#CDE3C2", wave: "#F2D6A8", dizzy: "#D9D3EA", digits: "#D6D0C4",

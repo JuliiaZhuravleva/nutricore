@@ -47,6 +47,7 @@ from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_subscription import crud_subscription
 from app.crud.crud_usage_ledger import crud_usage_ledger
+from app.crud.crud_user import crud_user
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -68,6 +69,7 @@ from app.models import (
 from app.services import (
     dishes,
     favorites,
+    feedback_inbox,
     feedback_screen,
     invites,
     meal_card,
@@ -337,6 +339,15 @@ def _world(db) -> SimpleNamespace:
         },
     )
 
+    voice_feedback = crud_feedback.create(
+        db,
+        telegram_id=A,
+        kind="voice",
+        text=f"{MARK} голосом",
+        file_id=A_FILE,
+        original={"message_id": 7998, "voice": {"file_id": A_FILE}},
+    )
+
     # B's own. B holds a real grant: a locked person would pass every probe here.
     crud_subscription.create_subscription(db, telegram_id=B, granted_by_telegram_id=A)
     borscht = _dish(db, b, "борщ")
@@ -365,6 +376,7 @@ def _world(db) -> SimpleNamespace:
         logged=logged.id,
         invited=7_000_000_001,
         feedback=feedback.id,
+        voice_feedback=voice_feedback.id,
         soup=soup.id,
         porridge=porridge.id,
         hidden=hidden.id,
@@ -512,9 +524,13 @@ def _assert_nothing_of_a(wire: Chats, person: int = B) -> None:
 # What each verb is given: ``w`` holds A's ids.
 PROBES = {
     "fb:food": lambda w: f"fb:food:{w.feedback}",
-    "us:p": lambda w: f"us:p:{w.invited}",
-    "us:x": lambda w: f"us:x:{w.invited}",
-    "us:u": lambda w: f"us:u:{w.invited}",
+    "usr:p": lambda w: f"usr:p:{w.invited}",
+    "usr:c": lambda w: f"usr:c:{w.invited}",
+    "usr:x": lambda w: f"usr:x:{w.invited}",
+    "usr:u": lambda w: f"usr:u:{w.invited}",
+    "usr:fp": lambda w: f"usr:fp:{A}:0",
+    "usr:fr": lambda w: f"usr:fr:{w.feedback}:0:0",
+    "usr:ff": lambda w: f"usr:ff:{w.voice_feedback}:0:0",
     "ml:r": lambda w: f"ml:r:{w.lunch}",
     "ml:o": lambda w: f"ml:o:{w.lunch}:r",
     "ml:op": lambda w: f"ml:op:{w.lunch}:0:r",
@@ -593,7 +609,8 @@ NO_ID = {
     "fb:open": lambda w: "fb:open",
     "fb:see": lambda w: "fb:see",
     "fb:x": lambda w: "fb:x",
-    "us:l": lambda w: "us:l:0",
+    "usr:l": lambda w: "usr:l:0",
+    "usr:f": lambda w: "usr:f:0",
     "ml:dl": lambda w: f"ml:dl:{datetime.now(UTC):%Y%m%d}:t",
     "ml:da": lambda w: f"ml:da:{datetime.now(UTC):%Y%m%d}:t",
     "dh:l": lambda w: "dh:l:0",
@@ -1287,3 +1304,59 @@ def test_a_feedback_message_goes_through_on_this_database(db, world):
     assert row.original["text"] == "не понятно <b>"
     copies = [p for n, p in wire.calls if n == "sendMessage" and p["chat_id"] == A]
     assert any("«не понятно &lt;b&gt;»" in p["text"] for p in copies), copies
+
+
+def test_the_owners_screens_read_on_this_database(db, world):
+    """The sums, the zone's days and the page: every statement /users and its card run."""
+    now = datetime.now(UTC)
+    for days_ago in (0, 0, 1, 3):
+        crud_action_event.add(
+            db, telegram_id=A, kind="photo", at=now - timedelta(days=days_ago)
+        )
+    crud_action_event.add(db, telegram_id=B, kind="text", at=now)
+    db.commit()
+    day = usage_ledger.today()
+    crud_usage_ledger.add(db, telegram_id=A, day=day, cost_usd=0.25)
+    crud_usage_ledger.add(db, telegram_id=A, day=day, cost_usd=None)
+    crud_usage_ledger.add(db, telegram_id=0, day=day - timedelta(days=2), cost_usd=0.05)
+    zone = ZoneInfo("Asia/Tbilisi")
+    flags = crud_action_event.active_days_all(db, [A, B, 42], zone=zone)
+    assert set(flags) == {A, B}
+    assert sum(flags[A]) >= 3 and flags[A][-1] and sum(flags[B]) == 1
+    assert crud_user.usernames(db, [A, B, 42]).keys() <= {A, B}
+
+    hub = people_screen.hub(db)
+    assert "$0.30" in hub.text and "Без человека: $0.05" in hub.text
+    assert "⚠️ Запросов без известной цены: 1. В суммах их нет." in hub.text
+    assert f"{MARK} Мика" in hub.text
+
+    card = people_screen.handle(db, A, f"usr:p:{A}")
+    assert "📷 4" in card.text and "$0.25 · 2 запроса · 1 без цены" in card.text
+    assert "💬 Фидбэк: 2" in card.text
+
+    assert crud_feedback.count_new(db) == 2
+    newest = feedback_inbox.view(db)
+    assert f"{MARK} голосом" in newest.text  # the second row made
+    older = feedback_inbox.view(db, 1, A)
+    assert f"{MARK} суп" in older.text
+    db.expire_all()
+    assert crud_feedback.count_new(db) == 0
+    assert crud_feedback.get(db, world.feedback).read_at is not None
+    assert crud_feedback.nth_for_owner(db, 2) is None
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "usr:p:999999999999999999",
+        "usr:x:999999999999999999",
+        "usr:u:999999999999999999",
+        "usr:fp:999999999999999999:0",
+        "usr:fr:999999999999999999:0:0",
+        "usr:ff:999999999999999999:0:0",
+    ],
+)
+def test_the_largest_id_a_button_can_hold_is_only_stale_here(db, world, data):
+    """What the pattern lets through has to fit every column it is compared with."""
+    shown = people_screen.handle(db, A, data)
+    assert shown.text.startswith(people_screen.STALE)

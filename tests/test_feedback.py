@@ -600,7 +600,7 @@ def test_the_owners_copy_has_the_head_the_words_the_journal_and_the_card(db):
     assert text.endswith("</blockquote>")
     assert "👆 ⚙️ Настройки" in text
     assert _labels(owner[0]["reply_markup"]) == [["👤 Саша"]]
-    assert _datas(owner[0]["reply_markup"]) == [[f"us:p:{SASHA}"]]
+    assert _datas(owner[0]["reply_markup"]) == [[f"usr:c:{SASHA}"]]
     assert owner[0]["parse_mode"] == "HTML"
     assert wire.to(OWNER, "forwardMessage") == []
 

@@ -540,7 +540,7 @@ def test_closed_person_is_stopped_and_their_records_stay(db, reader):  # noqa: F
     meals = db.scalars(select(Meal.id)).all()
     assert meals
 
-    wire = play(tap(OWNER, f"us:x:{SASHA}"), say(SASHA, "ещё суп"))
+    wire = play(tap(OWNER, f"usr:x:{SASHA}"), say(SASHA, "ещё суп"))
     shown = wire.edits()[0]
     assert shown["text"].startswith("<i>✓ Саша: доступ закрыт. Записи сохранены.</i>")
     assert _labels(shown) == [["↩️ Вернуть"], ["⬅️ Пользователи"]]
@@ -554,7 +554,7 @@ def test_closed_person_is_stopped_and_their_records_stay(db, reader):  # noqa: F
 def test_undo_opens_the_door_again(db, reader):  # noqa: F811
     _invite(db)
     wire = play(
-        tap(OWNER, f"us:x:{SASHA}"), tap(OWNER, f"us:u:{SASHA}"), say(SASHA, "суп")
+        tap(OWNER, f"usr:x:{SASHA}"), tap(OWNER, f"usr:u:{SASHA}"), say(SASHA, "суп")
     )
     shown = wire.edits()[1]
     assert shown["text"].startswith("<i>✓ Саша: доступ снова открыт.</i>")
@@ -573,7 +573,7 @@ def test_inviting_again_reactivates(db):
 
 def test_someone_in_the_settings_cannot_be_closed_by_a_button(db):
     _invite(db, LISTED, "Женя")
-    wire = play(tap(OWNER, f"us:p:{LISTED}"), tap(OWNER, f"us:x:{LISTED}"))
+    wire = play(tap(OWNER, f"usr:p:{LISTED}"), tap(OWNER, f"usr:x:{LISTED}"))
     card, refused = wire.edits()
     assert "в настройках сервера" in card["text"]
     assert _labels(card) == [["⬅️ Пользователи"]]
@@ -585,7 +585,7 @@ def test_someone_in_the_settings_cannot_be_closed_by_a_button(db):
 
 def test_stale_taps_lead_to_the_current_screen(db, caplog):
     with caplog.at_level(logging.WARNING):
-        wire = play(tap(OWNER, f"us:x:{ZHENYA}"), tap(OWNER, "us:zzz"))
+        wire = play(tap(OWNER, f"usr:x:{ZHENYA}"), tap(OWNER, "usr:zzz"))
     assert all("Пользователи" in edit["text"] for edit in wire.edits())
     assert len(wire.edits()) == 2
     assert "unknown or foreign" in caplog.text
@@ -593,7 +593,7 @@ def test_stale_taps_lead_to_the_current_screen(db, caplog):
 
 def test_a_tap_on_closed_again_is_not_a_crash(db):
     _invite(db)
-    wire = play(tap(OWNER, f"us:x:{SASHA}"), tap(OWNER, f"us:x:{SASHA}"))
+    wire = play(tap(OWNER, f"usr:x:{SASHA}"), tap(OWNER, f"usr:x:{SASHA}"))
     assert _labels(wire.edits()[1])[0] == ["↩️ Вернуть"]
 
 
@@ -601,13 +601,13 @@ def test_the_owners_screens_refuse_someone_else(db, caplog):
     _invite(db)
     crud_subscription.create_subscription(db, LISTED, OWNER, months=1)
     with caplog.at_level(logging.WARNING):
-        wire = play(tap(LISTED, f"us:x:{SASHA}"), tap(LISTED, people_screen.INVITE))
+        wire = play(tap(LISTED, f"usr:x:{SASHA}"), tap(LISTED, people_screen.INVITE))
     assert wire.edits() == [] and wire.to(LISTED) == []
     assert "unknown or foreign" in caplog.text
     assert crud_access_grant.is_active(db, SASHA) is True
-    # /users too, and it says so.
-    denied = play(say(LISTED, "/users")).to(LISTED)
-    assert [p["text"] for p in denied] == ["⛔️ Эта команда доступна только владельцу."]
+    # /users answers nothing at all; the owner's same command is the known positive.
+    assert play(say(LISTED, "/users")).to(LISTED) == []
+    assert "<b>👥 Пользователи</b>" in play(say(OWNER, "/users")).to(OWNER)[0]["text"]
 
 
 def test_the_hub_shows_who_and_how(db):
@@ -618,28 +618,29 @@ def test_the_hub_shows_who_and_how(db):
     invites.close(db, MIKA)
     hub = play(say(OWNER, "/users")).to(OWNER)[0]
     assert "<b>👥 Пользователи</b>" in hub["text"]
-    assert "Саша · в боте" in hub["text"]
+    assert "Саша · нет действий · 0 из 7 дней · $0.00" in hub["text"]
     assert "Женя · ⏳ бот ещё не открыт" in hub["text"]
     assert "Мика · ⛔ доступ закрыт" in hub["text"]
-    assert _labels(hub) == [["Саша", "Женя", "Мика"], ["➕ Пригласить"]]
+    labels = _labels(hub)
+    assert sorted(labels[0] + labels[1]) == sorted(["Саша", "Женя", "Мика", str(OWNER)])
+    assert labels[-1] == ["➕ Пригласить"]
     _fits(hub)
 
 
-def test_the_hub_is_empty_honestly_and_invites(db):
+def test_with_no_one_invited_the_hub_holds_the_owner_and_invites(db):
     wire = play(say(OWNER, "/users"), tap(OWNER, people_screen.INVITE))
-    assert "Пока никого" in wire.to(OWNER)[0]["text"]
     assert wire.to(OWNER)[1]["text"] == people_screen.PROMPT  # ➕ is the same flow
-    assert _labels(wire.to(OWNER)[0]) == [["➕ Пригласить"]]
+    assert _labels(wire.to(OWNER)[0]) == [[str(OWNER)], ["➕ Пригласить"]]
 
 
 def test_the_hub_pages_within_the_row_limits(db):
     for n in range(8):
         _invite(db, 5000 + n, f"Человек с очень длинным именем {n}")
-    wire = play(say(OWNER, "/users"), tap(OWNER, "us:l:1"))
+    wire = play(say(OWNER, "/users"), tap(OWNER, "usr:l:1"))
     first, second = wire.to(OWNER)[0], wire.edits()[0]
     _fits(first), _fits(second)
-    assert _labels(first)[-2:] == [["▶️"], ["➕ Пригласить"]]
-    assert _labels(second)[-2:] == [["◀️"], ["➕ Пригласить"]]
+    assert _labels(first)[-2:] == [["‹", "1/2", "›"], ["➕ Пригласить"]]
+    assert _labels(second)[-2:] == [["‹", "2/2", "›"], ["➕ Пригласить"]]
     assert all(len(label) <= 12 for label in _labels(first)[0])
 
 

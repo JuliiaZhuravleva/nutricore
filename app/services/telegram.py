@@ -15,6 +15,7 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 from telegram import (
     BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
@@ -54,6 +55,7 @@ from app.services import (
     dishes,
     explain_screen,
     favorites,
+    feedback_inbox,
     feedback_screen,
     food_lists,
     image_clean,
@@ -64,6 +66,7 @@ from app.services import (
     meal_card,
     meal_draft,
     meal_items,
+    owner_buttons,
     people_screen,
     portion_suggestions,
     routines,
@@ -74,7 +77,7 @@ from app.services import (
     welcome_screen,
 )
 from app.services.access_control import access_gate, admin_required, may_receive
-from app.services.admin_notify import deliver_to_admins, notify_admins
+from app.services.admin_notify import deliver_to_admins, deliver_to_one, notify_admins
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.attribution import attribute_to
 from app.services.card_delivery import CardDelivery
@@ -1123,14 +1126,24 @@ _COMMANDS = (
     BotCommand("start", "Открыть меню"),
     BotCommand("feedback", "Написать владельцу бота"),
 )
+_OWNER_COMMANDS = (BotCommand("users", "Кто пользуется и сколько это стоит"),)
 
 
 async def _set_commands(application: Application) -> None:
-    """The command menu. A convenience: without it the bot starts all the same."""
+    """The command menu. A convenience: without it the bot starts all the same. /users is
+    in each admin's own, and in nobody else's; each is set apart, so that a chat Telegram
+    refuses costs that admin the entry and no one else theirs."""
     try:
         await application.bot.set_my_commands(_COMMANDS)
     except Exception as e:
         logger.warning("Command menu not set: %s", type(e).__name__)
+    for admin_id in settings.admin_ids:
+        try:
+            await application.bot.set_my_commands(
+                (*_COMMANDS, *_OWNER_COMMANDS), scope=BotCommandScopeChat(admin_id)
+            )
+        except Exception as e:
+            logger.warning("Owner's command menu not set: %s", type(e).__name__)
 
 
 async def _on_start(application: Application) -> None:
@@ -2320,23 +2333,59 @@ async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _ask_to_pick(update.message, context)
 
 
-@admin_required
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Silent to anyone else: the screen is not advertised, and a refusal would be."""
+    if update.effective_user.id not in settings.admin_ids:
+        logger.warning("/users by %s: refused", update.effective_user.id)
+        return
     with SessionLocal() as db:
         screen = people_screen.hub(db)
     await _reply_screen(update, screen)
 
 
+async def _users_send(bot, admin_id: int, screen):
+    """A re-send goes out before the screen is drawn, which then says how it went."""
+    if not isinstance(screen, feedback_inbox.Resend):
+        return screen
+    whole = await deliver_to_one(
+        admin_id, list(screen.parts), file=screen.file, bot=bot
+    )
+    with SessionLocal() as db:
+        return feedback_inbox.after_send(db, screen, whole)
+
+
+async def _users_below(query, screen) -> None:
+    """A new message: the one tapped holds a person's words, not a screen."""
+    await query.message.reply_text(
+        screen.text, parse_mode=ParseMode.HTML, reply_markup=screen.markup
+    )
+
+
 async def users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if (
-        query.data == people_screen.INVITE
-        and update.effective_user.id in settings.admin_ids
-    ):
+    """Checked here and again in ``people_screen.handle``: for anyone else a tap answers
+    the same words whatever it names, and nothing is read or sent."""
+    query, admin_id = update.callback_query, update.effective_user.id
+    if admin_id not in settings.admin_ids:
+        logger.warning("people: %r by %s: unknown or foreign", query.data, admin_id)
+        await query.answer(people_screen.NOT_YOURS)
+        return
+    if query.data == people_screen.INVITE:
         await query.answer()
         await _ask_to_pick(query.message, context)
         return
-    await _screen_callback(update, people_screen.handle, "Нет доступа", "users")
+
+    async def send(screen):
+        return await _users_send(context.bot, admin_id, screen)
+
+    below = (query.data or "").startswith(owner_buttons.CARD_HERE)
+    await _screen_callback(
+        update,
+        people_screen.handle,
+        None,
+        "users",
+        deliver=_users_below if below else None,
+        before_answer=send,
+    )
 
 
 async def welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
