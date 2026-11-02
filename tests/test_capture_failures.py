@@ -22,7 +22,9 @@ from telegram.error import BadRequest
 
 from app.core.config import settings
 from app.crud.crud_meal_item import crud_meal_item
+from app.crud.crud_personal_food import crud_personal_food
 from app.models import InboundMessage, Meal, MealMessage, MealReading, User
+from app.models.personal_food import PersonalFood
 from app.services import capture, food_groups_retag, food_lists, stats_screen
 from app.services import telegram as tg
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
@@ -56,7 +58,8 @@ M4D = (
     "Голосовое сохранено, разобрать сейчас не вышло.\n"
     "В дневнике запись с этим голосовым."
 )
-M7B = "<b>✏️ Что было?</b>\nНапиши одним сообщением."
+M7B = capture.M7B_ASK
+M7_NOTE_WORDS = capture.M7_NOTE
 M7D = "Фото сохранено, еды на нём не видно.\nВ дневнике запись с этим фото."
 M7E = (
     "Фото пн 26 октября, 13:20 больше недоступно в Telegram. "
@@ -485,10 +488,13 @@ def test_written_words_become_the_reading_and_the_photo_stays(db, reader):
     assert answer["text"] == "Записано: суп. Фото хранится при этой записи."
     db.expire_all()
     fresh = _one(db)
-    item = crud_meal_item.live(db, fresh.id)[0]
-    assert _kb(answer) == [[f"ml:i:{item.id}:r", f"ml:t:{fresh.id}:r"]]
     assert fresh.reading_status == "read" and fresh.photos == ["big"]
-    assert item.name == "суп"
+    # The model read the words, not the photo that failed: foods and numbers came.
+    assert reader.text and "суп" in reader.text[-1] and not reader.image
+    assert [i.name for i in crud_meal_item.live(db, fresh.id)] == NUTRITION["foods"]
+    assert fresh.calories == NUTRITION["calories"]
+    assert "рис" in wire.edits()[-1]["text"]
+    assert M7_NOTE_WORDS in wire.edits()[-1]["text"]
     assert len(_meals(db)) == 1  # the words are no new meal
     reading = db.scalars(select(MealReading).order_by(MealReading.id.desc())).first()
     assert (reading.kind, reading.status, reading.applied) == ("text", "done", True)
@@ -545,8 +551,78 @@ def test_written_words_replace_the_words_that_failed(db, reader):
     wire = _writing(db, meal, "суп")
     assert wire.sent()[-1]["text"] == "Записано: суп."
     db.expire_all()
-    assert [i.name for i in crud_meal_item.live(db, meal.id)] == ["суп"]
+    names = [i.name for i in crud_meal_item.live(db, meal.id)]
+    assert names == NUTRITION["foods"] and "что-то непонятное" not in names
     assert _one(db).reading_status == "read"
+
+
+SENTENCE = "Это суп с курицей, рисом, морковкой, луком и чем-то ещё"
+
+
+def test_a_sentence_is_read_into_foods_and_is_no_dish(db, reader):
+    meal = _failed_photo(db, reader)
+    wire = _writing(db, meal, SENTENCE)
+    assert wire.sent()[-1]["text"].startswith(f"Записано: {SENTENCE}")
+    db.expire_all()
+    assert reader.text[-1] == SENTENCE
+    assert [i.name for i in crud_meal_item.live(db, meal.id)] == NUTRITION["foods"]
+    assert crud_personal_food.find_by_name(db, _one(db).user_id, SENTENCE) is None
+    assert _one(db).calories == NUTRITION["calories"]
+
+
+def test_written_words_that_fail_say_so_and_the_retry_reads_the_words(db, reader):
+    meal = _failed_photo(db, reader)
+    reader.error = ValueError("boom")
+    wire = _writing(db, meal, "суп")
+    assert wire.edits()[-1]["text"] == M7A
+    db.expire_all()
+    assert _one(db).reading_status == "failed" and _one(db).photos == ["big"]
+    assert crud_meal_item.live(db, meal.id) == []
+    assert crud_personal_food.find_by_name(db, _one(db).user_id, "суп") is None
+    reader.error = None
+    reader.text.clear()
+    wire = tap(f"ml:rr:{meal.id}:r", message_id=_line_id(db, meal))
+    db.expire_all()
+    assert reader.text == ["суп"] and not reader.image
+    assert [i.name for i in crud_meal_item.live(db, meal.id)] == NUTRITION["foods"]
+    assert M7_NOTE_WORDS in wire.edits()[-1]["text"]
+
+
+def test_a_retry_of_a_failed_photo_still_reads_the_photo(db, reader):
+    # Control: the retry follows the words only when the words are what failed.
+    meal = _failed_photo(db, reader)
+    tap(f"ml:rr:{meal.id}:r", message_id=_line_id(db, meal))
+    assert reader.image and not reader.text
+
+
+def test_written_words_with_no_food_seen_stand_as_written(db, reader):
+    meal = _failed_photo(db, reader)
+    reader.answer = {"foods": [], "calories": 0, "protein": 0, "fats": 0, "carbs": 0}
+    wire = _writing(db, meal, "та самая штука от мамы")
+    db.expire_all()
+    fresh = _one(db)
+    assert fresh.deleted_at is None and fresh.reading_status == "read"
+    assert fresh.photos == ["big"]
+    names = [i.name for i in crud_meal_item.live(db, fresh.id)]
+    assert names == ["та самая штука от мамы"]
+    assert wire.edits()[-1]["text"].startswith("Записано: та самая штука от мамы")
+
+
+def test_a_known_dish_written_costs_nothing(db, reader, owner):
+    meal = _failed_photo(db, reader)
+    db.add(PersonalFood(user_id=owner.id, canonical_name="Овсянка"))
+    db.commit()
+    _writing(db, meal, "Овсянка")
+    assert reader.text == []
+    db.expire_all()
+    assert [i.name for i in crud_meal_item.live(db, meal.id)] == ["Овсянка"]
+
+
+def test_the_ask_says_what_to_write(db, reader):
+    meal = _failed_photo(db, reader)
+    wire = tap(f"ml:w:{meal.id}:r", message_id=_line_id(db, meal))
+    asked = wire.edits()[-1]["text"]
+    assert "например" in asked and "сколько" in asked and "БЖУ" in asked
 
 
 def test_written_words_on_a_voice_keep_the_voice(db, reader):
@@ -1044,7 +1120,7 @@ def test_a_database_refusal_does_not_log_the_words(db, reader, monkeypatch, capl
     def refused(*_args, **_kwargs):
         raise refusal
 
-    monkeypatch.setattr(capture.meal_items, "add_item", refused)
+    monkeypatch.setattr(capture, "map_message", refused)
     wire = _writing(db, meal, secret)
     assert wire.sent()[-1]["text"] == "Не получилось, попробуй ещё раз"
     assert "Meal slot failed: IntegrityError" in caplog.text

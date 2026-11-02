@@ -451,7 +451,7 @@ def test_written_words_bring_a_silent_voice_into_the_day(db, seen, reader, whisp
     meal = _meal(db)
     assert meal.deleted_at is None
     assert meal.reading_status == "read"
-    assert _item_names(db, meal) == ["суп"]
+    assert _item_names(db, meal) == NUTRITION["foods"]
     assert _source(db).audio_path
     assert [m.id for m in _in_day(db)] == [meal.id]
 
@@ -500,7 +500,7 @@ def test_silence_after_the_person_wrote_keeps_what_they_wrote(
     meal = _meal(db)
     assert meal.deleted_at is None
     assert meal.reading_status == "read"
-    assert _item_names(db, meal) == ["суп"]
+    assert _item_names(db, meal) == NUTRITION["foods"]
     # What the service said is still on record.
     assert any(r.status == "no_speech" for r in _readings(db))
 

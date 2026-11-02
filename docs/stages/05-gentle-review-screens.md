@@ -1099,14 +1099,14 @@ R35's sentence stands as written, and the second line says what it leaves out (s
 
 ```tg
 <b>✏️ Что было?</b>
-Напиши одним сообщением.
+Напиши одним сообщением, что и примерно сколько, например «суп с курицей, тарелка». Калории и БЖУ посчитаются по этим словам.
 ```
 
 ```kb
 ⬅️ К ответу бота => ml:r:<mid>
 ```
 
-**`M7c`** Result of writing.
+**`M7c`** Result of writing. A known dish is added free, with its numbers. New words are read by the model like any text sent as food: split into foods with numbers, and no dish is named by the whole sentence. The answer edits this line. The read fails: `M7a`, and its `🔁` reads the words, not the photo. No food seen in the words: they stand as written, without numbers, because the person knows what they ate.
 
 ```tg
 Записано: суп. Фото хранится при этой записи.
