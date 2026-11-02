@@ -207,13 +207,15 @@ def test_order_of_arrival_outranks_the_message_numbers(db, soup):
 
 
 def test_the_read_waits_for_the_last_photo_not_the_first(db, soup, monkeypatch):
-    monkeypatch.setattr(capture, "ALBUM_WAIT_SECONDS", SLOW)
+    # The margin is wall clock, and a busy machine ate 0.2 s of it.
+    wait = SLOW * 3
+    monkeypatch.setattr(capture, "ALBUM_WAIT_SECONDS", wait)
 
     async def steps(application, _wire):
         await _in(application, shot("a"))
-        await asyncio.sleep(SLOW * 0.6)
+        await asyncio.sleep(wait * 0.6)
         await _in(application, shot("b"))
-        await asyncio.sleep(SLOW * 0.6)  # past the first photo's wait, not the second's
+        await asyncio.sleep(wait * 0.6)  # past the first photo's wait, not the second's
         assert soup.image == []
         await _drained()
         assert len(soup.image) == 1  # known-positive: the wait ends
