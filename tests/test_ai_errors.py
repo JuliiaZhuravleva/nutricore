@@ -10,7 +10,7 @@ import httpx
 import openai
 import pytest
 
-from app.services import ai_errors
+from app.services import ai_errors, capture
 
 # OpenAI's answer when the balance / monthly budget is spent.
 QUOTA_BODY = {
@@ -20,6 +20,17 @@ QUOTA_BODY = {
         "type": "insufficient_quota",
         "param": None,
         "code": "insufficient_quota",
+    }
+}
+# The same refusal as seen in production on 2026-11-02: the type says quota, the code
+# is new.
+EXHAUSTED_BODY = {
+    "error": {
+        "message": "You have no credits remaining. Add credits to continue using the "
+        "API at https://platform.openai.com/settings/organization/billing/.",
+        "type": "insufficient_quota",
+        "param": None,
+        "code": "credit_balance_exhausted",
     }
 }
 # A plain rate limit: requests per minute.
@@ -60,6 +71,14 @@ def test_openai_quota_is_out_of_credit():
     assert ai_errors.out_of_credit(err) is err
     assert not ai_errors.rate_limited(err)
     assert ai_errors.billing(err)[0] == "OpenAI"
+
+
+def test_an_exhausted_balance_is_out_of_credit_whatever_its_code():
+    err = sdk_error(429, EXHAUSTED_BODY)
+    assert err.code == "credit_balance_exhausted"
+    assert ai_errors.out_of_credit(err) is err
+    assert not ai_errors.rate_limited(err)
+    assert capture.failure_status(err) == capture.NO_CREDIT
 
 
 def test_openrouter_402_is_out_of_credit():

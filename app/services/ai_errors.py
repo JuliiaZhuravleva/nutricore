@@ -3,8 +3,9 @@
 Two of them need a different answer from «попробуйте ещё раз»:
 
 - **Out of credit** — the balance or the spend limit is used up: OpenAI answers
-  429 with ``code="insufficient_quota"``, OpenRouter answers 402. A retry will
-  not pass until someone tops up or raises the limit.
+  429 with ``type="insufficient_quota"`` (its ``code`` varies: the same word, or
+  ``credit_balance_exhausted``), OpenRouter answers 402. A retry will not pass
+  until someone tops up or raises the limit.
 - **Rate limited** — any other 429. It passes in a minute (the SDK has already
   retried it ``OPENAI_MAX_RETRIES`` times by the time it reaches us).
 
@@ -36,6 +37,10 @@ def _chain(exc: BaseException | None) -> Iterator[BaseException]:
         exc = exc.__cause__ or exc.__context__
 
 
+def _is_quota(e: openai.RateLimitError) -> bool:
+    return _QUOTA_CODE in (e.type, e.code)
+
+
 def out_of_credit(exc: BaseException) -> openai.APIStatusError | None:
     """The refusal that says the balance or spend limit is used up, if any."""
     for e in _chain(exc):
@@ -43,7 +48,7 @@ def out_of_credit(exc: BaseException) -> openai.APIStatusError | None:
             continue
         if e.status_code == 402:
             return e
-        if isinstance(e, openai.RateLimitError) and e.code == _QUOTA_CODE:
+        if isinstance(e, openai.RateLimitError) and _is_quota(e):
             return e
     return None
 
@@ -51,8 +56,7 @@ def out_of_credit(exc: BaseException) -> openai.APIStatusError | None:
 def rate_limited(exc: BaseException) -> bool:
     """A 429 that is not about money: wait a minute and it passes."""
     return any(
-        isinstance(e, openai.RateLimitError) and e.code != _QUOTA_CODE
-        for e in _chain(exc)
+        isinstance(e, openai.RateLimitError) and not _is_quota(e) for e in _chain(exc)
     )
 
 
