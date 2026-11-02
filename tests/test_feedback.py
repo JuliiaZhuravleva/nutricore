@@ -477,8 +477,7 @@ def test_a_menu_button_cancels_at_once_and_does_its_own_work(db, model, label):
 
 def test_every_menu_label_is_known_to_the_wait():
     main = {b.text for row in tg.main_keyboard.keyboard for b in row}
-    locked = {b.text for row in tg.subscription_keyboard.keyboard for b in row}
-    assert (main | locked) <= tg._FEEDBACK_LEAVES
+    assert (main | set(tg._OLD_LOCK_LABELS)) <= tg._FEEDBACK_LEAVES
 
 
 def test_a_word_that_is_only_like_a_label_is_still_feedback(db):

@@ -135,13 +135,15 @@ def test_it_stands_on_the_edits_migration_and_one_head_follows():
     assert module.revision == "a7b8c9d0e1f2"
     assert module.down_revision == "f6a7b8c9d0e1"
     chain = _chain()
-    assert _heads(chain) == ["f2a3b4c5d6e7"]
+    assert _heads(chain) == ["e7158dcd97a2"]
+    assert chain["e7158dcd97a2"][0] == ("f2a3b4c5d6e7",)
     assert chain["f2a3b4c5d6e7"][0] == ("e1f2a3b4c5d6",)
     assert chain["e1f2a3b4c5d6"][0] == ("d0e1f2a3b4c5",)
     assert chain["d0e1f2a3b4c5"][0] == ("c9d0e1f2a3b4",)
     assert chain["c9d0e1f2a3b4"][0] == ("b8c9d0e1f2a3",)
     assert chain["b8c9d0e1f2a3"][0] == ("a7b8c9d0e1f2",)
     # Known-positive: the check would have seen the old head as a head without it.
+    del chain["e7158dcd97a2"]
     del chain["f2a3b4c5d6e7"]
     del chain["e1f2a3b4c5d6"]
     del chain["d0e1f2a3b4c5"]
@@ -349,16 +351,25 @@ def test_postgres_renders_real_foreign_keys_and_says_the_backfill_did_not_run():
 _GRANTS = _PATH.parent / "e1f2a3b4c5d6_access_grants.py"
 
 
-def _grants_migration():
-    spec = importlib.util.spec_from_file_location("access_grants_migration", _GRANTS)
+_CLOSED_TOLD = _PATH.parent / "e7158dcd97a2_access_grant_closed_told_at.py"
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+def _grants_migration():
+    return _load("access_grants_migration", _GRANTS)
+
+
 def test_access_grants_goes_up_as_the_model_and_comes_back_down(conn):
     module = _grants_migration()
+    closed_told = _load("closed_told_migration", _CLOSED_TOLD)
     _run(conn, "upgrade", module)
+    _run(conn, "upgrade", closed_told)
     found = {c["name"]: c for c in sa.inspect(conn).get_columns("access_grants")}
     model = Base.metadata.tables["access_grants"]
     assert set(found) == {c.name for c in model.columns}
@@ -369,5 +380,8 @@ def test_access_grants_goes_up_as_the_model_and_comes_back_down(conn):
     assert indexes["ix_access_grants_telegram_id"]["unique"] == 1
     assert {i.name for i in model.indexes} == set(indexes)
 
+    _run(conn, "downgrade", closed_told)
+    columns = {c["name"] for c in sa.inspect(conn).get_columns("access_grants")}
+    assert "closed_told_at" not in columns and "first_opened_at" in columns
     _run(conn, "downgrade", module)
     assert "access_grants" not in sa.inspect(conn).get_table_names()

@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from app.core.config import settings
@@ -17,6 +18,13 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+TERM_ENDED = (
+    "Срок доступа закончился. Записи на месте. Продлить может тот, кто пригласил."
+)
+DOOR_CLOSED = "Доступ закрыт владельцем бота. Записи сохранены."
+# Only the open mode brings someone here who never had a term: nothing has ended.
+NO_ACCESS = "Доступа к дневнику пока нет. Открыть его может владелец бота."
 
 
 def is_user_allowed(telegram_id: Optional[int]) -> bool:
@@ -54,9 +62,8 @@ def _has_grant(telegram_id: int) -> bool:
 
 
 def _was_closed(telegram_id: int) -> bool:
-    """Whether the owner closed this person's door. Past it they would be a stranger at
-    the subscription screens, which someone invited never sees: they hear nothing, as in
-    any other mode. Fails open: the mode says everyone, and only a known closing says
+    """Whether the owner closed this person's door. They hear it once, in the gate, as in any
+    other mode. Fails open: the mode says everyone, and only a known closing says
     otherwise."""
     try:
         with SessionLocal() as db:
@@ -74,7 +81,7 @@ def in_the_settings(telegram_id: int) -> bool:
 
 def may_receive(db, telegram_id: int) -> bool:
     """Whether the bot may write or spend on someone unasked. As for the bot's own screens:
-    its buttons would answer 🔒 to anyone else."""
+    its buttons refuse anyone else."""
     if not is_user_allowed(telegram_id):
         return False
     return telegram_id in settings.admin_ids or (
@@ -83,11 +90,12 @@ def may_receive(db, telegram_id: int) -> bool:
 
 
 async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Global gate: silently drop updates from users not allowed by the mode.
+    """Global gate: drop updates from users not allowed by the mode.
 
-    Registered in an early handler group so it runs before every other handler;
-    raising ApplicationHandlerStop stops processing without sending any reply. Whoever is
-    refused goes through here, so an answer to a stranger belongs here, should one come.
+    Registered in an early handler group so it runs before every other handler; raising
+    ApplicationHandlerStop stops processing. Strangers hear nothing, and someone whose door
+    the owner closed hears that once. Whoever is refused goes through here, so an answer to
+    a stranger belongs here, should one come.
     """
     user = update.effective_user
     telegram_id = user.id if user else None
@@ -97,7 +105,26 @@ async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             telegram_id,
             settings.access_mode,
         )
+        await _tell_closed_once(update, context)
         raise ApplicationHandlerStop
+
+
+async def _tell_closed_once(update: Update, context) -> None:
+    """Only to someone speaking to the bot in private: a status change or a group message
+    spends nothing. Marked before it is sent: a lost line is smaller than a repeated one.
+    Nothing here may let the update through."""
+    chat = getattr(update, "effective_chat", None)
+    spoke = getattr(update, "message", None) or getattr(update, "callback_query", None)
+    if chat is None or chat.type != "private" or spoke is None:
+        return
+    try:
+        with SessionLocal() as db:
+            if crud_access_grant.take_closed_notice(db, update.effective_user.id):
+                await context.bot.send_message(chat.id, DOOR_CLOSED)
+    except TelegramError as e:
+        logger.warning("Closed door not told: %s", type(e).__name__)
+    except Exception as e:
+        logger.error("Closed door not read: %s", type(e).__name__)
 
 
 def admin_required(func):

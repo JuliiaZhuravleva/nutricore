@@ -23,6 +23,7 @@ from telegram import (
     Message,
     MessageOriginUser,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     ReplyParameters,
     Update,
 )
@@ -78,7 +79,13 @@ from app.services import (
     weight_screen,
     welcome_screen,
 )
-from app.services.access_control import access_gate, admin_required, may_receive
+from app.services.access_control import (
+    NO_ACCESS,
+    TERM_ENDED,
+    access_gate,
+    admin_required,
+    may_receive,
+)
 from app.services.admin_notify import deliver_to_admins, deliver_to_one, notify_admins
 from app.services.ai_call_log_service import analyze_and_log
 from app.services.attribution import attribute_to
@@ -150,22 +157,16 @@ _FEEDBACK_ALBUM = "feedback_album"  # (media_group_id, until)
 # Conversation states
 (
     CHOOSING_ACTION,
-    SUBSCRIPTION_INQUIRY,
     DISAMBIGUATING_PRODUCT,  # future: multiple-candidate product picker (A8/A9)
     ENTERING_WEIGHT,
     ENTERING_ROUTINE_NAME,
     ENTERING_FOOD_NAME,
-) = range(6)
+) = range(5)
+
+# The keyboard of the old padlock screen: it is gone, and phones still carry its labels.
+_OLD_LOCK_LABELS = ("❓ О боте", "💎 Получить подписку", "📱 Связаться с админом")
 
 # Keyboard layouts
-subscription_keyboard = ReplyKeyboardMarkup(
-    [
-        ["❓ О боте", "💎 Получить подписку"],
-        ["📱 Связаться с админом"],
-    ],
-    resize_keyboard=True,
-)
-
 main_keyboard = ReplyKeyboardMarkup(
     [
         ["🍽 Добавить приём пищи", "⭐ Избранное"],
@@ -180,9 +181,7 @@ main_keyboard = ReplyKeyboardMarkup(
 # «Сейчас» or «Обед» is no menu button, and may be just what someone has to say.
 _FEEDBACK_LEAVES = frozenset(action_event.MENU_LABELS) | {
     "🍽 Добавить прием пищи",  # the label keyboards already on phones still carry
-    "❓ О боте",
-    "💎 Получить подписку",
-    "📱 Связаться с админом",
+    *_OLD_LOCK_LABELS,
 }
 _KEYBOARD_LABEL = re.compile(
     "🍽 Добавить при[её]м пищи|⭐ Избранное|📊 Статистика|⚖️ Мой вес|⚙️ Настройки"
@@ -229,14 +228,11 @@ async def check_subscription(telegram_id: int) -> bool:
         db.close()
 
 
-LOCK_TEXT = (
-    "🔒 Эта функция доступна только для пользователей с подпиской.\n\n"
-    "Базовая версия бота позволяет:\n"
-    "• Узнать о возможностях бота\n"
-    "• Связаться с администратором\n"
-    "• Получить подписку\n\n"
-    "Подробнее — кнопка «💎 Получить подписку»."
-)
+def refusal(telegram_id: int) -> str:
+    """The one line for someone the gate let through whose diary is shut."""
+    with SessionLocal() as db:
+        had_a_term = crud_subscription.get_by_telegram_id(db, telegram_id) is not None
+    return TERM_ENDED if had_a_term else NO_ACCESS
 
 
 def subscription_required(func):
@@ -244,10 +240,8 @@ def subscription_required(func):
 
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_subscription(update.effective_user.id):
-            await update.message.reply_text(
-                LOCK_TEXT, reply_markup=subscription_keyboard
-            )
-            return SUBSCRIPTION_INQUIRY
+            await update.message.reply_text(refusal(update.effective_user.id))
+            return CHOOSING_ACTION
         return await func(update, context)
 
     return wrapper
@@ -257,15 +251,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     await _note_first_open(context, update.effective_user.id)
     if not await check_subscription(update.effective_user.id):
-        text = (
-            "👋 Привет! Я NutriCore — дневник питания и здоровья.\n\n"
-            "🤖 Что я умею:\n"
-            "• Разбирать еду по фото и описанию с помощью AI\n"
-            "• Вести вес и статистику по дням\n\n"
-            "💎 Для доступа к этим функциям нужна подписка."
-        )
-        await update.message.reply_text(text, reply_markup=subscription_keyboard)
-        return SUBSCRIPTION_INQUIRY
+        await update.message.reply_text(refusal(update.effective_user.id))
+        return CHOOSING_ACTION
     try:
         with SessionLocal() as db:
             first_run = welcome_screen.opens_welcome(db, update.effective_user.id)
@@ -322,7 +309,7 @@ async def add_meal_from_card(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """The same on an empty day card. The card stays as it is."""
     query = update.callback_query
     if not await check_subscription(update.effective_user.id):
-        await query.answer("🔒 Статистика доступна с подпиской", show_alert=True)
+        await query.answer(TERM_ENDED, show_alert=True)
         return None
     await query.answer()
     await update.effective_chat.send_message(**_new_meal_hint())
@@ -1011,8 +998,18 @@ async def _first_record_hint(bot, job: capture.Read) -> None:
     try:
         with SessionLocal() as db:
             hint = welcome_screen.take_hint(db, job.telegram_id)
-        if hint is not None:
-            await bot.send_message(job.chat_id, hint, reply_markup=main_keyboard)
+        if hint is None:
+            return
+        await bot.send_message(job.chat_id, hint, reply_markup=main_keyboard)
+        with SessionLocal() as db:
+            line = welcome_screen.zone_line(db, job.telegram_id, datetime.now(UTC))
+        if line is not None:
+            await bot.send_message(
+                job.chat_id,
+                line.text,
+                reply_markup=line.markup,
+                disable_notification=True,
+            )
     except Exception as e:
         logger.warning("First record hint not sent: %s", type(e).__name__)
 
@@ -1458,7 +1455,7 @@ async def _capture(
     if message is None or user is None:
         return _Went.REFUSED
     if not await check_subscription(user.id):
-        await message.reply_text(LOCK_TEXT, reply_markup=subscription_keyboard)
+        await message.reply_text(refusal(user.id))
         return _Went.REFUSED
     await _welcome_unasked(update, context)
     if not as_food and message.text and await _model_choice(update, context):
@@ -1614,7 +1611,7 @@ async def dishes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(
         update,
         handle,
-        "🔒 Блюда доступны с подпиской",
+        TERM_ENDED,
         "Dishes",
         deliver=_card_delivery.tap,
     )
@@ -1649,7 +1646,7 @@ async def meal_card_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _screen_callback(
             update,
             handle,
-            "🔒 Приёмы доступны с подпиской",
+            TERM_ENDED,
             "Meal card",
             deliver=_card_delivery.tap,
             before_answer=lambda screen: _send_files(context, chat_id, screen),
@@ -1886,7 +1883,7 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _screen_callback(
         update,
         handle,
-        "🔒 Избранное доступно с подпиской",
+        TERM_ENDED,
         "Favorites",
         deliver=_card_delivery.tap,
     )
@@ -1907,7 +1904,7 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(
         update,
         handle,
-        "🔒 Статистика доступна с подпиской",
+        TERM_ENDED,
         "Stats",
         deliver=_card_delivery.tap,
     )
@@ -1928,7 +1925,7 @@ async def weight_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(
         update,
         weight_screen.handle_callback,
-        "🔒 Дневник веса доступен с подпиской",
+        TERM_ENDED,
         "Weight",
     )
 
@@ -1989,16 +1986,14 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(
         update,
         settings_screen.handle_callback,
-        "🔒 Настройки доступны с подпиской",
+        TERM_ENDED,
         "Settings",
     )
 
 
 async def routines_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A tap on the routine screens (``rt:…``)."""
-    await _screen_callback(
-        update, routines.handle_callback, "🔒 Рутины доступны с подпиской", "Routines"
-    )
+    await _screen_callback(update, routines.handle_callback, TERM_ENDED, "Routines")
 
 
 async def food_lists_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2006,7 +2001,7 @@ async def food_lists_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await _screen_callback(
         update,
         food_lists.handle_callback,
-        "🔒 Списки еды доступны с подпиской",
+        TERM_ENDED,
         "Food lists",
     )
 
@@ -2016,7 +2011,7 @@ async def explain_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(
         update,
         explain_screen.handle_callback,
-        "🔒 Пояснения доступны с подпиской",
+        TERM_ENDED,
         "Explanations",
     )
 
@@ -2032,7 +2027,7 @@ async def routine_ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return screen
 
-    await _screen_callback(update, handle, "🔒 Рутины доступны с подпиской", "Routines")
+    await _screen_callback(update, handle, TERM_ENDED, "Routines")
     if not asked.get("wait"):
         return None
     context.user_data["routine_rename"] = asked["rename"]
@@ -2102,9 +2097,7 @@ async def food_ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return screen
 
-    await _screen_callback(
-        update, handle, "🔒 Списки еды доступны с подпиской", "Food lists"
-    )
+    await _screen_callback(update, handle, TERM_ENDED, "Food lists")
     if not asked.get("wait"):
         return None
     context.user_data["food_kind"] = asked["kind"]
@@ -2151,41 +2144,16 @@ async def process_food_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return CHOOSING_ACTION
 
 
-async def handle_subscription_inquiry(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
-    """Handle subscription related questions"""
-    text = update.message.text
-
-    if text == "❓ О боте":
-        response = (
-            "🤖 NutriCore — дневник питания и здоровья.\n\n"
-            "✨ С подпиской:\n"
-            "• Разбор еды по фото и описанию\n"
-            "• Избранные блюда в одно касание\n"
-            "• Статистику за день и неделю\n"
-            "• Дневник веса"
-        )
-
-    elif text == "💎 Получить подписку":
-        response = (
-            "💫 Подписка открывает доступ ко всем функциям бота!\n\n"
-            "Стоимость:\n"
-            "• 1 месяц - X руб\n"
-            "• 3 месяца - Y руб\n"
-            "• 12 месяцев - Z руб\n\n"
-            "Чтобы оформить, нажми «📱 Связаться с админом»."
-        )
-
-    elif text == "📱 Связаться с админом":
-        admin_username = settings.TELEGRAM_ADMIN_USERNAME
-        response = f"По вопросам подписки пиши администратору: {admin_username}"
-
+async def old_lock_label(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """A label of the padlock's keyboard, still on a phone. That keyboard goes, and comes
+    back as the menu for someone whose term was renewed."""
+    if await check_subscription(update.effective_user.id):
+        await update.message.reply_text("Что делаем?", reply_markup=main_keyboard)
     else:
-        return SUBSCRIPTION_INQUIRY
-
-    await update.message.reply_text(response, reply_markup=subscription_keyboard)
-    return SUBSCRIPTION_INQUIRY
+        await update.message.reply_text(
+            refusal(update.effective_user.id), reply_markup=ReplyKeyboardRemove()
+        )
+    return CHOOSING_ACTION
 
 
 @admin_required
@@ -2510,7 +2478,7 @@ async def welcome_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _screen_callback(
         update,
         welcome_screen.handle,
-        "🔒 Нужна подписка",
+        TERM_ENDED,
         "welcome",
         deliver=_first_record_screen,
     )
@@ -3002,11 +2970,8 @@ def create_bot_application() -> Application:
     media_leaves_wait = MessageHandler(
         ~filters.TEXT & ~filters.COMMAND, _capture_and_leave_wait
     )
-    # What the subscription keyboard sends. Anything else goes on to the router: a
-    # subscriber whose state stayed here after a grant still has a diary.
-    subscription_labels = MessageHandler(
-        filters.Regex("^(❓ О боте|💎 Получить подписку|📱 Связаться с админом)$"),
-        handle_subscription_inquiry,
+    old_lock_labels = MessageHandler(
+        filters.Regex(f"^({'|'.join(_OLD_LOCK_LABELS)})$"), old_lock_label
     )
     conv_handler = ConversationHandler(
         # The menu buttons are entry points too: the conversation state lives in
@@ -3015,7 +2980,7 @@ def create_bot_application() -> Application:
         entry_points=[
             CommandHandler("start", start),
             *menu(),
-            subscription_labels,
+            old_lock_labels,
             routine_ask,
             food_ask,
         ],
@@ -3050,18 +3015,11 @@ def create_bot_application() -> Application:
                 routine_ask,
                 food_ask,
             ],
-            SUBSCRIPTION_INQUIRY: [
-                *menu(),
-                subscription_labels,
-            ],
         },
         fallbacks=[
             CommandHandler("start", start),
             CommandHandler("cancel", cancel),
-            MessageHandler(filters.Regex("^❓ О боте$"), start),
-            MessageHandler(
-                filters.Regex("^💎 Получить подписку$"), handle_subscription_inquiry
-            ),
+            old_lock_labels,
         ],
     )
 

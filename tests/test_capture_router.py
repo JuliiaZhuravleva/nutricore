@@ -36,6 +36,7 @@ from app.models import (
 )
 from app.schemas.meal import MealCreate
 from app.services import meal_items
+from app.services.access_control import NO_ACCESS
 from app.services.product_lookup_service import ResolutionResult
 
 OWNER = 42
@@ -1151,11 +1152,11 @@ def test_a_non_subscriber_gets_the_lock_and_no_capture(db, owner, reader, monkey
     wire = send(message)
     assert _meals(db) == []
     assert _sources(db) == []
-    assert wire.seen()[0].startswith("🔒 Эта функция доступна только")
+    assert wire.seen() == [NO_ACCESS]
     assert reader.image == []
 
 
-def test_a_non_subscriber_can_ask_about_the_subscription_with_no_start_first(
+def test_an_old_lock_label_is_answered_with_no_start_first(
     db, owner, reader, monkeypatch
 ):
     message = text("💎 Получить подписку")
@@ -1163,7 +1164,7 @@ def test_a_non_subscriber_can_ask_about_the_subscription_with_no_start_first(
     message["chat"]["id"] = 77
     monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open")
     wire = send(message)
-    assert not wire.seen()[0].startswith("🔒")
+    assert wire.seen() == [NO_ACCESS]
 
 
 def test_logs_carry_no_body(db, owner, reader, caplog):

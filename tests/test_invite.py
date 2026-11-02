@@ -617,7 +617,7 @@ def test_closed_person_is_stopped_and_their_records_stay(db, reader):  # noqa: F
     shown = wire.edits()[0]
     assert shown["text"].startswith("<i>✓ Саша: доступ закрыт. Записи сохранены.</i>")
     assert _labels(shown) == [["↩️ Вернуть"], ["⬅️ Пользователи"]]
-    assert wire.to(SASHA) == []  # stopped, and silently
+    assert [p["text"] for p in wire.to(SASHA)] == [access_control.DOOR_CLOSED]
     assert len(reader.text) == 1
     db.expire_all()
     assert db.scalars(select(Meal.id)).all() == meals
@@ -892,7 +892,7 @@ def test_the_first_start_is_the_welcome(db):
     assert len(sent) == 1
     assert sent[0]["text"].startswith("<b>👋 Дневник питания</b>\n\n")
     assert (
-        "Владелец бота видит, как часто ты пользуешься ботом и сколько стоят запросы."
+        "Владелец бота в своих экранах видит, как часто ты пишешь и сколько это стоит."
         in sent[0]["text"]
     )
     assert sent[0]["text"].endswith(diet.QUESTION)
@@ -1011,7 +1011,7 @@ def _old_meal(user: User) -> Meal:
 
 
 def _welcomes(wire: Phone) -> list:
-    return [p for p in wire.to(SASHA) if "Владелец бота видит" in p["text"]]
+    return [p for p in wire.to(SASHA) if "в своих экранах видит" in p["text"]]
 
 
 def test_someone_invited_whose_first_word_is_food_still_learns_who_sees_what(
@@ -1039,7 +1039,7 @@ def test_a_welcome_telegram_did_not_take_is_still_owed(db, reader):  # noqa: F81
 
         async def do_request(self, url, method, request_data=None, **kwargs):
             params = dict(request_data.parameters) if request_data else {}
-            if self.refusing and "Владелец бота видит" in params.get("text", ""):
+            if self.refusing and "в своих экранах видит" in params.get("text", ""):
                 body = {"ok": False, "error_code": 400, "description": "Bad Request"}
                 return 400, json.dumps(body).encode()
             return await super().do_request(url, method, request_data, **kwargs)
@@ -1069,7 +1069,7 @@ def test_a_record_from_before_the_invitation_means_they_were_here(
 def test_a_listed_person_who_writes_first_is_as_before(db, reader):  # noqa: F811
     crud_subscription.create_subscription(db, LISTED, OWNER, months=1)
     wire = play(say(LISTED, "омлет"))
-    assert not [p for p in wire.to(LISTED) if "Владелец бота видит" in p["text"]]
+    assert not [p for p in wire.to(LISTED) if "в своих экранах видит" in p["text"]]
     assert reader.text == ["омлет"]  # known positive: the message did reach the diary
 
 
@@ -1174,7 +1174,7 @@ def _closes_while_reading(db, monkeypatch, error=None) -> None:
 def _pending_only(wire: Phone) -> None:
     """What the person saw is what they saw before the door closed."""
     assert wire.edits() == []
-    said = [p for p in wire.to(SASHA) if "Владелец бота видит" not in p["text"]]
+    said = [p for p in wire.to(SASHA) if "в своих экранах видит" not in p["text"]]
     assert len(said) == 1
 
 
@@ -1268,7 +1268,7 @@ def _open_mode_and_closed(db, monkeypatch) -> None:
 def test_closing_in_open_mode_really_closes(db, monkeypatch):
     _open_mode_and_closed(db, monkeypatch)
     wire = play(say(SASHA, "/start"), say(SASHA, "омлет"), tap(SASHA, "wl:later"))
-    assert wire.to(SASHA) == []
+    assert [p["text"] for p in wire.to(SASHA)] == [access_control.DOOR_CLOSED]
     assert not [n for n, _p in wire.calls if n == "editMessageText"]
     db.expire_all()
     assert db.scalars(select(Meal.id)).all() == []
@@ -1368,9 +1368,9 @@ def test_a_refusal_lost_in_an_outage_keeps_the_forward_out_of_the_diary(
     assert reader.text == []
 
 
-def test_someone_with_no_subscription_keeps_the_old_answer(db):
+def test_someone_listed_with_no_subscription_is_not_told_a_term_ended(db):
     sent = play(say(LISTED, "/start")).to(LISTED)
-    assert "нужна подписка" in sent[0]["text"]
+    assert [p["text"] for p in sent] == [access_control.NO_ACCESS]
 
 
 def test_the_conversation_goes_on_after_the_welcome(db):

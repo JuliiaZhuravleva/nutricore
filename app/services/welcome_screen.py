@@ -52,8 +52,9 @@ _WELCOME = (
     "<b>👋 Дневник питания</b>\n\n"
     "Записывает, что ты ешь, по фото, тексту или голосу. Без оценок и запретов, готовая "
     "еда считается наравне с любой.\n\n"
-    "Владелец бота видит, как часто ты пользуешься ботом и сколько стоят запросы. Записи "
-    "хранятся на сервере владельца, другим людям они не видны.\n\n"
+    "Ты видишь только свои записи. Владелец бота в своих экранах видит, как часто ты "
+    "пишешь и сколько это стоит. Текст и фото читает внешний ИИ-сервис, а технически "
+    "сообщения доступны тому, кто запускает бота.\n\n"
     f"{diet.QUESTION}"
 )
 
@@ -149,6 +150,24 @@ def take_menu(db, telegram_id: int) -> str | None:
         return None
     settings_screen._save(db, telegram_id, **{KEY: ANSWERED})
     return MENU
+
+
+def zone_line(db, telegram_id: int, now: datetime) -> Screen | None:
+    """After the first record of someone who has not chosen a time zone: the clock the
+    bot goes by, and the way to another. Nothing is asked. For the same one moment as the
+    hint, so it needs no mark of its own."""
+    user = _user(db, telegram_id)
+    if user is None or (user.settings or {}).get(settings_screen.TIMEZONE):
+        return None
+    zone = settings_screen.zone_name(user)
+    clock = now.astimezone(settings_screen.ZoneInfo(zone)).strftime("%H:%M")
+    button = InlineKeyboardButton(
+        "🕐 Часовой пояс", callback_data=settings_screen.ZONES_CALLBACK
+    )
+    return Screen(
+        f"Время записи {clock}. Если у тебя другое, поменяй пояс.",
+        InlineKeyboardMarkup([[button]]),
+    )
 
 
 def take_hint(db, telegram_id: int) -> str | None:

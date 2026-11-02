@@ -52,8 +52,8 @@ _COSTS_CB = CALLBACK_PREFIX + "costs"
 _WEEK_CB = CALLBACK_PREFIX + "week"
 _DRAFT_CB = CALLBACK_PREFIX + "draft"
 _NUMBERS_CB = CALLBACK_PREFIX + "num"
-_ZONES_CB = CALLBACK_PREFIX + "tz"
-_PICK = _ZONES_CB + ":"  # + the zone's IANA name
+ZONES_CALLBACK = CALLBACK_PREFIX + "tz"
+_PICK = ZONES_CALLBACK + ":"  # + the zone's IANA name
 _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
 _DIET_CB = CALLBACK_PREFIX + "diet"
 _DIET_PICK = _DIET_CB + ":"  # + the answer
@@ -184,7 +184,7 @@ def screen(
             _btn("✋ Не предлагать", food_lists.NEVER_OPEN),
         ],
         [
-            _btn("🕐 Пояс", _ZONES_CB),
+            _btn("🕐 Пояс", ZONES_CALLBACK),
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
             _btn(FEEDBACK_TITLE, FEEDBACK_OPEN),
         ],
@@ -266,7 +266,7 @@ def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
             _btn("›", f"{_OFFSETS}{min(page + 1, last)}"),
         ]
     )
-    rows.append([_btn("⬅️ Часовой пояс", _ZONES_CB)])
+    rows.append([_btn("⬅️ Часовой пояс", ZONES_CALLBACK)])
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
@@ -354,7 +354,7 @@ def handle_callback(
             notice = f"✓ Обычная еда: {diet.CHOICES[value]}"
             return open_view(db, telegram_id, notice, now)
     zone = zone_name(_user(db, telegram_id))
-    if data == _ZONES_CB:
+    if data == ZONES_CALLBACK:
         return zones_screen(zone, now)
     if data.startswith(_PICK):
         name = data[len(_PICK) :]

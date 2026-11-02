@@ -22,8 +22,7 @@ from app.db.base import Base
 from app.models.body_metric import BodyMetric
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import close_row
-from app.services import settings_screen
+from app.services import close_row, settings_screen
 from app.services import stats_screen as st
 from app.services import telegram as tg
 from app.services import weight_screen as wt
@@ -378,7 +377,10 @@ def test_weight_button_then_typed_weight_saves_with_undo(Session):
     with Session() as db:
         (metric,) = db.query(BodyMetric).all()
     assert metric.weight == 72.5
-    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [close_row.CALLBACK, f"wt:u:{metric.id}"]
+    assert _callbacks(message.kwargs[-1]["reply_markup"]) == [
+        close_row.CALLBACK,
+        f"wt:u:{metric.id}",
+    ]
 
 
 def test_not_a_weight_gets_the_hint_and_saves_nothing(Session):
@@ -729,7 +731,7 @@ def test_the_cost_switch_needs_a_subscription(Session, monkeypatch):
     monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=False))
     update, query = _query("set:costs")
     asyncio.run(tg.settings_callback(update, SimpleNamespace()))
-    assert "подпиской" in query.answer.await_args.args[0]
+    assert query.answer.await_args.args[0] == tg.TERM_ENDED
     assert not _costs_shown(Session)
 
 
@@ -743,7 +745,7 @@ def test_taps_without_subscription_change_nothing(Session, monkeypatch, callback
         "st:w" if callback == "stats_callback" else f"wt:u:{metric.id}"
     )
     asyncio.run(getattr(tg, callback)(update, SimpleNamespace()))
-    assert "подпиской" in query.answer.await_args.args[0]
+    assert query.answer.await_args.args[0] == tg.TERM_ENDED
     query.edit_message_text.assert_not_awaited()
     with Session() as db:
         assert db.query(BodyMetric).count() == 1
@@ -753,10 +755,9 @@ def test_texts_no_longer_promise_scale_integrations(Session, monkeypatch):
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "1")
     monkeypatch.setattr(tg, "check_subscription", AsyncMock(return_value=False))
     _state, start = _run(tg.start, "/start")
-    _state, about = _run(tg.handle_subscription_inquiry, "❓ О боте")
-    for text in (start.replies[-1], about.replies[-1]):
-        assert "Mi Scale" not in text and "Samsung" not in text
-    assert "Дневник веса" in about.replies[-1]
+    _state, about = _run(tg.old_lock_label, "❓ О боте")
+    assert start.replies[-1] == about.replies[-1] == tg.NO_ACCESS
+    assert "Mi Scale" not in tg.NO_ACCESS and "Samsung" not in tg.NO_ACCESS
 
 
 # --- registration -------------------------------------------------------------

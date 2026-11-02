@@ -457,7 +457,7 @@ def test_callback_without_subscription_changes_nothing(Session, monkeypatch):
     update, query = _query(f"fav:l:{fav.id}:d")
     asyncio.run(tg.favorites_callback(update, SimpleNamespace()))
 
-    assert "подпиской" in query.answer.await_args.args[0]
+    assert query.answer.await_args.args[0] == tg.TERM_ENDED
     query.edit_message_text.assert_not_awaited()
     with Session() as db:
         assert db.query(Meal).filter(Meal.resolution_source == "favorite").count() == 0
