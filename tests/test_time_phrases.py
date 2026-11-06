@@ -119,8 +119,8 @@ def test_without_yesterday_disagreeing_phrases_keep_the_sent_day():
 
 
 def test_phrases_that_all_fall_on_yesterday_give_yesterday():
-    # 10:00: both «в обед» and «вечером» are still ahead, so both are yesterday's.
-    morning = datetime(2026, 11, 6, 6, 0, tzinfo=UTC)
+    # 7:00: both «в обед» and «вечером» are far ahead, so both are yesterday's.
+    morning = datetime(2026, 11, 6, 3, 0, tzinfo=UTC)
     said = _said("в обед суп, а вечером паста", sent=morning)
     assert (said.precision, _local(said).date()) == (DAY_ONLY, YESTERDAY)
 
@@ -197,6 +197,10 @@ def _at_local(hour, minute=0) -> datetime:
     [
         ("на завтрак овсянка", 8, 30),
         ("на завтрак каша", 8, 30),
+        ("на завтрак каша", 6, 30),  # inside its hours, 2.5 h before 9:00
+        ("утром каша", 6, 30),
+        ("на ужин суп", 16, 30),  # 1.5 h before its hours start
+        ("в обед суп", 10, 0),
         ("в обед суп", 12, 40),
         ("на ужин паста", 18, 40),
         ("утром каша", 8, 30),
@@ -218,7 +222,7 @@ def test_a_bare_meal_name_going_on_now_is_about_the_sent_moment():
 @pytest.mark.parametrize(
     "text,hour,expected",
     [
-        ("в обед суп", 10, datetime(2026, 11, 5, 13, 0)),  # 3 h ahead
+        ("в обед суп", 8, datetime(2026, 11, 5, 13, 0)),  # 3 h before its hours
         ("на ужин паста", 7, datetime(2026, 11, 5, 19, 0)),  # 12 h ahead
     ],
 )

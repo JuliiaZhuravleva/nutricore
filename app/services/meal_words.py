@@ -31,11 +31,13 @@ _MEAL_NAMES = {
 # a clock said with its own part is that clock, «утром в 8:30».
 _WINDOWS = {"утром": (4, 11), "днем": (11, 18), "вечером": (18, 24)}
 _MEAL_PARTS = {"завтрак": "утром", "обед": "днем", "полдник": "днем", "ужин": "вечером"}
-# A part or a meal still ahead by no more than this is the one going on now: «на
-# завтрак каша» at 8:30 is this breakfast, not yesterday's. ASSUMED.
+# A part or a meal whose clock is still ahead is the one going on now when it was sent
+# inside its own hours, or no more than this before they start: «на завтрак каша» at
+# 6:30 and «на ужин суп» at 16:30 are this meal, not yesterday's. ASSUMED.
 _SOON = timedelta(hours=2)
 _NOON = time(12)
 _NIGHT = time(3)
+_NIGHT_HOURS = (0, 4)
 _FLAGS = re.IGNORECASE
 
 _CLOCK = re.compile(
@@ -43,7 +45,7 @@ _CLOCK = re.compile(
 )
 _MEAL_NAME = "|".join(name.replace(" ", r"\s+") for name in _MEAL_NAMES)
 _YESTERDAY_PART = re.compile(
-    rf"\bвчера\s+(утром|дн[её]м|вечером|{_MEAL_NAME})\b", _FLAGS
+    rf"\bвчера\s+(утром|дн[её]м|вечером|ночью|{_MEAL_NAME})\b", _FLAGS
 )
 # «в 13» only at either end of the text: in the middle a number is more likely food's,
 # and a unit after it always is: «в 3 раза больше», «в 2 тарелки».
@@ -127,14 +129,20 @@ def _latest(local: datetime, clock: time, zone) -> datetime:
     )
 
 
-def _named_clock(match, word: str, local: datetime, zone) -> _Found:
-    """A part's or a meal's clock on its latest day. One still ahead by no more than
-    ``_SOON`` is going on now, and has the sent moment."""
-    clock = _clock_word(word)
-    today = _at(local.date(), clock, zone)
-    now = local < today <= local + _SOON
+def _named_clock(match, clock: time, window: tuple, local: datetime, zone) -> _Found:
+    """A part's, a meal's or the night's clock on its latest day. Sent inside the
+    hours of its next clock, or no more than ``_SOON`` before they start, it is going
+    on now, and has the sent moment: a meal said live is never yesterday's, and
+    «ночью» at 23:50 is this night's."""
+    day = local.date() if _at(local.date(), clock, zone) > local else None
+    day = day or local.date() + timedelta(days=1)
+    now = _at(day, time(window[0]), zone) - _SOON <= local
     moment = local if now else _latest(local, clock, zone)
-    return _Found(match, moment, APPROX, True, clock, _window(word), now)
+    return _Found(match, moment, APPROX, True, clock, window, now)
+
+
+def _named_word(match, word: str, local: datetime, zone) -> _Found:
+    return _named_clock(match, _clock_word(word), _window(word), local, zone)
 
 
 def _clock_of(match, hour: int, minute: int, local: datetime, zone) -> Optional[_Found]:
@@ -160,6 +168,9 @@ def _find_yesterday_part(text: str, local: datetime, zone) -> Optional[_Found]:
         return None
     day = local.date() - timedelta(days=1)
     word = match.group(1)
+    if _plain(word) == "ночью":
+        # A night spans two dates: yesterday's, and no clock that could be either.
+        return _Found(match, _at(day, _NOON, zone), DAY_ONLY)
     return _Found(
         match, _at(day, _clock_word(word), zone), APPROX, window=_window(word)
     )
@@ -191,17 +202,17 @@ def _find_night(text: str, local: datetime, zone) -> Optional[_Found]:
     match = _NIGHT_WORD.search(text)
     if match is None:
         return None
-    return _Found(match, _latest(local, _NIGHT, zone), APPROX)
+    return _named_clock(match, _NIGHT, _NIGHT_HOURS, local, zone)
 
 
 def _find_part(text: str, local: datetime, zone) -> Optional[_Found]:
     match = _PART.search(text)
-    return None if match is None else _named_clock(match, match.group(1), local, zone)
+    return None if match is None else _named_word(match, match.group(1), local, zone)
 
 
 def _find_meal(text: str, local: datetime, zone) -> Optional[_Found]:
     match = _MEAL.search(text)
-    return None if match is None else _named_clock(match, match.group(1), local, zone)
+    return None if match is None else _named_word(match, match.group(1), local, zone)
 
 
 _FINDERS = (
