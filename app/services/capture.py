@@ -2644,12 +2644,14 @@ def store_heard(db, job: Read, heard: voice.Heard, took_s: float) -> Optional[in
 
 def spoken_words(db, job: Read, transcript: str) -> str:
     """What the model reads of a note. A time said in it is the meal's, as in typed
-    words, unless the person has set one meanwhile. A caption says its part too."""
+    words, unless the person has set one meanwhile. A caption says its part too. The
+    noon of ``day_only`` claims no clock, so only a real time can be ahead of now."""
     meal = db.get(Meal, job.meal_id)
     source = db.get(MealSource, job.source_id)
     user = db.get(User, meal.user_id)
     said = _said(transcript, TEXT, source.sent_at, source.forward_date, user)
-    if said and meal.time_source == "sent" and said.moment <= _now():
+    ahead = said and said.precision != DAY_ONLY and said.moment > _now()
+    if said and meal.time_source == "sent" and not ahead:
         for column, value in _time_columns(source.sent_at, None, said).items():
             setattr(meal, column, value)
         db.commit()

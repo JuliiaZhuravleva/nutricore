@@ -206,13 +206,6 @@ def _local(meal) -> datetime:
             "пн 26 октября, ≈ 9:00",
         ),
         (
-            "днём суп",  # 14:00 is ahead of 13:20: yesterday
-            datetime(2026, 10, 25, 14, 0),
-            "approx",
-            "днём",
-            "вс 25 октября, ≈ 14:00",
-        ),
-        (
             "суп, вечером",
             datetime(2026, 10, 25, 20, 0),
             "approx",
@@ -237,6 +230,20 @@ def test_time_words_move_the_meal_and_leave_the_name(
     assert wire.sent()[0]["text"].split("\n")[0] == f"Записано на {head}: суп."
     # What came stays as it came.
     assert _sources(db)[0].text == words
+
+
+def test_a_part_of_the_day_just_ahead_is_now_and_keeps_the_sent_time(
+    db, owner, reader, clock
+):
+    # R0 review: 14:00 is 40 minutes ahead of 13:20, so «днём» is this afternoon going
+    # on, not yesterday's. The sent moment stays, and the words reach the model whole.
+    reader.answer = dict(SOUP)
+    wire = send(text("днём суп"))
+    meal = _meals(db)[0]
+    assert (meal.time_source, meal.time_precision) == ("sent", "exact")
+    assert meal.meal_time.replace(tzinfo=None) == NOW.replace(tzinfo=None)
+    assert reader.text == ["днём суп"]
+    assert wire.sent()[0]["text"].startswith("Записано: ")
 
 
 @pytest.mark.parametrize(
