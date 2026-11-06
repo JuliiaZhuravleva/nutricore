@@ -170,7 +170,8 @@ def _find_yesterday_part(text: str, local: datetime, zone) -> Optional[_Found]:
     word = match.group(1)
     if _plain(word) == "ночью":
         # A night spans two dates: yesterday's, and no clock that could be either.
-        return _Found(match, _at(day, _NOON, zone), DAY_ONLY)
+        # Its hours let a clock said with it outrank it, as a part's do.
+        return _Found(match, _at(day, _NOON, zone), DAY_ONLY, window=_NIGHT_HOURS)
     return _Found(
         match, _at(day, _clock_word(word), zone), APPROX, window=_window(word)
     )
@@ -292,21 +293,58 @@ def _tied(one: _Found, other: _Found, text: str) -> bool:
     return _next_to(one, other, text) or _one_clause(one, other, text)
 
 
-def _one_time(found: list, text: str, local: datetime, zone) -> list:
-    """The phrases left once those that say one time are one. «вчера» puts a clock of
-    no named day on yesterday only when the two are about one meal: «вчера суп в
-    13:00», not «вчера суп, утром каша»; a clock outranks its own part or meal's name;
-    a day alone adds nothing to a time on that day that it is said with."""
-    named = [one for one in found if one.yesterday]
+def _of_today(one: _Found, text: str, local: datetime) -> _Found:
+    """A part or a meal's name said with «сегодня» in its clause is today's, even
+    when its hours are still ahead: «сегодня на ужин суп» at 12:40 is no yesterday's
+    dinner. Its clock is not yet, so the sent moment stays, as for a meal going on."""
+    if not (one.of_day and one.window) or one.moment.date() >= local.date():
+        return one
+    for match in _TODAY.finditer(text):
+        if _tied(one, _Found(match, local, DAY_ONLY), text):
+            return replace(one, moment=local, now=True)
+    return one
+
+
+def _of_yesterday(one: _Found, named: list, text: str, local: datetime, zone):
+    """A phrase of no named day said with «вчера» about one meal is yesterday's. The
+    night, «вчера … ночью», is yesterday's day and no clock, as «вчера ночью» is; a
+    small-hours clock said with «вчера ночью» is on the night's second date."""
+    ties = [said for said in named if _tied(one, said, text)]
+    if not (one.of_day and ties):
+        return one
     day = local.date() - timedelta(days=1)
-    found = [
-        (
-            replace(one, moment=_at(day, one.clock, zone), of_day=False, now=False)
-            if one.of_day and any(_tied(one, said, text) for said in named)
-            else one
+    if one.window == _NIGHT_HOURS:
+        return replace(
+            one,
+            moment=_at(day, _NOON, zone),
+            precision=DAY_ONLY,
+            of_day=False,
+            clock=None,
+            window=None,
+            now=False,
         )
-        for one in found
-    ]
+    small_hours = one.clock.hour < _NIGHT_HOURS[1]
+    if small_hours and any(said.window == _NIGHT_HOURS for said in ties):
+        moment = _latest(local, one.clock, zone)
+    else:
+        moment = _at(day, one.clock, zone)
+    return replace(one, moment=moment, of_day=False, now=False)
+
+
+def _said_day(one: _Found, named: list, text: str, local: datetime, zone) -> _Found:
+    """The phrase on the day its words name: «сегодня» first, then «вчера»."""
+    today = _of_today(one, text, local)
+    return today if today is not one else _of_yesterday(one, named, text, local, zone)
+
+
+def _one_time(found: list, text: str, local: datetime, zone) -> list:
+    """The phrases left once those that say one time are one. «сегодня» keeps a part
+    or a meal's name on today; «вчера» puts a clock of no named day on yesterday only
+    when the two are about one meal: «вчера суп в 13:00», not «вчера суп, утром каша»;
+    a clock outranks its own part or meal's name; a day alone adds nothing to a time
+    on that day that it is said with."""
+    named = [one for one in found if one.yesterday]
+    found = [_said_day(one, named, text, local, zone) for one in found]
     clocks = [one for one in found if one.precision == EXACT]
     found = [
         one
