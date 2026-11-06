@@ -12,7 +12,9 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
+from datetime import time as clock_time
+from datetime import timedelta
 from typing import Optional
 
 import httpx
@@ -33,6 +35,7 @@ from app.models.meal_message import MealMessage
 from app.models.meal_reading import MealReading
 from app.models.meal_source import MealSource
 from app.models.record_event import RecordEvent
+from app.models.reminder_send import ReminderSend
 from app.models.user import User
 from app.schemas.meal import MealCreate
 from app.services import (
@@ -194,6 +197,8 @@ SPLIT_BUTTONS_MAX = 9
 STALE_LABELS = frozenset(("Сейчас", "Завтрак", "Обед", "Ужин", "Назад", "Отмена"))
 FILE_MAX = 20 * 1024 * 1024  # what Telegram hands a bot
 CORRECTION_WINDOW = timedelta(hours=3)  # ASSUMED, section 5.1
+_DAY_END = clock_time(23, 59, 59)  # a reminder's day, as late as it goes (§3.2(a))
+RECALL_KEY = "recall"  # Meal.resolution_signals: what a bound voice found (§3.2)
 TIME_WINDOW = timedelta(hours=24)  # ASSUMED, M5e
 _MERGES_MAX = 16  # a chain of joined meals; only ever a guard against a bad row
 
@@ -1070,6 +1075,9 @@ def route_media(db, came: Incoming) -> Route:
     joins it at the end of the read, and a deleted one is said aloud in its line."""
     user = _user(db, came)
     if came.reply_to is not None:
+        if _replied_send(db, came, user) is not None:
+            # §3.2(a): a meal of its own on the reminder's day, never the ⭐ it holds.
+            return Route(NEW_MEAL)
         target = _replied_meal(db, came.chat_id, came.reply_to, user)
         if (
             target is not None
@@ -1080,13 +1088,42 @@ def route_media(db, came: Incoming) -> Route:
     return Route(NEW_MEAL)
 
 
+def _timed_add(came: Incoming, user: User, correction) -> bool:
+    """«а ещё днём был йогурт»: a corrective add that says a time of its own."""
+    if not correction or correction[0] != ADD or not correction[1]:
+        return False
+    return time_words(correction[1], _aware(came.sent_at), user_zone(user)) is not None
+
+
 def _recalls_more(db, came: Incoming, user: User, correction) -> bool:
     """A corrective add with a time of its own, sent while a reminder is answered."""
-    if correction[0] != ADD or not correction[1]:
-        return False
-    if time_words(correction[1], _aware(came.sent_at), user_zone(user)) is None:
+    if not _timed_add(came, user, correction):
         return False
     return reminders.bound_send(db, user, came) is not None
+
+
+def _replied_send(db, came: Incoming, user: Optional[User]):
+    """§3.2(a): the 🔔 reminder this message replies to, if it is one."""
+    return reminders.replied_send(db, user, came.chat_id, came.reply_to, came.sent_at)
+
+
+def _for_the_star(came: Incoming, user: User) -> bool:
+    """A reply to a reminder that holds a ⭐ changes that ⭐ only by a bare time,
+    grams or a correction; any other words are a meal of their own (§3.2(a))."""
+    text = came.text
+    if _COLON_CLOCK.fullmatch(text) or _bare_time(text, user):
+        return True
+    if meal_card.parse_grams(text) is not None:
+        return True
+    correction = _correction(text)
+    return bool(correction) and not _timed_add(came, user, correction)
+
+
+def _nothing(db, came: Incoming, user: User, send) -> Route:
+    """R16: an answer with no dish in it, so nothing to read and no line."""
+    _keep(db, came, user)
+    retouch = reminders.accept_nothing(db, user, send, came)
+    return Route(SILENT, retouch=retouch)
 
 
 def route_text(db, came: Incoming, as_food: bool = False) -> Route:
@@ -1097,10 +1134,13 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
         return Route(LINE, Line(M9B_STALE, menu=True))
     user = _user(db, came)
 
-    target = None
+    target = send = None
     if came.reply_to is not None:
         target = _replied_meal(db, came.chat_id, came.reply_to, user)
-    if target is not None:
+        send = _replied_send(db, came, user)
+    if send is not None and not as_food and reminders.is_nothing(text):
+        return _nothing(db, came, user, send)  # never the ⭐ the reminder holds
+    if target is not None and (send is None or _for_the_star(came, user)):
         route = _on_reply(db, came, user, target)
         if route is not None:
             return route
@@ -1145,10 +1185,7 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
     if reminders.is_nothing(text):
         send = reminders.bound_send(db, user, came)
         if send is not None:
-            # R16: an answer with no dish in it, so nothing to read and no line.
-            _keep(db, came, user)
-            retouch = reminders.accept_nothing(db, user, send, came)
-            return Route(SILENT, retouch=retouch)
+            return _nothing(db, came, user, send)
     if _is_stop_word(text):
         _keep(db, came, user)
         return Route(SILENT)
@@ -1705,11 +1742,24 @@ def _time_columns(
     }
 
 
-def _said(text: Optional[str], kind: str, sent, forward, user: User):
-    """The time words of what came. A caption's words may be all there is."""
+def _said(
+    text: Optional[str], kind: str, sent, forward, user: User, send=None, reply_to=None
+):
+    """The time words of what came. A caption's words may be all there is. A reply
+    to a reminder (§3.2(a)) sent on a later day: a time with no day of its own is of
+    the reminder's day, as a reply with no time is."""
     if forward:
         return None
-    return time_words(text, _aware(sent), user_zone(user), bare_ok=kind != "text")
+    zone = user_zone(user)
+    said = time_words(text, _aware(sent), zone, bare_ok=kind != "text")
+    if said is None or not said.of_day or send is None:
+        return said
+    if reply_to is None or reply_to != send.message_id:
+        return said
+    if local_time(_aware(sent), zone).date() <= send.local_day:
+        return said
+    end = datetime.combine(send.local_day, _DAY_END, zone)
+    return time_words(text, end, zone, bare_ok=kind != "text") or said
 
 
 def _born_exact(
@@ -1773,8 +1823,10 @@ def born(
     ``day``: the day it was asked for (O1b); time words in it are still no dish."""
     user = _user(db, came)
     told = words if words is not None else came.text
-    said = _said(told, came.kind, came.sent_at, came.forward_date, user)
     send = None if day else reminders.bound_send(db, user, came)
+    said = _said(
+        told, came.kind, came.sent_at, came.forward_date, user, send, came.reply_to
+    )
     recall = reminders.recall_time(send, came, user_zone(user)) if send else None
     told = said.rest if said and (said.rest or not day) else told
     on_day = meal_card.noon_of(day, user_zone(user)) if day else None
@@ -1820,7 +1872,11 @@ def born(
         db.rollback()
         return None
     if send is not None:
-        reminders.answered(db, user, send, came)
+        prior = reminders.answered(db, user, send, came)
+        if came.kind == "voice" and meal.time_source == reminders.SOURCE:
+            # Its words come later and may be of food eaten now (spoken_words).
+            meal.resolution_signals = {RECALL_KEY: prior}
+            db.commit()
 
     kind = _kind_of_read(came.kind)
     hint = False
@@ -2579,6 +2635,10 @@ def _reply_target(db, job: Read, meal: Meal, user: User) -> Optional[Meal]:
     source = db.get(MealSource, job.source_id)
     if source.kind == "text" or source.reply_to_message_id is None:
         return None
+    if reminders.replied_send(
+        db, user, source.chat_id, source.reply_to_message_id, source.sent_at
+    ):
+        return None  # §3.2(a): an answer to a reminder, never the ⭐ it holds
     target = _replied_meal(db, source.chat_id, source.reply_to_message_id, user)
     if target is None or target.deleted_at is not None or target.id == meal.id:
         return None
@@ -2689,12 +2749,27 @@ def spoken_words(db, job: Read, transcript: str) -> str:
     meal = db.get(Meal, job.meal_id)
     source = db.get(MealSource, job.source_id)
     user = db.get(User, meal.user_id)
-    said = _said(transcript, TEXT, source.sent_at, source.forward_date, user)
-    if meal.time_source == reminders.SOURCE and reminders.says_now(transcript):
-        # §3.2: food in front of the person now is never a reminder's: the sent time.
+    bound = meal.time_source == reminders.SOURCE
+    signals = (
+        meal.resolution_signals if isinstance(meal.resolution_signals, dict) else {}
+    )
+    prior = signals.get(RECALL_KEY) if bound else None
+    send = None
+    if bound and reminders.says_now(transcript):
+        # §3.2: food in front of the person now is never a reminder's: the sent time,
+        # and the reminder is as unanswered as it was before this note.
         for column, value in _time_columns(source.sent_at, None, None).items():
             setattr(meal, column, value)
+        rest = {key: value for key, value in signals.items() if key != RECALL_KEY}
+        meal.resolution_signals = rest or None
         db.commit()
+        reminders.take_back(db, user, prior, source.sent_at)
+    elif isinstance(prior, dict) and isinstance(prior.get("send_id"), int):
+        send = db.get(ReminderSend, prior["send_id"])
+    reply_to = source.reply_to_message_id
+    said = _said(
+        transcript, TEXT, source.sent_at, source.forward_date, user, send, reply_to
+    )
     ahead = said and said.precision != DAY_ONLY and said.moment > _now()
     if said and meal.time_source in ("sent", reminders.SOURCE) and not ahead:
         for column, value in _time_columns(source.sent_at, None, said).items():

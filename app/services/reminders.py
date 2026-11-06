@@ -505,13 +505,17 @@ def _logged_line(meal: Meal, zone, today: date) -> str:
     return f"✓ Записано на {when}, {clock(meal, zone)}: {name}."
 
 
-def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
+def tap_view(
+    db, user: User, send: ReminderSend, now: datetime, accepted: bool = False
+) -> Screen:
     """The reminder after a ⭐: a line for each, ↩️ and 🕐 for the latest still
-    logged, so undoing the newest leaves the one before it in reach (A3)."""
+    logged, so undoing the newest leaves the one before it in reach (A3).
+    ``accepted``: a «больше ничего» closed it, so «✓ Принято.» stands under them."""
     zone = settings_screen.user_zone(user)
     logs = _logs(db, user, send)
     today = now.astimezone(zone).date()
-    lines = [TITLE] + [_logged_line(meal, zone, today) for meal in logs] + [_MORE]
+    lines = [TITLE] + [_logged_line(meal, zone, today) for meal in logs]
+    lines.append(ACCEPTED if accepted else _MORE)
     latest = next((meal for meal in reversed(logs) if meal.deleted_at is None), None)
     live = latest is not None
     rows = []
@@ -559,16 +563,18 @@ def window_end(send: ReminderSend) -> datetime:
     return min(sent + RECALL_CAP, max(sent, answered) + RECALL_WINDOW)
 
 
-def _replied(db, user: User, came) -> ReminderSend | None:
-    """(a) The reminder the message replies to, within two local days of it."""
-    if came.reply_to is None:
+def replied_send(
+    db, user: User | None, chat_id, message_id, sent_at
+) -> ReminderSend | None:
+    """(a) The reminder a message replies to, within two local days of it."""
+    if user is None or message_id is None:
         return None
     stmt = (
         select(ReminderSend)
         .where(
             ReminderSend.user_id == user.id,
-            ReminderSend.chat_id == came.chat_id,
-            ReminderSend.message_id == came.reply_to,
+            ReminderSend.chat_id == chat_id,
+            ReminderSend.message_id == message_id,
         )
         .order_by(ReminderSend.id.desc())
         .limit(1)
@@ -577,8 +583,12 @@ def _replied(db, user: User, came) -> ReminderSend | None:
     if send is None:
         return None
     zone = settings_screen.user_zone(user)
-    day = meal_items._utc(came.sent_at).astimezone(zone).date()
+    day = meal_items._utc(sent_at).astimezone(zone).date()
     return send if (day - send.local_day).days <= LATE_DAYS else None
+
+
+def _replied(db, user: User, came) -> ReminderSend | None:
+    return replied_send(db, user, came.chat_id, came.reply_to, came.sent_at)
 
 
 def _in_window(db, user: User, came) -> ReminderSend | None:
@@ -631,28 +641,63 @@ def _answered_by(db, user: User, send: ReminderSend, came) -> None:
         _write(db, user, fragile=None)  # an answer: back to the full count
 
 
-def answered(db, user: User, send: ReminderSend, came) -> None:
+def answered(db, user: User, send: ReminderSend, came) -> dict:
     """A message bound to ``send``: answered in words, and the window runs on from
-    it. A ⭐ logged from it stays the answer: that message keeps its lines (R4)."""
+    it. A ⭐ logged from it stays the answer: that message keeps its lines (R4).
+    Returns what stood before, for ``take_back``."""
+    prior = {
+        "send_id": send.id,
+        "answer": send.answer,
+        "answered_at": (
+            meal_items._utc(send.answered_at).isoformat() if send.answered_at else None
+        ),
+        "fragile": config(user).fragile,
+    }
     if send.answer != "fav":
         send.answer = "words"
     _answered_by(db, user, send, came)
+    return prior
+
+
+def take_back(db, user: User, prior: dict | None, sent_at) -> None:
+    """A voice bound at birth whose words turned out to be of food eaten now: no
+    answer after all (§3.2), so the ladder and the window are as they were. Only
+    while it is still the latest answer: one that came after it stands."""
+    send_id = (prior or {}).get("send_id")
+    send = db.get(ReminderSend, send_id) if isinstance(send_id, int) else None
+    if send is None or send.user_id != user.id or send.answered_at is None:
+        return
+    if meal_items._utc(send.answered_at) != meal_items._utc(sent_at):
+        return
+    answer = prior.get("answer")
+    send.answer = answer if answer in (*_ANSWERS, *_NEUTRAL_ANSWERS) else None
+    send.answered_at = _moment(prior.get("answered_at"))
+    db.commit()
+    if prior.get("fragile") is True and not config(user).fragile:
+        _write(db, user, fragile=True)
 
 
 def accept_nothing(
     db, user: User, send: ReminderSend, came
 ) -> meal_card.Retouch | None:
     """R16: answered and closed, with no read. The reminder's message becomes
-    «✓ Принято.» with no buttons, unless a ⭐ was logged from it: its lines and their
-    ↩️ stay where they are."""
+    «✓ Принято.» with no buttons. A ⭐ logged from it keeps its lines and their ↩️,
+    with «✓ Принято.» under them. One turned off by ✖ stays as it is: its ↩️ Вернуть
+    is the only way back, and nothing here says the reminders are on."""
+    if send.answer == "off":
+        return None
     holds_star = send.answer == "fav"
     if not holds_star:
         send.answer = "none"
     if send.closed_at is None:
         send.closed_at = meal_items._utc(came.sent_at)
     _answered_by(db, user, send, came)
-    if holds_star or send.message_id is None or send.chat_id != came.chat_id:
+    if send.message_id is None or send.chat_id != came.chat_id:
         return None
+    if holds_star:
+        now = meal_items._utc(came.sent_at)
+        view = tap_view(db, user, send, now, accepted=True)
+        return meal_card.Retouch(send.message_id, view.text, view.markup)
     return meal_card.Retouch(send.message_id, f"{TITLE}\n{ACCEPTED}", None)
 
 

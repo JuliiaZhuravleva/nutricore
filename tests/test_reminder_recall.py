@@ -8,17 +8,19 @@ paid call. The reminder went out on Friday 6 November at 21:00 in Tbilisi (UTC+4
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
 import pytest
 from sqlalchemy import select
 
 from app.crud.crud_reminder_send import crud_reminder_send
 from app.models import Meal, MealSource
 from app.models.reminder_send import ReminderSend
-from app.services import capture, meal_card, openai_service, reminders, voice
+from app.services import capture, favorites, meal_card, reminders
+from app.services import telegram as tg
+from app.services import voice
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     CHAT,
     OWNER,
@@ -46,6 +48,33 @@ def at(hour: int, minute: int = 0, day: date = DAY) -> datetime:
 def _utc(moment: datetime) -> datetime:
     # SQLite hands back naive datetimes; the columns are written in UTC.
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
+@pytest.fixture
+def starred(db, owner, evening):
+    """A ⭐ «Гречка» tapped on the reminder at 21:03, as the bot does it: the
+    reminder's message then holds that meal (telegram.reminders_callback)."""
+    old = at(12, 0, DAY - timedelta(days=100))
+    source = Meal(
+        user_id=owner.id,
+        description="Гречка",
+        meal_time=old,
+        sent_at=old,
+        calories=300,
+        proteins=10,
+        fats=5,
+        carbohydrates=40,
+    )
+    db.add(source)
+    db.commit()
+    fav, _ = favorites.save_from_meal(db, source, "Гречка")
+    data = f"rm:f:{evening.id}:{fav.id}"
+    screen = reminders.handle_callback(
+        db, OWNER, data, now=at(21, 3), message_id=REMINDER
+    )
+    capture.tapped(db, CHAT, REMINDER, screen)
+    assert screen.meal_id is not None
+    return screen.meal_id
 
 
 @pytest.fixture
@@ -218,6 +247,37 @@ def test_a_voice_of_food_eaten_now_keeps_the_sent_time(db, evening, hears, monke
     arrive(monkeypatch, speak(at(21, 5)))
     (meal,) = _meals(db)
     _is_sent(meal, at(21, 5))
+    row = _send_row(db, evening.id)  # bound at birth, taken back by its words
+    assert row.answer is None and row.answered_at is None
+    assert reminders.window_end(row) == at(21, 30)
+
+
+def test_a_voice_of_food_eaten_now_keeps_an_earlier_answer(
+    db, evening, hears, monkeypatch
+):
+    hears["words"] = "только что съела пасту"
+    arrive(monkeypatch, say(at(21, 5), "суп"), speak(at(21, 20)))
+    soup, pasta = _meals(db)
+    _is_day_only(soup)
+    _is_sent(pasta, at(21, 20))
+    row = _send_row(db, evening.id)
+    assert row.answer == "words" and _utc(row.answered_at) == at(21, 5)
+
+
+def test_right_now_keeps_the_sent_time(db, evening, monkeypatch):
+    arrive(monkeypatch, say(at(21, 5), "прямо сейчас ем суп"))
+    (meal,) = _meals(db)
+    _is_sent(meal, at(21, 5))
+    assert _send_row(db, evening.id).answer is None
+
+
+@pytest.mark.parametrize("words", ["нет, не ел", "70.5", "12:30"])
+def test_never_bound_inside_the_window(db, evening, reader, words, monkeypatch):
+    """§3.2: «нет», a weight and a bare clock keep their own routes."""
+    arrive(monkeypatch, say(at(21, 5), words))
+    assert reader.text == [] and _meals(db) == []
+    row = _send_row(db, evening.id)
+    assert row.answer is None and row.answered_at is None
 
 
 def test_a_reply_three_hours_later_is_still_the_reminders_day(db, evening, monkeypatch):
@@ -225,6 +285,55 @@ def test_a_reply_three_hours_later_is_still_the_reminders_day(db, evening, monke
     (meal,) = _meals(db)
     _is_day_only(meal)
     assert _send_row(db, evening.id).answer == "words"
+
+
+@pytest.mark.parametrize(
+    ("hour", "words", "clock", "precision"),
+    [(10, "утром каша", time(9), "approx"), (14, "в 13 суп", time(13), "exact")],
+)
+def test_a_time_in_a_reply_the_next_day_is_of_the_reminders_day(
+    db, evening, hour, words, clock, precision, monkeypatch
+):
+    arrive(monkeypatch, say(at(hour, 0, DAY + timedelta(days=1)), words, **_reply()))
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == (precision, "said")
+    assert _local(meal) == datetime.combine(DAY, clock, tzinfo=ZONE)
+
+
+def test_a_voice_reply_the_next_day_is_of_the_reminders_day(
+    db, evening, hears, monkeypatch
+):
+    hears["words"] = "утром каша"
+    voice_note = speak(at(10, 0, DAY + timedelta(days=1)))
+    arrive(monkeypatch, {**voice_note, **_reply()})
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == ("approx", "said")
+    assert _local(meal) == datetime.combine(DAY, time(9), tzinfo=ZONE)
+
+
+def test_yesterday_in_a_reply_the_next_day_is_still_yesterday(db, evening, monkeypatch):
+    """A day the words name is theirs: «вчера» on the 7th is the 6th."""
+    arrive(
+        monkeypatch,
+        say(at(10, 0, DAY + timedelta(days=1)), "вчера в 13 суп", **_reply()),
+    )
+    (meal,) = _meals(db)
+    assert _local(meal) == datetime.combine(DAY, time(13), tzinfo=ZONE)
+
+
+def test_an_album_caption_in_reply_times_the_bound_meal(db, evening, monkeypatch):
+    """§3.2: the album's caption re-times a meal the reminder dated (capture._join_album)."""
+    monkeypatch.setattr(capture, "ALBUM_WAIT_SECONDS", 0.05)
+    reply = {"reply_to_message": _reminder_message(), "media_group_id": "a1"}
+    arrive(
+        monkeypatch,
+        snap(at(21, 10), **reply),
+        snap(at(21, 10), caption="в 13", **reply),
+    )
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == ("exact", "said")
+    assert _local(meal) == datetime.combine(DAY, time(13), tzinfo=ZONE)
+    assert len(meal.photos) == 2
 
 
 def test_a_reply_three_days_later_is_not_bound(db, evening, monkeypatch):
@@ -353,13 +462,74 @@ def test_nothing_after_the_window_takes_the_usual_way(db, evening, reader, monke
     assert _send_row(db, evening.id).answer is None
 
 
-def test_nothing_after_a_star_keeps_the_stars_lines(db, evening, monkeypatch):
-    evening.answer = "fav"
-    db.commit()
+def test_nothing_after_a_star_keeps_the_stars_lines(
+    db, evening, starred, reader, monkeypatch
+):
+    """R16 after a ⭐: its ✓ line, ✅ ОК first and ↩️ stay, «✓ Принято.» under them."""
     wire = arrive(monkeypatch, say(at(21, 10), "больше ничего"))
-    assert wire.edits() == []  # the ✓ line of the ⭐ and its ↩️ stay
+    assert reader.text == [] and wire.sent() == []
+    _accepted_under_the_star(wire)
+    assert _item_names(db, _meal(db, starred)) == ["Гречка"]
     row = _send_row(db, evening.id)
-    assert row.answer == "fav" and row.closed_at is not None
+    assert row.answer == "fav" and _utc(row.closed_at) == at(21, 10)
+
+
+def test_nothing_in_reply_after_a_star_is_no_dish_of_it(
+    db, evening, starred, reader, monkeypatch
+):
+    """The reminder's message holds the ⭐ meal; «ничего» in reply is still R16."""
+    wire = arrive(monkeypatch, say(at(21, 10), "почти ничего не ела", **_reply()))
+    assert reader.text == [] and reader.image == [] and wire.sent() == []
+    _accepted_under_the_star(wire)
+    assert _item_names(db, _meal(db, starred)) == ["Гречка"]
+    assert _new_meals(db, starred) == []
+    row = _send_row(db, evening.id)
+    assert row.answer == "fav" and _utc(row.closed_at) == at(21, 10)
+
+
+def test_soup_in_reply_after_a_star_is_its_own_meal(
+    db, evening, starred, reader, monkeypatch
+):
+    """§3.2(a): food in reply is a meal of its own on that day, not a dish of the ⭐."""
+    wire = arrive(monkeypatch, say(at(21, 10), "суп", **_reply()))
+    assert reader.text == ["суп"]
+    assert _item_names(db, _meal(db, starred)) == ["Гречка"]
+    (soup,) = _new_meals(db, starred)
+    _is_day_only(soup)
+    assert wire.sent()[0]["text"].startswith(DAY_LINE + ": суп"), wire.sent()
+    row = _send_row(db, evening.id)
+    assert row.answer == "fav" and _utc(row.answered_at) == at(21, 10)
+
+
+def test_a_bare_time_in_reply_after_a_star_times_the_star(
+    db, evening, starred, reader, monkeypatch
+):
+    arrive(monkeypatch, say(at(21, 10), "в 13", **_reply()))
+    star = _meal(db, starred)
+    assert (star.time_precision, _local(star).time()) == ("exact", time(13))
+    assert _new_meals(db, starred) == [] and reader.text == []
+
+
+def test_a_photo_in_reply_after_a_star_is_its_own_meal(
+    db, evening, starred, reader, monkeypatch
+):
+    arrive(monkeypatch, snap(at(21, 10), reply_to_message=_reminder_message()))
+    (plate,) = _new_meals(db, starred)
+    _is_day_only(plate)
+    star = _meal(db, starred)
+    assert _item_names(db, star) == ["Гречка"] and not star.photos
+
+
+def test_nothing_in_reply_to_a_reminder_turned_off_leaves_it_as_it_is(
+    db, evening, reader, monkeypatch
+):
+    """✖ took it: its ↩️ Вернуть stays, and nothing says the reminders are on."""
+    evening.answer, evening.closed_at = "off", at(21, 2)
+    db.commit()
+    wire = arrive(monkeypatch, say(at(21, 10), "ничего", **_reply()))
+    assert wire.edits() == [] and wire.sent() == [] and reader.text == []
+    row = _send_row(db, evening.id)
+    assert row.answer == "off" and _utc(row.closed_at) == at(21, 2)
 
 
 def test_nothing_with_food_in_it_is_food(db, evening, reader, monkeypatch):
@@ -370,18 +540,24 @@ def test_nothing_with_food_in_it_is_food(db, evening, reader, monkeypatch):
 
 
 def test_nothing_costs_no_model_call(db, evening, monkeypatch):
+    """The guard sits on the read's own entries, so the control goes the same way."""
     calls = []
 
-    def refuse(*args, **kwargs):
-        calls.append(args)
+    async def refuse_text(*, kind, payload, input_ref, telegram_id):
+        calls.append(payload)
         raise AssertionError("a model call")
 
-    monkeypatch.setattr(openai_service.OpenAIService, "__init__", refuse)
-    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
+    async def refuse_image(payload, **kwargs):
+        calls.append("photo")
+        raise AssertionError("a model call")
+
+    monkeypatch.setattr(tg, "_analyze_and_parse", refuse_text)
+    monkeypatch.setattr(tg, "resolve_meal_nutrition", refuse_image)
     arrive(monkeypatch, say(at(21, 10), "почти ничего не ела"))
     assert calls == []
-    with pytest.raises(AssertionError, match="a model call"):
-        openai_service.OpenAIService()  # the control: the guard does catch one
+    # the control: a text that is read, in the same window, reaches the guard
+    arrive(monkeypatch, say(at(21, 15), "суп"))
+    assert calls == ["суп"]
 
 
 # --- the acceptance scenarios D1–D3 -------------------------------------------------
@@ -449,6 +625,30 @@ def _reminder_message() -> dict:
 
 def _reply() -> dict:
     return {"reply_to_message": _reminder_message()}
+
+
+def _meal(db, meal_id: int) -> Meal:
+    db.expire_all()
+    return db.get(Meal, meal_id)
+
+
+def _new_meals(db, star_id: int) -> list[Meal]:
+    """The meals after the ⭐ meal: what the answer itself made."""
+    return [meal for meal in _meals(db) if meal.id > star_id]
+
+
+def _accepted_under_the_star(wire) -> None:
+    (edit,) = wire.edits()
+    assert edit["message_id"] == REMINDER
+    lines = edit["text"].split("\n")
+    assert lines[0] == "🔔 <b>Еда за сегодня</b>"
+    assert lines[1].startswith("✓ Записано на") and "Гречка" in lines[1]
+    assert lines[-1] == "✓ Принято."
+    markup = edit["reply_markup"]
+    markup = json.loads(markup) if isinstance(markup, str) else markup
+    labels = [[b["text"] for b in row] for row in markup["inline_keyboard"]]
+    assert labels[0] == ["✅ ОК"], labels
+    assert "↩️ Отменить" in labels[1], labels
 
 
 def _time_rows(db, meal: Meal) -> list:
