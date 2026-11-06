@@ -137,6 +137,48 @@ def test_a_zone_voice_photo_and_clock(tmp_path):
     assert stamps[1].startswith("2026-11-09 20:"), stamps
 
 
+def test_answers_to_the_evening_reminder_f4_f3_and_d1(tmp_path):
+    """Stage 6, §3.2 and R16 through the CLI: what follows the 🔔 is its day."""
+    w = tmp_path / "world"
+    _sim(w, "new", "Julia", "--owner", "--zone", "Asia/Tbilisi")
+    _sim(w, "clock", "2026-11-06T14:00")
+    _sim(w, "say", "гречка")
+    _sim(w, "clock", "20:59")
+    out = _sim(w, "advance", "15m", "--tick")
+    reminder = _number(out, "🔔 Еда за сегодня")
+
+    # F4: «суп», then «а ещё днём был йогурт» is a second meal, at about two
+    _sim(w, "clock", "21:16")
+    assert "Записано на пт 6 ноября, без времени: суп." in _sim(w, "say", "суп")
+    _sim(w, "advance", "3m")
+    out = _sim(w, "say", "а ещё днём был йогурт")
+    assert "Записано на пт 6 ноября, ≈ 14:00" in out, out
+    # F3: «больше ничего» answers and closes it, with nothing read
+    _sim(w, "advance", "2m")
+    out = _sim(w, "say", "больше ничего")
+    assert (
+        f"~ #{reminder} bot (silent, edited):\n  🔔 Еда за сегодня\n  ✓ Принято." in out
+    )
+    assert "Записано" not in out
+    # D1's photo: the window closed with «ничего», so it is now, exact
+    out = _sim(w, "photo", "омлет")
+    assert "Записано: омлет." in out, out
+
+    out = _sim(w, "day")
+    assert "4 records" in out, out
+    lines = [line.strip() for line in out.splitlines()]
+    assert any(
+        line.startswith("без времени  суп  [precision=day_only source=reminder")
+        for line in lines
+    ), out
+    assert any(
+        line.startswith("14:00  был йогурт  [precision=approx") for line in lines
+    )
+    assert any(line.startswith("21:21  омлет  [precision=exact") for line in lines)
+    state = json.loads((w / world.STATE_FILE).read_text(encoding="utf-8"))
+    assert state["model_calls"] == []
+
+
 def test_reply_tap_on_a_message_and_numbers_per_chat(tmp_path):
     w = tmp_path / "world"
     _sim(w, "new", "Julia", "--owner")

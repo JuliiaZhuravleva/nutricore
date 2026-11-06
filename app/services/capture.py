@@ -40,6 +40,7 @@ from app.services import (
     food_groups,
     meal_card,
     meal_items,
+    reminders,
     stats_screen,
     voice,
     weight_screen,
@@ -971,6 +972,7 @@ class Route:
     tick: Optional[str] = None
     note: Optional[str] = None
     words: Optional[str] = None  # NEW_MEAL: the food, without what was said to the meal
+    retouch: Optional[meal_card.Retouch] = None  # SILENT: a message of ours to redraw
 
 
 def _clock_in(text: str) -> Optional[tuple]:
@@ -1078,6 +1080,15 @@ def route_media(db, came: Incoming) -> Route:
     return Route(NEW_MEAL)
 
 
+def _recalls_more(db, came: Incoming, user: User, correction) -> bool:
+    """A corrective add with a time of its own, sent while a reminder is answered."""
+    if correction[0] != ADD or not correction[1]:
+        return False
+    if time_words(correction[1], _aware(came.sent_at), user_zone(user)) is None:
+        return False
+    return reminders.bound_send(db, user, came) is not None
+
+
 def route_text(db, came: Incoming, as_food: bool = False) -> Route:
     """Rows 3 to 10 for a text. The first two are ahead of this handler. ``as_food``: the
     person said it is food, so its form does not say otherwise."""
@@ -1111,6 +1122,10 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
         return Route(LINE, line or Line(M5F_NO_MEAL))
 
     correction = _correction(text)
+    if correction and _recalls_more(db, came, user, correction):
+        # §3.2: «а ещё днём был йогурт» after an answer is a meal of its own, at
+        # that time; «а ещё хлеб» still joins the first answer below.
+        return Route(NEW_MEAL, words=correction[1])
     if correction:
         meal = _last_meal(db, user, CORRECTION_WINDOW)
         line = None
@@ -1127,6 +1142,13 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
 
     if as_food:
         return Route(NEW_MEAL)
+    if reminders.is_nothing(text):
+        send = reminders.bound_send(db, user, came)
+        if send is not None:
+            # R16: an answer with no dish in it, so nothing to read and no line.
+            _keep(db, came, user)
+            retouch = reminders.accept_nothing(db, user, send, came)
+            return Route(SILENT, retouch=retouch)
     if _is_stop_word(text):
         _keep(db, came, user)
         return Route(SILENT)
@@ -1624,7 +1646,7 @@ def _join_album(
         return None
     meal = meals[0]
     meal.photos = [*(meal.photos or []), came.file_id]
-    if said and meal.time_source == "sent":  # any caption counts; a hand's time stays
+    if said and meal.time_source in ("sent", reminders.SOURCE):  # a hand's time stays
         for key, value in _time_columns(came.sent_at, None, said).items():
             setattr(meal, key, value)
     source = _source(came, user, meal.id)
@@ -1641,9 +1663,12 @@ def _join_album(
     return Born(meal.id, source.id, meal.rev or 0, joined=len(meal.photos))
 
 
-def _time_columns(sent, forward, said: Optional[SaidTime], on_day=None) -> dict:
+def _time_columns(
+    sent, forward, said: Optional[SaidTime], on_day=None, recall=None
+) -> dict:
     """When it was eaten, section 5.3. A forward's own time outranks any words, and a
-    day the person chose (O1b) outranks both: it is a hand's, and nothing moves it."""
+    day the person chose (O1b) outranks both: it is a hand's, and nothing moves it.
+    ``recall``: (moment, precision) of a reminder's answer with no time of its own."""
     if on_day:
         return {
             "meal_time": on_day,
@@ -1664,6 +1689,13 @@ def _time_columns(sent, forward, said: Optional[SaidTime], on_day=None) -> dict:
             "time_precision": said.precision,
             "time_source": "said",
             "time_phrase": said.phrase,
+        }
+    if recall:
+        return {
+            "meal_time": recall[0],
+            "time_precision": recall[1],
+            "time_source": reminders.SOURCE,
+            "time_phrase": None,
         }
     return {
         "meal_time": sent,
@@ -1688,8 +1720,9 @@ def _born_exact(
     note: Optional[str],
     said=None,
     on_day=None,
+    recall=None,
 ) -> Born:
-    columns = _time_columns(came.sent_at, came.forward_date, said, on_day)
+    columns = _time_columns(came.sent_at, came.forward_date, said, on_day, recall)
     meal = meal_items.save_exact(
         db, user.id, dishes, meal_time=columns["meal_time"], draft=draft_on(user)
     )
@@ -1741,6 +1774,8 @@ def born(
     user = _user(db, came)
     told = words if words is not None else came.text
     said = _said(told, came.kind, came.sent_at, came.forward_date, user)
+    send = None if day else reminders.bound_send(db, user, came)
+    recall = reminders.recall_time(send, came, user_zone(user)) if send else None
     told = said.rest if said and (said.rest or not day) else told
     on_day = meal_card.noon_of(day, user_zone(user)) if day else None
     try:
@@ -1750,7 +1785,10 @@ def born(
         if came.kind == "text":
             dishes = meal_items.exact_match(db, user.id, told)
             if dishes:
-                return _born_exact(db, came, user, dishes, note, said, on_day)
+                exact = _born_exact(db, came, user, dishes, note, said, on_day, recall)
+                if send is not None:
+                    reminders.answered(db, user, send, came)
+                return exact
         reading_text = came.kind == "text"
         meal = crud_meal.build(
             MealCreate(
@@ -1758,7 +1796,7 @@ def born(
                 sent_at=came.sent_at,
                 photos=[] if reading_text or came.kind == "voice" else [came.file_id],
                 numbers_basis="none",
-                **_time_columns(came.sent_at, came.forward_date, said, on_day),
+                **_time_columns(came.sent_at, came.forward_date, said, on_day, recall),
             ),
             user.id,
         )
@@ -1781,6 +1819,8 @@ def born(
     except IntegrityError:
         db.rollback()
         return None
+    if send is not None:
+        reminders.answered(db, user, send, came)
 
     kind = _kind_of_read(came.kind)
     hint = False
@@ -2650,8 +2690,13 @@ def spoken_words(db, job: Read, transcript: str) -> str:
     source = db.get(MealSource, job.source_id)
     user = db.get(User, meal.user_id)
     said = _said(transcript, TEXT, source.sent_at, source.forward_date, user)
+    if meal.time_source == reminders.SOURCE and reminders.says_now(transcript):
+        # §3.2: food in front of the person now is never a reminder's: the sent time.
+        for column, value in _time_columns(source.sent_at, None, None).items():
+            setattr(meal, column, value)
+        db.commit()
     ahead = said and said.precision != DAY_ONLY and said.moment > _now()
-    if said and meal.time_source == "sent" and not ahead:
+    if said and meal.time_source in ("sent", reminders.SOURCE) and not ahead:
         for column, value in _time_columns(source.sent_at, None, said).items():
             setattr(meal, column, value)
         db.commit()

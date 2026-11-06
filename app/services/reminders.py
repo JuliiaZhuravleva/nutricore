@@ -108,6 +108,21 @@ OK_TOAST = "Понятно"
 UNDO_TOAST = "Отменено"
 UNDONE_TOAST = "Эта запись уже отменена"
 ZONE_LABEL = "🕐 Часовой пояс"
+ACCEPTED = "✓ Принято."  # a «ничего» answered it (R16)
+
+# §3.2: what a voice or a text after a reminder is bound to it by.
+RECALL_WINDOW = timedelta(minutes=30)  # after the send, renewed by each bound answer
+RECALL_CAP = timedelta(minutes=90)  # never longer than this after the send
+_LIVE = ("sent", "maybe")
+_PHOTOS = ("photo", "document_photo")
+# Food in front of the person now: its time is the sent one, whatever came before.
+_NOW_WORDS = re.compile(r"\b(?:сейчас|только\s+что)\b")
+# R16: a day with little or nothing, said as an answer; no dish in it to read.
+_NOTHING = re.compile(
+    r"(?:(?:сегодня|больше|почти|вообще)\s+)*"
+    r"(?:ничего|не\s+ел[аио]?|не\s+было)"
+    r"(?:\s+не\s+ел[аио]?|\s+не\s+было)?[.!…]*"
+)
 
 
 @dataclass(frozen=True)
@@ -522,6 +537,123 @@ def _redraw(t, send: ReminderSend, toast: str) -> Screen:
     if _logs(t.db, t.user, send):
         return replace(tap_view(t.db, t.user, send, t.now), toast=toast)
     return replace(reminder_view(t.db, t.user, send, t.now), toast=toast)
+
+
+# --- an answer in words (§3.2, R16) -------------------------------------------------
+
+
+def says_now(text: str | None) -> bool:
+    """«сейчас», «только что», «прямо сейчас»: food in front of the person now."""
+    return bool(text) and _NOW_WORDS.search(text.casefold()) is not None
+
+
+def is_nothing(text: str | None) -> bool:
+    """«ничего», «почти ничего не ела», «сегодня не было»: no dish, only an answer."""
+    return bool(text) and _NOTHING.fullmatch(text.strip().casefold()) is not None
+
+
+def window_end(send: ReminderSend) -> datetime:
+    """30 minutes after the send, renewed by each bound answer, at most 90 in all."""
+    sent = meal_items._utc(send.sent_at)
+    answered = meal_items._utc(send.answered_at) if send.answered_at else sent
+    return min(sent + RECALL_CAP, max(sent, answered) + RECALL_WINDOW)
+
+
+def _replied(db, user: User, came) -> ReminderSend | None:
+    """(a) The reminder the message replies to, within two local days of it."""
+    if came.reply_to is None:
+        return None
+    stmt = (
+        select(ReminderSend)
+        .where(
+            ReminderSend.user_id == user.id,
+            ReminderSend.chat_id == came.chat_id,
+            ReminderSend.message_id == came.reply_to,
+        )
+        .order_by(ReminderSend.id.desc())
+        .limit(1)
+    )
+    send = db.scalars(stmt).first()
+    if send is None:
+        return None
+    zone = settings_screen.user_zone(user)
+    day = meal_items._utc(came.sent_at).astimezone(zone).date()
+    return send if (day - send.local_day).days <= LATE_DAYS else None
+
+
+def _in_window(db, user: User, came) -> ReminderSend | None:
+    """(b) The latest reminder, while it is live and its window is open."""
+    stmt = (
+        select(ReminderSend)
+        .where(ReminderSend.user_id == user.id, ReminderSend.status.in_(_LIVE))
+        .order_by(ReminderSend.sent_at.desc(), ReminderSend.id.desc())
+        .limit(1)
+    )
+    send = db.scalars(stmt).first()
+    if send is None or send.closed_at is not None:
+        return None
+    moment = meal_items._utc(came.sent_at)
+    if not meal_items._utc(send.sent_at) <= moment < window_end(send):
+        return None
+    return send
+
+
+def bound_send(db, user: User | None, came) -> ReminderSend | None:
+    """The reminder a message from this person answers, if any (§3.2): an explicit
+    reply to it, any kind, within two local days; or, but for a photo, one that came
+    while its window was open. Never a forward, and never words of food eaten now."""
+    if user is None or came.forward_date is not None or says_now(came.text):
+        return None
+    send = _replied(db, user, came)
+    if send is not None:
+        return send
+    if came.kind in _PHOTOS:
+        return None  # a photo is food in front of the person now
+    return _in_window(db, user, came)
+
+
+def recall_time(send: ReminderSend, came, zone) -> tuple[datetime, str]:
+    """(meal_time, precision) of a bound meal with no time of its own: the
+    reminder's day, no clock. A meal slot's centre, ≈, only for a reply to it: a
+    guessed centre is never stamped on a message that merely came in its window."""
+    replied = came.reply_to is not None and came.reply_to == send.message_id
+    if send.kind != EVENING and send.centre and replied:
+        hours, minutes = (int(part) for part in send.centre.split(":"))
+        centre = datetime.combine(send.local_day, clock_time(hours, minutes), zone)
+        return centre.astimezone(UTC), "approx"
+    return meal_card.noon_of(send.local_day, zone).astimezone(UTC), DAY_ONLY
+
+
+def _answered_by(db, user: User, send: ReminderSend, came) -> None:
+    send.answered_at = meal_items._utc(came.sent_at)
+    db.commit()
+    if config(user).fragile:
+        _write(db, user, fragile=None)  # an answer: back to the full count
+
+
+def answered(db, user: User, send: ReminderSend, came) -> None:
+    """A message bound to ``send``: answered in words, and the window runs on from
+    it. A ⭐ logged from it stays the answer: that message keeps its lines (R4)."""
+    if send.answer != "fav":
+        send.answer = "words"
+    _answered_by(db, user, send, came)
+
+
+def accept_nothing(
+    db, user: User, send: ReminderSend, came
+) -> meal_card.Retouch | None:
+    """R16: answered and closed, with no read. The reminder's message becomes
+    «✓ Принято.» with no buttons, unless a ⭐ was logged from it: its lines and their
+    ↩️ stay where they are."""
+    holds_star = send.answer == "fav"
+    if not holds_star:
+        send.answer = "none"
+    if send.closed_at is None:
+        send.closed_at = meal_items._utc(came.sent_at)
+    _answered_by(db, user, send, came)
+    if holds_star or send.message_id is None or send.chat_id != came.chat_id:
+        return None
+    return meal_card.Retouch(send.message_id, f"{TITLE}\n{ACCEPTED}", None)
 
 
 # --- the sub-screen (§4.2) --------------------------------------------------------

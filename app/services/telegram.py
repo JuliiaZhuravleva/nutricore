@@ -1485,6 +1485,7 @@ async def _capture(
         written = await _new_meal(update, context, came, route.note, route.words)
         return _Went.WRITTEN if written else _Went.REFUSED
     if route.action == capture.SILENT:
+        await _retouch(context.bot, came.chat_id, route.retouch)  # R16: «✓ Принято.»
         return _Went.NOTHING
     went = _Went.WRITTEN
     if route.action == capture.LINE:
