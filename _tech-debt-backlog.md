@@ -64,6 +64,14 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
+- [ ] **TD-244**: HTMLBubbles (interactive widgets in a message) — prototype once Bot API 10.4 ships them publicly
+  - **Priority:** Low
+  - **Source:** owner, 2026-11-06 (her research note on Telegram Serverless + HTMLBubbles; facts there are after my knowledge cutoff, re-check before starting)
+  - **Created:** 2026-11-06
+  - **Wait for:** the widget methods in the public Bot API changelog (10.4); python-telegram-bot will lag, so the first send may go through the raw Bot API.
+  - **Candidates, in order:** (1) the week card as a live widget — day bars, tap a day for its meals; data baked in at send time, no request to the bot; the current PNG card stays as the fallback. (2) Portion choice in a draft — a horizontal scale or big S/M/L/150 г tiles instead of size chips Telegram cuts at ~12 chars; the choice goes back through the 64-byte `request()`. (3) ⭐ in the reminder as tiles — only after stage 6 shows how people answer.
+  - **Rules:** nothing personal in `publicData`/`chatData` (it travels with a forward); every widget has a plain message or card fallback (old clients see a stub, the server may refuse the send).
+  - **Not Telegram Serverless:** no scheduler (reminders, week card need the 15-min sweep), health data would live at Telegram with no described export.
 - [ ] **TD-226**: With no weight, the screen says «считаю 100 г» while an immediate 🍽 Записать logs the portion guess
   - **Priority:** Low
   - **Source:** stage 5 smart portions review; left until someone notices it
