@@ -584,10 +584,42 @@ def _match(labels: list, wanted: str) -> list:
     return []
 
 
+def _keys(state, person) -> list:
+    return [
+        k for row in state.data["keyboards"].get(str(person["id"]), []) for k in row
+    ]
+
+
+def _press(state, label: str) -> None:
+    print(f"> keyboard [{label}]")
+    _send(state, "text", label, text=label)
+
+
+def _tap_key(state, person, wanted: str) -> None:
+    """``tap --key``: the reply keyboard only, even when an inline button has the
+    same label."""
+    found = _match(_keys(state, person), wanted)
+    if len(set(found)) == 1:
+        _press(state, found[0])
+        return
+    keyboard = _keyboard_line(state, person["id"]) or "keyboard: none"
+    if found:
+        raise SystemExit(
+            f"error: {wanted!r} matches several keys: "
+            + ", ".join(f"[{f}]" for f in found)
+        )
+    raise SystemExit(f"error: no key {wanted!r}.\n{keyboard}")
+
+
 def cmd_tap(state, args):
     from telegram import Update
 
     _, person = state.person()
+    if getattr(args, "key", False):
+        if args.msg is not None:
+            raise SystemExit("error: --key taps the reply keyboard; --msg is inline")
+        _tap_key(state, person, args.label)
+        return
     chat = state.chat(person["id"])
     if args.msg is not None:
         candidates = [m for m in chat if m["id"] == args.msg]
@@ -626,13 +658,9 @@ def cmd_tap(state, args):
             drive(state, steps)
             return
     if args.msg is None:
-        keys = [
-            k for row in state.data["keyboards"].get(str(person["id"]), []) for k in row
-        ]
-        found = _match(keys, args.label)
+        found = _match(_keys(state, person), args.label)
         if len(set(found)) == 1:
-            print(f"> keyboard [{found[0]}]")
-            _send(state, "text", found[0], text=found[0])
+            _press(state, found[0])
             return
     latest = next((m for m in candidates), None)
     shown = _render(state, latest) if latest else "no message with buttons in this chat"
@@ -695,6 +723,25 @@ def cmd_tick(state, args):
         print(line)
 
 
+def _beats(start: datetime, end: datetime, last: str | None = None) -> list:
+    """The beats from ``start`` to ``end``, both ends in. A clock standing on a beat
+    (in its minute: a command's own run moves the clock a few seconds) has it still to
+    run, unless ``last``, the latest beat already ticked, is it."""
+    from tests.sim.pushes import BEAT_MINUTES
+
+    moment = start.replace(second=0, microsecond=0)
+    moment -= timedelta(minutes=moment.minute % BEAT_MINUTES)
+    done = datetime.fromisoformat(last) if last else None
+    beats = []
+    while moment <= end:
+        if moment >= start.replace(second=0, microsecond=0) and (
+            done is None or moment > done
+        ):
+            beats.append(moment)
+        moment += timedelta(minutes=BEAT_MINUTES)
+    return beats
+
+
 def cmd_advance(state, args):
     from tests.sim.pushes import BEAT_MINUTES
 
@@ -702,14 +749,7 @@ def cmd_advance(state, args):
     start = CLOCK.now()
     end = start + span
     if args.tick:
-        beats = []
-        moment = start.replace(second=0, microsecond=0)
-        moment -= timedelta(minutes=moment.minute % BEAT_MINUTES)
-        while True:
-            moment += timedelta(minutes=BEAT_MINUTES)
-            if moment > end:
-                break
-            beats.append(moment)
+        beats = _beats(start, end, state.data.get("last_beat"))
         lines = []
 
         async def steps(application):
@@ -720,6 +760,8 @@ def cmd_advance(state, args):
                     lines.append(f"{local:%a %H:%M} {line}")
 
         drive(state, steps)
+        if beats:
+            state.data["last_beat"] = beats[-1].isoformat()
         for line in lines:
             print(line)
         print(f"ticked {len(beats)} times (every {BEAT_MINUTES} min)")
@@ -749,11 +791,13 @@ def cmd_day(state, args):
 
     name, person = state.person()
     zone = _zone_of(state)
-    day = (
-        datetime.strptime(args.date, "%Y-%m-%d").date()
-        if args.date
-        else CLOCK.now().astimezone(zone).date()
-    )
+    if args.date:
+        try:
+            day = datetime.strptime(args.date, "%Y-%m-%d").date()
+        except ValueError:
+            raise SystemExit(f"error: not a date: {args.date!r} (YYYY-MM-DD)")
+    else:
+        day = CLOCK.now().astimezone(zone).date()
     with SessionLocal() as db:
         user = _user(db, person["id"])
         meals = (
@@ -788,10 +832,14 @@ def cmd_day(state, args):
                 flags.append(f"via={meal.resolution_source}")
             if meal.is_draft:
                 flags.append("DRAFT")
-            if meal.reading_status not in (None, "done"):
+            if meal.reading_status != "read":  # pending, failed, no_food, no_speech
                 flags.append(f"reading={meal.reading_status}")
             label = ", ".join(names) or meal.description or "(no name)"
-            rows.append((local, f"  {local:%H:%M}  {label}  [{' '.join(flags)}]"))
+            # day_only holds a day: its stored 12:00 is a placeholder, not a time
+            clock = (
+                "без времени" if meal.time_precision == "day_only" else f"{local:%H:%M}"
+            )
+            rows.append((local, f"  {clock}  {label}  [{' '.join(flags)}]"))
     print(f"day {day:%a %Y-%m-%d} of {name} ({zone.key}): {len(rows)} records")
     for _, line in sorted(rows):
         print(line)
@@ -831,6 +879,9 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("tap", help="tap a button (inline, else the keyboard)")
     p.add_argument("label")
     p.add_argument("--msg", type=int, help="on this message, not the latest with it")
+    p.add_argument(
+        "--key", action="store_true", help="the reply-keyboard key, never an inline one"
+    )
     p.set_defaults(run=cmd_tap)
 
     p = sub.add_parser("reply", help="reply to message N with text")

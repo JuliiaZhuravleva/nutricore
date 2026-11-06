@@ -9,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -441,6 +442,13 @@ def test_sim_sh_usage_names_every_command():
         [str(REPO / "scripts" / "sim.sh")], capture_output=True, text=True
     )
     assert done.returncode == 2 and "Usage:" in done.stderr
+    # only the comment block, no line of the code under it
+    lines = done.stderr.splitlines()
+    assert all(line.startswith("#") for line in lines), done.stderr
+    assert (
+        lines[-1]
+        == "# Each command prints only what changed. More: tests/sim/README.md"
+    )
 
 
 @pytest.mark.parametrize(
@@ -460,3 +468,86 @@ def test_spans():
     assert world.parse_span("1h30m").total_seconds() == 5400
     with pytest.raises(SystemExit):
         world.parse_span("soon")
+
+
+def test_a_photo_caption_and_a_day_by_date(tmp_path):
+    w = tmp_path / "world"
+    _sim(w, "new", "Julia", "--owner")
+    out = _sim(w, "photo", "омлет и кофе", "--caption", "вчера")
+    assert "📷 photo: омлет и кофе | caption: вчера" in out
+    assert "Записано на чт 5 ноября, без времени: омлет и кофе." in out
+
+    out = _sim(w, "day", "2026-11-05")
+    assert "day Thu 2026-11-05 of Julia (Asia/Tbilisi): 1 records" in out, out
+    row = [line.strip() for line in out.splitlines()][-1]
+    # a day_only record's 12:00 is a placeholder, never shown as its time
+    assert row.startswith("без времени  омлет, кофе  [precision=day_only"), out
+    assert "12:00" not in out and "reading=" not in out  # "read" is the normal status
+    assert "0 records" in _sim(w, "day")  # today: the caption moved it to yesterday
+
+    out = _sim(w, "day", "2026-13-01", code=1)
+    assert "error: not a date: '2026-13-01' (YYYY-MM-DD)" in out
+
+
+def test_beats_include_the_one_the_clock_stands_on():
+    from tests.sim import cli
+
+    def at(clock):
+        return datetime.fromisoformat(f"2026-11-08T{clock}+00:00")
+
+    def hours(beats):
+        return [f"{b:%H:%M}" for b in beats]
+
+    assert hours(cli._beats(at("22:00:00"), at("22:15:00"))) == ["22:00", "22:15"]
+    # a command's own run leaves the clock a few seconds past its beat
+    assert hours(cli._beats(at("22:00:02.5"), at("22:30:00"))) == [
+        "22:00",
+        "22:15",
+        "22:30",
+    ]
+    assert hours(cli._beats(at("21:59:00"), at("22:14:00"))) == ["22:00"]
+    assert hours(cli._beats(at("22:01:00"), at("22:15:00"))) == ["22:15"]
+    # a beat an earlier advance --tick already ran is not run again
+    done = at("22:15:00").isoformat()
+    assert hours(cli._beats(at("22:15:01"), at("22:30:00"), done)) == ["22:30"]
+
+
+def test_tap_key_sends_the_keyboard_key_past_a_stale_inline_button(
+    tmp_path, monkeypatch, capsys
+):
+    from tests.sim import cli
+
+    state = world.State(tmp_path)
+    state.people["Julia"] = {"id": 7, "owner": True}
+    state.data["current"] = "Julia"
+    state.data["keyboards"]["7"] = [["⭐ Избранное", "📊 Статистика"]]
+    state.add_message(
+        id=1,
+        chat=7,
+        sender="bot",
+        kind="text",
+        text="",
+        html=False,
+        buttons=[[{"text": "⭐ Избранное", "callback_data": "stale"}]],
+        reply_to=None,
+        silent=False,
+        date=0,
+        edited=False,
+        deleted=False,
+    )
+    sent = []
+    monkeypatch.setattr(cli, "drive", lambda *_: None)
+    monkeypatch.setattr(cli, "_send", lambda _s, kind, shown, **_: sent.append(shown))
+
+    cli.cmd_tap(state, argparse.Namespace(label="Избранное", msg=None, key=False))
+    assert "> tap [⭐ Избранное] on #1" in capsys.readouterr().out  # inline wins
+    assert sent == []
+
+    cli.cmd_tap(state, argparse.Namespace(label="Избранное", msg=None, key=True))
+    assert "> keyboard [⭐ Избранное]" in capsys.readouterr().out
+    assert sent == ["⭐ Избранное"]
+
+    with pytest.raises(SystemExit, match="no key 'Удалить'"):
+        cli.cmd_tap(state, argparse.Namespace(label="Удалить", msg=None, key=True))
+    with pytest.raises(SystemExit, match="--msg is inline"):
+        cli.cmd_tap(state, argparse.Namespace(label="Избранное", msg=1, key=True))

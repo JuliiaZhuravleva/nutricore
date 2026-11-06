@@ -31,12 +31,13 @@ W=/tmp/w                                  # the world: any folder, made on first
 | `voice "<transcript>"` | Sends a voice note that is heard as this text. |
 | `photo "<seen>" [--caption ".."]` | Sends a photo that the fake vision reads as this text. |
 | `tap "<label>" [--msg N]` | Taps an inline button on the latest message that has it, or on #N. Matching goes exact, then case-insensitive, then a unique substring, each across the whole chat (newest first) before the next: an exact `[Салат]` on an older message wins over `[Салат · 1 раз]` on a newer one. If no inline button matches, it falls back to a reply-keyboard key. |
+| `tap --key "<label>"` | Sends the reply-keyboard key, even when an older inline button has the same label (without `--key` the inline button wins). |
 | `reply N "<text>"` | Replies to message #N. |
 | `clock [2026-11-06T21:00 \| 21:00]` | Shows the clock, or sets it in the person's zone. Time only goes forward. |
-| `advance 40m\|2h\|1d\|1h30m [--tick]` | Moves the clock. With `--tick`, it ticks at every 15-minute beat on the way. |
+| `advance 40m\|2h\|1d\|1h30m [--tick]` | Moves the clock. With `--tick`, it ticks at every 15-minute beat on the way, the beat the clock stands on included (unless an earlier `advance --tick` already ran it). |
 | `tick` | Runs every periodic push due at the clock (the registry in `pushes.py`). Beat's `model-watch` is left out on purpose: it needs the network and the model companies' APIs. |
 | `chat [--last N]` | Prints the person's chat. |
-| `day [YYYY-MM-DD]` | Prints the person's live records for that local day. |
+| `day [YYYY-MM-DD]` | Prints the person's live records for that local day: the time, or «без времени» for a `day_only` record (its stored 12:00 is a placeholder); `reading=` shows only when the status is not `read`. |
 
 ## Output
 

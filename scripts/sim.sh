@@ -13,19 +13,22 @@
 #   tap "<button label>" [--msg N]                inline button on the latest
 #                                                 message having it (or #N); else
 #                                                 a reply-keyboard key
+#   tap --key "<key label>"                       the reply-keyboard key only
 #   reply N "<text>"                              reply to message #N
 #   clock [2026-11-06T21:00 | 21:00]              show / set (person's zone, forward)
-#   advance 40m|2h|1d [--tick]                    move the clock (--tick: every beat)
+#   advance 40m|2h|1d [--tick]                    move the clock (--tick: every beat,
+#                                                 the one it stands on included)
 #   tick                                          run every periodic push due now
 #   chat [--last N]                               the chat as text, numbered
-#   day [YYYY-MM-DD]                              records: time, name, precision,
-#                                                 time_source
+#   day [YYYY-MM-DD]                              records: time (or «без времени»),
+#                                                 name, precision, time_source
 # Food text is split on commas and «и» into dishes with fixed numbers.
 # Each command prints only what changed. More: tests/sim/README.md
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 if [[ $# -lt 2 ]]; then
-  sed -n '2,26p' "$0" >&2
+  # the comment block under the shebang, up to the first line of code
+  awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0" >&2
   exit 2
 fi
 STATE="$1"
