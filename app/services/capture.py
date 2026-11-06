@@ -85,7 +85,7 @@ from app.services.meal_card import (  # noqa: F401 (the copy is read from here t
 )
 from app.services.meal_draft import num
 from app.services.meal_words import STOP_WORDS  # noqa: F401 (the name tests read)
-from app.services.meal_words import ADD, REMOVE, REPEAT, SaidTime
+from app.services.meal_words import _TODAY, _YESTERDAY, ADD, REMOVE, REPEAT, SaidTime
 from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
 from app.services.meal_words import says_no as _says_no
@@ -235,6 +235,10 @@ ALBUM_MAX = 10
 
 class DeadFile(Exception):
     """Telegram refused this file id: no read of it will pass (M7e)."""
+
+
+class SaidNothing(Exception):
+    """R16 in a voice bound to a reminder: no dish in its words, so no read of them."""
 
 
 def _now() -> datetime:
@@ -1058,10 +1062,12 @@ def _on_reply(db, came: Incoming, user: User, meal: Meal) -> Optional[Route]:
             meal,
             lambda: _apply_correction(db, came, user, meal, correction),
         )
+        _renews(db, came, user, line)
     else:
         line = _touching(
             db, user, meal, lambda: _add(db, came, user, meal, text.strip())
         )
+        _renews(db, came, user, line)
     return Route(LINE, line) if line else None
 
 
@@ -1139,6 +1145,16 @@ def _for_the_star(came: Incoming, user: User) -> bool:
     return bool(correction) and not _own_meal_add(came, user, correction)
 
 
+def _renews(db, came: Incoming, user: User, line: Optional[Line]) -> Optional[Line]:
+    """§3.2: words that changed a meal inside a reminder's window are bound too, and
+    run the window on from them, as a meal of their own would."""
+    if line is not None:
+        send = reminders.bound_send(db, user, came)
+        if send is not None:
+            reminders.answered(db, user, send, came)
+    return line
+
+
 def _nothing(db, came: Incoming, user: User, send) -> Route:
     """R16: an answer with no dish in it, so nothing to read and no line."""
     _keep(db, came, user)
@@ -1202,7 +1218,7 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
                 meal,
                 lambda: _apply_correction(db, came, user, meal, correction),
             )
-        if line is not None:
+        if _renews(db, came, user, line) is not None:
             return Route(LINE, line)
         logger.info("Corrective words with no meal to change: a new meal")
 
@@ -1780,6 +1796,8 @@ def _said(
         return said
     if local_time(_aware(sent), zone).date() <= send.local_day:
         return said
+    if _YESTERDAY.search(text) or _TODAY.search(text):
+        return said  # «вчера …», «сегодня …»: the words name their own day
     end = datetime.combine(send.local_day, _DAY_END, zone)
     return time_words(text, end, zone, bare_ok=kind != "text") or said
 
@@ -2764,6 +2782,57 @@ def store_heard(db, job: Read, heard: voice.Heard, took_s: float) -> Optional[in
     )
 
 
+def _bound_send(db, user: User, prior) -> Optional[ReminderSend]:
+    """The reminder a voice was bound to at birth (``born``), from what it kept."""
+    send_id = prior.get("send_id") if isinstance(prior, dict) else None
+    send = db.get(ReminderSend, send_id) if isinstance(send_id, int) else None
+    return send if send is not None and send.user_id == user.id else None
+
+
+def _said_nothing(db, job: Read, meal: Meal, prior, transcript: str) -> bool:
+    """R16: a voice bound to a reminder that says only «ничего», with no caption and
+    nothing written to its meal meanwhile."""
+    if prior is None or job.text or not reminders.is_nothing(transcript):
+        return False
+    if meal.deleted_at is not None or meal.reading_status != "pending":
+        return False
+    return not crud_meal_item.live(db, meal.id)
+
+
+def read_said_nothing(db, job: Read) -> Done:
+    """R16 for a voice: no read and no meal in the day, the voice stays its source, as
+    words with no food do. Its reminder is answered «ничего» and closed, and its
+    message says «✓ Принято.» (``reminders.accept_nothing``)."""
+    meal = db.get(Meal, job.meal_id)
+    source = db.get(MealSource, job.source_id)
+    user = db.get(User, meal.user_id)
+    signals = (
+        meal.resolution_signals if isinstance(meal.resolution_signals, dict) else {}
+    )
+    send = _bound_send(db, user, signals.get(RECALL_KEY))
+    line = _no_food(db, job, meal)
+    retouch = None
+    if send is not None:
+        came = Incoming(
+            telegram_id=job.telegram_id,
+            username=None,
+            chat_id=source.chat_id,
+            message_id=source.message_id,
+            kind=source.kind,
+            text=None,
+            file_id=source.file_id,
+            file_unique_id=source.file_unique_id,
+            file_size=None,
+            duration_s=source.duration_s,
+            media_group_id=None,
+            reply_to=source.reply_to_message_id,
+            sent_at=_aware(source.sent_at),
+            forward_date=None,
+        )
+        retouch = reminders.accept_nothing(db, user, send, came)
+    return Done(line if _claim_view(db, job) else None, retouch=retouch)
+
+
 def spoken_words(db, job: Read, transcript: str) -> str:
     """What the model reads of a note. A time said in it is the meal's, as in typed
     words, unless the person has set one meanwhile. A caption says its part too. The
@@ -2776,6 +2845,8 @@ def spoken_words(db, job: Read, transcript: str) -> str:
         meal.resolution_signals if isinstance(meal.resolution_signals, dict) else {}
     )
     prior = signals.get(RECALL_KEY) if bound else None
+    if _said_nothing(db, job, meal, prior, transcript):
+        raise SaidNothing()
     send = None
     if bound and reminders.says_now(transcript):
         # §3.2: food in front of the person now is never a reminder's: the sent time,

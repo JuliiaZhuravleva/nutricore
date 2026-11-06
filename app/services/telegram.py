@@ -857,6 +857,12 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
             done = capture.read_no_speech(db, job)
         await _tell_read(bot, job, done.line)
         return False, None
+    except capture.SaidNothing:
+        # R16: «ничего» said to a reminder; heard, never read.
+        with SessionLocal() as db:
+            done = capture.read_said_nothing(db, job)
+        await _tell_read(bot, job, done.line, retouch=done.retouch)
+        return False, None
     except Exception as e:
         error = type(e).__name__
         logger.error("Meal %s not read: %s", job.meal_id, error)

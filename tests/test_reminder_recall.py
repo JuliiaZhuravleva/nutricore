@@ -703,6 +703,108 @@ def test_d3_at_twenty_one_twenty_the_clock_chip_makes_it_exact(
     assert _utc(meal.meal_time) == at(21, 20)
 
 
+# --- R1b review: a day the words name, a correction's renewal, a voice «ничего» -----
+
+
+SATURDAY = DAY + timedelta(days=1)
+
+
+def test_yesterday_and_evening_in_a_reply_the_next_day_is_the_reminders_day(
+    db, evening, monkeypatch
+):
+    """«вчера» on Saturday names Friday: no re-anchor to the reminder's day (Thursday)."""
+    words = "вчера утром каша, вечером суп"
+    arrive(monkeypatch, say(at(10, 0, SATURDAY), words, **_reply()))
+    (meal,) = _meals(db)
+    assert meal.time_precision == "day_only"
+    assert _local(meal) == datetime.combine(DAY, time(12), tzinfo=ZONE)
+
+
+def test_today_in_a_reply_the_next_day_is_that_day(db, evening, monkeypatch):
+    """«сегодня утром» on Saturday at 10:00 is Saturday ≈ 9:00, as before R0."""
+    arrive(monkeypatch, say(at(10, 0, SATURDAY), "сегодня утром каша", **_reply()))
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == ("approx", "said")
+    assert _local(meal) == datetime.combine(SATURDAY, time(9), tzinfo=ZONE)
+
+
+def test_today_in_a_voice_reply_the_next_day_is_that_day(
+    db, evening, hears, monkeypatch
+):
+    hears["words"] = "сегодня утром каша"
+    voice_note = speak(at(10, 0, SATURDAY))
+    arrive(monkeypatch, {**voice_note, **_reply()})
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == ("approx", "said")
+    assert _local(meal) == datetime.combine(SATURDAY, time(9), tzinfo=ZONE)
+
+
+def test_and_also_bread_renews_the_window(db, evening, reader, monkeypatch):
+    """§3.2: a correction inside the window is bound too, and renews it."""
+    arrive(
+        monkeypatch,
+        say(at(21, 5), "суп"),
+        say(at(21, 30), "а ещё хлеб"),
+    )
+    (soup,) = _meals(db)
+    _is_day_only(soup)
+    assert _utc(_send_row(db, evening.id).answered_at) == at(21, 30)
+    arrive(monkeypatch, say(at(21, 45), "йогурт"))
+    soup, yoghurt = _meals(db)
+    _is_day_only(yoghurt)  # +45, inside the window «а ещё хлеб» renewed
+    assert _utc(_send_row(db, evening.id).answered_at) == at(21, 45)
+
+
+def test_nothing_after_a_renewing_correction_is_r16(db, evening, reader, monkeypatch):
+    wires = arrive(
+        monkeypatch,
+        say(at(21, 5), "суп"),
+        say(at(21, 30), "а ещё хлеб"),
+        say(at(21, 45), "йогурт"),
+        say(at(21, 50), "ничего"),
+    )
+    assert reader.text == ["суп", "хлеб", "йогурт"]  # «ничего» is never read
+    assert wires[-1].sent() == []
+    (edit,) = wires[-1].edits()
+    assert edit["message_id"] == REMINDER
+    assert edit["text"] == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
+    row = _send_row(db, evening.id)
+    assert row.answer == "none" and _utc(row.closed_at) == at(21, 50)
+
+
+@pytest.mark.parametrize("words", ["почти ничего не ела", "ничего"])
+def test_a_voice_of_nothing_is_not_read_and_closes_the_reminder(
+    db, evening, hears, reader, words, monkeypatch
+):
+    """R16 for a voice: heard, never read; no meal in the day, «✓ Принято.»."""
+    hears["words"] = words
+    wire = arrive(monkeypatch, speak(at(21, 5)))
+    assert reader.text == [] and reader.image == []
+    assert _meals(db) == []
+    edits = {edit["message_id"]: edit for edit in wire.edits()}
+    assert edits[REMINDER]["text"] == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
+    assert "reply_markup" not in edits[REMINDER] or not _kb(edits[REMINDER])
+    (line,) = [edit for mid, edit in edits.items() if mid != REMINDER]
+    assert line["text"] == meal_card.M3A_NO_FOOD, line  # no longer «слушаю…»
+    row = _send_row(db, evening.id)
+    assert row.answer == "none"
+    assert _utc(row.answered_at) == at(21, 5) and _utc(row.closed_at) == at(21, 5)
+    assert reminders.outcome(row) == reminders.ANSWERED
+
+
+def test_a_voice_of_food_under_the_reminder_is_still_read(
+    db, evening, hears, reader, monkeypatch
+):
+    """The control of the one above: a food transcript goes to the read."""
+    hears["words"] = "суп"
+    wire = arrive(monkeypatch, speak(at(21, 5)))
+    assert reader.text == ["суп"]
+    (meal,) = _meals(db)
+    _is_day_only(meal)
+    assert all(edit["message_id"] != REMINDER for edit in wire.edits())
+    assert _send_row(db, evening.id).answer == "words"
+
+
 # --- helpers --------------------------------------------------------------------------
 
 
