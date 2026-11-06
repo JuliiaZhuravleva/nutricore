@@ -2802,7 +2802,8 @@ def _said_nothing(db, job: Read, meal: Meal, prior, transcript: str) -> bool:
 def read_said_nothing(db, job: Read) -> Done:
     """R16 for a voice: no read and no meal in the day, the voice stays its source, as
     words with no food do. Its reminder is answered «ничего» and closed, and its
-    message says «✓ Принято.» (``reminders.accept_nothing``)."""
+    message says «✓ Принято.» (``reminders.accept_nothing``), as the voice's own line
+    does, with no buttons."""
     meal = db.get(Meal, job.meal_id)
     source = db.get(MealSource, job.source_id)
     user = db.get(User, meal.user_id)
@@ -2830,6 +2831,8 @@ def read_said_nothing(db, job: Read) -> Done:
             forward_date=None,
         )
         retouch = reminders.accept_nothing(db, user, send, came)
+        # The person said «ничего» to the reminder: no «no food seen» nor ✏️ offer.
+        line = Line(reminders.ACCEPTED, meal_id=meal.id)
     return Done(line if _claim_view(db, job) else None, retouch=retouch)
 
 

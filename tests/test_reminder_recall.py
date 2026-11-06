@@ -755,6 +755,33 @@ def test_and_also_bread_renews_the_window(db, evening, reader, monkeypatch):
     assert _utc(_send_row(db, evening.id).answered_at) == at(21, 45)
 
 
+SOUP_LINE = 5001  # the first line the wire sends (Wire.next_id + 1)
+
+
+@pytest.mark.parametrize("words", ["а ещё хлеб", "хлеб"])
+def test_a_reply_to_the_soup_line_renews_the_window(
+    db, evening, reader, words, monkeypatch
+):
+    """§3.2: words in reply to an answered meal's line change it, are bound, and run
+    the window on: a correction and a plain addition alike."""
+    arrive(monkeypatch, say(at(21, 5), "суп"))
+    line = {
+        "message_id": SOUP_LINE,
+        "date": int(at(21, 5).timestamp()),
+        "chat": {"id": CHAT, "type": "private"},
+        "from": {"id": 1, "is_bot": True, "first_name": "bot", "username": "b"},
+        "text": "суп",
+    }
+    arrive(monkeypatch, say(at(21, 30), words, reply_to_message=line))
+    (soup,) = _meals(db)  # the reply joined the soup
+    _is_day_only(soup)
+    assert "хлеб" in reader.text, reader.text
+    assert _utc(_send_row(db, evening.id).answered_at) == at(21, 30)
+    arrive(monkeypatch, say(at(21, 45), "йогурт"))
+    soup, yoghurt = _meals(db)
+    _is_day_only(yoghurt)  # +40 from the reply: inside the window it renewed
+
+
 def test_nothing_after_a_renewing_correction_is_r16(db, evening, reader, monkeypatch):
     wires = arrive(
         monkeypatch,
@@ -785,7 +812,8 @@ def test_a_voice_of_nothing_is_not_read_and_closes_the_reminder(
     assert edits[REMINDER]["text"] == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
     assert "reply_markup" not in edits[REMINDER] or not _kb(edits[REMINDER])
     (line,) = [edit for mid, edit in edits.items() if mid != REMINDER]
-    assert line["text"] == meal_card.M3A_NO_FOOD, line  # no longer «слушаю…»
+    assert line["text"] == reminders.ACCEPTED, line  # no longer «слушаю…»
+    assert "reply_markup" not in line or not _kb(line)  # no ✏️ to a «ничего»
     row = _send_row(db, evening.id)
     assert row.answer == "none"
     assert _utc(row.answered_at) == at(21, 5) and _utc(row.closed_at) == at(21, 5)
