@@ -1206,6 +1206,30 @@ def test_m5e_a_bare_time_in_a_reply_is_a_time_and_no_dish(
     assert _kb(wire.sent()[0])[1][0].startswith("ml:u:")
 
 
+@pytest.mark.parametrize(
+    "words, now, local, head",
+    [
+        # The part is still ahead of the sent clock, so going on now: its own clock
+        # still goes on the replied meal's day, never the minute it was typed.
+        ("вечером", (18, 30), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),
+        ("утром", (8, 0), datetime(2026, 10, 26, 9, 0), "≈ 9:00"),
+        ("в обед", (11, 30), datetime(2026, 10, 26, 13, 0), "≈ 13:00"),
+        ("вечером", (21, 0), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),  # control
+    ],
+)
+def test_a_part_in_reply_to_yesterdays_meal_keeps_its_own_clock(
+    db, owner, reader, clock, monkeypatch, words, now, local, head
+):
+    meal = _meal_now(db, owner, minutes_ago=0)  # пн 26 октября, 13:20
+    sent = datetime(2026, 10, 27, *now, tzinfo=NOW.tzinfo) - timedelta(hours=4)
+    monkeypatch.setattr(capture, "_now", lambda: sent)
+    reply = _mapped(db, meal)
+    wire = send(text(words, date=int(sent.timestamp()), reply_to_message=reply))
+    db.expire_all()
+    assert (_local(meal), meal.time_precision) == (local, "approx")
+    assert wire.sent()[0]["text"] == f"Время приёма теперь пн 26 октября, {head}: суп."
+
+
 def test_m5e_yesterday_alone_in_a_reply_takes_the_clock_away(db, owner, reader, clock):
     meal = _meal_now(db, owner, minutes_ago=300)
     wire = send(text("вчера", reply_to_message=_mapped(db, meal)))

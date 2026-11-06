@@ -985,10 +985,11 @@ def _bare_time(text: str, user: User) -> Optional[SaidTime]:
 
 
 def _reply_moment(said: SaidTime, meal: Meal, user: User) -> datetime:
-    """A clock with no day named is of the replied meal's own day."""
+    """A clock with no day named is of the replied meal's own day. A part's own clock,
+    not the sent one: «вечером» at 18:30 to yesterday's meal is yesterday ≈ 20:00."""
     if not said.of_day:
         return said.moment
-    clock = local_time(said.moment, user_zone(user)).time()
+    clock = said.clock or local_time(said.moment, user_zone(user)).time()
     return datetime.combine(meal_card.meal_day(meal, user), clock, user_zone(user))
 
 

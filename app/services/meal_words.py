@@ -57,6 +57,9 @@ _HOUR_LAST = re.compile(
 )
 _AGO = re.compile(r"\b(полчаса|час)\s+назад\b", _FLAGS)
 _YESTERDAY = re.compile(r"\bвчера\b", _FLAGS)
+_TODAY = re.compile(r"\bсегодня\b", _FLAGS)
+# What parts one clause from the next: «в обед суп, в 15:00 чай» is two meals.
+_CLAUSE_EDGE = re.compile(r"[,;.!?—–\n]|\b(?:и|а|потом|затем)\b", _FLAGS)
 _NIGHT_WORD = re.compile(r"\bночью\b", _FLAGS)
 _PART = re.compile(r"\b(утром|дн[её]м|вечером)\b", _FLAGS)
 _MEAL = re.compile(rf"\b({_MEAL_NAME})\b", _FLAGS)
@@ -69,6 +72,7 @@ class SaidTime:
     phrase: Optional[str]  # None when several phrases left only the day
     rest: str  # the text without the phrase
     of_day: bool = False  # a clock of a day that the words did not name
+    clock: Optional[time] = None  # what an of_day time keeps on another day
 
 
 @dataclass(frozen=True)
@@ -242,52 +246,95 @@ def time_phrases(text: Optional[str], sent: datetime, zone) -> list:
     return sorted(found, key=lambda one: one.match.start())
 
 
+def _between(one: _Found, other: _Found, text: str) -> str:
+    """The words between two phrases, whichever comes first."""
+    first, second = sorted((one, other), key=lambda each: each.match.start())
+    return text[first.match.end() : second.match.start()]
+
+
+def _next_to(one: _Found, other: _Found, text: str) -> bool:
+    """Nothing but a space or a comma between: «утром, в 12:00 каша»."""
+    return re.fullmatch(r"[\s,]*", _between(one, other, text)) is not None
+
+
+def _one_clause(one: _Found, other: _Found, text: str) -> bool:
+    """No comma, dash or «и»/«а» between: «на обед суп в 13:30» is one clause, «в обед
+    суп, в 15:00 чай» two."""
+    return _CLAUSE_EDGE.search(_between(one, other, text)) is None
+
+
 def _beside(part: _Found, clock: _Found, text: str) -> bool:
-    """A part or a meal's name said with a clock of its own hours, or right next to
-    it: «утром в 8:30», «на обед суп в 13:30», «в 8:30 утром»."""
-    low, high = part.window
-    if low <= clock.moment.hour < high:
+    """A part or a meal's name said with a clock: right next to it, «утром в 8:30»,
+    «в 8:30 утром», or in its clause and of its hours, «на обед суп в 13:30». A clock
+    in another clause is another meal's: «в обед суп, в 15:00 чай»."""
+    if _next_to(part, clock, text):
         return True
-    first, second = sorted((part, clock), key=lambda one: one.match.start())
-    return (
-        re.fullmatch(r"[\s,]*", text[first.match.end() : second.match.start()])
-        is not None
-    )
+    low, high = part.window
+    hour = (clock.clock or clock.moment.time()).hour
+    return _one_clause(part, clock, text) and low <= hour < high
+
+
+def _tied(one: _Found, other: _Found, text: str) -> bool:
+    """Two phrases about one meal: in one clause, and no «сегодня» between."""
+    if _TODAY.search(_between(one, other, text)):
+        return False
+    return _next_to(one, other, text) or _one_clause(one, other, text)
 
 
 def _one_time(found: list, text: str, local: datetime, zone) -> list:
-    """The phrases left once those that say one time are one. «вчера» puts every clock
-    the words gave no day on yesterday; a clock outranks its own part or meal's name;
-    a day alone adds nothing to a time on that day."""
-    if any(one.yesterday for one in found):
-        day = local.date() - timedelta(days=1)
-        found = [
-            (
-                replace(one, moment=_at(day, one.clock, zone), of_day=False, now=False)
-                if one.of_day
-                else one
-            )
-            for one in found
-        ]
+    """The phrases left once those that say one time are one. «вчера» puts a clock of
+    no named day on yesterday only when the two are about one meal: «вчера суп в
+    13:00», not «вчера суп, утром каша»; a clock outranks its own part or meal's name;
+    a day alone adds nothing to a time on that day that it is said with."""
+    named = [one for one in found if one.yesterday]
+    day = local.date() - timedelta(days=1)
+    found = [
+        (
+            replace(one, moment=_at(day, one.clock, zone), of_day=False, now=False)
+            if one.of_day and any(_tied(one, said, text) for said in named)
+            else one
+        )
+        for one in found
+    ]
     clocks = [one for one in found if one.precision == EXACT]
     found = [
         one
         for one in found
         if not (one.window and any(_beside(one, clock, text) for clock in clocks))
     ]
-    timed = {one.moment.date() for one in found if one.precision != DAY_ONLY}
+    timed = [one for one in found if one.precision != DAY_ONLY]
     return [
         one
         for one in found
-        if not (one.precision == DAY_ONLY and one.moment.date() in timed)
+        if not (
+            one.precision == DAY_ONLY
+            and any(
+                said.moment.date() == one.moment.date()
+                and (said.yesterday or _tied(said, one, text))
+                for said in timed
+            )
+        )
     ]
 
 
-def _common_day(found: list, local: datetime):
-    """The day phrases that disagree on the clock still agree on: the one all their
-    moments fall on, else the day it was sent. «вчера» has already put every clock of
-    no named day on yesterday."""
-    days = {one.moment.date() for one in found}
+def _day_of(one: _Found, named: list, text: str):
+    """The day a phrase speaks of. A clock of no named day said after «вчера», with no
+    «сегодня» between, is of yesterday too: «вчера утром каша, вечером суп». One said
+    before it keeps its own: «на завтрак каша, вчера в 22:00 торт»."""
+    if one.of_day:
+        for said in named:
+            if said.match.start() < one.match.start() and not _TODAY.search(
+                _between(said, one, text)
+            ):
+                return said.moment.date()
+    return one.moment.date()
+
+
+def _common_day(kept: list, found: list, text: str, local: datetime):
+    """The day phrases that disagree on the clock still agree on: the one all of them
+    speak of, else the day it was sent."""
+    named = [one for one in found if one.yesterday]
+    days = {_day_of(one, named, text) for one in kept}
     return days.pop() if len(days) == 1 else local.date()
 
 
@@ -300,7 +347,9 @@ def time_words(
     """The time the phrases say. None if there is none, or, unless ``bare_ok``, if
     nothing else is there: a time word alone is nobody's dish, and nobody's time. A
     part or a meal going on as it was sent is no time either, when food is said with
-    it: the sent moment stays. Phrases that say one time are one («утром в 8:30»);
+    it: the sent moment stays. Said alone, it keeps its own ``clock`` too, for a reply
+    that puts it on another day («вечером» at 18:30 to yesterday's meal is ≈ 20:00).
+    Phrases that say one time are one («утром в 8:30»);
     those that still name different moments give their day and no clock: «утром каша,
     в 19:30 паста» is two meals, and neither time is the record's."""
     if not text:
@@ -311,7 +360,7 @@ def time_words(
         return None
     kept = _one_time(found, text, local, zone)
     if len({one.moment for one in kept}) > 1:
-        day = _common_day(kept, local)
+        day = _common_day(kept, found, text, local)
         named = day != local.date() and any(one.yesterday for one in found)
         return SaidTime(
             _at(day, _NOON, zone).astimezone(UTC), DAY_ONLY, None, text, not named
@@ -323,7 +372,12 @@ def time_words(
     if not rest and not bare_ok:
         return None
     return SaidTime(
-        best.moment.astimezone(UTC), best.precision, best.phrase, rest, best.of_day
+        best.moment.astimezone(UTC),
+        best.precision,
+        best.phrase,
+        rest,
+        best.of_day,
+        best.clock if best.of_day else None,
     )
 
 

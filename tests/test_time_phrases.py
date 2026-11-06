@@ -64,13 +64,50 @@ def test_yesterday_named_once_carries_the_other_phrase_to_yesterday():
     assert not said.of_day  # the words named the day
 
 
-def test_yesterday_puts_a_part_of_no_named_day_on_yesterday():
-    # 21:00: «утром» alone is today's 9:00, yet «вчера» names the day; a day alone
-    # adds nothing to a time on that day.
+def test_yesterday_in_another_clause_gives_its_day_and_no_clock():
+    # 21:00: «утром» is another clause's, so it is two phrases and no clock; «вчера»
+    # before it still names the day.
     said = _said("вчера каша, утром суп")
-    assert (said.precision, _local(said)) == (APPROX, datetime(2026, 11, 5, 9, 0))
+    assert (said.precision, _local(said)) == (DAY_ONLY, datetime(2026, 11, 5, 12, 0))
+    assert said.phrase is None
     assert not said.of_day
-    assert said.rest == "каша, суп"
+
+
+TEN = datetime(2026, 11, 6, 6, 0, tzinfo=UTC)  # пт 6 ноября, 10:00 local
+
+
+@pytest.mark.parametrize(
+    "text,day",
+    [
+        # «сегодня» keeps the other phrase on its own day: the days differ.
+        ("вчера пицца, сегодня утром каша", TODAY),
+        ("вчера суп, сегодня в 9:00 каша", TODAY),
+        # Said after «вчера», nothing between: the same day, still no clock.
+        ("вчера суп, утром каша", YESTERDAY),
+    ],
+)
+def test_yesterday_moves_no_clock_of_another_clause(text, day):
+    # R11: two different time phrases give the day, never a clock of 9:00 on Thursday.
+    said = _said(text, sent=TEN)
+    assert (said.precision, said.phrase) == (DAY_ONLY, None)
+    assert _local(said) == datetime.combine(day, datetime.min.time()).replace(hour=12)
+
+
+def test_control_yesterday_evening_with_its_clock_is_yesterdays_clock():
+    said = _said("вчера вечером в 20:00 паста", sent=TEN)
+    assert (said.precision, _local(said)) == (EXACT, datetime(2026, 11, 5, 20, 0))
+
+
+def test_a_phrase_before_yesterday_keeps_its_own_day():
+    # The breakfast is this morning's, the cake yesterday's: the sent day, no clock.
+    said = _said("на завтрак каша, вчера в 22:00 торт")
+    assert (said.precision, _local(said)) == (DAY_ONLY, datetime(2026, 11, 6, 12, 0))
+    assert said.of_day
+
+
+def test_yesterday_and_a_meal_name_in_one_clause_are_one_time():
+    said = _said("вчера паста на ужин")
+    assert (said.precision, _local(said)) == (APPROX, datetime(2026, 11, 5, 19, 0))
 
 
 def test_without_yesterday_disagreeing_phrases_keep_the_sent_day():
@@ -175,6 +212,7 @@ def test_a_bare_meal_name_going_on_now_is_about_the_sent_moment():
     # A caption «на обед» at 12:40 is not yesterday's lunch, and not a future 13:00.
     said = time_words("на обед", _at_local(12, 40), ZONE, bare_ok=True)
     assert (said.precision, _local(said)) == (APPROX, datetime(2026, 11, 6, 12, 40))
+    assert said.clock.hour == 13  # what a reply puts on the replied meal's day
 
 
 @pytest.mark.parametrize(
@@ -226,6 +264,24 @@ def test_yesterday_evening_with_a_clock_is_the_same_at_any_sent_hour(hour):
     said = _said("вчера вечером в 20:00 паста", sent=_at_local(hour))
     assert (said.precision, _local(said)) == (EXACT, datetime(2026, 11, 5, 20, 0))
     assert not said.of_day
+
+
+@pytest.mark.parametrize(
+    "text,sent",
+    [
+        ("в обед суп, в 15:00 чай", EVENING),
+        ("утром каша, в 10:30 йогурт", EVENING),
+        ("днём суп, полдник в 17:00", EVENING),
+        ("в обед суп и в 16:00 чай", EVENING),
+        ("на обед суп, в 16:30 печенье", _at_local(18)),
+        ("утром каша, в 10:30 кофе", EVENING),
+        ("утром каша в 19:30 паста", EVENING),  # one clause, other hours
+    ],
+)
+def test_a_clock_of_another_clause_is_another_meals(text, sent):
+    # Of the part's own hours, yet past a comma or «и»: no clock is the record's.
+    said = _said(text, sent=sent)
+    assert (said.precision, said.phrase) == (DAY_ONLY, None)
 
 
 def test_control_a_clock_of_another_part_still_disagrees():
