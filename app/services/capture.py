@@ -1095,11 +1095,31 @@ def _timed_add(came: Incoming, user: User, correction) -> bool:
     return time_words(correction[1], _aware(came.sent_at), user_zone(user)) is not None
 
 
+def _own_meal_add(came: Incoming, user: User, correction) -> bool:
+    """A corrective add that is a meal of its own under a reminder: a time of its own
+    («а ещё днём был йогурт»), or food eaten now («а ещё сейчас яблоко»)."""
+    if _timed_add(came, user, correction):
+        return True
+    return (
+        bool(correction) and correction[0] == ADD and reminders.says_now(correction[1])
+    )
+
+
 def _recalls_more(db, came: Incoming, user: User, correction) -> bool:
-    """A corrective add with a time of its own, sent while a reminder is answered."""
-    if not _timed_add(came, user, correction):
+    """A corrective add of a meal of its own, sent while a reminder is answered.
+    One of food eaten now is never bound (born leaves it at its own sent time),
+    and it is never a dish of the recalled no-clock answer either."""
+    if not _own_meal_add(came, user, correction):
         return False
-    return reminders.bound_send(db, user, came) is not None
+    return reminders.answering(db, user, came) is not None
+
+
+# «а ещё днём был йогурт»: the verb is no dish, and a known «йогурт» costs no read.
+_RECALL_VERB = re.compile(r"(?<!\w)(?:был[аио]?|ещё|еще)(?!\w)\s*", re.IGNORECASE)
+
+
+def _recalled(rest: str) -> str:
+    return _RECALL_VERB.sub("", rest).strip(" ,") or rest
 
 
 def _replied_send(db, came: Incoming, user: Optional[User]):
@@ -1116,7 +1136,7 @@ def _for_the_star(came: Incoming, user: User) -> bool:
     if meal_card.parse_grams(text) is not None:
         return True
     correction = _correction(text)
-    return bool(correction) and not _timed_add(came, user, correction)
+    return bool(correction) and not _own_meal_add(came, user, correction)
 
 
 def _nothing(db, came: Incoming, user: User, send) -> Route:
@@ -1161,11 +1181,17 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
         )
         return Route(LINE, line or Line(M5F_NO_MEAL))
 
+    if not as_food and reminders.is_nothing(text):
+        # R16 ahead of the corrective words: «нет, ничего» is no «это было …».
+        send = reminders.bound_send(db, user, came)
+        if send is not None:
+            return _nothing(db, came, user, send)
+
     correction = _correction(text)
     if correction and _recalls_more(db, came, user, correction):
         # §3.2: «а ещё днём был йогурт» after an answer is a meal of its own, at
         # that time; «а ещё хлеб» still joins the first answer below.
-        return Route(NEW_MEAL, words=correction[1])
+        return Route(NEW_MEAL, words=_recalled(correction[1]))
     if correction:
         meal = _last_meal(db, user, CORRECTION_WINDOW)
         line = None
@@ -1182,10 +1208,6 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
 
     if as_food:
         return Route(NEW_MEAL)
-    if reminders.is_nothing(text):
-        send = reminders.bound_send(db, user, came)
-        if send is not None:
-            return _nothing(db, came, user, send)
     if _is_stop_word(text):
         _keep(db, came, user)
         return Route(SILENT)

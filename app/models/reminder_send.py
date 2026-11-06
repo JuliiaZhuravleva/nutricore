@@ -44,7 +44,7 @@ class ReminderSend(Base, BaseClass):
     chat_id = Column(BigInteger, nullable=False)
     message_id = Column(BigInteger, nullable=True)
     status = Column(String(8), nullable=False)  # claimed, sent, maybe, blocked
-    answer = Column(String(8), nullable=True)  # fav, words, none, ok, off
+    answer = Column(String(8), nullable=True)  # fav, words, none, fav_none, ok, off
     answered_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(

@@ -78,7 +78,10 @@ _INT_MAX = 2**31 - 1
 
 # The ladder (§5.6): what a send's ``answer`` and ``status`` mean.
 ANSWERED, NEUTRAL, UNANSWERED_SEND = "answered", "neutral", "unanswered"
-_ANSWERS = ("fav", "words", "none")
+FAV, NONE = "fav", "none"
+# R16 over a ⭐: the ⭐ still holds the message (R4), and «ничего» closed it.
+FAV_NONE = "fav_none"
+_ANSWERS = (FAV, "words", NONE, FAV_NONE)
 _NEUTRAL_ANSWERS = ("ok", "off")
 STRIP = "strip"  # Screen.view: take the buttons off the message, keep its text
 
@@ -118,10 +121,14 @@ _PHOTOS = ("photo", "document_photo")
 # Food in front of the person now: its time is the sent one, whatever came before.
 _NOW_WORDS = re.compile(r"\b(?:сейчас|только\s+что)\b")
 # R16: a day with little or nothing, said as an answer; no dish in it to read.
+# «нет, ничего» is one too; «нет, не ел» stays a «нет» (says_no), as §3.2 has it.
+_SOFTLY = r"(?:(?:сегодня|больше|почти|вообще)\s+)*"
 _NOTHING = re.compile(
-    r"(?:(?:сегодня|больше|почти|вообще)\s+)*"
-    r"(?:ничего|не\s+ел[аио]?|не\s+было)"
+    rf"(?:нет[,.!…]?\s+(?={_SOFTLY}ничего))?"
+    + _SOFTLY
+    + r"(?:ничего|не\s+ел[аио]?|не\s+было)"
     r"(?:\s+не\s+ел[аио]?|\s+не\s+было)?[.!…]*"
+    r"(?:,?\s*спасибо)?[.!…]*"
 )
 
 
@@ -304,6 +311,16 @@ def due(db, user: User, now: datetime) -> Slot | None:
 
 
 # --- unanswered → silent (§5.6) ---------------------------------------------------
+
+
+def holds_star(send: ReminderSend) -> bool:
+    """A ⭐ was logged from it: its message stays in the chat (R4)."""
+    return send.answer in (FAV, FAV_NONE)
+
+
+def said_nothing(send: ReminderSend) -> bool:
+    """A «ничего» closed it (R16), over a ⭐ or not."""
+    return send.answer in (NONE, FAV_NONE)
 
 
 def outcome(send: ReminderSend) -> str:
@@ -505,19 +522,26 @@ def _logged_line(meal: Meal, zone, today: date) -> str:
     return f"✓ Записано на {when}, {clock(meal, zone)}: {name}."
 
 
-def tap_view(
-    db, user: User, send: ReminderSend, now: datetime, accepted: bool = False
-) -> Screen:
+def accepted_view() -> Screen:
+    """R16: «✓ Принято.» and no buttons."""
+    return Screen(f"{TITLE}\n{ACCEPTED}", None, view=meal_card.NO_MEAL)
+
+
+def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
     """The reminder after a ⭐: a line for each, ↩️ and 🕐 for the latest still
-    logged, so undoing the newest leaves the one before it in reach (A3).
-    ``accepted``: a «больше ничего» closed it, so «✓ Принято.» stands under them."""
+    logged, so undoing the newest leaves the one before it in reach (A3). One a
+    «больше ничего» closed (R16) keeps those lines, ✅ ОК and ↩️ / 🕐, with
+    «✓ Принято.» under them and no chips; with every ⭐ undone, it is R16's own."""
     zone = settings_screen.user_zone(user)
     logs = _logs(db, user, send)
+    latest = next((meal for meal in reversed(logs) if meal.deleted_at is None), None)
+    live = latest is not None
+    accepted = said_nothing(send)
+    if accepted and not live:
+        return accepted_view()
     today = now.astimezone(zone).date()
     lines = [TITLE] + [_logged_line(meal, zone, today) for meal in logs]
     lines.append(ACCEPTED if accepted else _MORE)
-    latest = next((meal for meal in reversed(logs) if meal.deleted_at is None), None)
-    live = latest is not None
     rows = []
     if live:
         rows.append(ok_row())
@@ -527,8 +551,9 @@ def tap_view(
                 InlineKeyboardButton("🕐 Время", callback_data=f"ml:t:{latest.id}:r"),
             ]
         )
-    picks = pick_favorites(db, user, send.local_day, zone, before=send.sent_at)
-    rows += _chip_rows(send, picks)
+    if not accepted:
+        picks = pick_favorites(db, user, send.local_day, zone, before=send.sent_at)
+        rows += _chip_rows(send, picks)
     return Screen(
         "\n".join(lines),
         InlineKeyboardMarkup(rows),
@@ -538,7 +563,7 @@ def tap_view(
 
 
 def _redraw(t, send: ReminderSend, toast: str) -> Screen:
-    if _logs(t.db, t.user, send):
+    if _logs(t.db, t.user, send) or said_nothing(send):
         return replace(tap_view(t.db, t.user, send, t.now), toast=toast)
     return replace(reminder_view(t.db, t.user, send, t.now), toast=toast)
 
@@ -612,7 +637,15 @@ def bound_send(db, user: User | None, came) -> ReminderSend | None:
     """The reminder a message from this person answers, if any (§3.2): an explicit
     reply to it, any kind, within two local days; or, but for a photo, one that came
     while its window was open. Never a forward, and never words of food eaten now."""
-    if user is None or came.forward_date is not None or says_now(came.text):
+    if says_now(came.text):
+        return None
+    return answering(db, user, came)
+
+
+def answering(db, user: User | None, came) -> ReminderSend | None:
+    """The reminder a message came under, its words aside: «а ещё сейчас яблоко»
+    is not bound, yet it is still said while the reminder is being answered."""
+    if user is None or came.forward_date is not None:
         return None
     send = _replied(db, user, came)
     if send is not None:
@@ -653,7 +686,8 @@ def answered(db, user: User, send: ReminderSend, came) -> dict:
         ),
         "fragile": config(user).fragile,
     }
-    if send.answer != "fav":
+    # A ⭐ stays the answer; one ✖ turned off stays off, as accept_nothing has it.
+    if not holds_star(send) and send.answer != "off":
         send.answer = "words"
     _answered_by(db, user, send, came)
     return prior
@@ -681,24 +715,20 @@ def accept_nothing(
     db, user: User, send: ReminderSend, came
 ) -> meal_card.Retouch | None:
     """R16: answered and closed, with no read. The reminder's message becomes
-    «✓ Принято.» with no buttons. A ⭐ logged from it keeps its lines and their ↩️,
-    with «✓ Принято.» under them. One turned off by ✖ stays as it is: its ↩️ Вернуть
-    is the only way back, and nothing here says the reminders are on."""
+    «✓ Принято.» with no buttons. A ⭐ logged from it keeps its lines, ✅ ОК and its
+    ↩️ / 🕐 (the hanging-undo rule), with «✓ Принято.» under them and no chips
+    (FAV_NONE). One turned off by ✖ stays as it is: its ↩️ Вернуть is the only way
+    back, and nothing here says the reminders are on."""
     if send.answer == "off":
         return None
-    holds_star = send.answer == "fav"
-    if not holds_star:
-        send.answer = "none"
+    send.answer = FAV_NONE if holds_star(send) else NONE
     if send.closed_at is None:
         send.closed_at = meal_items._utc(came.sent_at)
     _answered_by(db, user, send, came)
     if send.message_id is None or send.chat_id != came.chat_id:
         return None
-    if holds_star:
-        now = meal_items._utc(came.sent_at)
-        view = tap_view(db, user, send, now, accepted=True)
-        return meal_card.Retouch(send.message_id, view.text, view.markup)
-    return meal_card.Retouch(send.message_id, f"{TITLE}\n{ACCEPTED}", None)
+    view = tap_view(db, user, send, meal_items._utc(came.sent_at))
+    return meal_card.Retouch(send.message_id, view.text, view.markup)
 
 
 # --- the sub-screen (§4.2) --------------------------------------------------------
@@ -804,7 +834,8 @@ def _v_fav(t, data: str, sid: str, fid: str) -> Screen:
         source=SOURCE,
         extra_signals={"via": "reminder", "send_id": send.id},
     )
-    send.answer = "fav"
+    # A stale chip after «ничего»: logged, and the «✓ Принято.» stays.
+    send.answer = FAV_NONE if said_nothing(send) else FAV
     send.answered_at = t.now
     t.db.commit()
     if config(t.user).fragile:
@@ -828,12 +859,13 @@ def _v_undo(t, data: str, sid: str, mid: str) -> Screen:
         return replace(tap_view(t.db, t.user, send, t.now), toast=UNDONE_TOAST)
     # Soft, as every delete: a pull holding this row learns of it.
     meal_items.delete_meal(t.db, t.user.id, meal.id)
-    if send.answer == "fav" and all(
+    if holds_star(send) and all(
         log.deleted_at is not None for log in _logs(t.db, t.user, send)
     ):
-        # Nothing logged from it any more: not an answer, and the next send may
-        # delete it (R4). Neutral, as ✅ ОК: the person did look at it.
-        send.answer = "ok"
+        # Nothing logged from it any more, and the next send may delete it (R4).
+        # Neutral, as ✅ ОК: the person did look at it. A «ничего» that closed it
+        # stays its answer, and the message is R16's own.
+        send.answer = NONE if send.answer == FAV_NONE else "ok"
         t.db.commit()
     return replace(tap_view(t.db, t.user, send, t.now), toast=UNDO_TOAST)
 

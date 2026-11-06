@@ -18,7 +18,7 @@ from sqlalchemy import select
 from app.crud.crud_reminder_send import crud_reminder_send
 from app.models import Meal, MealSource
 from app.models.reminder_send import ReminderSend
-from app.services import capture, favorites, meal_card, reminders
+from app.services import capture, favorites, meal_card, reminders, routines
 from app.services import telegram as tg
 from app.services import voice
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
@@ -271,13 +271,17 @@ def test_right_now_keeps_the_sent_time(db, evening, monkeypatch):
     assert _send_row(db, evening.id).answer is None
 
 
-@pytest.mark.parametrize("words", ["нет, не ел", "70.5", "12:30"])
+@pytest.mark.parametrize("words", ["нет, не ел", "70.5", "12:30", "Витамин"])
 def test_never_bound_inside_the_window(db, evening, reader, words, monkeypatch):
-    """§3.2: «нет», a weight and a bare clock keep their own routes."""
-    arrive(monkeypatch, say(at(21, 5), words))
+    """§3.2: «нет», a weight, a bare clock and a routine name keep their own routes."""
+    routine = {"id": "r1", "name": "Витамин", "schedule": routines.DAILY, "icon": "💊"}
+    routines._save(db, OWNER, [routine])
+    wire = arrive(monkeypatch, say(at(21, 5), words))
     assert reader.text == [] and _meals(db) == []
     row = _send_row(db, evening.id)
     assert row.answer is None and row.answered_at is None
+    if words == "Витамин":  # a tick, not a dish nor an answer
+        assert [m["text"] for m in wire.sent()] == ["✓ Витамин"], wire.sent()
 
 
 def test_a_reply_three_hours_later_is_still_the_reminders_day(db, evening, monkeypatch):
@@ -382,13 +386,31 @@ def test_and_also_yoghurt_in_the_day_is_a_second_meal_at_about_two(
     db, evening, reader, monkeypatch
 ):
     """F4: 21:05 «суп»; 21:08 «а ещё днём был йогурт»."""
-    arrive(monkeypatch, say(at(21, 5), "суп"), say(at(21, 8), "а ещё днём был йогурт"))
+    wires = arrive(
+        monkeypatch, say(at(21, 5), "суп"), say(at(21, 8), "а ещё днём был йогурт")
+    )
     soup, yoghurt = _meals(db)
     _is_day_only(soup)
     assert (yoghurt.time_precision, yoghurt.time_source) == ("approx", "said")
     assert _local(yoghurt) == datetime.combine(DAY, time(14), tzinfo=ZONE)
-    assert reader.text == ["суп", "был йогурт"]
+    assert reader.text == ["суп", "йогурт"]  # the verb is no dish
+    line = wires[1].sent()[0]["text"]
+    assert line.startswith("Записано на пт 6 ноября, ≈ 14:00: йогурт."), line
     assert _utc(_send_row(db, evening.id).answered_at) == at(21, 8)
+
+
+def test_and_also_now_an_apple_is_its_own_meal_at_its_sent_time(
+    db, evening, reader, monkeypatch
+):
+    """«сейчас» is never bound, and never a dish of the recalled answer either."""
+    arrive(monkeypatch, say(at(21, 5), "суп"), say(at(21, 8), "а ещё сейчас яблоко"))
+    soup, apple = _meals(db)
+    _is_day_only(soup)
+    assert apple.time_precision == "exact" and _utc(apple.meal_time) == at(21, 8)
+    assert apple.time_source != reminders.SOURCE
+    assert reader.text == ["суп", "сейчас яблоко"]  # read as «ем сейчас пасту» is
+    assert _item_names(db, soup) == ["рис", "курица", "овощи"]  # no apple in it
+    assert _utc(_send_row(db, evening.id).answered_at) == at(21, 5)
 
 
 def test_and_also_bread_joins_the_first_answer(db, evening, reader, monkeypatch):
@@ -427,6 +449,10 @@ def test_no_is_silent_and_leaves_the_reminder_unanswered(db, evening, monkeypatc
         "не было",
         "сегодня ничего.",
         "вообще  ничего не ели!",
+        "нет, ничего",
+        "Нет ничего",
+        "ничего, спасибо",
+        "нет, больше ничего, спасибо.",
     ],
 )
 def test_nothing_answers_and_closes_with_no_read(
@@ -447,6 +473,23 @@ def test_nothing_answers_and_closes_with_no_read(
     assert reminders.outcome(row) == reminders.ANSWERED
     # what came is kept, as every message is
     assert len(list(db.scalars(select(MealSource)))) == 1
+
+
+def test_no_nothing_after_soup_closes_it_and_leaves_the_soup(
+    db, evening, reader, monkeypatch
+):
+    """«нет, ничего» is R16, not a correction «это было …» of the soup."""
+    wires = arrive(monkeypatch, say(at(21, 5), "суп"), say(at(21, 8), "нет, ничего"))
+    (soup,) = _meals(db)
+    _is_day_only(soup)
+    assert _item_names(db, soup) == ["рис", "курица", "овощи"]  # the fake's read
+    assert reader.text == ["суп"]
+    assert wires[1].sent() == []
+    (edit,) = wires[1].edits()
+    assert edit["message_id"] == REMINDER
+    assert edit["text"] == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
+    row = _send_row(db, evening.id)
+    assert row.answer == "none" and _utc(row.closed_at) == at(21, 8)
 
 
 def test_nothing_outside_a_window_takes_the_usual_way(db, owner, reader, monkeypatch):
@@ -471,7 +514,42 @@ def test_nothing_after_a_star_keeps_the_stars_lines(
     _accepted_under_the_star(wire)
     assert _item_names(db, _meal(db, starred)) == ["Гречка"]
     row = _send_row(db, evening.id)
-    assert row.answer == "fav" and _utc(row.closed_at) == at(21, 10)
+    assert row.answer == reminders.FAV_NONE and _utc(row.closed_at) == at(21, 10)
+    assert reminders.outcome(row) == reminders.ANSWERED
+    assert reminders.holds_star(row)  # the next send keeps the message (R4)
+
+
+def test_undo_of_the_star_after_nothing_keeps_the_nothing(
+    db, evening, starred, reader, monkeypatch
+):
+    """↩️ on the ⭐ after «больше ничего»: still answered, and R16's own message."""
+    arrive(monkeypatch, say(at(21, 10), "больше ничего"))
+    data = f"rm:u:{evening.id}:{starred}"
+    screen = reminders.handle_callback(
+        db, OWNER, data, now=at(21, 12), message_id=REMINDER
+    )
+    assert screen.text == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
+    assert screen.markup is None
+    row = _send_row(db, evening.id)
+    assert row.answer == "none" and reminders.outcome(row) == reminders.ANSWERED
+    assert _meal(db, starred).deleted_at is not None
+
+
+def test_a_stale_chip_after_nothing_keeps_it_accepted(
+    db, evening, starred, reader, monkeypatch
+):
+    """A chip from before «ничего» still logs; «✓ Принято.» stays, no chip comes back."""
+    arrive(monkeypatch, say(at(21, 10), "больше ничего"))
+    fav_id = _meal(db, starred).resolution_signals["favorite_id"]
+    data = f"rm:f:{evening.id}:{fav_id}"
+    screen = reminders.handle_callback(
+        db, OWNER, data, now=at(21, 20), message_id=REMINDER
+    )
+    lines = screen.text.split("\n")
+    assert lines[-1] == "✓ Принято." and len(lines) == 4, lines
+    callbacks = [b.callback_data for row in screen.markup.inline_keyboard for b in row]
+    assert not any(c.startswith("rm:f:") for c in callbacks), callbacks
+    assert _send_row(db, evening.id).answer == reminders.FAV_NONE
 
 
 def test_nothing_in_reply_after_a_star_is_no_dish_of_it(
@@ -484,7 +562,7 @@ def test_nothing_in_reply_after_a_star_is_no_dish_of_it(
     assert _item_names(db, _meal(db, starred)) == ["Гречка"]
     assert _new_meals(db, starred) == []
     row = _send_row(db, evening.id)
-    assert row.answer == "fav" and _utc(row.closed_at) == at(21, 10)
+    assert row.answer == reminders.FAV_NONE and _utc(row.closed_at) == at(21, 10)
 
 
 def test_soup_in_reply_after_a_star_is_its_own_meal(
@@ -530,6 +608,18 @@ def test_nothing_in_reply_to_a_reminder_turned_off_leaves_it_as_it_is(
     assert wire.edits() == [] and wire.sent() == [] and reader.text == []
     row = _send_row(db, evening.id)
     assert row.answer == "off" and _utc(row.closed_at) == at(21, 2)
+
+
+def test_food_in_reply_to_a_reminder_turned_off_keeps_it_off(
+    db, evening, reader, monkeypatch
+):
+    """As «ничего» there: ✖'s answer stands, so its ↩️ Вернуть still restores."""
+    evening.answer, evening.closed_at = "off", at(21, 2)
+    db.commit()
+    arrive(monkeypatch, say(at(21, 10), "суп", **_reply()))
+    (soup,) = _meals(db)
+    _is_day_only(soup)
+    assert _send_row(db, evening.id).answer == "off"
 
 
 def test_nothing_with_food_in_it_is_food(db, evening, reader, monkeypatch):
@@ -581,12 +671,15 @@ def test_d2_a_day_told_in_one_voice_is_one_meal_with_no_clock(
 ):
     # «днём», not the spec's «в обед»: meal_words knows no «в обед» (left as it is)
     hears["words"] = "утром овсянка, днём суп"
-    arrive(monkeypatch, speak(at(21, 5)))
+    wire = arrive(monkeypatch, speak(at(21, 5)))
     (meal,) = _meals(db)
     # Two times in one message: meal_words' own rule says the day and no clock.
     assert meal.time_precision == "day_only"
     assert _local(meal) == datetime.combine(DAY, time(12), tzinfo=ZONE)
     assert reader.text == ["утром овсянка, днём суп"]  # nothing cut from the read
+    # the voice's line: «слушаю…» first, then edited to what the read made
+    line = wire.edits()[-1]["text"]
+    assert line.startswith(DAY_LINE), line
     labels = [b.text for row in _time_rows(db, meal) for b in row]
     assert {"Утром", "Днём", "Вечером"} <= set(labels), labels
 
@@ -649,6 +742,9 @@ def _accepted_under_the_star(wire) -> None:
     labels = [[b["text"] for b in row] for row in markup["inline_keyboard"]]
     assert labels[0] == ["✅ ОК"], labels
     assert "↩️ Отменить" in labels[1], labels
+    assert len(labels) == 2, labels  # no chip under «✓ Принято.» (R16)
+    callbacks = [b["callback_data"] for row in markup["inline_keyboard"] for b in row]
+    assert not any(c.startswith("rm:f:") for c in callbacks), callbacks
 
 
 def _time_rows(db, meal: Meal) -> list:

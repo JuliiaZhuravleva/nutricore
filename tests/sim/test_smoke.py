@@ -152,7 +152,7 @@ def test_answers_to_the_evening_reminder_f4_f3_and_d1(tmp_path):
     assert "Записано на пт 6 ноября, без времени: суп." in _sim(w, "say", "суп")
     _sim(w, "advance", "3m")
     out = _sim(w, "say", "а ещё днём был йогурт")
-    assert "Записано на пт 6 ноября, ≈ 14:00" in out, out
+    assert "Записано на пт 6 ноября, ≈ 14:00: йогурт." in out, out
     # F3: «больше ничего» answers and closes it, with nothing read
     _sim(w, "advance", "2m")
     out = _sim(w, "say", "больше ничего")
@@ -172,8 +172,8 @@ def test_answers_to_the_evening_reminder_f4_f3_and_d1(tmp_path):
         for line in lines
     ), out
     assert any(
-        line.startswith("14:00  был йогурт  [precision=approx") for line in lines
-    )
+        line.startswith("14:00  йогурт  [precision=approx") for line in lines
+    ), out  # the verb «был» is no dish
     assert any(line.startswith("21:21  омлет  [precision=exact") for line in lines)
     state = json.loads((w / world.STATE_FILE).read_text(encoding="utf-8"))
     assert state["model_calls"] == []

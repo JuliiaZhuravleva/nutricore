@@ -698,12 +698,17 @@ def test_ok_strips_now_and_the_next_send_deletes_it(db):
 
 
 @BACKENDS
-def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db):
+@pytest.mark.parametrize("then_nothing", [False, True])
+def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db, then_nothing):
+    """A «ничего» after the ⭐ (R16, FAV_NONE) still keeps the message (R4)."""
     _usual(db)
     fav = _fav(db, "Суп")
     _run(db, _bot())
     send = db.query(ReminderSend).one()
     _tap(db, f"rm:f:{send.id}:{fav.id}", AT_21 + timedelta(minutes=5))
+    if then_nothing:
+        send.answer = reminders.FAV_NONE
+        db.commit()
     bot = _bot(message_id=901)
     _next_evening(db, bot)
     bot.delete_message.assert_not_awaited()

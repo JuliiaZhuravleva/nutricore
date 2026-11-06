@@ -63,7 +63,7 @@ async def _close_previous(db, bot, send: ReminderSend, now: datetime) -> None:
         sent_at = sent_at.replace(tzinfo=UTC)  # SQLite drops it
     young = now - sent_at < reminders.DELETE_WITHIN
     try:
-        if previous.answer != "fav" and young:
+        if not reminders.holds_star(previous) and young:
             await bot.delete_message(previous.chat_id, previous.message_id)
             return
     except TelegramError as error:
