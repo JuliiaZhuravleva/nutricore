@@ -9,7 +9,9 @@ model, the transcription and the network. Nothing here changes ``app/``.
 from __future__ import annotations
 
 import datetime as _dt_module
+import fcntl
 import json
+import logging
 import os
 import pickle
 import re
@@ -26,6 +28,9 @@ MEMORY_FILE = "ptb.pickle"
 START = "2026-11-06T08:00:00+00:00"  # a Friday, 12:00 in Tbilisi
 BOT_ID = 1
 FIRST_PERSON_ID = 100_001
+LOCK_FILE = ".lock"
+# How long a command waits for another one on the same world before it gives up.
+LOCK_WAIT_SECONDS = float(os.environ.get("SIM_LOCK_WAIT", "60"))
 
 _REAL_DT = _dt_module.datetime
 _REAL_DATE = _dt_module.date
@@ -164,25 +169,38 @@ def parse_span(text: str) -> timedelta:
 
 class State:
     """What the world remembers besides its database: the people, the chats as a
-    phone would show them, the clock, the files sent."""
+    phone would show them, the clock, the files sent.
+
+    Message numbers count per chat, as in Telegram's private chats: everyone's chat
+    starts at #1, so Julia's #12 and Anna's #12 both exist. A message is kept under
+    its key ``"<chat>:<number>"``."""
 
     def __init__(self, folder: Path):
         self.folder = folder
         self.path = folder / STATE_FILE
         if self.path.exists():
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(self.data.get("next_message"), dict):
+                raise SystemExit(
+                    f"error: {folder} was made by an older simulator "
+                    "(one message counter for all chats); start a new folder"
+                )
         else:
             self.data = {
                 "clock": START,
                 "current": None,
                 "people": {},
-                "next_message": 1,
+                "next_message": {},
+                "next_file": 1,
                 "next_update": 1,
                 "messages": {},
                 "keyboards": {},
                 "files": {},
                 "model_calls": [],
+                "errors": [],
             }
+        self.data.setdefault("errors", [])
+        self.data.setdefault("next_file", 1)
         self.events: list = []  # what this command changed, in order
 
     def save(self) -> None:
@@ -191,9 +209,15 @@ class State:
         self.path.write_text(text, encoding="utf-8")
 
     # ids
-    def next_message(self) -> int:
-        number = self.data["next_message"]
-        self.data["next_message"] = number + 1
+    def next_message(self, chat_id: int) -> int:
+        counters = self.data["next_message"]
+        number = counters.get(str(chat_id), 1)
+        counters[str(chat_id)] = number + 1
+        return number
+
+    def next_file(self) -> int:
+        number = self.data["next_file"]
+        self.data["next_file"] = number + 1
         return number
 
     def next_update(self) -> int:
@@ -225,11 +249,19 @@ class State:
         return [p["id"] for p in self.people.values() if p.get("owner")]
 
     # messages
-    def message(self, number: int) -> dict | None:
-        return self.data["messages"].get(str(number))
+    @staticmethod
+    def key(chat_id: int, number: int) -> str:
+        return f"{int(chat_id)}:{int(number)}"
+
+    def message(self, chat_id: int, number: int) -> dict | None:
+        """Message #number of this chat; another chat's #number is another one."""
+        return self.data["messages"].get(self.key(chat_id, number))
+
+    def by_key(self, key: str) -> dict:
+        return self.data["messages"][key]
 
     def add_message(self, **fields) -> dict:
-        self.data["messages"][str(fields["id"])] = fields
+        self.data["messages"][self.key(fields["chat"], fields["id"])] = fields
         return fields
 
     def chat(self, chat_id: int) -> list:
@@ -351,6 +383,78 @@ def _install_fakes(state: State) -> None:
     settings.RENDER_DIR = str(state.folder / "render")
 
 
+def _rebind_bound_defaults() -> None:
+    """Column defaults that hold the real ``datetime.utcnow`` itself (bound when the
+    model was imported, so ``_install_clock`` cannot reach them), to the world's.
+    Defaults written as ``lambda: datetime.datetime.now(UTC)`` look the name up at
+    call time and need nothing."""
+    from sqlalchemy.schema import ColumnDefault
+
+    from app.models import User
+
+    def utcnow():
+        return SimDatetime.utcnow()
+
+    columns = User.__table__.c
+    ColumnDefault(utcnow)._set_parent_with_dispatch(columns.created_at)
+    ColumnDefault(utcnow)._set_parent_with_dispatch(columns.updated_at)
+    ColumnDefault(utcnow, for_update=True)._set_parent_with_dispatch(columns.updated_at)
+
+
+class _ErrorLog(logging.Handler):
+    """An error the app logs and goes on from (a handler that crashed, a meal read
+    that failed) is written down: the command prints it and exits 4."""
+
+    def __init__(self, state: State):
+        super().__init__(logging.ERROR)
+        self.state = state
+
+    def emit(self, record) -> None:
+        try:
+            text = f"{record.name}: {record.getMessage()}"
+        except Exception:  # a message that does not format is still an error
+            text = f"{record.name}: {record.msg!r}"
+        self.state.data["errors"].append(text)
+        self.state.events.append(("error", text))
+
+
+def _install_logging(state: State) -> None:
+    """The app's own handler still prints to stderr; this one only counts errors."""
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, _ErrorLog):
+            root.removeHandler(handler)
+    root.addHandler(_ErrorLog(state))
+    root.setLevel(os.environ.get("SIM_LOG", "WARNING"))
+    for noisy in ("telegram", "httpx", "httpcore", "apscheduler"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_LOCKS: dict = {}
+
+
+def _lock(folder: Path) -> None:
+    """One command at a time on a world: two at once would each load ``sim.json``
+    and the last to save would win. Held until the process ends."""
+    if folder in _LOCKS:
+        return
+    handle = open(folder / LOCK_FILE, "w")
+    deadline = _real_monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if _real_monotonic() >= deadline:
+                handle.close()
+                raise SystemExit(
+                    f"error: world busy: another sim command is running on {folder} "
+                    f"(waited {LOCK_WAIT_SECONDS:g}s)"
+                )
+            _time_module.sleep(0.05)
+    _LOCKS[folder] = handle
+
+
 def apply_people(state: State) -> None:
     """The owners are the settings' admins; everyone else came in by an invitation."""
     from app.core.config import settings
@@ -378,6 +482,7 @@ def _import_everything() -> None:
 def boot(folder: str | Path) -> State:
     folder = Path(folder).resolve()
     folder.mkdir(parents=True, exist_ok=True)
+    _lock(folder)
     os.chdir(folder)  # pydantic reads ``.env`` from here: the state folder has none
     for key in _UNSET:
         os.environ.pop(key, None)
@@ -409,15 +514,11 @@ def boot(folder: str | Path) -> State:
         if name.startswith(("app.", "celery_app.")) and hasattr(module, "SessionLocal"):
             module.SessionLocal = factory
 
-    import logging
-
-    logging.getLogger().setLevel(os.environ.get("SIM_LOG", "WARNING"))
-    for noisy in ("telegram", "httpx", "httpcore", "apscheduler"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-
     state = State(folder)
+    _install_logging(state)
     CLOCK.set(_REAL_DT.fromisoformat(state.data["clock"]))
     _install_clock()
+    _rebind_bound_defaults()
     _install_fakes(state)
     apply_people(state)
     return state

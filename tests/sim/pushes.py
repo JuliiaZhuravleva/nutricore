@@ -2,6 +2,9 @@
 
 A push is ``async (db, bot, now) -> dict`` and decides by itself who is due at ``now``
 (the world's clock), exactly as its Celery task does. A new push is one line here.
+
+Left out on purpose: beat's ``model-watch`` (celery_app.py), which checks the model
+companies' APIs over the network and messages the admins; the world has neither.
 """
 
 from __future__ import annotations

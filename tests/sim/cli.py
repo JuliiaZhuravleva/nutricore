@@ -29,7 +29,8 @@ def _wire_class():
     class SimWire(Wire):
         """Telegram for the world: every chat as a phone shows it, kept in the state.
         Refuses what Telegram refuses: an edit or delete of a message that is not
-        there, an edit that changes nothing."""
+        there, an edit that changes nothing, a text edit of a photo, a caption or
+        media edit of a text."""
 
         def __init__(self, state: world.State):
             super().__init__()
@@ -85,7 +86,7 @@ def _wire_class():
             keyboard_changed = keys.get(str(chat)) != before
             reply = _markup(params.get("reply_parameters")).get("message_id")
             message = state.add_message(
-                id=state.next_message(),
+                id=state.next_message(chat),
                 chat=chat,
                 sender="bot",
                 kind=kind,
@@ -98,7 +99,7 @@ def _wire_class():
                 edited=False,
                 deleted=False,
             )
-            state.events.append(("message", message["id"], "new"))
+            state.events.append(("message", state.key(chat, message["id"]), "new"))
             if keyboard_changed:
                 state.events.append(("keyboard", chat))
             return _as_telegram(message)
@@ -114,13 +115,10 @@ def _wire_class():
 
         # edits
         def _target(self, params) -> dict:
-            message = self.state.message(int(params.get("message_id", 0)))
-            if (
-                message is None
-                or message["deleted"]
-                or message["sender"] != "bot"
-                or message["chat"] != int(params.get("chat_id", 0))
-            ):
+            message = self.state.message(
+                int(params.get("chat_id", 0)), int(params.get("message_id", 0))
+            )
+            if message is None or message["deleted"] or message["sender"] != "bot":
                 raise _Refused("Bad Request: message to edit not found")
             return message
 
@@ -139,16 +137,25 @@ def _wire_class():
                     "content and reply markup are exactly the same"
                 )
             message["edited"] = True
-            self.state.events.append(("message", message["id"], "edited"))
+            key = self.state.key(message["chat"], message["id"])
+            self.state.events.append(("message", key, "edited"))
             return _as_telegram(message)
 
         def _editMessageText(self, params):
-            return self._edit(params, text=params.get("text", ""), kind="text")
+            if self._target(params)["kind"] != "text":
+                raise _Refused("Bad Request: there is no text in the message to edit")
+            return self._edit(params, text=params.get("text", ""))
 
         def _editMessageCaption(self, params):
+            if self._target(params)["kind"] == "text":
+                raise _Refused(
+                    "Bad Request: there is no caption in the message to edit"
+                )
             return self._edit(params, text=params.get("caption", ""))
 
         def _editMessageMedia(self, params):
+            if self._target(params)["kind"] == "text":
+                raise _Refused("Bad Request: there is no media in the message to edit")
             media = _markup(params.get("media"))
             return self._edit(params, text=media.get("caption"), kind="photo")
 
@@ -157,15 +164,13 @@ def _wire_class():
 
         # deletes
         def _deleteMessage(self, params):
-            message = self.state.message(int(params.get("message_id", 0)))
-            if (
-                message is None
-                or message["deleted"]
-                or message["chat"] != int(params.get("chat_id", 0))
-            ):
+            chat = int(params.get("chat_id", 0))
+            message = self.state.message(chat, int(params.get("message_id", 0)))
+            if message is None or message["deleted"]:
                 raise _Refused("Bad Request: message to delete not found")
             message["deleted"] = True
-            self.state.events.append(("message", message["id"], "deleted"))
+            key = self.state.key(chat, message["id"])
+            self.state.events.append(("message", key, "deleted"))
             return True
 
         def _deleteMessages(self, params):
@@ -257,6 +262,8 @@ def _render(state: world.State, message: dict, mark: str = "") -> str:
         head = f"{mark}#{message['id']} you"
         if message.get("reply_to"):
             head += f" ↩ #{message['reply_to']}"
+        if message.get("deleted"):
+            head += " (DELETED)"
         kind = {"voice": "🎤 voice: ", "photo": "📷 photo: "}.get(message["kind"], "")
         return f"{head}: {kind}{message['text']}"
     if message.get("reply_to"):
@@ -274,16 +281,21 @@ def _render(state: world.State, message: dict, mark: str = "") -> str:
         head += " (" + ", ".join(flags) + ")"
     lines = [head + ":"]
     lines += ["  " + line for line in _plain(message).splitlines()]
+    if message.get("deleted"):
+        return "\n".join(lines)  # its buttons went with it
     for row in message.get("buttons") or []:
         lines.append("  " + " ".join(f"[{_label(b)}]" for b in row))
     return "\n".join(lines)
 
 
 def _keyboard_line(state: world.State, chat: int) -> str | None:
+    """The reply keyboard on one line, its rows apart: ``[a] [b] | [c]``."""
     rows = state.data["keyboards"].get(str(chat))
     if not rows:
         return None
-    return "keyboard: " + " ".join(f"[{label}]" for row in rows for label in row)
+    return "keyboard: " + " | ".join(
+        " ".join(f"[{label}]" for label in row) for row in rows
+    )
 
 
 def _print_events(state: world.State) -> None:
@@ -304,11 +316,13 @@ def _print_events(state: world.State) -> None:
             print(line)
         elif event[0] == "model":
             print(f"!! A MODEL CALL WAS ATTEMPTED AND REFUSED: {event[1]}")
+        elif event[0] == "error":
+            print(f"!! APP ERROR: {event[1]}")
         elif event[0] == "say":
-            print(_render(state, state.message(event[1]), "> "))
+            print(_render(state, state.by_key(event[1]), "> "))
         elif event[0] == "message" and event[1] not in done:
             done.add(event[1])
-            message = state.message(event[1])
+            message = state.by_key(event[1])
             kinds = marks[event[1]]
             mark = "+ " if "new" in kinds else ("- " if kinds == {"deleted"} else "~ ")
             text = _render(state, message, mark)
@@ -369,7 +383,7 @@ def _send(state: world.State, kind: str, shown: str, **fields) -> None:
     from telegram import Update
 
     name, person = state.person()
-    number = state.next_message()
+    number = state.next_message(person["id"])
     message = {
         "message_id": number,
         "date": _now_ts(),
@@ -389,7 +403,7 @@ def _send(state: world.State, kind: str, shown: str, **fields) -> None:
         edited=False,
         deleted=False,
     )
-    state.events.append(("say", number))
+    state.events.append(("say", state.key(person["id"], number)))
     update = {"update_id": state.next_update(), "message": message}
 
     async def steps(application):
@@ -501,9 +515,9 @@ def cmd_say(state, args):
 
 
 def cmd_reply(state, args):
-    target = state.message(args.number)
     _, person = state.person()
-    if target is None or target["chat"] != person["id"]:
+    target = state.message(person["id"], args.number)
+    if target is None:
         raise SystemExit(f"error: no message #{args.number} in this chat")
     _send(
         state, "text", args.text, text=args.text, reply_to_message=_as_telegram(target)
@@ -511,7 +525,7 @@ def cmd_reply(state, args):
 
 
 def _file(state, kind: str, content: str) -> str:
-    file_id = f"sim-{kind}-{state.data['next_message']}"
+    file_id = f"sim-{kind}-{state.next_file()}"
     state.data["files"][file_id] = {"kind": kind, "content": content}
     return file_id
 
@@ -548,14 +562,23 @@ def cmd_photo(state, args):
     _send(state, "photo", shown, **fields)
 
 
-def _match(labels: list, wanted: str) -> list:
+def _tiers(wanted: str) -> tuple:
+    """How a label is matched, the strictest first: exact, any case, a substring."""
     norm = " ".join(wanted.split())
-    for test in (
+    return (
         lambda label: label == norm,
         lambda label: label.casefold() == norm.casefold(),
         lambda label: norm.casefold() in label.casefold(),
-    ):
-        found = [label for label in labels if test(" ".join(label.split()))]
+    )
+
+
+def _hits(labels: list, test) -> list:
+    return [label for label in labels if test(" ".join(label.split()))]
+
+
+def _match(labels: list, wanted: str) -> list:
+    for test in _tiers(wanted):
+        found = _hits(labels, test)
         if found:
             return found
     return []
@@ -570,21 +593,24 @@ def cmd_tap(state, args):
         candidates = [m for m in chat if m["id"] == args.msg]
         if not candidates:
             raise SystemExit(f"error: no message #{args.msg} in this chat")
+        if candidates[0]["deleted"]:
+            raise SystemExit(f"error: #{args.msg} was deleted")
     else:
         candidates = [
             m for m in reversed(chat) if m.get("buttons") and not m["deleted"]
         ]
-    for message in candidates:
-        if message["deleted"]:
-            raise SystemExit(f"error: #{message['id']} was deleted")
-        buttons = [b for row in message.get("buttons") or [] for b in row]
-        found = _match([_label(b) for b in buttons], args.label)
-        if len(set(found)) > 1:
-            raise SystemExit(
-                f"error: {args.label!r} matches several buttons on #{message['id']}: "
-                + ", ".join(f"[{f}]" for f in found)
-            )
-        if found:
+    # A stricter match on an older message beats a looser one on a newer message.
+    for test in _tiers(args.label):
+        for message in candidates:
+            buttons = [b for row in message.get("buttons") or [] for b in row]
+            found = _hits([_label(b) for b in buttons], test)
+            if len(set(found)) > 1:
+                raise SystemExit(
+                    f"error: {args.label!r} matches several buttons on "
+                    f"#{message['id']}: " + ", ".join(f"[{f}]" for f in found)
+                )
+            if not found:
+                continue
             button = next(b for b in buttons if _label(b) == found[0])
             if "callback_data" not in button:
                 print(f"[{found[0]}] opens {button.get('url', 'something outside')}")
@@ -841,6 +867,7 @@ def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     state = world.boot(args.state)
     before = len(state.data["model_calls"])
+    errors_before = len(state.data["errors"])
     try:
         args.run(state, args)
         if state.events or args.command in _SENDS:
@@ -849,6 +876,8 @@ def main(argv=None) -> int:
         state.save()
     if len(state.data["model_calls"]) > before:
         return 3  # a model call was tried: the run is not what it claims to be
+    if len(state.data["errors"]) > errors_before:
+        return 4  # the app logged an error and went on: a crash it swallowed
     return 0
 
 
