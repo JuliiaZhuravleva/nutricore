@@ -46,12 +46,18 @@ def users_due(db, now: datetime) -> list:
 
 
 async def _close_previous(db, bot, send: ReminderSend, now: datetime) -> None:
-    """At most one live reminder in the chat (R4)."""
+    """At most one live reminder in the chat (R4). One closed by ✅ ОК or ✖ is
+    still in the chat, so it leaves too: ``closed_at`` says it was dismissed, not
+    that it is gone. The previous one is the latest that got a message, so a
+    message behind a maybe, a block or a killed claim is not left with its buttons;
+    when it already left at an earlier send, the second delete only fails, as a
+    retried claim's does, and that is harmless."""
     previous = crud_reminder_send.previous(db, send.user_id, send.id)
-    if previous is None or previous.message_id is None or previous.closed_at:
+    if previous is None:
         return
-    previous.closed_at = now
-    db.commit()
+    if previous.closed_at is None:
+        previous.closed_at = now
+        db.commit()
     sent_at = previous.sent_at
     if sent_at.tzinfo is None:
         sent_at = sent_at.replace(tzinfo=UTC)  # SQLite drops it

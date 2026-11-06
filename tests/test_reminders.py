@@ -2,11 +2,14 @@
 tap, the ladder that quiets it, the claim, and its ⚙️ screen.
 
 On an in-memory SQLite DB with a fake bot: no model and no network anywhere. Friday
-6 November 2026 in Tbilisi (UTC+4) unless a test says otherwise.
+6 November 2026 in Tbilisi (UTC+4) unless a test says otherwise. The claim and send
+tests also run on Postgres when ``TWO_PEOPLE_DB_URL`` names a migrated one, whose
+tables they empty: never point it at anything but a throwaway database.
 """
 
 import ast
 import asyncio
+import os
 import re
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -17,6 +20,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy import text as sql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from telegram.error import BadRequest, Forbidden, NetworkError, TimedOut
@@ -47,6 +51,20 @@ ZONE = ZoneInfo("Asia/Tbilisi")
 DAY = date(2026, 11, 6)  # a Friday
 SUNDAY = date(2026, 11, 8)
 ROOT = Path(__file__).resolve().parents[1]
+PG_URL = os.environ.get("TWO_PEOPLE_DB_URL")
+# The claim, the send and the ladder's dates on both: the UNIQUE claim, its rollback
+# and the aware datetimes behave differently on Postgres (sqlite-gate-hides-postgres).
+BACKENDS = pytest.mark.parametrize(
+    "factory",
+    [
+        "sqlite",
+        pytest.param(
+            "postgres",
+            marks=pytest.mark.skipif(not PG_URL, reason="TWO_PEOPLE_DB_URL unset"),
+        ),
+    ],
+    indirect=True,
+)
 
 
 def _utc(day, hour, minute=0, zone=ZONE):
@@ -56,8 +74,24 @@ def _utc(day, hour, minute=0, zone=ZONE):
 AT_21 = _utc(DAY, 21, 5)  # the first sweep inside the default slot
 
 
+def _engine(backend: str):
+    if backend == "postgres":
+        engine = create_engine(PG_URL)
+        names = ", ".join(t.name for t in Base.metadata.sorted_tables)
+        with engine.begin() as connection:
+            connection.execute(sql(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+        return engine
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    return engine
+
+
 @pytest.fixture
-def factory(monkeypatch):
+def factory(monkeypatch, request):
     monkeypatch.setattr(
         crud_subscription, "is_active_subscription", lambda _db, _id: True
     )
@@ -65,12 +99,7 @@ def factory(monkeypatch):
     monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open", raising=False)
     # Not the owner: D1 turns reminders on for everyone, not only for her.
     monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "1")
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(bind=engine)
+    engine = _engine(getattr(request, "param", "sqlite"))
     make = sessionmaker(bind=engine)
     with make() as session:
         session.add(User(id=1, telegram_id=42, settings={}))
@@ -391,7 +420,9 @@ def test_three_unanswered_stop_them(db):
     for day in _days_before(3, 2, 1):
         _send(db, day)
     assert _reason(db) == "quiet"
-    assert reminders.config(_user(db)).quiet == {"level": "off", "on": DAY.isoformat()}
+    # Dated by the 3rd unanswered one, not by the sweep that found it (B2).
+    on = (DAY - timedelta(days=1)).isoformat()
+    assert reminders.config(_user(db)).quiet == {"level": "off", "on": on}
 
 
 def test_two_unanswered_still_send(db):
@@ -455,6 +486,7 @@ def test_a_breakfast_the_next_morning_neither_answers_nor_resumes(db):
     assert _reason(db) == "quiet"
 
 
+@BACKENDS
 def test_resume_needs_a_gap_day_then_two_record_days(db):
     paused = DAY - timedelta(days=3)
     _set(db, quiet={"level": "off", "on": paused.isoformat()})
@@ -477,6 +509,7 @@ def test_weights_do_not_resume(db):
     assert _reason(db) == "quiet"
 
 
+@BACKENDS
 def test_after_a_return_one_unanswered_quiets_again(db):
     _usual(db)
     _set(db, fragile=True, count_from=_utc(DAY - timedelta(days=2), 0).isoformat())
@@ -523,6 +556,7 @@ def test_the_purge_keeps_the_pause(db, monkeypatch):
 # --- the claim and the send (§5.4) -------------------------------------------------
 
 
+@BACKENDS
 def test_two_sweeps_send_once(db):
     _usual(db)
     bot = _bot()
@@ -534,6 +568,7 @@ def test_two_sweeps_send_once(db):
     assert reminders.config(_user(db)).noted == send.id
 
 
+@BACKENDS
 def test_a_lost_race_is_skipped(db):
     _usual(db)
     user, slot = _user(db), reminders.Slot("21:00", "evening")
@@ -543,6 +578,7 @@ def test_a_lost_race_is_skipped(db):
     bot.send_message.assert_awaited_once()
 
 
+@BACKENDS
 def test_silent_by_default_and_with_sound_when_chosen(db):
     """D3."""
     _usual(db)
@@ -556,6 +592,7 @@ def test_silent_by_default_and_with_sound_when_chosen(db):
     assert bot.send_message.await_args.kwargs["disable_notification"] is False
 
 
+@BACKENDS
 def test_blocked_is_kept_as_blocked(db):
     _usual(db)
     counts = _run(db, _bot(error=Forbidden("bot was blocked by the user")))
@@ -563,6 +600,7 @@ def test_blocked_is_kept_as_blocked(db):
     assert db.query(ReminderSend).one().status == "blocked"
 
 
+@BACKENDS
 def test_maybe_arrived_is_not_sent_again(db):
     _usual(db)
     bot = _bot(error=TimedOut())
@@ -574,6 +612,7 @@ def test_maybe_arrived_is_not_sent_again(db):
     bot.send_message.assert_awaited_once()
 
 
+@BACKENDS
 def test_never_made_is_retried_by_the_next_sweep(db):
     _usual(db)
     bot = _bot(error=_never_made())
@@ -609,6 +648,7 @@ def _next_evening(db, bot):
     return _run(db, bot, _utc(tomorrow, 21, 5))
 
 
+@BACKENDS
 def test_the_next_send_deletes_the_previous_one(db):
     _usual(db)
     bot = _bot()
@@ -618,6 +658,7 @@ def test_the_next_send_deletes_the_previous_one(db):
     assert first.closed_at is not None
 
 
+@BACKENDS
 def test_ok_strips_now_and_the_next_send_deletes_it(db):
     _usual(db)
     _run(db, _bot())
@@ -626,12 +667,14 @@ def test_ok_strips_now_and_the_next_send_deletes_it(db):
     assert (screen.text, screen.view, screen.toast) == ("", reminders.STRIP, "Понятно")
     db.refresh(send)
     assert send.answer == "ok"
+    assert send.closed_at is not None  # dismissed: R1b's window no longer binds
     bot = _bot(message_id=901)
     _next_evening(db, bot)
     bot.delete_message.assert_awaited_once_with(42, 900)
     bot.edit_message_reply_markup.assert_not_awaited()
 
 
+@BACKENDS
 def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db):
     _usual(db)
     fav = _fav(db, "Суп")
@@ -646,6 +689,7 @@ def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db):
     )
 
 
+@BACKENDS
 def test_too_old_to_delete_loses_its_buttons_and_a_failed_delete_too(db):
     _send(db, DAY - timedelta(days=3))  # unanswered, three days old
     _usual(db)
@@ -657,6 +701,105 @@ def test_too_old_to_delete_loses_its_buttons_and_a_failed_delete_too(db):
     _next_evening(db, bot)
     bot.delete_message.assert_awaited_once()
     bot.edit_message_reply_markup.assert_awaited_once()
+
+
+@BACKENDS
+def test_a_message_behind_a_killed_claim_still_loses_its_buttons(db):
+    """R4: a claim with no message (a killed worker, a maybe, a block) is walked past,
+    so the reminder before it that really is in the chat leaves at the next send."""
+    _usual(db)
+    _run(db, _bot())  # Friday's, message 900
+    saturday = DAY + timedelta(days=1)
+    _row(db, _utc(saturday, 10))
+    crud_reminder_send.claim(
+        db,
+        user_id=1,
+        local_day=saturday,
+        slot="21:00",
+        kind=reminders.EVENING,
+        chat_id=42,
+        now=_utc(saturday, 21, 5),
+    )  # the worker died before anything else
+    sunday = DAY + timedelta(days=2)
+    _setting(db, WEEK_PUSH, False)
+    _row(db, _utc(sunday, 10))
+    bot = _bot(message_id=902)
+    assert _run(db, bot, _utc(sunday, 21, 5))["sent"] == 1
+    # Exactly 48 h old: too old to delete, so only its buttons go.
+    bot.edit_message_reply_markup.assert_awaited_once_with(
+        chat_id=42, message_id=900, reply_markup=None
+    )
+
+
+def _counting_bot():
+    ids = iter(range(900, 1000))
+
+    async def send_message(**_kw):
+        return SimpleNamespace(message_id=next(ids))
+
+    return SimpleNamespace(
+        send_message=AsyncMock(side_effect=send_message),
+        delete_message=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+
+@BACKENDS
+def test_after_a_return_through_the_sweep_one_unanswered_quiets_again(db):
+    """R9 end to end: the resume writes count_from at the sweep's own moment and the
+    same sweep sends then; that send counts, so leaving it unanswered quiets."""
+    paused = DAY - timedelta(days=3)
+    _set(db, quiet={"level": "off", "on": paused.isoformat()})
+    # DAY-2: no row at all (the gap). DAY-1 and DAY: records.
+    _row(db, _utc(DAY - timedelta(days=1), 10))
+    _usual(db)
+    assert _run(db, _counting_bot())["sent"] == 1
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is True
+    send = db.query(ReminderSend).one()
+    assert send.status == "sent" and send.answer is None
+    saturday = DAY + timedelta(days=1)
+    _row(db, _utc(saturday, 10))
+    assert _reason(db, _utc(saturday, 21, 5)) == "quiet"
+    assert reminders.config(_user(db)).quiet == {"level": "off", "on": DAY.isoformat()}
+
+
+@BACKENDS
+def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
+    """B1 + B2: last record Monday; sweeps every evening. Tue, Wed, Thu go out; the
+    pause is dated Thursday, so Friday is the gap day; a photo Saturday is the 1st
+    record day (nothing), Sunday is the week's, Monday's record makes the 2nd: sent."""
+    monday = date(2026, 11, 2)
+    _row(db, _utc(monday, 10))
+    bot = _counting_bot()
+    sent_on = []
+    for offset in range(1, 8):  # Tue 3 .. Mon 9
+        day = monday + timedelta(days=offset)
+        if day == date(2026, 11, 7):
+            _row(db, _utc(day, 12))  # the photo, Saturday 12:00
+        if day == date(2026, 11, 9):
+            _row(db, _utc(day, 9))  # Monday 9:00
+        if _run(db, bot, _utc(day, 21, 5))["sent"]:
+            sent_on.append(day)
+        if day == date(2026, 11, 6):
+            quiet = reminders.config(_user(db)).quiet
+            assert quiet == {"level": "off", "on": "2026-11-05"}
+    assert sent_on == [
+        date(2026, 11, 3),
+        date(2026, 11, 4),
+        date(2026, 11, 5),
+        date(2026, 11, 9),
+    ]
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is True
+    assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
+    # Thursday's untouched one leaves at Monday's send: four days old, so Telegram
+    # no longer deletes it and only its buttons go (R4, §5.4's 48 h).
+    thursday = db.query(ReminderSend).filter_by(local_day=date(2026, 11, 5)).one()
+    assert thursday.closed_at is not None
+    bot.edit_message_reply_markup.assert_awaited_with(
+        chat_id=42, message_id=thursday.message_id, reply_markup=None
+    )
 
 
 # --- the message (§3.1) ------------------------------------------------------------
@@ -815,6 +958,23 @@ def test_undo_takes_the_dish_back(db):
     assert "✅ ОК" not in _labels(screen.markup)
     assert screen.view == meal_card.NO_MEAL
     assert _tap(db, f"rm:u:{send.id}:{meal.id}", now).toast == reminders.UNDONE_TOAST
+    db.refresh(send)
+    assert send.answer == "ok"  # nothing logged from it: neutral, not answered
+    bot = _bot(message_id=901)
+    _next_evening(db, bot)
+    bot.delete_message.assert_awaited_once_with(42, 900)  # R4: deleted, not stripped
+    bot.edit_message_reply_markup.assert_not_awaited()
+
+
+def test_undo_of_one_of_two_stars_keeps_the_answer(db):
+    send, fav = _sent(db)
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now + timedelta(seconds=10))
+    latest = _favorite_meals(db)[-1]
+    _tap(db, f"rm:u:{send.id}:{latest.id}", now + timedelta(seconds=20))
+    db.refresh(send)
+    assert send.answer == "fav"
 
 
 def test_a_removed_star_says_so(db):
@@ -880,6 +1040,7 @@ def test_off_at_once_and_back(db):
     assert reminders.hub_line(_user(db)) == "🔔 Напоминания: выкл"
     db.refresh(send)
     assert send.answer == "off"
+    assert send.closed_at is not None
     screen = _tap(db, f"rm:b:{send.id}", AT_21)
     assert "✓ Напоминания включены: вечером, в 22:00." in screen.text
     cfg = reminders.config(_user(db))
@@ -1063,6 +1224,16 @@ def test_r10_words_never_said(db):
     # The control: the same check catches a banned word.
     assert _banned(["Сегодня пропущено"]) == ["Сегодня пропущено"]
     assert _banned(["Уже 3 дня"]) == ["Уже 3 дня"]
+
+
+def test_the_explanation_says_what_the_time_screen_offers():
+    """§10, §3.5: every ⭐ from a reminder is day_only, so the 🕐 options and R0's
+    one-message-one-meal rule are what the entry has to say."""
+    how = explain_screen.TOPICS["reminders"].how
+    for phrase in ("«утром», «днём», «вечером»", "когда ответ был прислан"):
+        assert phrase in how
+    assert "на день приёма" in how
+    assert "несколько времён, оно записывается без часов" in how
 
 
 # --- the schedule --------------------------------------------------------------------

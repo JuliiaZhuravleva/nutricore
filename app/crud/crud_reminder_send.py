@@ -70,10 +70,16 @@ class CRUDReminderSend:
     def previous(
         self, db: Session, user_id: int, before_id: int
     ) -> ReminderSend | None:
-        """The send right before this one: the one still standing in the chat."""
+        """The latest earlier send that reached the chat: the one still standing
+        there. Rows with no message (maybe, blocked) are walked past, so a reminder
+        behind them still leaves (R4)."""
         stmt = (
             select(ReminderSend)
-            .where(ReminderSend.user_id == user_id, ReminderSend.id < before_id)
+            .where(
+                ReminderSend.user_id == user_id,
+                ReminderSend.id < before_id,
+                ReminderSend.message_id.is_not(None),
+            )
             .order_by(ReminderSend.id.desc())
             .limit(1)
         )
@@ -88,12 +94,14 @@ class CRUDReminderSend:
         before_day: datetime.date,
     ) -> list[ReminderSend]:
         """Sends of days before ``before_day`` (a day still open can be answered),
-        later than ``after`` when it is given, newest first."""
+        from ``after`` on when it is given, newest first. From, not after: a resume
+        writes ``count_from = now`` and the same sweep sends at that very moment,
+        and that send must count (R9: one unanswered after a return quiets)."""
         stmt = select(ReminderSend).where(
             ReminderSend.user_id == user_id, ReminderSend.local_day < before_day
         )
         if after is not None:
-            stmt = stmt.where(ReminderSend.sent_at > after)
+            stmt = stmt.where(ReminderSend.sent_at >= after)
         stmt = stmt.order_by(ReminderSend.sent_at.desc(), ReminderSend.id.desc())
         return list(db.scalars(stmt).all())
 

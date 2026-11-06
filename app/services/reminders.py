@@ -352,12 +352,14 @@ def quiet_now(db, user: User, local_day: date, now: datetime) -> bool:
     sends = crud_reminder_send.newest_first(
         db, user.id, after=cfg.count_from, before_day=local_day
     )
-    answered = next((s for s in sends if outcome(s) != NEUTRAL), None)
-    if cfg.fragile and answered is not None and outcome(answered) == ANSWERED:
+    latest = next((s for s in sends if outcome(s) != NEUTRAL), None)
+    if cfg.fragile and latest is not None and outcome(latest) == ANSWERED:
         _write(db, user, fragile=None)
         cfg = config(user)
     if level(cfg, streak(sends)) == OFF:
-        _write(db, user, quiet={"level": OFF, "on": local_day.isoformat()})
+        # Dated by the send that completed the streak, not by this sweep: the
+        # sweep runs a day later, and that day may be the return's gap day (B2).
+        _write(db, user, quiet={"level": OFF, "on": latest.local_day.isoformat()})
         logger.info("reminders: %s quiet after unanswered ones", user.id)
         return True
     return False
@@ -645,6 +647,13 @@ def _v_undo(t, data: str, sid: str, mid: str) -> Screen:
         return replace(tap_view(t.db, t.user, send, t.now), toast=UNDONE_TOAST)
     # Soft, as every delete: a pull holding this row learns of it.
     meal_items.delete_meal(t.db, t.user.id, meal.id)
+    if send.answer == "fav" and all(
+        log.deleted_at is not None for log in _logs(t.db, t.user, send)
+    ):
+        # Nothing logged from it any more: not an answer, and the next send may
+        # delete it (R4). Neutral, as ✅ ОК: the person did look at it.
+        send.answer = "ok"
+        t.db.commit()
     return replace(tap_view(t.db, t.user, send, t.now), toast=UNDO_TOAST)
 
 
@@ -653,6 +662,8 @@ def _v_ok(t, data: str, sid: str) -> Screen:
     send = _own_send(t, data, sid)
     if send.answer is None:
         send.answer = "ok"
+    if send.closed_at is None:
+        send.closed_at = t.now  # dismissed; the next send still deletes it
     t.db.commit()
     return Screen("", None, toast=OK_TOAST, view=STRIP)
 
@@ -662,6 +673,8 @@ def _v_off(t, data: str, sid: str) -> Screen:
     send = _own_send(t, data, sid)
     if send.answer is None:
         send.answer = "off"
+    if send.closed_at is None:
+        send.closed_at = t.now
     cfg = config(t.user)
     prev = {"mode": cfg.mode, "evening": cfg.evening} if cfg.mode != OFF else cfg.prev
     _write(t.db, t.user, mode=OFF, prev=prev)
