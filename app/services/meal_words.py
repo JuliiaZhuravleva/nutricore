@@ -16,6 +16,17 @@ from typing import Optional
 EXACT, APPROX, DAY_ONLY = "exact", "approx", "day_only"
 
 _PARTS = {"утром": time(9), "днем": time(14), "вечером": time(20)}
+# A meal's name said as its time: «в обед суп». ASSUMED, like the parts.
+_MEAL_NAMES = {
+    "на завтрак": time(9),
+    "за завтраком": time(9),
+    "в обед": time(13),
+    "на обед": time(13),
+    "за обедом": time(13),
+    "на полдник": time(16),
+    "на ужин": time(19),
+    "за ужином": time(19),
+}
 _NOON = time(12)
 _NIGHT = time(3)
 _FLAGS = re.IGNORECASE
@@ -23,7 +34,10 @@ _FLAGS = re.IGNORECASE
 _CLOCK = re.compile(
     r"(?<![\w:.,])(?:(вчера)\s+)?(?:в\s+)?(\d{1,2}):(\d{2})(?![\d:])", _FLAGS
 )
-_YESTERDAY_PART = re.compile(r"\bвчера\s+(утром|дн[её]м|вечером)\b", _FLAGS)
+_MEAL_NAME = "|".join(name.replace(" ", r"\s+") for name in _MEAL_NAMES)
+_YESTERDAY_PART = re.compile(
+    rf"\bвчера\s+(утром|дн[её]м|вечером|{_MEAL_NAME})\b", _FLAGS
+)
 # «в 13» only at either end of the text: in the middle a number is more likely food's,
 # and a unit after it always is: «в 3 раза больше», «в 2 тарелки».
 _NOT_HOUR = r"раз|г\b|гр|кг|мл|л\b|шт|тарел|порц|кус|лож|стак|чаш|упак|пач|бан|бут|ломт"
@@ -38,13 +52,14 @@ _AGO = re.compile(r"\b(полчаса|час)\s+назад\b", _FLAGS)
 _YESTERDAY = re.compile(r"\bвчера\b", _FLAGS)
 _NIGHT_WORD = re.compile(r"\bночью\b", _FLAGS)
 _PART = re.compile(r"\b(утром|дн[её]м|вечером)\b", _FLAGS)
+_MEAL = re.compile(rf"\b({_MEAL_NAME})\b", _FLAGS)
 
 
 @dataclass(frozen=True)
 class SaidTime:
     moment: datetime  # in UTC
     precision: str
-    phrase: str
+    phrase: Optional[str]  # None when several phrases left only the day
     rest: str  # the text without the phrase
     of_day: bool = False  # a clock of a day that the words did not name
 
@@ -52,13 +67,27 @@ class SaidTime:
 @dataclass(frozen=True)
 class _Found:
     match: re.Match
-    moment: datetime
+    moment: datetime  # local
     precision: str
     of_day: bool = False
+
+    @property
+    def phrase(self) -> str:
+        return self.match.group(0).strip()
+
+    @property
+    def yesterday(self) -> bool:
+        return _YESTERDAY.search(self.phrase) is not None
 
 
 def _plain(word: str) -> str:
     return word.casefold().replace("ё", "е")
+
+
+def _clock_word(word: str) -> time:
+    """The clock of a part of the day or of a meal's name, however spaced."""
+    plain = " ".join(_plain(word).split())
+    return _PARTS.get(plain) or _MEAL_NAMES[plain]
 
 
 def _at(day, clock: time, zone) -> datetime:
@@ -97,7 +126,7 @@ def _find_yesterday_part(text: str, local: datetime, zone) -> Optional[_Found]:
     if match is None:
         return None
     day = local.date() - timedelta(days=1)
-    return _Found(match, _at(day, _PARTS[_plain(match.group(1))], zone), APPROX)
+    return _Found(match, _at(day, _clock_word(match.group(1)), zone), APPROX)
 
 
 def _find_hour(text: str, local: datetime, zone) -> Optional[_Found]:
@@ -137,6 +166,14 @@ def _find_part(text: str, local: datetime, zone) -> Optional[_Found]:
     return _Found(match, _latest(local, clock, zone), APPROX, of_day=True)
 
 
+def _find_meal(text: str, local: datetime, zone) -> Optional[_Found]:
+    match = _MEAL.search(text)
+    if match is None:
+        return None
+    clock = _clock_word(match.group(1))
+    return _Found(match, _latest(local, clock, zone), APPROX, of_day=True)
+
+
 _FINDERS = (
     _find_clock,
     _find_yesterday_part,
@@ -145,7 +182,11 @@ _FINDERS = (
     _find_yesterday,
     _find_night,
     _find_part,
+    _find_meal,
 )
+# What a found phrase leaves in its place. Not a space: «в 13» counts only at either
+# end of the text, and a phrase found before it must not make an end of the middle.
+_MASK = "\x00"
 
 
 def _without(text: str, match: re.Match) -> str:
@@ -153,29 +194,66 @@ def _without(text: str, match: re.Match) -> str:
     return " ".join(left.split()).strip(" ,.;:—-")
 
 
+def _found(text: str, local: datetime, zone) -> list:
+    """Every phrase, each finder in the table's order, each run until it finds no
+    more; a found span is masked, so no phrase is found twice. In finder order."""
+    found = []
+    for find in _FINDERS:
+        while (one := find(text, local, zone)) is not None:
+            found.append(one)
+            start, end = one.match.span()
+            text = f"{text[:start]}{_MASK * (end - start)}{text[end:]}"
+    return found
+
+
+def time_phrases(text: Optional[str], sent: datetime, zone) -> list:
+    """All the time phrases of a text, in text order, none overlapping another."""
+    if not text:
+        return []
+    found = _found(text, sent.astimezone(zone), zone)
+    return sorted(found, key=lambda one: one.match.start())
+
+
+def _common_day(found: list, local: datetime):
+    """The day phrases that disagree on the clock still agree on: the one all their
+    moments fall on, else yesterday when «вчера» is said and nothing names another day,
+    else the day it was sent."""
+    days = {one.moment.date() for one in found}
+    if len(days) == 1:
+        return days.pop()
+    if any(one.yesterday for one in found) and all(
+        one.yesterday or one.of_day for one in found
+    ):
+        return local.date() - timedelta(days=1)
+    return local.date()
+
+
 def time_words(
     text: Optional[str], sent: datetime, zone, *, bare_ok: bool = False
 ) -> Optional[SaidTime]:
     """The first phrase of the table. None if there is none, or, unless ``bare_ok``,
-    if nothing else is there: a time word alone is nobody's dish, and nobody's time."""
+    if nothing else is there: a time word alone is nobody's dish, and nobody's time.
+    Two phrases that name different moments give their day and no clock: «утром каша,
+    в 19:30 паста» is two meals, and neither time is the record's."""
     if not text:
         return None
     local = sent.astimezone(zone)
-    for find in _FINDERS:
-        found = find(text, local, zone)
-        if found is None:
-            continue
-        rest = _without(text, found.match)
-        if not rest and not bare_ok:
-            return None
+    found = _found(text, local, zone)
+    if not found:
+        return None
+    if len({one.moment for one in found}) > 1:
+        day = _common_day(found, local)
+        named = day != local.date() and any(one.yesterday for one in found)
         return SaidTime(
-            found.moment.astimezone(UTC),
-            found.precision,
-            found.match.group(0).strip(),
-            rest,
-            found.of_day,
+            _at(day, _NOON, zone).astimezone(UTC), DAY_ONLY, None, text, not named
         )
-    return None
+    first = found[0]
+    rest = _without(text, first.match)
+    if not rest and not bare_ok:
+        return None
+    return SaidTime(
+        first.moment.astimezone(UTC), first.precision, first.phrase, rest, first.of_day
+    )
 
 
 # --- 5.4 corrective words -------------------------------------------------------------

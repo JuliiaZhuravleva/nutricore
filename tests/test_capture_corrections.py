@@ -13,8 +13,7 @@ from telegram import Update
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import BodyMetric, Meal, MealItem, MealMessage, MealSource, RecordEvent
-from app.services import close_row
-from app.services import capture, meal_items
+from app.services import capture, close_row, meal_items
 from app.services import telegram as tg
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     CHAT,
@@ -264,6 +263,35 @@ def test_words_that_only_look_like_time_stay_food(db, owner, reader, clock, word
     assert wire.sent()[0]["text"].startswith("Записано: ")
 
 
+@pytest.mark.parametrize("words", ["утром каша, в обед суп", "утром каша, в 13:00 суп"])
+def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
+    db, owner, reader, clock, words
+):
+    reader.answer = dict(SOUP)
+    wire = send(text(words))
+    meal = _meals(db)[0]
+    assert meal.time_precision == "day_only"
+    assert meal.time_source == "said"
+    assert meal.time_phrase is None
+    assert _local(meal) == datetime(2026, 10, 26, 12, 0)
+    # No phrase is cut: neither is the meal's, and the words keep both times.
+    assert reader.text == [words]
+    assert meal.description == words
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == f"Записано на пн 26 октября, без времени: {words}."
+
+
+def test_r0_control_one_time_in_the_message_is_still_its_time(db, owner, reader, clock):
+    reader.answer = dict(SOUP)
+    wire = send(text("в обед суп"))
+    meal = _meals(db)[0]
+    assert (meal.time_precision, meal.time_phrase) == ("approx", "в обед")
+    assert _local(meal) == datetime(2026, 10, 26, 13, 0)
+    assert reader.text == ["суп"]
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == "Записано на пн 26 октября, ≈ 13:00: суп."
+
+
 def test_a_time_word_alone_is_no_dish(db, owner, reader, clock):
     """Nothing is left of the text to read, so the words stay what the model gets."""
     reader.answer = {"foods": []}
@@ -478,7 +506,10 @@ def test_an_add_is_born_as_its_own_meal_then_joined(db, owner, reader, clock):
     db.expire_all()
     assert meal.description == "суп, сыр"
     assert _item_names(db, meal) == ["суп", "сыр"]
-    assert _kb(wire.sent()[0]) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(wire.sent()[0]) == [
+        [close_row.CALLBACK],
+        [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"],
+    ]
 
 
 def test_the_born_meal_counts_in_no_reader(db, owner, reader, clock):
@@ -1215,7 +1246,10 @@ def test_a_photo_in_reply_joins_when_it_is_read(db, owner, reader, clock):
     assert source.meal_id == meal.id
     assert source.origin_meal_id == born.id
     assert born.merged_into_id == meal.id
-    assert _kb(line) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(line) == [
+        [close_row.CALLBACK],
+        [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"],
+    ]
     # And the original line, with the new list.
     assert wire.edits()[1]["message_id"] == 700
     assert wire.edits()[1]["text"] == "Записано: суп, рис и курица."

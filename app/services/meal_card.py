@@ -37,7 +37,14 @@ from app.models.meal_source import MealSource
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
-from app.services import favorites, food_groups, meal_items, next_step, stats_screen
+from app.services import (
+    favorites,
+    food_groups,
+    meal_items,
+    meal_words,
+    next_step,
+    stats_screen,
+)
 from app.services.close_row import ok_row
 from app.services.day_card import APPROX, DAY_ONLY
 from app.services.day_card import clock as _clock
@@ -130,8 +137,18 @@ UNDO_LABEL = "↩️ Вернуть"
 NOTHING_SAME = "<i>Уже так</i>"
 TIME_FUTURE = "<i>Это время ещё не наступило. Напиши другое.</i>"
 # ``d``: without a time, on the meal's present day. ``y``: without a time, on the
-# button's day, for a meal that has no clock a day could be counted with.
-_PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY, "y": DAY_ONLY}
+# button's day, for a meal that has no clock a day could be counted with. ``p``: a
+# part of the day of a meal that had none (R0). ``s``: the moment it was sent.
+_PRECISION_OF = {
+    "e": EXACT,
+    "a": APPROX,
+    "d": DAY_ONLY,
+    "y": DAY_ONLY,
+    "p": APPROX,
+    "s": EXACT,
+}
+# R0: the parts of the day a day_only meal is offered, at meal_words' clocks.
+_PART_CHIPS = (("Утром", "утром"), ("Днём", "днем"), ("Вечером", "вечером"))
 # Two taps on one picked dish are one wish; the same dish a moment later is another.
 REPEAT_WINDOW = timedelta(seconds=3)
 
@@ -1849,6 +1866,37 @@ def _time_chip(meal: Meal, label: str, moment: datetime, kind: str, back: str):
     return _button(label, f"ml:ts:{meal.id}:{int(moment.timestamp())}:{kind}:{back}")
 
 
+def _sent_chip(t: _Tap, meal: Meal, back: str) -> list:
+    """«В 21:40»: the moment it was sent, exact. On another day than the meal's, the
+    label says which, so a tap after midnight never reads as the meal's own day."""
+    if meal.sent_at is None:
+        return []
+    sent = local_time(meal.sent_at, t.zone)
+    if sent.date() == meal_day(meal, t.user):
+        label = f"В {plain_time(sent)}"
+    elif sent.date() == local_time(t.now, t.zone).date():
+        label = f"Сегодня, {plain_time(sent)}"
+    else:
+        label = f"{_day_label(sent.date())}, {plain_time(sent)}"
+    return [_time_chip(meal, label, sent, "s", back)]
+
+
+def _day_only_rows(t: _Tap, meal: Meal, back: str, yesterday, undo_row) -> list:
+    """R0, §3.5: a day and no clock gets the parts of that day and the sent moment,
+    each one tap. A part still ahead of now is not offered."""
+    day = meal_day(meal, t.user)
+    parts = []
+    for label, word in _PART_CHIPS:
+        moment = datetime.combine(day, meal_words._PARTS[word], tzinfo=t.zone)
+        if moment <= t.now:
+            parts.append(_time_chip(meal, label, moment, "p", back))
+    rows = [parts] if parts else []
+    rows.append([*_sent_chip(t, meal, back), yesterday])
+    if undo_row:
+        rows.append(undo_row)
+    return rows
+
+
 def _time_screen(
     t: _Tap,
     meal: Meal,
@@ -1874,7 +1922,7 @@ def _time_screen(
     if meal.time_precision == DAY_ONLY:
         # No clock to carry over: the day moves, and it still claims no time (N5c).
         yesterday = _time_chip(meal, label, _noon(day, zone), "y", back)
-        rows = [[yesterday, *undo_row]]
+        rows = _day_only_rows(t, meal, back, yesterday, undo_row)
     else:
         rows = [
             [
@@ -2109,7 +2157,7 @@ _VERBS: tuple = (
     (re.compile(rf"ml:d:{_ID}:{_BACK}"), _v_delete),
     (re.compile(rf"ml:u:{_ID}:{_BACK_TIME}"), _v_undo),
     (re.compile(rf"ml:t:{_ID}:{_BACK_TIME}"), _v_time),
-    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d|y):{_BACK_TIME}"), _v_time_set),
+    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d|y|p|s):{_BACK_TIME}"), _v_time_set),
     (re.compile(rf"ml:pk:{_ID}:(a|r):{_BACK}:(\d{{1,2}})"), _v_pick),
     (re.compile(rf"ml:pa:{_ID}:{_ID}:{_BACK}"), _v_pick_add),
     (re.compile(rf"ml:pr:{_ID}:{_ID}:{_BACK}"), _v_pick_replace),

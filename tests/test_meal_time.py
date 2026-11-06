@@ -286,7 +286,12 @@ def test_n5c_not_remembered_keeps_the_day_and_drops_the_clock_chips(db, owner):
             PLEASE,
         ]
     )
-    assert _rows(screen) == [["Вчера, 30 окт", UNDO], ["⬅️ К приёму"]]
+    assert _rows(screen) == [
+        ["Утром", "Днём", "Вечером"],
+        ["В 13:20", "Вчера, 30 окт"],
+        [UNDO],
+        ["⬅️ К приёму"],
+    ]
     db.refresh(meal)
     assert meal.time_precision == "day_only"
     assert meal_card.meal_day(meal, owner) == date(2026, 10, 26)
@@ -294,7 +299,11 @@ def test_n5c_not_remembered_keeps_the_day_and_drops_the_clock_chips(db, owner):
     assert _eaten(db, meal).astimezone(ZONE).strftime("%H:%M") == "12:00"
     # Reopened later, it has no chips to count from and no undo.
     reopened = _sat(db, f"ml:t:{meal.id}:t")
-    assert _rows(reopened) == [["Вчера, 30 окт"], ["⬅️ К приёму"]]
+    assert _rows(reopened) == [
+        ["Утром", "Днём", "Вечером"],
+        ["В 13:20", "Вчера, 30 окт"],
+        ["⬅️ К приёму"],
+    ]
     assert "Записано на: пн 26 октября, без времени." in reopened.text
 
 
@@ -353,6 +362,122 @@ def test_the_chip_on_a_meal_already_yesterday_says_no_new_day(db, owner):
     screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "Вчера, 30 окт"))
     assert screen.text.startswith("<i>✓ Время примерное: ≈ 13:20</i>\n\n")
     assert "в этом дне" not in screen.text
+
+
+# --- R0: a day and no clock (§3.5) ------------------------------------------
+
+
+def _day_only(db, owner, day, sent):
+    """A meal on ``day`` with no clock, sent at the local ``sent``."""
+    meal, _item = _one(db, owner)
+    meal.meal_time = datetime(day.year, day.month, day.day, 12, 0, tzinfo=ZONE)
+    meal.time_precision, meal.time_source = "day_only", "said"
+    meal.sent_at = sent.replace(tzinfo=ZONE).astimezone(UTC)
+    db.commit()
+    return meal
+
+
+def test_r0_a_day_only_meal_of_yesterday_gets_every_part_and_its_sent_moment(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 30, 21, 40))
+    screen = _sat(db, f"ml:t:{meal.id}:t")
+    assert screen.text == "\n".join(
+        [TIME_TITLE, "Записано на: пт 30 октября, без времени.", PLEASE]
+    )
+    assert _rows(screen) == [
+        ["Утром", "Днём", "Вечером"],
+        ["В 21:40", "Вчера, 30 окт"],
+        ["⬅️ К приёму"],
+    ]
+    clocks = [datetime(2026, 10, 30, hour, 0, tzinfo=ZONE) for hour in (9, 14, 20)]
+    assert _data(screen)[0] == [f"ml:ts:{meal.id}:{_ts(c)}:p:t" for c in clocks]
+    sent = datetime(2026, 10, 30, 21, 40, tzinfo=ZONE)
+    assert _data(screen)[1][0] == f"ml:ts:{meal.id}:{_ts(sent)}:s:t"
+
+
+def test_r0_a_part_tap_is_approximate_on_the_meals_day_and_edited(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 30, 21, 40))
+    screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "Днём"))
+    assert screen.text.startswith("<i>✓ Время примерное: ≈ 14:00</i>\n\n")
+    db.refresh(meal)
+    assert _eaten(db, meal) == datetime(2026, 10, 30, 14, 0, tzinfo=ZONE)
+    assert (meal.time_precision, meal.time_source) == ("approx", "edited")
+    # With a clock again, the screen is the exact branch's (control).
+    assert _rows(screen)[0] == ["−15 мин", "−1 ч", "Вчера, 30 окт"]
+    assert len(_events(db)) == 1
+
+
+def test_r0_the_sent_moment_is_exact(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 30, 21, 40))
+    screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "В 21:40"))
+    assert screen.text.startswith("<i>✓ Время: 21:40</i>\n\n")
+    db.refresh(meal)
+    assert _eaten(db, meal) == _aware(meal.sent_at)
+    assert (meal.time_precision, meal.time_source) == ("exact", "edited")
+
+
+def test_r0_a_sent_moment_on_the_next_day_says_today_and_lands_there(db, owner):
+    # Yesterday's day, answered at 1:30 today: «В 1:30» would read as yesterday's.
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 31, 1, 30))
+    screen = _sat(db, f"ml:t:{meal.id}:t")
+    assert _rows(screen)[1] == ["Сегодня, 1:30", "Вчера, 30 окт"]
+    assert "В 1:30" not in [label for row in _rows(screen) for label in row]
+    screen = _sat(db, _button(screen, "Сегодня, 1:30"))
+    assert screen.text.startswith(
+        "<i>✓ Время: сб 31 октября, 1:30. Приём теперь в этом дне.</i>"
+    )
+    assert meal_card.meal_day(meal, owner) == date(2026, 10, 31)
+    assert _eaten(db, meal) == datetime(2026, 10, 31, 1, 30, tzinfo=ZONE)
+
+
+def test_r0_a_sent_moment_on_neither_day_names_its_own(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 28), datetime(2026, 10, 29, 1, 5))
+    assert _rows(_sat(db, f"ml:t:{meal.id}:t"))[1] == ["чт 29, 1:05", "Вчера, 30 окт"]
+
+
+def test_r0_a_part_later_than_now_is_not_drawn(db, owner):
+    # 14:00 local on the 31st: «Днём» is now, «Вечером» is ahead.
+    meal = _day_only(db, owner, date(2026, 10, 31), datetime(2026, 10, 31, 13, 50))
+    assert _rows(_sat(db, f"ml:t:{meal.id}:t")) == [
+        ["Утром", "Днём"],
+        ["В 13:50", "Вчера, 30 окт"],
+        ["⬅️ К приёму"],
+    ]
+    early = datetime(2026, 10, 31, 4, 0, tzinfo=UTC)  # 8:00 local: none has come
+    rows = _rows(_sat(db, f"ml:t:{meal.id}:t", now=early))
+    assert rows == [["В 13:50", "Вчера, 30 окт"], ["⬅️ К приёму"]]
+
+
+def test_r0_a_meal_with_no_sent_moment_offers_the_parts_only(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 30, 21, 40))
+    meal.sent_at = None
+    db.commit()
+    assert _rows(_sat(db, f"ml:t:{meal.id}:t"))[1] == ["Вчера, 30 окт"]
+
+
+def test_r0_the_exact_branch_offers_no_parts(db, owner):
+    meal, _item = _one(db, owner)
+    labels = [label for row in _rows(_sat(db, f"ml:t:{meal.id}:t")) for label in row]
+    assert not {"Утром", "Днём", "Вечером", "В 13:20"} & set(labels)
+    assert "−15 мин" in labels  # control: it is the time screen
+
+
+def test_r0_the_day_only_screen_keeps_the_layout_limits(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 31, 1, 30))
+    screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "Днём"))
+    screen = _sat(db, _button(screen, "Не помню"))  # day_only again, with an undo
+    rows = _rows(screen)
+    assert [UNDO] in rows and ["Утром", "Днём", "Вечером"] in rows
+    assert len(rows) <= 5
+    for row in rows:
+        budget = {1: 34, 2: 20, 3: 13}[len(row)]
+        assert all(len(label) <= budget for label in row), row
+    for data in [d for row in _data(screen) for d in row]:
+        assert meal_card.is_known_shape(data), data
+
+
+@pytest.mark.parametrize("data", ["ml:ts:1:100:p:r", "ml:ts:1:100:s:t"])
+def test_r0_the_new_chip_kinds_are_known_shapes(data):
+    assert meal_card.is_known_shape(data)
 
 
 # --- typed ------------------------------------------------------------------
