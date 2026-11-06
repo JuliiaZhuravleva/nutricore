@@ -142,7 +142,15 @@ async def run(db, bot, now: datetime | None = None) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     counts = {"sent": 0, "skipped": 0, "failed": 0, "blocked": 0}
     for user, slot in users_due(db, now):
-        outcome = await _send(db, bot, user, slot, now)
+        telegram_id = user.telegram_id
+        try:
+            outcome = await _send(db, bot, user, slot, now)
+        except Exception:
+            # One person's failed claim or commit must not cost everyone after
+            # them their reminder until the next sweep.
+            logger.exception("reminders: could not send to %s", telegram_id)
+            db.rollback()
+            outcome = "failed"
         counts[outcome] += 1
     log = logger.error if counts["failed"] else logger.info
     log("reminders: %s", counts)

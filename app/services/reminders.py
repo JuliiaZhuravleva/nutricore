@@ -372,8 +372,10 @@ def pick_favorites(
     db, user: User, local_day: date, zone, before: datetime | None = None
 ) -> list[tuple[FavoriteMeal, str]]:
     """Up to four (⭐, its name): one eaten that day goes last, then the most days
-    in four weeks, then the list's own order. ``before``: count only what came
-    before the reminder, so a tap on it does not reorder its own chips."""
+    in four weeks, then the newest ⭐ first. ``before``: count only what came
+    before the reminder, so a tap on it does not reorder its own chips. The last
+    key is when the ⭐ was saved, not ``list_active``'s last use: a tap moves that,
+    and every chip under the finger would move with it."""
     favs = crud_favorite_meal.list_active(db, user.id)
     if not favs:
         return []
@@ -401,11 +403,12 @@ def pick_favorites(
     for dish_id, moment in db.execute(stmt):
         days[dish_id].add(local_time(moment, zone).date())
     ranked = []
-    for index, fav in enumerate(favs):
+    for fav in favs:
         dish = crud_favorite_meal.dish_if_any(db, fav)
         eaten = days.get(dish.id, set()) if dish is not None else set()
         name = dish.canonical_name if dish is not None else fav.name
-        ranked.append(((local_day in eaten, -len(eaten), index), fav, name))
+        saved = -meal_card._stamp(fav.created_at)
+        ranked.append(((local_day in eaten, -len(eaten), saved, -fav.id), fav, name))
     ranked.sort(key=lambda entry: entry[0])
     return [(fav, name) for _key, fav, name in ranked[:CHIPS]]
 
@@ -488,14 +491,16 @@ def _logged_line(meal: Meal, zone, today: date) -> str:
 
 
 def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
-    """The reminder after a ⭐: a line for each, ↩️ and 🕐 for the latest."""
+    """The reminder after a ⭐: a line for each, ↩️ and 🕐 for the latest still
+    logged, so undoing the newest leaves the one before it in reach (A3)."""
     zone = settings_screen.user_zone(user)
     logs = _logs(db, user, send)
     today = now.astimezone(zone).date()
     lines = [TITLE] + [_logged_line(meal, zone, today) for meal in logs] + [_MORE]
-    latest = logs[-1] if logs else None
+    latest = next((meal for meal in reversed(logs) if meal.deleted_at is None), None)
+    live = latest is not None
     rows = []
-    if latest is not None and latest.deleted_at is None:
+    if live:
         rows.append(ok_row())
         rows.append(
             [
@@ -505,7 +510,6 @@ def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
         )
     picks = pick_favorites(db, user, send.local_day, zone, before=send.sent_at)
     rows += _chip_rows(send, picks)
-    live = latest is not None and latest.deleted_at is None
     return Screen(
         "\n".join(lines),
         InlineKeyboardMarkup(rows),
@@ -676,8 +680,12 @@ def _v_off(t, data: str, sid: str) -> Screen:
     if send.closed_at is None:
         send.closed_at = t.now
     cfg = config(t.user)
-    prev = {"mode": cfg.mode, "evening": cfg.evening} if cfg.mode != OFF else cfg.prev
-    _write(t.db, t.user, mode=OFF, prev=prev)
+    if cfg.mode != OFF:
+        # Tied to this message: its ↩️ only puts back what this ✖ took away.
+        prev = {"mode": cfg.mode, "evening": cfg.evening, "send": send.id}
+        _write(t.db, t.user, mode=OFF, prev=prev)
+    else:
+        t.db.commit()  # the send's answer; the settings stay as they are
     rows = [
         ok_row(),
         [_btn(meal_card.UNDO_LABEL, f"b:{send.id}"), _btn("⚙️ Настроить", "o")],
@@ -687,18 +695,21 @@ def _v_off(t, data: str, sid: str) -> Screen:
 
 
 def _v_back(t, data: str, sid: str) -> Screen:
-    _own_send(t, data, sid)
+    """↩️ Вернуть under ✖: what that ✖ took, once. A second tap, or one after a
+    change in ⚙️, leaves the settings as they are and says what they are."""
+    send = _own_send(t, data, sid)
     cfg = config(t.user)
     prev = cfg.prev or {}
-    mode = prev.get("mode") if prev.get("mode") in MODES else EVENING
-    evening = prev.get("evening")
-    _write(
-        t.db,
-        t.user,
-        mode=mode,
-        evening=evening if evening in EVENING_TIMES else cfg.evening,
-        prev=None,
-    )
+    if prev.get("send") == send.id:
+        mode = prev.get("mode") if prev.get("mode") in MODES else EVENING
+        evening = prev.get("evening")
+        _write(
+            t.db,
+            t.user,
+            mode=mode,
+            evening=evening if evening in EVENING_TIMES else cfg.evening,
+            prev=None,
+        )
     now_on = config(t.user)
     said = (
         "✓ Напоминания выключены."
@@ -724,11 +735,11 @@ def _v_mode(t, data: str, mode: str) -> Screen:
             )
         return settings_view(t.user, t.now, "✓ Напоминания выключены")
     stamp = t.now.isoformat()
-    values = {"mode": EVENING, "off_day": None}
-    if cfg.mode == OFF:
-        values["since"] = stamp  # the hour just passed does not go out at once
+    values = {"mode": EVENING, "off_day": None, "prev": None}
     if cfg.mode == OFF or cfg.quiet is not None:
-        values.update(quiet=None, fragile=None, count_from=stamp)
+        # The hour just passed does not go out at once: not while the person is
+        # still on this screen.
+        values.update(since=stamp, quiet=None, fragile=None, count_from=stamp)
     _write(t.db, t.user, **values)
     if cfg.mode != OFF and cfg.quiet is not None:
         notice = "✓ Напоминания приходят"
@@ -741,7 +752,11 @@ def _v_evening(t, data: str, digits: str) -> Screen:
     at = f"{digits[:2]}:{digits[2:]}"
     if at not in EVENING_TIMES:
         return _unknown(t, data)
-    _write(t.db, t.user, mode=EVENING, evening=at, since=t.now.isoformat())
+    if config(t.user).mode == OFF:
+        # A stale hour button while off: the hour is kept, they stay off.
+        _write(t.db, t.user, evening=at)
+    else:
+        _write(t.db, t.user, evening=at, since=t.now.isoformat(), prev=None)
     return settings_view(t.user, t.now, f"✓ Время: {at}")
 
 

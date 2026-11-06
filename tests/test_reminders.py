@@ -639,6 +639,29 @@ def test_one_persons_bad_data_does_not_stop_the_others(db, monkeypatch):
     assert [u.id for u, _ in reminder_push.users_due(db, AT_21)] == [2]
 
 
+@BACKENDS
+def test_one_persons_failed_claim_does_not_stop_the_sweep(db, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    _usual(db)
+    db.add(User(id=2, telegram_id=43, settings={}))
+    db.commit()
+    _row(db, _utc(DAY, 10), user_id=2)
+    real = crud_reminder_send.claim
+
+    def claim(db_, **kw):
+        if kw["user_id"] == 1:
+            raise OperationalError("INSERT", {}, Exception("connection reset"))
+        return real(db_, **kw)
+
+    monkeypatch.setattr(crud_reminder_send, "claim", claim)
+    bot = _bot()
+    counts = _run(db, bot)
+    assert (counts["failed"], counts["sent"]) == (1, 1)
+    assert bot.send_message.await_args.kwargs["chat_id"] == 43
+    assert db.query(ReminderSend).one().user_id == 2
+
+
 # --- the previous one leaves (R4) ---------------------------------------------------
 
 
@@ -971,10 +994,46 @@ def test_undo_of_one_of_two_stars_keeps_the_answer(db):
     now = AT_21 + timedelta(minutes=5)
     _tap(db, f"rm:f:{send.id}:{fav.id}", now)
     _tap(db, f"rm:f:{send.id}:{fav.id}", now + timedelta(seconds=10))
-    latest = _favorite_meals(db)[-1]
-    _tap(db, f"rm:u:{send.id}:{latest.id}", now + timedelta(seconds=20))
+    first, latest = _favorite_meals(db)
+    screen = _tap(db, f"rm:u:{send.id}:{latest.id}", now + timedelta(seconds=20))
     db.refresh(send)
     assert send.answer == "fav"
+    # A3: the one still logged keeps ✅ ОК first, its ↩️ and its 🕐.
+    assert "↩️ Отменено: Суп." in screen.text
+    assert screen.markup.inline_keyboard[0][0].text == "✅ ОК"
+    assert _callbacks(screen.markup)[1:3] == [
+        f"rm:u:{send.id}:{first.id}",
+        f"ml:t:{first.id}:r",
+    ]
+    assert screen.meal_id == first.id
+    assert screen.view is None
+    assert f"rm:f:{send.id}:{fav.id}" in _callbacks(screen.markup)  # chips stay
+
+
+def _chips(markup) -> list[str]:
+    return [data for data in _callbacks(markup) if data.startswith("rm:f:")]
+
+
+@BACKENDS
+def test_a_tap_does_not_move_the_chips(db):
+    """§3.3 «Tapped chips stay»: in place, so a second tap at the same spot logs
+    the dish the person sees there."""
+    _usual(db)
+    for name in ("Овсянка", "Хумус с хлебом", "Суп", "Чай"):
+        _fav(db, name)
+    bot = _bot()
+    _run(db, bot)
+    send = db.query(ReminderSend).one()
+    sent = _chips(bot.send_message.await_args.kwargs["reply_markup"])
+    assert len(sent) == 4
+    now = AT_21 + timedelta(minutes=5)
+    screen = _tap(db, sent[-1], now)
+    assert _chips(screen.markup) == sent
+    screen = _tap(db, sent[-1], now + timedelta(seconds=10))
+    assert _chips(screen.markup) == sent
+    screen = _tap(db, sent[1], now + timedelta(seconds=20))
+    assert _chips(screen.markup) == sent
+    assert _chips(reminders.reminder_view(db, _user(db), send, now).markup) == sent
 
 
 def test_a_removed_star_says_so(db):
@@ -1045,6 +1104,51 @@ def test_off_at_once_and_back(db):
     assert "✓ Напоминания включены: вечером, в 22:00." in screen.text
     cfg = reminders.config(_user(db))
     assert (cfg.mode, cfg.evening) == ("evening", "22:00")
+
+
+def test_a_stale_back_leaves_the_settings_alone(db):
+    _usual(db)
+    send = _send(db, DAY)
+    _tap(db, f"rm:x:{send.id}", AT_21)
+    _tap(db, f"rm:b:{send.id}", AT_21)
+    _tap(db, "rm:m:off", AT_21)  # then off in ⚙️
+    screen = _tap(db, f"rm:b:{send.id}", AT_21)  # the old message's ↩️ again
+    assert "✓ Напоминания выключены." in screen.text
+    assert reminders.config(_user(db)).mode == "off"
+    # ✖, then on again in ⚙️ at another hour: the old ↩️ does not undo that.
+    _tap(db, "rm:m:evening", AT_21)
+    _tap(db, f"rm:x:{send.id}", AT_21)
+    _tap(db, "rm:m:evening", AT_21)
+    _tap(db, "rm:e:2300", AT_21)
+    _tap(db, f"rm:b:{send.id}", AT_21)
+    cfg = reminders.config(_user(db))
+    assert (cfg.mode, cfg.evening) == ("evening", "23:00")
+
+
+def test_a_stale_hour_while_off_keeps_them_off(db):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day)
+    assert _reason(db) == "quiet"
+    _tap(db, "rm:m:off", AT_21)
+    screen = _tap(db, "rm:e:2200", AT_21)
+    assert "✓ Время: 22:00" in screen.text
+    assert "Сейчас: выключены." in screen.text
+    cfg = reminders.config(_user(db))
+    assert (cfg.mode, cfg.evening) == ("off", "22:00")
+    assert cfg.quiet is not None  # turning on again is what clears the pause
+
+
+def test_resuming_inside_the_hour_waits_for_the_next_slot(db):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day)
+    assert _reason(db) == "quiet"
+    _tap(db, "rm:m:evening", _utc(DAY, 21, 10))
+    assert _reason(db, now=_utc(DAY, 21, 15)) == "turned on after the slot"
+    tomorrow = DAY + timedelta(days=1)
+    _row(db, _utc(tomorrow, 10))
+    assert _reason(db, now=_utc(tomorrow, 21, 5)) is None
 
 
 def test_the_settings_screen(db):
@@ -1261,3 +1365,42 @@ def test_task_builds_no_bot_when_nobody_is_due(db, monkeypatch):
 
     monkeypatch.setattr(task.custom_emoji, "build_bot", no_bot)
     assert task.send_reminders() == task.NOTHING
+
+
+def test_task_builds_a_bot_and_sends_when_someone_is_due(db, monkeypatch):
+    """The pair of the one above: the same task does build a bot and send."""
+    from celery_app.tasks import reminders as task
+
+    _usual(db)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return AT_21
+
+    bot = _bot()
+    bot.emoji = SimpleNamespace(load=AsyncMock(), problem=None)
+
+    class Bot:
+        async def __aenter__(self):
+            return bot
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        def __getattr__(self, name):
+            return getattr(bot, name)
+
+    built = []
+
+    def build_bot(*args, **kwargs):
+        built.append(args)
+        return Bot()
+
+    monkeypatch.setattr(task, "SessionLocal", lambda: db)
+    monkeypatch.setattr(task, "datetime", Clock)
+    monkeypatch.setattr(task.custom_emoji, "build_bot", build_bot)
+    counts = task.send_reminders()
+    assert len(built) == 1
+    assert counts["sent"] == 1
+    bot.send_message.assert_awaited_once()
