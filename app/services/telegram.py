@@ -72,6 +72,7 @@ from app.services import (
     owner_buttons,
     people_screen,
     portion_suggestions,
+    reminders,
     routines,
     settings_screen,
     stats_screen,
@@ -1893,6 +1894,36 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on a 🔔 reminder or its settings (``rm:…``). A ⭐ logged from a reminder
+    makes the message hold that meal, as a ⭐ from the list does."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+    strip = []
+
+    def handle(db, telegram_id: int, data: str):
+        screen = reminders.handle_callback(db, telegram_id, data, message_id=message_id)
+        if screen.text:
+            capture.tapped(db, chat_id, message_id, screen)
+        strip.append(screen.view == reminders.STRIP)
+        return screen
+
+    await _screen_callback(
+        update,
+        handle,
+        TERM_ENDED,
+        "Reminders",
+        deliver=_card_delivery.tap,
+    )
+    if strip and strip[0]:
+        # ✅ ОК: the buttons leave, the text stays.
+        try:
+            await update.callback_query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError as e:
+            logger.warning("reminders: buttons stayed on the message: %s", e)
+
+
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A statistics tab (``st:…``). The message shows no one meal from here on."""
     message = update.callback_query.message
@@ -3047,6 +3078,13 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             favorites_callback, pattern=f"^{favorites.CALLBACK_PREFIX}"
+        )
+    )
+
+    # 🔔 reminders and their settings (stateless, like favorites).
+    application.add_handler(
+        CallbackQueryHandler(
+            reminders_callback, pattern=f"^{reminders.CALLBACK_PREFIX}"
         )
     )
 

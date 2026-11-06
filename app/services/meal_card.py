@@ -280,6 +280,8 @@ def line_head(meal: Meal, zone, plain: str = "Записано") -> str:
         return f"Записано на {_when(meal, zone)}"
     if meal.time_source == "edited" and meal.time_precision == DAY_ONLY:
         return f"Записано на {_when(meal, zone)}"  # O1b: a day, chosen on another day
+    if meal.time_source == "reminder":
+        return f"Записано на {_when(meal, zone)}"  # 🔔: the reminder's day, not now
     return plain
 
 

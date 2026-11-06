@@ -2,7 +2,7 @@
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
     [🔢 Цифры сразу: выкл] [📋 Черновик: выкл]
-    [🗓 Итог недели: вкл] [💸 Стоимость: выкл]
+    [🔔 Напоминания] [💸 Стоимость: выкл]
     [🧺 Надёжная еда] [✋ Не предлагать]
     [🕐 Пояс] [💊 Рутины] [💬 Фидбэк]
     [🍽 Обычная еда] [ℹ️ Как это работает]
@@ -57,6 +57,7 @@ _PICK = ZONES_CALLBACK + ":"  # + the zone's IANA name
 _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
 _DIET_CB = CALLBACK_PREFIX + "diet"
 _DIET_PICK = _DIET_CB + ":"  # + the answer
+REMINDERS_OPEN = "rm:o"  # == reminders.OPEN, which imports this module
 
 CITIES = (
     ("Тбилиси", "Asia/Tbilisi"),
@@ -153,6 +154,7 @@ def screen(
     never: int = 0,
     draft: bool = False,
     eats: str | None = None,
+    reminders: str = "🔔 Напоминания: вечером, 21:00",
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     # One short line each, in two groups. A switch's state is on its button; what a
@@ -163,6 +165,7 @@ def screen(
         f"🕐 Часовой пояс: {zone_label(zone, now)}",
         _diet_line(eats),
         "🗓 Итог недели: " + ("вс, 22:00" if week_push else "не присылаю"),
+        reminders,
         "",
         f"💊 Рутины: {routines or 'пока нет'}",
         f"🧺 Надёжная еда: {reliable or 'пока нет'}",
@@ -176,7 +179,8 @@ def screen(
             _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
         ],
         [
-            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
+            # The week's switch lives in 🔔 now; an old set:week button still works.
+            _btn("🔔 Напоминания", REMINDERS_OPEN),
             _btn(f"💸 Стоимость: {'вкл' if on else 'выкл'}", _COSTS_CB),
         ],
         [
@@ -294,7 +298,14 @@ def open_view(
         never,
         draft_on(user),
         diet.chosen((user.settings or {}) if user else {}),
+        _reminders_line(user),
     )
+
+
+def _reminders_line(user: User | None) -> str:
+    from app.services import reminders  # it imports this module
+
+    return reminders.hub_line(user)
 
 
 def _save(db, telegram_id: int, **values) -> None:

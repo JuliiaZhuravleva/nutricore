@@ -337,6 +337,22 @@ def just_logged(db, user_id: int, message_id, dish_id: int, now: datetime) -> bo
 
 
 def _log(t, fav: FavoriteMeal, dish: PersonalFood | None, name: str) -> Meal:
+    return log_at(t, fav, dish, name, meal_time=t.now, precision="exact", source="sent")
+
+
+def log_at(
+    t,
+    fav: FavoriteMeal,
+    dish: PersonalFood | None,
+    name: str,
+    *,
+    meal_time: datetime,
+    precision: str,
+    source: str,
+    extra_signals: dict | None = None,
+) -> Meal:
+    """A ⭐ logged at ``meal_time``: now from the list, a reminder's day from 🔔. Still
+    a favourite's meal either way, so the double-tap guard and the undo know it."""
     # What a person corrected on the dish goes over the favourite's copy.
     fields = meal_items.star_meal_fields(t.db, dish, fav)
     grams = fields.pop("grams")
@@ -344,10 +360,14 @@ def _log(t, fav: FavoriteMeal, dish: PersonalFood | None, name: str) -> Meal:
         "favorite_id": fav.id,
         **({"portion_grams": grams} if grams else {}),
         **({"portion_assumed": True} if fields.pop("assumed") else {}),
+        **(extra_signals or {}),
     }
     meal_in = MealCreate(
         description=name,
-        meal_time=t.now,
+        meal_time=meal_time,
+        sent_at=t.now,
+        time_precision=precision,
+        time_source=source,
         **fields,
         resolution_source=FAVORITE_SOURCE,
         resolution_signals=signals,

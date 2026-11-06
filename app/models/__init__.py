@@ -16,6 +16,7 @@ from .meal_source import MealSource
 from .personal_food import PersonalFood, PersonalFoodEmbedding
 from .product_cache import ProductCache
 from .record_event import RecordEvent
+from .reminder_send import ReminderSend
 from .routine_tick import RoutineTick
 from .subscription import Subscription
 from .usage_ledger import UsageLedger
@@ -33,6 +34,7 @@ __all__ = [
     "FavoriteMeal",
     "Feedback",
     "RoutineTick",
+    "ReminderSend",
     "Activity",
     "AnalysisReport",
     "Subscription",

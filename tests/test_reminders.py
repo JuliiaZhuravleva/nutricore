@@ -1,0 +1,1092 @@
+"""🔔 The evening reminder (stage 6, slice R1a): when it goes out, what it says, the ⭐
+tap, the ladder that quiets it, the claim, and its ⚙️ screen.
+
+On an in-memory SQLite DB with a fake bot: no model and no network anywhere. Friday
+6 November 2026 in Tbilisi (UTC+4) unless a test says otherwise.
+"""
+
+import ast
+import asyncio
+import re
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
+
+import httpx
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from telegram.error import BadRequest, Forbidden, NetworkError, TimedOut
+
+from app.core.config import settings
+from app.crud.crud_reminder_send import crud_reminder_send
+from app.crud.crud_subscription import crud_subscription
+from app.db.base import Base
+from app.models.body_metric import BodyMetric
+from app.models.meal import Meal
+from app.models.meal_item import MealItem
+from app.models.reminder_send import ReminderSend
+from app.models.user import User
+from app.services import capture, explain_screen
+from app.services import favorites as fv
+from app.services import (
+    meal_card,
+    openai_service,
+    reminder_push,
+    reminders,
+    settings_screen,
+)
+from app.services import telegram as tg
+from app.services.day_card import DAY_ONLY
+from app.services.settings_screen import TIMEZONE, WEEK_PUSH
+
+ZONE = ZoneInfo("Asia/Tbilisi")
+DAY = date(2026, 11, 6)  # a Friday
+SUNDAY = date(2026, 11, 8)
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _utc(day, hour, minute=0, zone=ZONE):
+    return datetime.combine(day, time(hour, minute), tzinfo=zone).astimezone(UTC)
+
+
+AT_21 = _utc(DAY, 21, 5)  # the first sweep inside the default slot
+
+
+@pytest.fixture
+def factory(monkeypatch):
+    monkeypatch.setattr(
+        crud_subscription, "is_active_subscription", lambda _db, _id: True
+    )
+    monkeypatch.setattr(settings, "DEFAULT_TIMEZONE", "Asia/Tbilisi")
+    monkeypatch.setattr(settings, "BOT_ACCESS_MODE", "open", raising=False)
+    # Not the owner: D1 turns reminders on for everyone, not only for her.
+    monkeypatch.setattr(settings, "TELEGRAM_ADMIN_IDS", "1")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    make = sessionmaker(bind=engine)
+    with make() as session:
+        session.add(User(id=1, telegram_id=42, settings={}))
+        session.commit()
+    monkeypatch.setattr(tg, "SessionLocal", make)
+    yield make
+    engine.dispose()
+
+
+@pytest.fixture
+def db(factory):
+    with factory() as session:
+        yield session
+
+
+def _user(db, user_id=1) -> User:
+    user = db.get(User, user_id)
+    db.refresh(user)
+    return user
+
+
+def _set(db, **values):
+    """The reminders' dict as stored, beside the rest of the settings."""
+    user = _user(db)
+    user.settings = {**(user.settings or {}), reminders.KEY: values}
+    db.commit()
+
+
+def _setting(db, key, value):
+    user = _user(db)
+    user.settings = {**(user.settings or {}), key: value}
+    db.commit()
+
+
+def _row(db, sent, *, user_id=1, draft=False, deleted=False, meal_time=None):
+    meal = Meal(
+        user_id=user_id,
+        description="суп",
+        meal_time=meal_time or sent,
+        sent_at=sent,
+        calories=300,
+        proteins=10,
+        fats=5,
+        carbohydrates=40,
+        is_draft=draft,
+        deleted_at=sent if deleted else None,
+    )
+    db.add(meal)
+    db.commit()
+    return meal
+
+
+def _usual(db):
+    """A record that morning: the person keeps a diary, nothing fresh by 21:00."""
+    return _row(db, _utc(DAY, 10))
+
+
+def _reason(db, now=AT_21, slot=reminders.Slot("21:00", reminders.EVENING)):
+    return reminders.skip_reason(db, _user(db), slot, now)
+
+
+def _send(db, day, *, answer=None, status="sent", slot="21:00", user_id=1):
+    """A reminder of an earlier day, as the sweep left it."""
+    row = crud_reminder_send.claim(
+        db,
+        user_id=user_id,
+        local_day=day,
+        slot=slot,
+        kind=reminders.EVENING if slot >= "18:00" else "meal",
+        chat_id=42 if user_id == 1 else 43,
+        now=_utc(day, int(slot[:2]), int(slot[3:])),
+    )
+    row.status = status
+    row.answer = answer
+    row.message_id = 500 + row.id
+    db.commit()
+    return row
+
+
+def _send_now(db, now):
+    """A reminder that went out a minute before ``now``, on its day."""
+    return crud_reminder_send.claim(
+        db,
+        user_id=1,
+        local_day=now.astimezone(ZONE).date(),
+        slot="21:00",
+        kind=reminders.EVENING,
+        chat_id=42,
+        now=now - timedelta(minutes=1),
+    )
+
+
+def _bot(**kw):
+    return SimpleNamespace(
+        send_message=AsyncMock(
+            side_effect=kw.get("error"),
+            return_value=SimpleNamespace(message_id=kw.get("message_id", 900)),
+        ),
+        delete_message=AsyncMock(side_effect=kw.get("delete_error")),
+        edit_message_reply_markup=AsyncMock(),
+    )
+
+
+def _run(db, bot, now=AT_21):
+    return asyncio.run(reminder_push.run(db, bot, now))
+
+
+def _never_made():
+    error = NetworkError("httpx.ConnectError: no route")
+    error.__cause__ = httpx.ConnectError("no route")
+    return error
+
+
+def _labels(markup) -> list[str]:
+    return [b.text for row in markup.inline_keyboard for b in row]
+
+
+def _callbacks(markup) -> list[str]:
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+def _fav(db, name, user_id=1):
+    """A ⭐ saved long ago, so its own meal counts in no ranking."""
+    source = _row(db, _utc(DAY - timedelta(days=100), 12), user_id=user_id)
+    source.description = name
+    db.commit()
+    fav, _ = fv.save_from_meal(db, source, name)
+    return fav
+
+
+def _eaten(db, fav, day, hour=13):
+    """A meal on ``day`` holding the ⭐'s dish."""
+    meal = _row(db, _utc(day, hour))
+    db.add(
+        MealItem(
+            meal_id=meal.id,
+            origin_meal_id=meal.id,
+            personal_food_id=fav.personal_food_id,
+            name=fav.name,
+        )
+    )
+    db.commit()
+    return meal
+
+
+def _tap(db, data, now, message_id=None):
+    return reminders.handle_callback(db, 42, data, now=now, message_id=message_id)
+
+
+def _favorite_meals(db):
+    return (
+        db.query(Meal)
+        .filter(Meal.resolution_source == fv.FAVORITE_SOURCE)
+        .order_by(Meal.id)
+        .all()
+    )
+
+
+# --- when it is due (§5.3) ---------------------------------------------------------
+
+
+def test_due_with_nothing_in_the_way(db):
+    _usual(db)
+    assert reminders.due(db, _user(db), AT_21) == reminders.Slot("21:00", "evening")
+
+
+def test_absent_config_is_on_at_21_silent_for_everyone(db):
+    """D1: nobody is asked; an invited person with nothing stored gets the evening."""
+    _usual(db)
+    user = _user(db)
+    assert reminders.KEY not in user.settings
+    assert 42 not in settings.admin_ids
+    cfg = reminders.config(user)
+    assert (cfg.mode, cfg.evening, cfg.sound) == ("evening", "21:00", False)
+    assert reminders.due(db, user, AT_21) is not None
+
+
+@pytest.mark.parametrize(
+    "hour, minute, reason",
+    [(20, 59, "not its hour"), (21, 0, None), (21, 59, None), (22, 0, "not its hour")],
+)
+def test_the_slot_goes_within_its_hour(db, hour, minute, reason):
+    _usual(db)
+    assert _reason(db, _utc(DAY, hour, minute)) == reason
+
+
+def test_a_chosen_hour_moves_the_slot(db):
+    _usual(db)
+    _set(db, mode="evening", evening="22:00")
+    assert reminders.due(db, _user(db), AT_21) is None
+    assert reminders.due(db, _user(db), _utc(DAY, 22, 5)).at == "22:00"
+
+
+def test_off_sends_nothing(db):
+    _usual(db)
+    _set(db, mode="off")
+    assert _reason(db) == "off"
+
+
+def test_turned_on_after_the_slot_waits_for_tomorrow(db):
+    _usual(db)
+    _set(db, since=_utc(DAY, 21, 2).isoformat())
+    assert _reason(db) == "turned on after the slot"
+    _set(db, since=_utc(DAY, 20, 50).isoformat())
+    assert _reason(db) is None
+
+
+def test_off_day_skips_that_day_only(db):
+    _usual(db)
+    _set(db, off_day=DAY.isoformat())
+    assert _reason(db) == "off today"
+    _set(db, off_day=(DAY - timedelta(days=1)).isoformat())
+    assert _reason(db) is None
+
+
+def test_sunday_with_the_week_summary_gives_way_to_it(db):
+    _row(db, _utc(SUNDAY, 10))
+    sunday = _utc(SUNDAY, 21, 5)
+    assert _reason(db, sunday) == "the week's summary instead"
+    _setting(db, WEEK_PUSH, False)
+    assert _reason(db, sunday) is None
+
+
+def test_may_not_receive(db, monkeypatch):
+    _usual(db)
+    monkeypatch.setattr(
+        crud_subscription, "is_active_subscription", lambda _db, _id: False
+    )
+    assert _reason(db) == "may not receive"
+
+
+def test_no_live_record_ever_sends_nothing(db):
+    _row(db, _utc(DAY, 9), draft=True)
+    _row(db, _utc(DAY, 10), deleted=True)
+    assert _reason(db) == "no record ever"
+    _row(db, _utc(DAY - timedelta(days=2), 10))
+    assert _reason(db) is None
+
+
+@pytest.mark.parametrize("days, reason", [(8, "no record for a week"), (6, None)])
+def test_a_week_without_records_stops_them(db, days, reason):
+    _row(db, _utc(DAY - timedelta(days=days), 10))
+    assert _reason(db) == reason
+
+
+def test_any_row_counts_as_a_recent_record(db):
+    _row(db, _utc(DAY - timedelta(days=9), 10))
+    _row(db, _utc(DAY - timedelta(days=1), 10), draft=True)
+    assert _reason(db) is None
+
+
+def test_a_claimed_slot_is_not_sent_again(db):
+    _usual(db)
+    _send(db, DAY)
+    assert _reason(db) == "already claimed"
+
+
+def test_three_a_day_at_most(db):
+    _usual(db)
+    for slot in ("09:00", "13:00", "17:00"):
+        _send(db, DAY, slot=slot, answer="ok")
+    assert _reason(db) == "three today"
+
+
+def test_one_evening_a_day_even_after_the_hour_moved(db):
+    _usual(db)
+    _send(db, DAY, slot="20:00", answer="ok")
+    assert _reason(db) == "the evening one went out"
+
+
+@pytest.mark.parametrize(
+    "hour, minute, kind, reason",
+    [
+        (18, 30, "live", "fresh record"),
+        (19, 0, "draft", "fresh record"),
+        (20, 0, "deleted", "fresh record"),
+        (17, 55, "live", None),
+    ],
+)
+def test_a_fresh_record_within_three_hours_skips(db, hour, minute, kind, reason):
+    _usual(db)
+    _row(db, _utc(DAY, hour, minute), draft=kind == "draft", deleted=kind == "deleted")
+    assert _reason(db) == reason
+
+
+def test_records_through_the_day_do_not_stop_it(db):
+    """No rule on how many meals the day holds."""
+    for hour, minute in ((8, 40), (11, 0), (13, 10)):
+        _row(db, _utc(DAY, hour, minute))
+    assert _reason(db) is None
+
+
+def test_an_open_question_waits_for_the_next_sweep(db):
+    _usual(db)
+    _setting(db, meal_card.ASK, {"kind": "time", "meal_id": 1})
+    assert _reason(db) == "a question is open"
+
+
+def test_kolkata_is_due_at_its_own_half_hour(db):
+    kolkata = ZoneInfo("Asia/Kolkata")
+    _setting(db, TIMEZONE, "Asia/Kolkata")
+    _row(db, _utc(DAY, 10, zone=kolkata))
+    assert _utc(DAY, 21, zone=kolkata) == datetime(2026, 11, 6, 15, 30, tzinfo=UTC)
+    user = _user(db)
+    assert reminders.due(db, user, datetime(2026, 11, 6, 15, 15, tzinfo=UTC)) is None
+    assert reminders.due(db, user, datetime(2026, 11, 6, 15, 30, tzinfo=UTC))
+
+
+# --- unanswered → silent (§5.6) -----------------------------------------------------
+
+
+def _days_before(*offsets):
+    return [DAY - timedelta(days=n) for n in offsets]
+
+
+def test_three_unanswered_stop_them(db):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day)
+    assert _reason(db) == "quiet"
+    assert reminders.config(_user(db)).quiet == {"level": "off", "on": DAY.isoformat()}
+
+
+def test_two_unanswered_still_send(db):
+    _usual(db)
+    for day in _days_before(2, 1):
+        _send(db, day)
+    assert _reason(db) is None
+
+
+@pytest.mark.parametrize("neutral", [{"answer": "ok"}, {"answer": "off"}])
+def test_ok_and_off_are_neutral(db, neutral):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day, **neutral)
+    assert _reason(db) is None
+    # Stepped over, not a break: the unanswered ones around them still add up.
+    db.query(ReminderSend).delete()
+    db.commit()
+    for day in _days_before(5, 3, 1):
+        _send(db, day)
+    for day in _days_before(4, 2):
+        _send(db, day, **neutral)
+    assert _reason(db) == "quiet"
+
+
+def test_maybe_is_neutral_and_blocked_is_unanswered(db):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day, status="maybe")
+    assert _reason(db) is None
+    _set(db)
+    db.query(ReminderSend).delete()
+    db.commit()
+    for day in _days_before(3, 2, 1):
+        _send(db, day, status="blocked")
+    assert _reason(db) == "quiet"
+
+
+def test_an_answer_breaks_the_streak(db):
+    _usual(db)
+    _send(db, DAY - timedelta(days=4))
+    _send(db, DAY - timedelta(days=3), answer="fav")
+    for day in _days_before(2, 1):
+        _send(db, day)
+    assert _reason(db) is None
+
+
+def test_the_day_still_open_does_not_count(db):
+    """Today's own send can still be answered: only the days before it count."""
+    _usual(db)
+    for day in _days_before(2, 1):
+        _send(db, day)
+    _send(db, DAY, slot="09:00")
+    assert _reason(db) is None
+
+
+def test_a_breakfast_the_next_morning_neither_answers_nor_resumes(db):
+    _set(db, quiet={"level": "off", "on": (DAY - timedelta(days=3)).isoformat()})
+    for day in _days_before(2, 1, 0):
+        _row(db, _utc(day, 8))
+    assert _reason(db) == "quiet"
+
+
+def test_resume_needs_a_gap_day_then_two_record_days(db):
+    paused = DAY - timedelta(days=3)
+    _set(db, quiet={"level": "off", "on": paused.isoformat()})
+    # DAY-2: no row at all. DAY-1 and DAY: records.
+    _row(db, _utc(DAY - timedelta(days=1), 8))
+    assert _reason(db, _utc(DAY - timedelta(days=1), 21, 5)) == "quiet"  # the 1st
+    _row(db, _utc(DAY, 8))
+    assert _reason(db) is None  # the 2nd
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is True
+    assert cfg.count_from == AT_21
+
+
+def test_weights_do_not_resume(db):
+    _set(db, quiet={"level": "off", "on": (DAY - timedelta(days=3)).isoformat()})
+    for day in _days_before(1, 0):
+        db.add(BodyMetric(user_id=1, timestamp=_utc(day, 8), weight=60))
+    _row(db, _utc(DAY, 8))  # one record day only
+    db.commit()
+    assert _reason(db) == "quiet"
+
+
+def test_after_a_return_one_unanswered_quiets_again(db):
+    _usual(db)
+    _set(db, fragile=True, count_from=_utc(DAY - timedelta(days=2), 0).isoformat())
+    _send(db, DAY - timedelta(days=3))  # before the return: not counted
+    _send(db, DAY - timedelta(days=1))
+    assert _reason(db) == "quiet"
+
+
+def test_an_answer_clears_fragile(db):
+    _usual(db)
+    _set(db, fragile=True, count_from=_utc(DAY - timedelta(days=2), 0).isoformat())
+    _send(db, DAY - timedelta(days=1), answer="fav")
+    assert _reason(db) is None
+    assert reminders.config(_user(db)).fragile is False
+
+
+def test_a_tap_in_settings_resumes(db):
+    _usual(db)
+    for day in _days_before(3, 2, 1):
+        _send(db, day)
+    assert _reason(db) == "quiet"
+    screen = _tap(db, "rm:m:evening", _utc(DAY, 20))
+    assert "✓ Напоминания приходят" in screen.text
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is False
+    assert _reason(db) is None
+
+
+def test_the_purge_keeps_the_pause(db, monkeypatch):
+    from celery_app.tasks import periodic
+
+    quiet = {"level": "off", "on": "2026-08-01"}
+    _set(db, quiet=quiet)
+    old = _send(db, date(2026, 7, 1))
+    kept = _send(db, datetime.now(UTC).date() - timedelta(days=59))
+    old_id, kept_id = old.id, kept.id
+    monkeypatch.setattr(periodic, "SessionLocal", lambda: db)
+    assert periodic.purge_reminder_sends() == 1
+    assert db.get(ReminderSend, old_id) is None
+    assert db.get(ReminderSend, kept_id) is not None
+    assert reminders.config(_user(db)).quiet == quiet
+
+
+# --- the claim and the send (§5.4) -------------------------------------------------
+
+
+def test_two_sweeps_send_once(db):
+    _usual(db)
+    bot = _bot()
+    assert _run(db, bot)["sent"] == 1
+    assert _run(db, bot, AT_21 + timedelta(minutes=15))["sent"] == 0
+    bot.send_message.assert_awaited_once()
+    send = db.query(ReminderSend).one()
+    assert (send.status, send.message_id, send.local_day) == ("sent", 900, DAY)
+    assert reminders.config(_user(db)).noted == send.id
+
+
+def test_a_lost_race_is_skipped(db):
+    _usual(db)
+    user, slot = _user(db), reminders.Slot("21:00", "evening")
+    bot = _bot()
+    assert asyncio.run(reminder_push._send(db, bot, user, slot, AT_21)) == "sent"
+    assert asyncio.run(reminder_push._send(db, bot, user, slot, AT_21)) == "skipped"
+    bot.send_message.assert_awaited_once()
+
+
+def test_silent_by_default_and_with_sound_when_chosen(db):
+    """D3."""
+    _usual(db)
+    bot = _bot()
+    _run(db, bot)
+    assert bot.send_message.await_args.kwargs["disable_notification"] is True
+    assert bot.send_message.await_args.kwargs["parse_mode"] == "HTML"
+    _row(db, _utc(DAY + timedelta(days=1), 10))
+    _set(db, sound=True, noted=1)
+    _run(db, bot, _utc(DAY + timedelta(days=1), 21, 5))
+    assert bot.send_message.await_args.kwargs["disable_notification"] is False
+
+
+def test_blocked_is_kept_as_blocked(db):
+    _usual(db)
+    counts = _run(db, _bot(error=Forbidden("bot was blocked by the user")))
+    assert counts["blocked"] == 1
+    assert db.query(ReminderSend).one().status == "blocked"
+
+
+def test_maybe_arrived_is_not_sent_again(db):
+    _usual(db)
+    bot = _bot(error=TimedOut())
+    assert _run(db, bot)["failed"] == 1
+    send = db.query(ReminderSend).one()
+    assert send.status == "maybe"
+    assert reminders.config(_user(db)).noted is None
+    _run(db, bot, AT_21 + timedelta(minutes=15))
+    bot.send_message.assert_awaited_once()
+
+
+def test_never_made_is_retried_by_the_next_sweep(db):
+    _usual(db)
+    bot = _bot(error=_never_made())
+    assert _run(db, bot)["failed"] == 1
+    assert db.query(ReminderSend).count() == 0
+    bot.send_message.side_effect = None
+    assert _run(db, bot, AT_21 + timedelta(minutes=15))["sent"] == 1
+    assert db.query(ReminderSend).one().status == "sent"
+
+
+def test_one_persons_bad_data_does_not_stop_the_others(db, monkeypatch):
+    _usual(db)
+    db.add(User(id=2, telegram_id=43, settings={}))
+    db.commit()
+    _row(db, _utc(DAY, 10), user_id=2)
+    real = reminders.due
+
+    def due(db_, user, now):
+        if user.id == 1:
+            raise ValueError("bad row")
+        return real(db_, user, now)
+
+    monkeypatch.setattr(reminders, "due", due)
+    assert [u.id for u, _ in reminder_push.users_due(db, AT_21)] == [2]
+
+
+# --- the previous one leaves (R4) ---------------------------------------------------
+
+
+def _next_evening(db, bot):
+    tomorrow = DAY + timedelta(days=1)
+    _row(db, _utc(tomorrow, 10))
+    return _run(db, bot, _utc(tomorrow, 21, 5))
+
+
+def test_the_next_send_deletes_the_previous_one(db):
+    _usual(db)
+    bot = _bot()
+    _run(db, bot)
+    _next_evening(db, _bot(message_id=901))
+    first = db.query(ReminderSend).order_by(ReminderSend.id).first()
+    assert first.closed_at is not None
+
+
+def test_ok_strips_now_and_the_next_send_deletes_it(db):
+    _usual(db)
+    _run(db, _bot())
+    send = db.query(ReminderSend).one()
+    screen = _tap(db, f"rm:k:{send.id}", AT_21 + timedelta(minutes=5))
+    assert (screen.text, screen.view, screen.toast) == ("", reminders.STRIP, "Понятно")
+    db.refresh(send)
+    assert send.answer == "ok"
+    bot = _bot(message_id=901)
+    _next_evening(db, bot)
+    bot.delete_message.assert_awaited_once_with(42, 900)
+    bot.edit_message_reply_markup.assert_not_awaited()
+
+
+def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db):
+    _usual(db)
+    fav = _fav(db, "Суп")
+    _run(db, _bot())
+    send = db.query(ReminderSend).one()
+    _tap(db, f"rm:f:{send.id}:{fav.id}", AT_21 + timedelta(minutes=5))
+    bot = _bot(message_id=901)
+    _next_evening(db, bot)
+    bot.delete_message.assert_not_awaited()
+    bot.edit_message_reply_markup.assert_awaited_once_with(
+        chat_id=42, message_id=900, reply_markup=None
+    )
+
+
+def test_too_old_to_delete_loses_its_buttons_and_a_failed_delete_too(db):
+    _send(db, DAY - timedelta(days=3))  # unanswered, three days old
+    _usual(db)
+    bot = _bot()
+    _run(db, bot)
+    bot.delete_message.assert_not_awaited()
+    bot.edit_message_reply_markup.assert_awaited_once()
+    bot = _bot(message_id=902, delete_error=BadRequest("message can't be deleted"))
+    _next_evening(db, bot)
+    bot.delete_message.assert_awaited_once()
+    bot.edit_message_reply_markup.assert_awaited_once()
+
+
+# --- the message (§3.1) ------------------------------------------------------------
+
+
+def _first_view(db, now=AT_21):
+    send = crud_reminder_send.claim(
+        db,
+        user_id=1,
+        local_day=DAY,
+        slot="21:00",
+        kind="evening",
+        chat_id=42,
+        now=now,
+    )
+    return send, reminders.reminder_view(db, _user(db), send, now)
+
+
+def test_the_first_names_the_zone_once_and_offers_it(db):
+    """D1: the footnote names the zone; the zone row while none was chosen."""
+    send, screen = _first_view(db)
+    assert screen.text.startswith("🔔 <b>Еда за сегодня</b>\nМожно не отвечать.")
+    assert "в 21:00 по времени Тбилиси (UTC+4), без звука" in screen.text
+    assert "⭐" not in screen.text  # no ⭐ saved: no word of them
+    assert screen.markup.inline_keyboard[-1][0].text == "🕐 Часовой пояс"
+    assert screen.markup.inline_keyboard[-1][0].callback_data == "set:tz"
+    assert _callbacks(screen.markup)[:2] == [f"rm:k:{send.id}", f"rm:x:{send.id}"]
+    assert screen.view == meal_card.NO_MEAL
+    # A chosen zone: named, not offered.
+    _setting(db, TIMEZONE, "Asia/Tbilisi")
+    screen = reminders.reminder_view(db, _user(db), send, AT_21)
+    assert "Тбилиси (UTC+4)" in screen.text
+    assert "set:tz" not in _callbacks(screen.markup)
+
+
+def test_the_first_says_with_sound_when_on(db):
+    _set(db, sound=True)
+    _send_, screen = _first_view(db)
+    assert "со звуком" in screen.text
+
+
+def test_later_ones_are_short_with_no_zone_row(db):
+    send, _screen = _first_view(db)
+    _set(db, noted=send.id)
+    later = _send(db, DAY + timedelta(days=1))
+    screen = reminders.reminder_view(db, _user(db), later, AT_21)
+    assert screen.text == f"{reminders.TITLE}\n{reminders._LATER}"
+    assert "set:tz" not in _callbacks(screen.markup)
+    assert len(screen.markup.inline_keyboard) == 1
+    # The first one redrawn is still the first.
+    again = reminders.reminder_view(db, _user(db), send, AT_21)
+    assert reminders._FIRST in again.text
+
+
+def test_no_times_in_any_reminder(db):
+    for hour in (8, 11, 13, 19):
+        _row(db, _utc(DAY, hour, 40))
+    send, first = _first_view(db)
+    body = first.text.replace("в 21:00 по времени", "")
+    assert not re.search(r"\d:\d\d", body)
+    _set(db, noted=send.id)
+    later = reminders.reminder_view(db, _user(db), _send(db, DAY, slot="22:00"), AT_21)
+    assert not re.search(r"\d", later.text)
+
+
+def test_chips_ranked_by_days_eaten_with_todays_last(db):
+    favs = {name: _fav(db, name) for name in ("Аа", "Бб", "Вв", "Гг", "Дд")}
+    for back in (1, 2, 3):
+        _eaten(db, favs["Бб"], DAY - timedelta(days=back))
+    _eaten(db, favs["Вв"], DAY - timedelta(days=5))
+    for back in (0, 1, 2, 3, 4):
+        _eaten(db, favs["Аа"], DAY - timedelta(days=back))
+    # 40 days ago is outside the four weeks.
+    for back in (40, 41, 42, 43):
+        _eaten(db, favs["Гг"], DAY - timedelta(days=back))
+    picks = reminders.pick_favorites(db, _user(db), DAY, ZONE)
+    # Then the list's own order: the newest ⭐ first.
+    assert [name for _fav_, name in picks] == ["Бб", "Вв", "Дд", "Гг"]
+
+
+def test_chips_two_a_row_and_cut_to_fit(db):
+    for name in ("Овсянка", "Суп", "Гречка с грибами и луком по-домашнему", "Чай"):
+        _fav(db, name)
+    send, screen = _first_view(db)
+    assert reminders._FIRST_STARS in screen.text
+    rows = screen.markup.inline_keyboard
+    assert [len(row) for row in rows[:2]] == [2, 2]
+    assert all(c.callback_data.startswith(f"rm:f:{send.id}:") for c in rows[0])
+    assert all(len(label) <= fv.PAIR_LABEL_MAX for label in _labels(screen.markup))
+    _set(db, noted=send.id)
+    tomorrow = _send(db, DAY + timedelta(days=1))
+    later = reminders.reminder_view(db, _user(db), tomorrow, AT_21)
+    assert len(later.markup.inline_keyboard) == 3
+    assert later.text.endswith(reminders._LATER_STARS)
+
+
+# --- a ⭐ from the reminder (§3.3) --------------------------------------------------
+
+
+def _sent(db):
+    _usual(db)
+    fav = _fav(db, "Суп")
+    _run(db, _bot())
+    return db.query(ReminderSend).one(), fav
+
+
+def test_a_star_logs_on_the_reminders_day_without_a_clock(db):
+    send, fav = _sent(db)
+    now = AT_21 + timedelta(minutes=5)
+    screen = _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    (meal,) = _favorite_meals(db)
+    assert meal.time_precision == DAY_ONLY
+    assert meal.time_source == "reminder"
+    assert meal.resolution_signals["send_id"] == send.id
+    moment = meal_card.local_time(meal.meal_time, ZONE)
+    assert (moment.date(), moment.hour) == (DAY, 12)
+    db.refresh(send)
+    assert send.answer == "fav"
+    assert screen.toast == "Записано"
+    assert screen.meal_id == meal.id
+    assert "✓ Записано на сегодня, без времени: Суп." in screen.text
+    rows = screen.markup.inline_keyboard
+    assert rows[0][0].text == "✅ ОК"
+    assert _callbacks(screen.markup)[1:3] == [
+        f"rm:u:{send.id}:{meal.id}",
+        f"ml:t:{meal.id}:r",
+    ]
+    assert f"rm:f:{send.id}:{fav.id}" in _callbacks(screen.markup)  # chips stay
+
+
+def test_a_star_tapped_twice_within_three_seconds_logs_once(db, factory):
+    _usual(db)
+    fav = _fav(db, "Суп")
+    now = datetime.now(UTC)  # the guard reads the row's own created_at
+    send = _send_now(db, now)
+    data = f"rm:f:{send.id}:{fav.id}"
+    screen = _tap(db, data, now, message_id=7)
+    capture.tapped(db, 42, 7, screen)
+    again = _tap(db, data, now + timedelta(seconds=1), message_id=7)
+    assert (again.text, again.toast) == ("", fv.LOG_AGAIN_TOAST)
+    assert len(_favorite_meals(db)) == 1
+    _tap(db, data, now + timedelta(seconds=5), message_id=7)
+    assert len(_favorite_meals(db)) == 2
+
+
+def test_undo_takes_the_dish_back(db):
+    send, fav = _sent(db)
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    (meal,) = _favorite_meals(db)
+    screen = _tap(db, f"rm:u:{send.id}:{meal.id}", now)
+    db.refresh(meal)
+    assert meal.deleted_at is not None
+    assert screen.toast == "Отменено"
+    assert "↩️ Отменено: Суп." in screen.text
+    assert "✅ ОК" not in _labels(screen.markup)
+    assert screen.view == meal_card.NO_MEAL
+    assert _tap(db, f"rm:u:{send.id}:{meal.id}", now).toast == reminders.UNDONE_TOAST
+
+
+def test_a_removed_star_says_so(db):
+    send, fav = _sent(db)
+    fav.removed_at = AT_21
+    db.commit()
+    screen = _tap(db, f"rm:f:{send.id}:{fav.id}", AT_21 + timedelta(minutes=5))
+    assert screen.toast == reminders.STALE_TOAST
+    assert _favorite_meals(db) == []
+
+
+def test_an_old_reminder_opens_the_star_list(db):
+    send, fav = _sent(db)
+    screen = _tap(db, f"rm:f:{send.id}:{fav.id}", _utc(DAY + timedelta(days=3), 9))
+    assert "Это напоминание за прошлые дни" in screen.text
+    assert _favorite_meals(db) == []
+
+
+def test_foreign_ids_get_todays_card(db):
+    send, fav = _sent(db)
+    db.add(User(id=2, telegram_id=43, settings={}))
+    db.commit()
+    theirs = _send(db, DAY, user_id=2)
+    their_fav = _fav(db, "Чужое", user_id=2)
+    now = AT_21 + timedelta(minutes=5)
+    for data in (
+        f"rm:f:{theirs.id}:{fav.id}",
+        f"rm:f:{send.id}:{their_fav.id}",
+        f"rm:k:{theirs.id}",
+        f"rm:f:{send.id}:99999999999",
+        "rm:zz",
+    ):
+        screen = _tap(db, data, now)
+        assert reminders.TITLE not in screen.text, data
+        assert screen.view == meal_card.NO_MEAL
+    assert _favorite_meals(db) == []
+    db.refresh(theirs)
+    assert theirs.answer is None
+
+
+def test_a_tap_after_midnight_names_the_reminders_day(db):
+    send, fav = _sent(db)
+    now = _utc(DAY + timedelta(days=1), 0, 20)
+    screen = _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    assert "✓ Записано на сегодня" not in screen.text
+    assert "6 ноября" in screen.text
+    (meal,) = _favorite_meals(db)
+    time_screen = meal_card.handle_callback(db, 42, f"ml:t:{meal.id}:r", now)
+    assert "Сегодня, 0:20" in _labels(time_screen.markup)
+
+
+# --- ✖, ↩️, ⚙️ ----------------------------------------------------------------------
+
+
+def test_off_at_once_and_back(db):
+    _usual(db)
+    _set(db, evening="22:00")
+    send = _send(db, DAY, slot="22:00")
+    screen = _tap(db, f"rm:x:{send.id}", AT_21)
+    assert reminders._TURNED_OFF in screen.text
+    assert _callbacks(screen.markup)[1:] == [f"rm:b:{send.id}", "rm:o"]
+    assert reminders.config(_user(db)).mode == "off"
+    assert reminders.hub_line(_user(db)) == "🔔 Напоминания: выкл"
+    db.refresh(send)
+    assert send.answer == "off"
+    screen = _tap(db, f"rm:b:{send.id}", AT_21)
+    assert "✓ Напоминания включены: вечером, в 22:00." in screen.text
+    cfg = reminders.config(_user(db))
+    assert (cfg.mode, cfg.evening) == ("evening", "22:00")
+
+
+def test_the_settings_screen(db):
+    screen = _tap(db, "rm:o", AT_21)
+    assert "Сейчас: вечером, в 21:00 по времени Тбилиси (UTC+4)." in screen.text
+    assert "без звука" in screen.text
+    rows = [[b.callback_data for b in row] for row in screen.markup.inline_keyboard]
+    assert rows == [
+        ["rm:m:off", "rm:m:evening"],
+        ["rm:e:2000", "rm:e:2100", "rm:e:2200", "rm:e:2300"],
+        ["rm:week", "set:tz"],
+        ["rm:snd"],
+        ["set:open"],
+    ]
+    assert "✓ 21:00" in _labels(screen.markup)
+    assert "🔔 Звук: выкл" in _labels(screen.markup)
+
+
+def test_sound_toggle(db):
+    """D3: «✓ Со звуком» / «✓ Без звука»."""
+    screen = _tap(db, "rm:snd", AT_21)
+    assert "✓ Со звуком" in screen.text
+    assert "🔔 Звук: вкл" in _labels(screen.markup)
+    assert reminders.config(_user(db)).sound is True
+    screen = _tap(db, "rm:snd", AT_21)
+    assert "✓ Без звука" in screen.text
+    assert reminders.config(_user(db)).sound is False
+
+
+def test_hour_and_mode(db):
+    screen = _tap(db, "rm:e:2300", AT_21)
+    assert "✓ Время: 23:00" in screen.text
+    cfg = reminders.config(_user(db))
+    assert cfg.evening == "23:00" and cfg.since == AT_21
+    assert reminders.TITLE not in _tap(db, "rm:e:2130", AT_21).text  # not a choice
+    screen = _tap(db, "rm:m:off", AT_21)
+    assert "Сейчас: выключены." in screen.text
+    assert len(screen.markup.inline_keyboard) == 4  # no hours while off
+    screen = _tap(db, "rm:m:evening", AT_21)
+    assert "✓ Напоминания: вечером, в 23:00" in screen.text
+
+
+def test_the_pause_shows_in_the_sub_screen_never_in_the_hub(db):
+    _set(db, quiet={"level": "off", "on": DAY.isoformat()})
+    assert "Сейчас не приходят." in _tap(db, "rm:o", AT_21).text
+    assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
+    hub = settings_screen.open_view(db, 42, now=AT_21)
+    assert "🔔 Напоминания: вечером, 21:00" in hub.text
+    assert "не приходят" not in hub.text
+    assert len(hub.markup.inline_keyboard) == 5
+    assert len(_labels(hub.markup)) == 11
+    assert "rm:o" in _callbacks(hub.markup)
+
+
+def test_week_toggle_here_and_the_legacy_button(db):
+    screen = _tap(db, "rm:week", AT_21)
+    assert "✓ Итог недели выключен" in screen.text
+    assert settings_screen.week_push_on(_user(db)) is False
+    settings_screen.handle_callback(db, 42, "set:week", AT_21)
+    assert settings_screen.week_push_on(_user(db)) is True
+
+
+# --- the bot side ------------------------------------------------------------------
+
+
+def _query(data, telegram_id=42):
+    query = SimpleNamespace(
+        data=data,
+        answer=AsyncMock(),
+        message=None,
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+    update = SimpleNamespace(
+        callback_query=query, effective_user=SimpleNamespace(id=telegram_id)
+    )
+    return update, query
+
+
+def test_handler_ok_takes_the_buttons_and_keeps_the_text(factory):
+    with factory() as db:
+        send = _send(db, DAY)
+        sid = send.id
+    update, query = _query(f"rm:k:{sid}")
+    asyncio.run(tg.reminders_callback(update, SimpleNamespace()))
+    query.answer.assert_awaited_once_with("Понятно")
+    query.edit_message_text.assert_not_awaited()
+    query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+
+def test_handler_star_edits_in_place(factory):
+    with factory() as db:
+        _usual(db)
+        fav = _fav(db, "Суп")
+        send = _send_now(db, datetime.now(UTC))
+        data = f"rm:f:{send.id}:{fav.id}"
+    update, query = _query(data)
+    asyncio.run(tg.reminders_callback(update, SimpleNamespace()))
+    query.answer.assert_awaited_once_with("Записано")
+    (text,), _kw = query.edit_message_text.await_args
+    assert "✓ Записано на сегодня, без времени: Суп." in text
+    query.edit_message_reply_markup.assert_not_awaited()
+
+
+def test_handler_is_registered_before_the_dishes(factory):
+    source = (ROOT / "app/services/telegram.py").read_text()
+    assert source.index("reminders_callback, pattern") < source.index(
+        "dishes_callback, pattern"
+    )
+
+
+# --- no model, no network (R1) -----------------------------------------------------
+
+
+def test_no_model_call_anywhere(db, monkeypatch):
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("a model call")
+
+    monkeypatch.setattr(openai_service.OpenAIService, "__init__", refuse)
+    for name in ("analyze_food_entry", "analyze_food_image"):
+        if hasattr(openai_service.OpenAIService, name):
+            monkeypatch.setattr(openai_service.OpenAIService, name, refuse)
+    monkeypatch.setattr(httpx.Client, "send", refuse)
+    monkeypatch.setattr(httpx.AsyncClient, "send", refuse)
+
+    send, fav = _sent(db)  # a sweep
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now)  # a ⭐
+    (meal,) = _favorite_meals(db)
+    for data in (f"rm:u:{send.id}:{meal.id}", f"rm:k:{send.id}", "rm:o", "rm:snd"):
+        _tap(db, data, now)
+    _tap(db, f"rm:x:{send.id}", now)
+    assert calls == []
+    # The control: the same guards do catch a call.
+    with pytest.raises(AssertionError, match="a model call"):
+        openai_service.OpenAIService()
+    with pytest.raises(AssertionError, match="a model call"):
+        httpx.Client().get("http://127.0.0.1:9/")
+    assert len(calls) == 2
+
+
+# --- what the texts may say (R10) ---------------------------------------------------
+
+_BANNED = re.compile(
+    r"пропуск|пропущен|забыл|забыв|не записано|ещё не|еще не|пусто|снова|опять"
+    r"|если было что-то ещё|\d+\s*(?:дн|день|дня)",
+    re.IGNORECASE,
+)
+
+
+def _cyrillic_literals(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text())
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.search("[а-яё]", node.value, re.IGNORECASE)
+    ]
+
+
+def _banned(texts) -> list[str]:
+    return [text for text in texts if _BANNED.search(text)]
+
+
+def test_r10_words_never_said(db):
+    texts = _cyrillic_literals(ROOT / "app/services/reminders.py")
+    topic = explain_screen.TOPICS["reminders"]
+    texts += [topic.label, topic.what, topic.how, topic.why]
+    _send_, screen = _first_view(db)
+    texts.append(screen.text)
+    assert len(texts) > 20  # the scan did read the module
+    assert _banned(texts) == []
+    # The control: the same check catches a banned word.
+    assert _banned(["Сегодня пропущено"]) == ["Сегодня пропущено"]
+    assert _banned(["Уже 3 дня"]) == ["Уже 3 дня"]
+
+
+# --- the schedule --------------------------------------------------------------------
+
+
+def test_beat_entry_and_include():
+    from celery_app.celery_app import app
+
+    assert "celery_app.tasks.reminders" in app.conf.include
+    entry = app.conf.beat_schedule["meal-reminders"]
+    assert entry["task"] == "celery_app.tasks.reminders.send_reminders"
+    assert entry["options"] == {"expires": 840}
+    assert entry["schedule"].minute == {0, 15, 30, 45}
+    purge = app.conf.beat_schedule["purge-reminder-sends"]
+    assert purge["task"] == "celery_app.tasks.periodic.purge_reminder_sends"
+
+
+def test_task_builds_no_bot_when_nobody_is_due(db, monkeypatch):
+    from celery_app.tasks import reminders as task
+
+    monkeypatch.setattr(task, "SessionLocal", lambda: db)
+
+    def no_bot(*_args, **_kwargs):
+        raise AssertionError("a bot was built")
+
+    monkeypatch.setattr(task.custom_emoji, "build_bot", no_bot)
+    assert task.send_reminders() == task.NOTHING

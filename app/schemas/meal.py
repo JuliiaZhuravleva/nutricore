@@ -26,7 +26,7 @@ class MealBase(BaseModel):
 # A default of None with no Optional in the type: leaving one of these out is fine,
 # and an explicit null is refused, because the three columns are NOT NULL.
 TimePrecision = Literal["exact", "approx", "day_only"]
-TimeSource = Literal["sent", "said", "forward", "edited"]
+TimeSource = Literal["sent", "said", "forward", "edited", "reminder"]
 NumbersBasis = Literal["items", "plate", "none"]
 
 

@@ -1,7 +1,7 @@
 from collections.abc import Collection
-from datetime import datetime
+from datetime import UTC, date, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models.meal import Meal
@@ -118,6 +118,51 @@ class CRUDMeal:
             .order_by(Meal.meal_time)
         )
         return list(db.scalars(stmt).all())
+
+    # Whether a record arrived: by ``sent_at``, drafts and deleted rows included. A
+    # meal taken back still says the person was writing then (stage 6, R3, R8).
+
+    def any_live(self, db: Session, user_id: int) -> bool:
+        """Whether there is at least one meal in the diary: not deleted, not a draft."""
+        stmt = select(Meal.id).where(
+            Meal.user_id == user_id,
+            Meal.deleted_at.is_(None),
+            Meal.is_draft.is_(False),
+        )
+        return db.scalars(stmt.limit(1)).first() is not None
+
+    def any_sent_between(
+        self, db: Session, user_id: int, start: datetime, end: datetime
+    ) -> bool:
+        """Whether any meal row arrived with ``start <= sent_at <= end``."""
+        stmt = select(Meal.id).where(
+            Meal.user_id == user_id, Meal.sent_at >= start, Meal.sent_at <= end
+        )
+        return db.scalars(stmt.limit(1)).first() is not None
+
+    def last_sent_at(self, db: Session, user_id: int) -> datetime | None:
+        """When the latest meal row arrived, any row; naive from SQLite means UTC."""
+        moment = db.scalar(
+            select(func.max(Meal.sent_at)).where(Meal.user_id == user_id)
+        )
+        if moment is not None and moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return moment
+
+    def record_days(
+        self, db: Session, user_id: int, start: datetime, end: datetime, zone
+    ) -> set[date]:
+        """The local days in ``zone`` on which any meal row arrived, ``start <=
+        sent_at < end``."""
+        stmt = select(Meal.sent_at).where(
+            Meal.user_id == user_id, Meal.sent_at >= start, Meal.sent_at < end
+        )
+        days = set()
+        for moment in db.scalars(stmt):
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=UTC)
+            days.add(moment.astimezone(zone).date())
+        return days
 
     def build(self, obj_in: MealCreate, user_id: int) -> Meal:
         """The row, not added and not committed: for a transaction that holds more."""

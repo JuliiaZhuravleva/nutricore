@@ -21,7 +21,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import explain_screen, routines, settings_screen
+from app.services import explain_screen, reminders, routines, settings_screen
 from app.services import stats_screen as st
 from app.services import week_card, week_push
 from app.services.card_delivery import CardDelivery, may_have_arrived
@@ -728,9 +728,13 @@ def test_no_subscription_no_summary_as_with_the_screens_themselves(db, monkeypat
 def test_settings_turn_the_summary_off_with_one_tap_and_back(db):
     screen = settings_screen.open_view(db, 42)
     assert "🗓 Итог недели: вс, 22:00\n" in screen.text
+    # The switch lives in ⚙️ → 🔔 now (stage 6, §4.1); an old set:week still works.
     labels = [b.text for row in screen.markup.inline_keyboard for b in row]
-    assert "🗓 Итог недели: вкл" in labels
+    assert "🔔 Напоминания" in labels and "🗓 Итог недели: вкл" not in labels
     assert len(screen.markup.inline_keyboard) <= 5
+    sub = reminders.handle_callback(db, 42, "rm:o")
+    labels = [b.text for row in sub.markup.inline_keyboard for b in row]
+    assert "🗓 Итог недели: вкл" in labels
 
     off = settings_screen.handle_callback(db, 42, "set:week")
     assert off.text.startswith("<i>✓ Итог недели выключен</i>")

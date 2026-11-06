@@ -400,7 +400,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _labels(markup) == [
         "🔢 Цифры сразу: выкл",
         "📋 Черновик: выкл",
-        "🗓 Итог недели: вкл",
+        "🔔 Напоминания",
         "💸 Стоимость: выкл",
         "🧺 Надёжная еда",
         "✋ Не предлагать",
@@ -413,7 +413,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _callbacks(markup) == [
         "set:num",
         "set:draft",
-        "set:week",
+        "rm:o",  # the week's switch moved into 🔔 (stage 6, §4.1)
         "set:costs",
         "fl:rel",
         "fl:nev",

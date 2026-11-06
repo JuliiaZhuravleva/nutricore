@@ -17,8 +17,15 @@ async def _week_card(db, bot, now) -> dict:
     return await week_push.run(db, bot, tg._card_delivery, now)
 
 
+async def _reminders(db, bot, now) -> dict:
+    from app.services import reminder_push
+
+    return await reminder_push.run(db, bot, now)
+
+
 PUSHES = {
     "week card": _week_card,
+    "reminders": _reminders,
 }
 
 BEAT_MINUTES = 15  # how often beat runs them (celery_app.py: crontab(minute="*/15"))

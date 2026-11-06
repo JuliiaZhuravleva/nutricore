@@ -12,6 +12,7 @@ app = Celery(
         "celery_app.tasks.personal_food",
         "celery_app.tasks.model_watch",
         "celery_app.tasks.week_push",
+        "celery_app.tasks.reminders",
     ],
 )
 
@@ -40,6 +41,16 @@ app.conf.beat_schedule = {
     # Sunday 22:00 on each user's clock; the task itself checks who is due.
     "week-summaries": {
         "task": "celery_app.tasks.week_push.send_week_summaries",
+        "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},  # after a restart, no pile of old runs
+    },
+    "purge-reminder-sends": {
+        "task": "celery_app.tasks.periodic.purge_reminder_sends",
+        "schedule": crontab(hour=4, minute=15),
+    },
+    # 🔔 on each person's clock, also in zones with :30 and :45; the task checks who.
+    "meal-reminders": {
+        "task": "celery_app.tasks.reminders.send_reminders",
         "schedule": crontab(minute="*/15"),
         "options": {"expires": 840},  # after a restart, no pile of old runs
     },
