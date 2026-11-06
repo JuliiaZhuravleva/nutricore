@@ -7,7 +7,7 @@ the clocks are ASSUMED, as in the spec.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Optional
 
@@ -16,37 +16,14 @@ from typing import Optional
 EXACT, APPROX, DAY_ONLY = "exact", "approx", "day_only"
 
 _PARTS = {"утром": time(9), "днем": time(14), "вечером": time(20)}
-# A meal's name said as its time: «в обед суп». ASSUMED, like the parts.
-_MEAL_NAMES = {
-    "на завтрак": time(9),
-    "за завтраком": time(9),
-    "в обед": time(13),
-    "на обед": time(13),
-    "за обедом": time(13),
-    "на полдник": time(16),
-    "на ужин": time(19),
-    "за ужином": time(19),
-}
-# The hours a part of the day covers, as day_card._part_of_day (lunch inside the day):
-# a clock said with its own part is that clock, «утром в 8:30».
-_WINDOWS = {"утром": (4, 11), "днем": (11, 18), "вечером": (18, 24)}
-_MEAL_PARTS = {"завтрак": "утром", "обед": "днем", "полдник": "днем", "ужин": "вечером"}
-# A part or a meal whose clock is still ahead is the one going on now when it was sent
-# inside its own hours, or no more than this before they start: «на завтрак каша» at
-# 6:30 and «на ужин суп» at 16:30 are this meal, not yesterday's. ASSUMED.
-_SOON = timedelta(hours=2)
 _NOON = time(12)
 _NIGHT = time(3)
-_NIGHT_HOURS = (0, 4)
 _FLAGS = re.IGNORECASE
 
 _CLOCK = re.compile(
     r"(?<![\w:.,])(?:(вчера)\s+)?(?:в\s+)?(\d{1,2}):(\d{2})(?![\d:])", _FLAGS
 )
-_MEAL_NAME = "|".join(name.replace(" ", r"\s+") for name in _MEAL_NAMES)
-_YESTERDAY_PART = re.compile(
-    rf"\bвчера\s+(утром|дн[её]м|вечером|ночью|{_MEAL_NAME})\b", _FLAGS
-)
+_YESTERDAY_PART = re.compile(r"\bвчера\s+(утром|дн[её]м|вечером)\b", _FLAGS)
 # «в 13» only at either end of the text: in the middle a number is more likely food's,
 # and a unit after it always is: «в 3 раза больше», «в 2 тарелки».
 _NOT_HOUR = r"раз|г\b|гр|кг|мл|л\b|шт|тарел|порц|кус|лож|стак|чаш|упак|пач|бан|бут|ломт"
@@ -59,60 +36,33 @@ _HOUR_LAST = re.compile(
 )
 _AGO = re.compile(r"\b(полчаса|час)\s+назад\b", _FLAGS)
 _YESTERDAY = re.compile(r"\bвчера\b", _FLAGS)
-_TODAY = re.compile(r"\bсегодня\b", _FLAGS)
-# What parts one clause from the next: «в обед суп, в 15:00 чай» is two meals.
-_CLAUSE_EDGE = re.compile(r"[,;.!?—–\n]|\b(?:и|а|потом|затем)\b", _FLAGS)
 _NIGHT_WORD = re.compile(r"\bночью\b", _FLAGS)
 _PART = re.compile(r"\b(утром|дн[её]м|вечером)\b", _FLAGS)
-_MEAL = re.compile(rf"\b({_MEAL_NAME})\b", _FLAGS)
+_TODAY = re.compile(r"\bсегодня\b", _FLAGS)
+# R0: what parts one clause from the next, «утром каша, в 19:30 паста»: a comma, a
+# semicolon, a dash, and a standalone «и» or «а» between words.
+_CLAUSE_EDGE = re.compile(r"[,;—]|(?<!\S)[иа](?!\S)", _FLAGS)
 
 
 @dataclass(frozen=True)
 class SaidTime:
     moment: datetime  # in UTC
     precision: str
-    phrase: Optional[str]  # None when several phrases left only the day
+    phrase: Optional[str]  # None when clauses said different times (R0)
     rest: str  # the text without the phrase
     of_day: bool = False  # a clock of a day that the words did not name
-    clock: Optional[time] = None  # what an of_day time keeps on another day
 
 
 @dataclass(frozen=True)
 class _Found:
     match: re.Match
-    moment: datetime  # local
+    moment: datetime
     precision: str
     of_day: bool = False
-    clock: Optional[time] = None  # what an of_day phrase keeps on another day
-    window: Optional[tuple] = None  # the hours of a part or a meal's name
-    now: bool = False  # a part or a meal going on as it was sent
-
-    @property
-    def phrase(self) -> str:
-        return self.match.group(0).strip()
-
-    @property
-    def yesterday(self) -> bool:
-        return _YESTERDAY.search(self.phrase) is not None
 
 
 def _plain(word: str) -> str:
     return word.casefold().replace("ё", "е")
-
-
-def _clock_word(word: str) -> time:
-    """The clock of a part of the day or of a meal's name, however spaced."""
-    plain = " ".join(_plain(word).split())
-    return _PARTS.get(plain) or _MEAL_NAMES[plain]
-
-
-def _window(word: str) -> tuple:
-    """The hours of a part of the day or of a meal's name."""
-    plain = _plain(word)
-    for meal, part in _MEAL_PARTS.items():
-        if meal in plain:
-            return _WINDOWS[part]
-    return _WINDOWS[" ".join(plain.split())]
 
 
 def _at(day, clock: time, zone) -> datetime:
@@ -129,22 +79,6 @@ def _latest(local: datetime, clock: time, zone) -> datetime:
     )
 
 
-def _named_clock(match, clock: time, window: tuple, local: datetime, zone) -> _Found:
-    """A part's, a meal's or the night's clock on its latest day. Sent inside the
-    hours of its next clock, or no more than ``_SOON`` before they start, it is going
-    on now, and has the sent moment: a meal said live is never yesterday's, and
-    «ночью» at 23:50 is this night's."""
-    day = local.date() if _at(local.date(), clock, zone) > local else None
-    day = day or local.date() + timedelta(days=1)
-    now = _at(day, time(window[0]), zone) - _SOON <= local
-    moment = local if now else _latest(local, clock, zone)
-    return _Found(match, moment, APPROX, True, clock, window, now)
-
-
-def _named_word(match, word: str, local: datetime, zone) -> _Found:
-    return _named_clock(match, _clock_word(word), _window(word), local, zone)
-
-
 def _clock_of(match, hour: int, minute: int, local: datetime, zone) -> Optional[_Found]:
     if hour > 23 or minute > 59:
         return None
@@ -152,7 +86,7 @@ def _clock_of(match, hour: int, minute: int, local: datetime, zone) -> Optional[
     if match.group(1):
         day = local.date() - timedelta(days=1)
         return _Found(match, _at(day, clock, zone), EXACT)
-    return _Found(match, _latest(local, clock, zone), EXACT, of_day=True, clock=clock)
+    return _Found(match, _latest(local, clock, zone), EXACT, of_day=True)
 
 
 def _find_clock(text: str, local: datetime, zone) -> Optional[_Found]:
@@ -167,14 +101,7 @@ def _find_yesterday_part(text: str, local: datetime, zone) -> Optional[_Found]:
     if match is None:
         return None
     day = local.date() - timedelta(days=1)
-    word = match.group(1)
-    if _plain(word) == "ночью":
-        # A night spans two dates: yesterday's, and no clock that could be either.
-        # Its hours let a clock said with it outrank it, as a part's do.
-        return _Found(match, _at(day, _NOON, zone), DAY_ONLY, window=_NIGHT_HOURS)
-    return _Found(
-        match, _at(day, _clock_word(word), zone), APPROX, window=_window(word)
-    )
+    return _Found(match, _at(day, _PARTS[_plain(match.group(1))], zone), APPROX)
 
 
 def _find_hour(text: str, local: datetime, zone) -> Optional[_Found]:
@@ -203,17 +130,15 @@ def _find_night(text: str, local: datetime, zone) -> Optional[_Found]:
     match = _NIGHT_WORD.search(text)
     if match is None:
         return None
-    return _named_clock(match, _NIGHT, _NIGHT_HOURS, local, zone)
+    return _Found(match, _latest(local, _NIGHT, zone), APPROX)
 
 
 def _find_part(text: str, local: datetime, zone) -> Optional[_Found]:
     match = _PART.search(text)
-    return None if match is None else _named_word(match, match.group(1), local, zone)
-
-
-def _find_meal(text: str, local: datetime, zone) -> Optional[_Found]:
-    match = _MEAL.search(text)
-    return None if match is None else _named_word(match, match.group(1), local, zone)
+    if match is None:
+        return None
+    clock = _PARTS[_plain(match.group(1))]
+    return _Found(match, _latest(local, clock, zone), APPROX, of_day=True)
 
 
 _FINDERS = (
@@ -224,210 +149,69 @@ _FINDERS = (
     _find_yesterday,
     _find_night,
     _find_part,
-    _find_meal,
 )
-# What a found phrase leaves in its place. Not a space: «в 13» counts only at either
-# end of the text, and a phrase found before it must not make an end of the middle.
-_MASK = "\x00"
 
 
-def _without(text: str, found: list) -> str:
-    """The text with every one of these phrases cut."""
-    for one in sorted(found, key=lambda one: one.match.start(), reverse=True):
-        text = f"{text[: one.match.start()]} {text[one.match.end() :]}"
-    return " ".join(text.split()).strip(" ,.;:—-")
+def _without(text: str, match: re.Match) -> str:
+    left = f"{text[: match.start()]} {text[match.end() :]}"
+    return " ".join(left.split()).strip(" ,.;:—-")
 
 
-def _found(text: str, local: datetime, zone) -> list:
-    """Every phrase, each finder in the table's order, each run until it finds no
-    more; a found span is masked, so no phrase is found twice. In finder order."""
-    found = []
+def _first_phrase(
+    text: str, local: datetime, zone, bare_ok: bool
+) -> Optional[SaidTime]:
+    """The first phrase of the table. None if there is none, or, unless ``bare_ok``,
+    if nothing else is there: a time word alone is nobody's dish, and nobody's time."""
     for find in _FINDERS:
-        while (one := find(text, local, zone)) is not None:
-            found.append(one)
-            start, end = one.match.span()
-            text = f"{text[:start]}{_MASK * (end - start)}{text[end:]}"
-    return found
-
-
-def time_phrases(text: Optional[str], sent: datetime, zone) -> list:
-    """All the time phrases of a text, in text order, none overlapping another."""
-    if not text:
-        return []
-    found = _found(text, sent.astimezone(zone), zone)
-    return sorted(found, key=lambda one: one.match.start())
-
-
-def _between(one: _Found, other: _Found, text: str) -> str:
-    """The words between two phrases, whichever comes first."""
-    first, second = sorted((one, other), key=lambda each: each.match.start())
-    return text[first.match.end() : second.match.start()]
-
-
-def _next_to(one: _Found, other: _Found, text: str) -> bool:
-    """Nothing but a space or a comma between: «утром, в 12:00 каша»."""
-    return re.fullmatch(r"[\s,]*", _between(one, other, text)) is not None
-
-
-def _one_clause(one: _Found, other: _Found, text: str) -> bool:
-    """No comma, dash or «и»/«а» between: «на обед суп в 13:30» is one clause, «в обед
-    суп, в 15:00 чай» two."""
-    return _CLAUSE_EDGE.search(_between(one, other, text)) is None
-
-
-def _beside(part: _Found, clock: _Found, text: str) -> bool:
-    """A part or a meal's name said with a clock: right next to it, «утром в 8:30»,
-    «в 8:30 утром», or in its clause and of its hours, «на обед суп в 13:30». A clock
-    in another clause is another meal's: «в обед суп, в 15:00 чай»."""
-    if _next_to(part, clock, text):
-        return True
-    low, high = part.window
-    hour = (clock.clock or clock.moment.time()).hour
-    return _one_clause(part, clock, text) and low <= hour < high
-
-
-def _tied(one: _Found, other: _Found, text: str) -> bool:
-    """Two phrases about one meal: in one clause, and no «сегодня» between."""
-    if _TODAY.search(_between(one, other, text)):
-        return False
-    return _next_to(one, other, text) or _one_clause(one, other, text)
-
-
-def _of_today(one: _Found, text: str, local: datetime) -> _Found:
-    """A part or a meal's name said with «сегодня» in its clause is today's, even
-    when its hours are still ahead: «сегодня на ужин суп» at 12:40 is no yesterday's
-    dinner. Its clock is not yet, so the sent moment stays, as for a meal going on."""
-    if not (one.of_day and one.window) or one.moment.date() >= local.date():
-        return one
-    for match in _TODAY.finditer(text):
-        if _tied(one, _Found(match, local, DAY_ONLY), text):
-            return replace(one, moment=local, now=True)
-    return one
-
-
-def _of_yesterday(one: _Found, named: list, text: str, local: datetime, zone):
-    """A phrase of no named day said with «вчера» about one meal is yesterday's. The
-    night, «вчера … ночью», is yesterday's day and no clock, as «вчера ночью» is; a
-    small-hours clock said with «вчера ночью» is on the night's second date."""
-    ties = [said for said in named if _tied(one, said, text)]
-    if not (one.of_day and ties):
-        return one
-    day = local.date() - timedelta(days=1)
-    if one.window == _NIGHT_HOURS:
-        return replace(
-            one,
-            moment=_at(day, _NOON, zone),
-            precision=DAY_ONLY,
-            of_day=False,
-            clock=None,
-            window=None,
-            now=False,
+        found = find(text, local, zone)
+        if found is None:
+            continue
+        rest = _without(text, found.match)
+        if not rest and not bare_ok:
+            return None
+        return SaidTime(
+            found.moment.astimezone(UTC),
+            found.precision,
+            found.match.group(0).strip(),
+            rest,
+            found.of_day,
         )
-    small_hours = one.clock.hour < _NIGHT_HOURS[1]
-    if small_hours and any(said.window == _NIGHT_HOURS for said in ties):
-        moment = _latest(local, one.clock, zone)
-    else:
-        moment = _at(day, one.clock, zone)
-    return replace(one, moment=moment, of_day=False, now=False)
+    return None
 
 
-def _said_day(one: _Found, named: list, text: str, local: datetime, zone) -> _Found:
-    """The phrase on the day its words name: «сегодня» first, then «вчера»."""
-    today = _of_today(one, text, local)
-    return today if today is not one else _of_yesterday(one, named, text, local, zone)
+def clauses(text: str) -> list:
+    """The text cut at every clause edge. Some may be empty."""
+    return _CLAUSE_EDGE.split(text)
 
 
-def _one_time(found: list, text: str, local: datetime, zone) -> list:
-    """The phrases left once those that say one time are one. «сегодня» keeps a part
-    or a meal's name on today; «вчера» puts a clock of no named day on yesterday only
-    when the two are about one meal: «вчера суп в 13:00», not «вчера суп, утром каша»;
-    a clock outranks its own part or meal's name; a day alone adds nothing to a time
-    on that day that it is said with."""
-    named = [one for one in found if one.yesterday]
-    found = [_said_day(one, named, text, local, zone) for one in found]
-    clocks = [one for one in found if one.precision == EXACT]
-    found = [
-        one
-        for one in found
-        if not (one.window and any(_beside(one, clock, text) for clock in clocks))
-    ]
-    timed = [one for one in found if one.precision != DAY_ONLY]
-    return [
-        one
-        for one in found
-        if not (
-            one.precision == DAY_ONLY
-            and any(
-                said.moment.date() == one.moment.date()
-                and (said.yesterday or _tied(said, one, text))
-                for said in timed
-            )
-        )
-    ]
-
-
-def _day_of(one: _Found, named: list, text: str):
-    """The day a phrase speaks of. A clock of no named day said after «вчера», with no
-    «сегодня» between, is of yesterday too: «вчера утром каша, вечером суп». One said
-    before it keeps its own: «на завтрак каша, вчера в 22:00 торт»."""
-    if one.of_day:
-        for said in named:
-            if said.match.start() < one.match.start() and not _TODAY.search(
-                _between(said, one, text)
-            ):
-                return said.moment.date()
-    return one.moment.date()
-
-
-def _common_day(kept: list, found: list, text: str, local: datetime):
-    """The day phrases that disagree on the clock still agree on: the one all of them
-    speak of, else the day it was sent."""
-    named = [one for one in found if one.yesterday]
-    days = {_day_of(one, named, text) for one in kept}
-    return days.pop() if len(days) == 1 else local.date()
-
-
-_RANK = {EXACT: 0, APPROX: 1, DAY_ONLY: 2}
+def _common_day(moments: list, text: str, local: datetime):
+    """The day several said moments share; else yesterday, if «вчера» is said and
+    «сегодня» is not; else the day it was sent."""
+    days = {moment.astimezone(local.tzinfo).date() for moment in moments}
+    if len(days) == 1:
+        return days.pop()
+    if _YESTERDAY.search(text) and not _TODAY.search(text):
+        return local.date() - timedelta(days=1)
+    return local.date()
 
 
 def time_words(
     text: Optional[str], sent: datetime, zone, *, bare_ok: bool = False
 ) -> Optional[SaidTime]:
-    """The time the phrases say. None if there is none, or, unless ``bare_ok``, if
-    nothing else is there: a time word alone is nobody's dish, and nobody's time. A
-    part or a meal going on as it was sent is no time either, when food is said with
-    it: the sent moment stays. Said alone, it keeps its own ``clock`` too, for a reply
-    that puts it on another day («вечером» at 18:30 to yesterday's meal is ≈ 20:00).
-    Phrases that say one time are one («утром в 8:30»);
-    those that still name different moments give their day and no clock: «утром каша,
-    в 19:30 паста» is two meals, and neither time is the record's."""
+    """The time the words say, as ``_first_phrase`` reads the whole text, with one
+    rule over it (R0): when two or more clauses each say a time and those times
+    differ, no phrase is the meal's. Then it is the day alone, and no clock: «утром
+    каша, в 19:30 паста» is two meals, and neither time is the record's."""
     if not text:
         return None
     local = sent.astimezone(zone)
-    found = _found(text, local, zone)
-    if not found:
-        return None
-    kept = _one_time(found, text, local, zone)
-    if len({one.moment for one in kept}) > 1:
-        day = _common_day(kept, found, text, local)
-        named = day != local.date() and any(one.yesterday for one in found)
-        return SaidTime(
-            _at(day, _NOON, zone).astimezone(UTC), DAY_ONLY, None, text, not named
-        )
-    best = min(kept, key=lambda one: _RANK[one.precision])
-    rest = _without(text, found)
-    if rest and best.now:
-        return None
-    if not rest and not bare_ok:
-        return None
-    return SaidTime(
-        best.moment.astimezone(UTC),
-        best.precision,
-        best.phrase,
-        rest,
-        best.of_day,
-        best.clock if best.of_day else None,
-    )
+    said = [_first_phrase(one, local, zone, True) for one in clauses(text)]
+    moments = [one.moment for one in said if one is not None]
+    if len(moments) >= 2 and len(set(moments)) > 1:
+        day = _common_day(moments, text, local)
+        noon = _at(day, _NOON, zone).astimezone(UTC)
+        return SaidTime(noon, DAY_ONLY, None, text, of_day=True)
+    return _first_phrase(text, local, zone, bare_ok)
 
 
 # --- 5.4 corrective words -------------------------------------------------------------

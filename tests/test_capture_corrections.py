@@ -206,6 +206,13 @@ def _local(meal) -> datetime:
             "пн 26 октября, ≈ 9:00",
         ),
         (
+            "днём суп",  # 14:00 is ahead of 13:20: yesterday
+            datetime(2026, 10, 25, 14, 0),
+            "approx",
+            "днём",
+            "вс 25 октября, ≈ 14:00",
+        ),
+        (
             "суп, вечером",
             datetime(2026, 10, 25, 20, 0),
             "approx",
@@ -232,20 +239,6 @@ def test_time_words_move_the_meal_and_leave_the_name(
     assert _sources(db)[0].text == words
 
 
-def test_a_part_of_the_day_just_ahead_is_now_and_keeps_the_sent_time(
-    db, owner, reader, clock
-):
-    # R0 review: 14:00 is 40 minutes ahead of 13:20, so «днём» is this afternoon going
-    # on, not yesterday's. The sent moment stays, and the words reach the model whole.
-    reader.answer = dict(SOUP)
-    wire = send(text("днём суп"))
-    meal = _meals(db)[0]
-    assert (meal.time_source, meal.time_precision) == ("sent", "exact")
-    assert meal.meal_time.replace(tzinfo=None) == NOW.replace(tzinfo=None)
-    assert reader.text == ["днём суп"]
-    assert wire.sent()[0]["text"].startswith("Записано: ")
-
-
 @pytest.mark.parametrize(
     "words",
     [
@@ -270,7 +263,9 @@ def test_words_that_only_look_like_time_stay_food(db, owner, reader, clock, word
     assert wire.sent()[0]["text"].startswith("Записано: ")
 
 
-@pytest.mark.parametrize("words", ["утром каша, в обед суп", "утром каша, в 13:00 суп"])
+@pytest.mark.parametrize(
+    "words", ["утром каша, вечером суп", "утром каша, в 13:00 суп"]
+)
 def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
     db, owner, reader, clock, words
 ):
@@ -288,15 +283,16 @@ def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
     assert head == f"Записано на пн 26 октября, без времени: {words}."
 
 
-def test_r0_control_one_time_in_the_message_is_still_its_time(db, owner, reader, clock):
+def test_r0_control_one_timed_clause_is_still_its_time(db, owner, reader, clock):
+    # «в обед» is no time (the meal-name finder is not built): one timed clause.
     reader.answer = dict(SOUP)
-    wire = send(text("в обед суп"))
+    wire = send(text("утром суп, в обед"))
     meal = _meals(db)[0]
-    assert (meal.time_precision, meal.time_phrase) == ("approx", "в обед")
-    assert _local(meal) == datetime(2026, 10, 26, 13, 0)
-    assert reader.text == ["суп"]
+    assert (meal.time_precision, meal.time_phrase) == ("approx", "утром")
+    assert _local(meal) == datetime(2026, 10, 26, 9, 0)
+    assert reader.text == ["суп, в обед"]
     head = wire.sent()[0]["text"].split("\n")[0]
-    assert head == "Записано на пн 26 октября, ≈ 13:00: суп."
+    assert head == "Записано на пн 26 октября, ≈ 9:00: суп, в обед."
 
 
 def test_a_time_word_alone_is_no_dish(db, owner, reader, clock):
@@ -1209,11 +1205,10 @@ def test_m5e_a_bare_time_in_a_reply_is_a_time_and_no_dish(
 @pytest.mark.parametrize(
     "words, now, local, head",
     [
-        # The part is still ahead of the sent clock, so going on now: its own clock
-        # still goes on the replied meal's day, never the minute it was typed.
+        # The part is still ahead of the sent clock: its own clock goes on the
+        # replied meal's day, never the minute it was typed.
         ("вечером", (18, 30), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),
         ("утром", (8, 0), datetime(2026, 10, 26, 9, 0), "≈ 9:00"),
-        ("в обед", (11, 30), datetime(2026, 10, 26, 13, 0), "≈ 13:00"),
         ("вечером", (21, 0), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),  # control
     ],
 )
