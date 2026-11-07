@@ -79,6 +79,16 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
+- [ ] **TD-260**: «⬅️ К ответу бота» on a typed meal still in its read draws the line with no «Считаю…». The marker was dropped there because the tapped message may not be the one the read edits at its end: a retry queued while the line was a card (`job.line_id=None`), a reply's message (time, «и сыр»), or a retry whose `shown` is the M7 text (no edit when it fails again). A marker there could stay for good. To bring it back, the tap must know the live read's line (and that read's end must always edit it). Photos and voice have the same issue with `pending_text` on a back tap. Also `_read_kind` takes the first source, so a typed meal made from a failed photo (M7c) shows the photo's «читаю…» on a back tap.
+  - **Priority:** Low (needs a tap into the card and back within the seconds of a read)
+  - **Source:** feat/text-reading-marker review
+  - **Created:** 2026-11-08
+
+- [ ] **TD-259**: A re-read started from the background (`read_again`: the sweep's automatic retry, /reprocess, /models) flips the line's view to pending but does not re-render it, so the line shows no «читаю…»/«Считаю…» while that read runs. Her rule (2026-11-08): a line waiting on the model always says so until the answer. Same for photos and voice.
+  - **Priority:** Low (the first read, the one people watch, has the marker)
+  - **Source:** feat/text-reading-marker
+  - **Created:** 2026-11-08
+
 - [ ] **TD-248**: The 🔔 custom-emoji tile is in the sticker-set source but the set was not rebuilt and uploaded; until then the reminder title falls back to the plain emoji. Verify the fallback before release, upload with the telegram-emoji-pack flow.
   - **Priority:** Low
   - **Source:** feat/meal-reminders (stage 6)

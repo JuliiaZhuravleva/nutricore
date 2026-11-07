@@ -530,7 +530,10 @@ def test_the_words_appear_at_once_and_the_names_only_edit_when_they_differ(
     meal = _meals(db)[0]
     assert wire.sent()[0]["text"].startswith("Записано: кофе и печенье.")
     assert _kb(wire.sent()[0]) == [[f"ml:o:{meal.id}:r", f"ml:t:{meal.id}:r"]]
-    assert wire.edits() == []  # the same names: nothing to say again
+    # The same names: the answer only takes «Считаю…» away.
+    assert [e["text"] for e in wire.edits()] == [
+        wire.sent()[0]["text"].replace("\nСчитаю…", "")
+    ]
     assert _item_names(db, meal) == ["кофе", "печенье"]
     assert meal.reading_status == "read"
 
@@ -1096,6 +1099,7 @@ def test_the_handler_returns_before_the_read_ends(db, owner, reader):
         assert [p["text"] for p in wire.sent()][:2] == [
             "Фото в дневнике, читаю…",
             "Записано: суп.\n"
+            "Считаю…\n"
             "На этом всё. Поправить можно кнопками или ответом на это сообщение.",
         ]
         assert wire.edits() == []  # known-positive: the reads are still held
@@ -1473,16 +1477,18 @@ def test_a_line_that_reads_the_same_still_gets_the_fix_for_its_one_dish(
     db.expire_all()
     meal = _meals(db)[0]
     item = crud_meal_item.live(db, meal.id)[0]
-    assert wire.sent()[0]["text"] == "Записано: суп."
+    assert wire.sent()[0]["text"] == "Записано: суп.\nСчитаю…"
     assert _kb(wire.sent()[0])[0][0] == f"ml:o:{meal.id}:r"  # no items yet
     assert [e["text"] for e in wire.edits()] == ["Записано: суп."]
     assert _kb(wire.edits()[0])[0] == [f"ml:i:{item.id}:r", f"ml:t:{meal.id}:r"]
 
 
 def test_a_line_that_reads_the_same_with_many_dishes_is_left_alone(db, owner, reader):
-    """Known-positive: its keyboard is right from the start, an edit would be refused."""
+    """Known-positive: its keyboard is right from the start, the answer only drops the
+    «Считаю…» line."""
     _hint_seen(db, owner)
     reader.answer = {**NUTRITION, "foods": ["суп", "хлеб"]}
     wire = send(text("суп и хлеб"))
-    assert wire.sent()[0]["text"] == "Записано: суп и хлеб."
-    assert wire.edits() == []
+    assert wire.sent()[0]["text"] == "Записано: суп и хлеб.\nСчитаю…"
+    assert [e["text"] for e in wire.edits()] == ["Записано: суп и хлеб."]
+    assert _kb(wire.edits()[0]) == _kb(wire.sent()[0])

@@ -218,7 +218,7 @@ def test_m1c_a_meal_soon_after_another_offers_the_join_and_joins_nothing(
     db.expire_all()
     second = db.scalars(select(Meal).order_by(Meal.id.desc())).first()
     line = wire.sent()[-1]
-    assert line["text"] == "Записано: сыр."
+    assert line["text"] == "Записано: сыр.\nСчитаю…"
     assert _labels(line)[-1] == ["🔗 Объединить с пн 26 окт, 13:00"]
     assert _datas(line)[-1] == [f"ml:j:{first.id}:{second.id}:r"]
     _budget(line)
