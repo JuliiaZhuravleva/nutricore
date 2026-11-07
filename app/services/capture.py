@@ -2157,7 +2157,7 @@ def _v_join(t, data: str, one: str, other: str, back: str) -> meal_card.Screen:
         return meal_card._card(t, live, back, notice=TARGET_GONE)
     if a.reading_status == "pending" or b.reading_status == "pending":
         return _not_yet_toast()
-    earlier, later = meal_card.in_order(a, b)
+    earlier, later = meal_card.in_order(a, b, t.zone)
     if not meal_card.has_source(t.db, later):
         return meal_card._card(t, a, back)
     known, rev = _record_text(t.db, earlier, t.user), earlier.rev

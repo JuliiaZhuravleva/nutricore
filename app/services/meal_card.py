@@ -1218,14 +1218,22 @@ def _moment(meal: Meal) -> tuple:
     return (moment if moment.tzinfo else moment.replace(tzinfo=UTC), meal.id)
 
 
-def in_order(one: Meal, other: Meal) -> tuple:
-    """(earlier, later): the earlier one survives a join, whichever way it was asked."""
+def in_order(one: Meal, other: Meal, zone) -> tuple:
+    """(earlier, later): the earlier one survives a join, whichever way it was asked.
+    Of two meals of one local day of which one alone has no time (``day_only``), the
+    timed one survives: its clock is the record's, and the noon of the other is none."""
+    one_free, other_free = (m.time_precision == DAY_ONLY for m in (one, other))
+    if one_free != other_free:
+        days = {local_time(m.meal_time, zone).date() for m in (one, other)}
+        if len(days) == 1:
+            return (other, one) if one_free else (one, other)
     return (one, other) if _moment(one) <= _moment(other) else (other, one)
 
 
 def may_join(db, one: Meal, other: Meal) -> bool:
     """➖ Отделить takes a source: a later meal with none could never come back."""
-    return has_source(db, in_order(one, other)[1])
+    zone = user_zone(db.get(User, one.user_id))
+    return has_source(db, in_order(one, other, zone)[1])
 
 
 def _short_when(meal: Meal, zone) -> str:
@@ -1263,7 +1271,8 @@ def join_row(db, meal: Meal) -> Optional[list]:
         return None
     if abs(_sent_moment(meal) - _sent_moment(previous)) >= JOIN_ROW_WINDOW:
         return None
-    earlier, later = in_order(previous, meal)
+    zone = user_zone(db.get(User, meal.user_id))
+    earlier, later = in_order(previous, meal, zone)
     return [join_button(db, earlier, later, "r")]
 
 
@@ -1893,7 +1902,9 @@ def _day_only_rows(t: _Tap, meal: Meal, back: str, yesterday, undo_row) -> list:
         if moment <= t.now:
             parts.append(_time_chip(meal, label, moment, "p", back))
     rows = [parts] if parts else []
-    rows.append([*_sent_chip(t, meal, back), yesterday])
+    last = [*_sent_chip(t, meal, back), *([yesterday] if yesterday else [])]
+    if last:
+        rows.append(last)
     if undo_row:
         rows.append(undo_row)
     return rows
@@ -1921,16 +1932,18 @@ def _time_screen(
         back,
     )
     undo_row = [_undo_button(undo, back)] if undo else []
+    # A meal already where «Вчера» would put it gets none: the tap would change nothing.
+    there = moment.date() == day and meal.time_precision in (DAY_ONLY, APPROX)
     if meal.time_precision == DAY_ONLY:
         # No clock to carry over: the day moves, and it still claims no time (N5c).
         yesterday = _time_chip(meal, label, _noon(day, zone), "y", back)
-        rows = _day_only_rows(t, meal, back, yesterday, undo_row)
+        rows = _day_only_rows(t, meal, back, None if there else yesterday, undo_row)
     else:
         rows = [
             [
                 _time_chip(meal, "−15 мин", moment - timedelta(minutes=15), "e", back),
                 _time_chip(meal, "−1 ч", moment - timedelta(hours=1), "e", back),
-                yesterday,
+                *([] if there else [yesterday]),
             ],
             [
                 _time_chip(meal, "Не помню", _noon(moment.date(), zone), "d", back),

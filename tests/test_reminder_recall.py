@@ -23,6 +23,7 @@ from app.models.user import User
 from app.services import capture, favorites, meal_card, reminders, routines
 from app.services import telegram as tg
 from app.services import voice
+from tests.test_capture_join import _datas, _labels, tap
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     CHAT,
     OWNER,
@@ -686,6 +687,21 @@ def test_d2_a_day_told_in_one_voice_is_one_meal_with_no_clock(
     assert {"Утром", "Днём", "Вечером"} <= set(labels), labels
 
 
+def test_d2_in_the_specs_own_words_a_meals_name_is_a_clauses_time(
+    db, evening, hears, reader, monkeypatch
+):
+    """«в обед» gives no clock, yet in R0's rule it is a time a clause says: one meal
+    of the day, no «≈ 9:00» from «утром»."""
+    hears["words"] = "утром овсянка, в обед суп"
+    wire = arrive(monkeypatch, speak(at(21, 5)))
+    (meal,) = _meals(db)
+    assert (meal.time_precision, meal.time_source) == ("day_only", "said")
+    assert _local(meal) == datetime.combine(DAY, time(12), tzinfo=ZONE)
+    assert reader.text == ["утром овсянка, в обед суп"]  # nothing cut from the read
+    line = wire.edits()[-1]["text"]
+    assert line.startswith(DAY_LINE) and "9:00" not in line, line
+
+
 def test_d3_yoghurt_at_twenty_one_forty_is_exact(db, evening, monkeypatch):
     arrive(monkeypatch, say(at(21, 40), "йогурт"))
     (meal,) = _meals(db)
@@ -703,6 +719,60 @@ def test_d3_at_twenty_one_twenty_the_clock_chip_makes_it_exact(
     (meal,) = _meals(db)
     assert meal.time_precision == "exact"
     assert _utc(meal.meal_time) == at(21, 20)
+
+
+# --- a timed meal and a day's meal with no time, joined ---------------------------
+
+
+def test_the_join_chip_under_a_day_only_meal_names_the_timed_one(
+    db, evening, reader, monkeypatch
+):
+    """Persona finding: the chip under «суп» named «суп» itself, «без времени»."""
+    wires = arrive(
+        monkeypatch,
+        say(at(21, 5), "вечером паста с сыром"),
+        say(at(21, 10), "суп"),
+    )
+    pasta, soup = _meals(db)
+    assert (pasta.time_precision, _local(pasta).time()) == ("approx", time(20))
+    _is_day_only(soup)
+    line = wires[1].sent()[-1]
+    assert _labels(line)[-1] == ["🔗 Объединить с пт 6 ноя, ≈ 20:00"]
+    assert _datas(line)[-1] == [f"ml:j:{pasta.id}:{soup.id}:r"]
+
+
+def test_a_join_of_a_day_only_meal_into_a_timed_one_keeps_the_clock(
+    db, evening, reader, monkeypatch
+):
+    """Whichever way it is asked, and whichever came first: the timed one survives."""
+    soup_first, pasta_later = arrive(
+        monkeypatch, say(at(21, 5), "суп"), say(at(21, 10), "вечером паста с сыром")
+    )
+    soup, pasta = _meals(db)
+    line = pasta_later.sent()[-1]
+    assert _labels(line)[-1] == ["🔗 Объединить с пт 6 ноя, ≈ 20:00"]
+    tap(f"ml:j:{soup.id}:{pasta.id}:r")
+    db.expire_all()
+    pasta, soup = db.get(Meal, pasta.id), db.get(Meal, soup.id)
+    assert soup.merged_into_id == pasta.id and pasta.merged_into_id is None
+    assert (pasta.time_precision, _local(pasta).time()) == ("approx", time(20))
+
+
+def test_two_timed_meals_still_join_into_the_earlier(db, owner):
+    """The control: no day_only, the earlier one survives as before."""
+    first = Meal(user_id=owner.id, meal_time=at(13), time_precision="exact")
+    second = Meal(user_id=owner.id, meal_time=at(20), time_precision="approx")
+    assert meal_card.in_order(second, first, ZONE) == (first, second)
+    noon = Meal(user_id=owner.id, meal_time=at(12), time_precision="day_only")
+    assert meal_card.in_order(noon, second, ZONE) == (second, noon)
+    assert meal_card.in_order(second, noon, ZONE) == (second, noon)
+    # a day_only meal of another day is no day's meal of this one: the order stands
+    other_day = Meal(
+        user_id=owner.id,
+        meal_time=at(12, 0, DAY - timedelta(days=1)),
+        time_precision="day_only",
+    )
+    assert meal_card.in_order(second, other_day, ZONE) == (other_day, second)
 
 
 # --- R1b review: a day the words name, a correction's renewal, a voice «ничего» -----
@@ -820,6 +890,93 @@ def test_a_voice_of_nothing_is_not_read_and_closes_the_reminder(
     assert row.answer == "none"
     assert _utc(row.answered_at) == at(21, 5) and _utc(row.closed_at) == at(21, 5)
     assert reminders.outcome(row) == reminders.ANSWERED
+
+
+NOTHING_TOO = [
+    "не ела ничего",
+    "не ел ничего сегодня",
+    "да ничего",
+    "ну ничего",
+    "нет ничего",
+    "ничего больше",
+    "больше ничего не было",
+    "ничего не было",
+    "ничо",
+    "ничё",
+    "ниче",
+    "Ничего.",
+]
+# Food or a remark after «ничего»: the read has it, as before.
+STILL_READ = [
+    "ничего особенного",
+    "ничего себе суп",
+    "ничего кроме супа",
+    "не ела ничего кроме супа",
+    "да, суп",
+    "ничего, но потом суп",
+]
+STILL_NO = ["нет", "нет, не ел"]  # the silent «нет» of §3.2 (says_no)
+
+
+@pytest.mark.parametrize("words", NOTHING_TOO)
+def test_more_ways_to_say_nothing_are_nothing(words):
+    assert reminders.is_nothing(words)
+
+
+@pytest.mark.parametrize("words", STILL_READ + STILL_NO)
+def test_nothing_with_more_in_it_or_a_no_is_not_nothing(words):
+    assert not reminders.is_nothing(words)
+
+
+@pytest.mark.parametrize("words", NOTHING_TOO)
+def test_more_ways_to_say_nothing_close_the_reminder_unread(
+    db, evening, reader, words, monkeypatch
+):
+    wire = arrive(monkeypatch, say(at(21, 10), words))
+    assert reader.text == [] and _meals(db) == [] and wire.sent() == []
+    (edit,) = wire.edits()
+    assert edit["text"] == "🔔 <b>Еда за сегодня</b>\n✓ Принято."
+    assert _send_row(db, evening.id).answer == "none"
+
+
+@pytest.mark.parametrize("words", NOTHING_TOO)
+def test_more_ways_to_say_nothing_in_a_voice_close_it_unread(
+    db, evening, hears, reader, words, monkeypatch
+):
+    hears["words"] = words
+    arrive(monkeypatch, speak(at(21, 5)))
+    assert reader.text == [] and _meals(db) == []
+    assert _send_row(db, evening.id).answer == "none"
+
+
+@pytest.mark.parametrize("words", STILL_READ)
+def test_nothing_with_more_in_it_is_read(db, evening, reader, words, monkeypatch):
+    arrive(monkeypatch, say(at(21, 10), words))
+    assert reader.text == [words]
+    assert len(_meals(db)) == 1
+    assert _send_row(db, evening.id).answer != "none"
+
+
+@pytest.mark.parametrize("words", STILL_READ)
+def test_nothing_with_more_in_it_in_a_voice_is_read(
+    db, evening, hears, reader, words, monkeypatch
+):
+    hears["words"] = words
+    arrive(monkeypatch, speak(at(21, 5)))
+    assert reader.text == [words]
+    assert len(_meals(db)) == 1
+    assert _send_row(db, evening.id).answer != "none"
+
+
+@pytest.mark.parametrize("words", STILL_NO)
+def test_a_no_stays_silent_and_leaves_the_reminder_unanswered(
+    db, evening, reader, words, monkeypatch
+):
+    wire = arrive(monkeypatch, say(at(21, 1), words))
+    assert wire.sent() == [] and wire.edits() == [] and reader.text == []
+    assert _meals(db) == []
+    row = _send_row(db, evening.id)
+    assert row.answer is None and reminders.outcome(row) == reminders.UNANSWERED_SEND
 
 
 def test_a_voice_of_food_under_the_reminder_is_still_read(

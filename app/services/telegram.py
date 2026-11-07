@@ -717,7 +717,8 @@ async def _show_owed(application: Application) -> None:
 
 async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> None:
     """The original line, to the meal's new list. Silent, and best effort: it may be
-    too old to edit, and the person was answered anyway."""
+    too old to edit, and the person was answered anyway. A line that already says it
+    (➖ Отделить gives a meal back its own line as it was) is no failure."""
     if retouch is None:
         return
     try:
@@ -728,6 +729,9 @@ async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> N
             parse_mode=ParseMode.HTML,
             reply_markup=retouch.markup,
         )
+    except BadRequest as e:
+        if not _is_not_modified(e):
+            logger.warning("Original line not edited: %s", type(e).__name__)
     except TelegramError as e:
         logger.warning("Original line not edited: %s", type(e).__name__)
 

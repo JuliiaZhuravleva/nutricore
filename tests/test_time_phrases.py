@@ -130,10 +130,12 @@ def test_one_timed_clause_reads_as_before():
 
 
 def test_a_meals_name_is_still_no_time():
-    # The meal-name finder of the first R0 is dropped: only «утром» is a time here.
-    said = _said("утром каша, в обед суп")
-    assert (said.precision, said.phrase) == (APPROX, "утром")
+    # The meal-name finder of the first R0 is dropped: a meal's name gives no clock.
     assert _said("в обед суп") is None
+    assert _said("каша, в обед суп") is None
+    # Only R0's rule counts it as a clause's time (stage 6, D2): two meals, one day.
+    said = _said("утром каша, в обед суп")
+    assert (said.precision, said.phrase) == (DAY_ONLY, None)
 
 
 def test_a_time_word_alone_is_no_meal_unless_bare():

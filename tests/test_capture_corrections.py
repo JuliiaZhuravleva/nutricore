@@ -284,15 +284,30 @@ def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
 
 
 def test_r0_control_one_timed_clause_is_still_its_time(db, owner, reader, clock):
-    # «в обед» is no time (the meal-name finder is not built): one timed clause.
+    # The second clause says no time: one timed clause, read as before R0.
     reader.answer = dict(SOUP)
-    wire = send(text("утром суп, в обед"))
+    wire = send(text("утром суп, хлеб"))
     meal = _meals(db)[0]
     assert (meal.time_precision, meal.time_phrase) == ("approx", "утром")
     assert _local(meal) == datetime(2026, 10, 26, 9, 0)
-    assert reader.text == ["суп, в обед"]
+    assert reader.text == ["суп, хлеб"]
     head = wire.sent()[0]["text"].split("\n")[0]
-    assert head == "Записано на пн 26 октября, ≈ 9:00: суп, в обед."
+    assert head == "Записано на пн 26 октября, ≈ 9:00: суп, хлеб."
+
+
+def test_d2_a_meals_name_in_the_other_clause_makes_it_two_times(
+    db, owner, reader, clock
+):
+    # Stage 6, D2: «в обед» counts as a clause's time in R0's rule alone, so «утром»
+    # and «в обед» are two moments: the day and no clock, nothing cut.
+    reader.answer = dict(SOUP)
+    wire = send(text("утром суп, в обед"))
+    meal = _meals(db)[0]
+    assert (meal.time_precision, meal.time_phrase) == ("day_only", None)
+    assert _local(meal) == datetime(2026, 10, 26, 12, 0)
+    assert reader.text == ["утром суп, в обед"]
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == "Записано на пн 26 октября, без времени: утром суп, в обед."
 
 
 def test_a_time_word_alone_is_no_dish(db, owner, reader, clock):

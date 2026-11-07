@@ -12,8 +12,10 @@ module and hard-coded), and, only where R0's rule applies, what it gives now:
   (``=``: the whole text).
 
 R0's rule: two or more clauses that each say a time, and those times differ, give the
-day and no clock. Every other row is the pre-R0 result, untouched. Pure: no rows, no
-model. A change of a row here is a change of behaviour."""
+day and no clock. In that rule alone a clause with a meal's name and no time phrase
+says a time too (stage 6, D2: «утром овсянка, в обед суп»); the column of clauses with a
+time still counts time phrases only. Every other row is the pre-R0 result, untouched.
+Pure: no rows, no model. A change of a row here is a change of behaviour."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.meal_words import DAY_ONLY, clauses, time_words
+from app.services.meal_words import _MEAL_NAME, DAY_ONLY, clauses, time_words
 
 ZONE = ZoneInfo("Asia/Tbilisi")  # UTC+4
 
@@ -159,21 +161,21 @@ TABLE = """
 утром каша, в 19:30 паста | 21:00 |  | 2 | exact 11-06 19:30 + [в 19:30] «утром каша, паста» | day 11-06 + [None] =
 утром каша, в 19:30 паста | 10:00 |  | 2 | exact 11-05 19:30 + [в 19:30] «утром каша, паста» | day 11-06 + [None] =
 утром каша в 19:30 паста | 21:00 |  | 1 | exact 11-06 19:30 + [в 19:30] «утром каша паста»
-в обед суп, а вечером паста | 21:00 |  | 1 | approx 11-06 20:00 + [вечером] «в обед суп, а паста»
-в обед суп, а вечером паста | 10:00 |  | 1 | approx 11-05 20:00 + [вечером] «в обед суп, а паста»
-в обед суп, а вечером паста | 07:00 |  | 1 | approx 11-05 20:00 + [вечером] «в обед суп, а паста»
-утром каша, в обед суп | 21:00 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп»
-утром каша, в обед суп | 13:20 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп»
-утром каша, в обед суп | 09:30 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп»
+в обед суп, а вечером паста | 21:00 |  | 1 | approx 11-06 20:00 + [вечером] «в обед суп, а паста» | day 11-06 + [None] =
+в обед суп, а вечером паста | 10:00 |  | 1 | approx 11-05 20:00 + [вечером] «в обед суп, а паста» | day 11-05 + [None] =
+в обед суп, а вечером паста | 07:00 |  | 1 | approx 11-05 20:00 + [вечером] «в обед суп, а паста» | day 11-05 + [None] =
+утром каша, в обед суп | 21:00 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп» | day 11-06 + [None] =
+утром каша, в обед суп | 13:20 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп» | day 11-06 + [None] =
+утром каша, в обед суп | 09:30 |  | 1 | approx 11-06 09:00 + [утром] «каша, в обед суп» | day 11-06 + [None] =
 на ужин суп, вечером чай | 18:40 |  | 1 | approx 11-05 20:00 + [вечером] «на ужин суп, чай»
-на завтрак каша, в обед суп | 06:30 |  | 0 | -
-в обед суп, в 15:00 чай | 21:00 |  | 1 | exact 11-06 15:00 + [в 15:00] «в обед суп, чай»
-в обед суп и в 16:00 чай | 21:00 |  | 1 | exact 11-06 16:00 + [в 16:00] «в обед суп и чай»
+на завтрак каша, в обед суп | 06:30 |  | 0 | - | day 11-05 + [None] =
+в обед суп, в 15:00 чай | 21:00 |  | 1 | exact 11-06 15:00 + [в 15:00] «в обед суп, чай» | day 11-06 + [None] =
+в обед суп и в 16:00 чай | 21:00 |  | 1 | exact 11-06 16:00 + [в 16:00] «в обед суп и чай» | day 11-06 + [None] =
 утром каша, в 10:30 йогурт | 21:00 |  | 2 | exact 11-06 10:30 + [в 10:30] «утром каша, йогурт» | day 11-06 + [None] =
 днём суп, полдник в 17:00 | 21:00 |  | 2 | exact 11-06 17:00 + [в 17:00] «днём суп, полдник» | day 11-06 + [None] =
-на обед суп, в 16:30 печенье | 18:00 |  | 1 | exact 11-06 16:30 + [в 16:30] «на обед суп, печенье»
-на обед суп, в 13:30 чай | 21:00 |  | 1 | exact 11-06 13:30 + [в 13:30] «на обед суп, чай»
-на ужин паста, в 19:30 чай | 21:00 |  | 1 | exact 11-06 19:30 + [в 19:30] «на ужин паста, чай»
+на обед суп, в 16:30 печенье | 18:00 |  | 1 | exact 11-06 16:30 + [в 16:30] «на обед суп, печенье» | day 11-06 + [None] =
+на обед суп, в 13:30 чай | 21:00 |  | 1 | exact 11-06 13:30 + [в 13:30] «на обед суп, чай» | day 11-06 + [None] =
+на ужин паста, в 19:30 чай | 21:00 |  | 1 | exact 11-06 19:30 + [в 19:30] «на ужин паста, чай» | day 11-06 + [None] =
 утром каша, утром кофе | 21:00 |  | 2 | approx 11-06 09:00 + [утром] «каша, утром кофе»
 утром каша, утром кофе | 08:30 |  | 2 | approx 11-05 09:00 + [утром] «каша, утром кофе»
 утром каша, в 13:00 суп | 13:20 |  | 2 | exact 11-06 13:00 + [в 13:00] «утром каша, суп» | day 11-06 + [None] =
@@ -184,8 +186,8 @@ TABLE = """
 вчера суп, утром каша | 10:00 |  | 2 | day 11-05 - [вчера] «суп, утром каша» | day 11-05 + [None] =
 вчера пицца, сегодня утром каша | 10:00 |  | 2 | day 11-05 - [вчера] «пицца, сегодня утром каша» | day 11-06 + [None] =
 вчера суп, сегодня в 9:00 каша | 10:00 |  | 2 | exact 11-06 09:00 + [в 9:00] «вчера суп, сегодня каша» | day 11-06 + [None] =
-на завтрак каша, вчера в 22:00 торт | 21:00 |  | 1 | exact 11-05 22:00 - [вчера в 22:00] «на завтрак каша, торт»
-вчера в обед суп, сегодня на завтрак каша | 10:00 |  | 1 | day 11-05 - [вчера] «в обед суп, сегодня на завтрак каша»
+на завтрак каша, вчера в 22:00 торт | 21:00 |  | 1 | exact 11-05 22:00 - [вчера в 22:00] «на завтрак каша, торт» | day 11-05 + [None] =
+вчера в обед суп, сегодня на завтрак каша | 10:00 |  | 1 | day 11-05 - [вчера] «в обед суп, сегодня на завтрак каша» | day 11-06 + [None] =
 вчера суп, ночью бутерброд | 10:00 |  | 2 | day 11-05 - [вчера] «суп, ночью бутерброд» | day 11-05 + [None] =
 # --- the clause edges, and more two-clause rows
 утром каша — вечером суп | 21:00 |  | 2 | approx 11-06 09:00 + [утром] «каша — вечером суп» | day 11-06 + [None] =
@@ -256,19 +258,35 @@ def test_time_phrase_corpus(text, sent, bare_ok, timed, before, rule):
     assert _now(text, sent, bare_ok) == (rule or before)
 
 
+def _named(text: str) -> int:
+    """Clauses the rule counts for a meal's name: no time phrase, a meal's name."""
+    return sum(
+        time_words(one, _sent("12:00"), ZONE, bare_ok=True) is None
+        and _MEAL_NAME.search(one) is not None
+        for one in clauses(text)
+    )
+
+
 def test_no_row_of_fewer_than_two_timed_clauses_changed_since_before_r0():
-    single = [row for row in ROWS if row[3] < 2]
+    single = [row for row in ROWS if row[3] + _named(row[0]) < 2]
     assert single  # a known positive: most rows are such
     assert [row for row in single if row[5] is not None] == []
     changed = [row for row in single if _now(*row[:3]) != row[4]]
     assert changed == []
 
 
+def test_a_meals_name_changes_only_rows_of_two_clauses_that_say_a_time():
+    named = [row for row in ROWS if row[3] < 2 and row[5] is not None]
+    assert named  # «утром каша, в обед суп»
+    for text, _sent_at, _bare, timed, _before, _rule in named:
+        assert _named(text) >= 1 and timed + _named(text) >= 2, text
+
+
 def test_the_rule_only_ever_gives_the_day_and_no_clock():
     ruled = [row for row in ROWS if row[5] is not None]
     assert ruled  # a known positive
     for text, sent, _bare, timed, before, rule in ruled:
-        assert timed >= 2, text
+        assert timed + _named(text) >= 2, text
         assert rule.startswith("day ") and rule.endswith(" + [None] ="), text
         assert rule != before, text
 

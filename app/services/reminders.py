@@ -156,13 +156,17 @@ _PHOTOS = ("photo", "document_photo")
 # Food in front of the person now: its time is the sent one, whatever came before.
 _NOW_WORDS = re.compile(r"\b(?:сейчас|только\s+что)\b")
 # R16: a day with little or nothing, said as an answer; no dish in it to read.
-# «нет, ничего» is one too; «нет, не ел» stays a «нет» (says_no), as §3.2 has it.
+# «нет, ничего», «да ничего», «не ела ничего сегодня» are one too; «нет, не ел» stays a
+# «нет» (says_no), as §3.2 has it. A word after «ничего» other than these is food's
+# or a remark's: «ничего кроме супа», «ничего особенного». On the text with «ё» as «е».
 _SOFTLY = r"(?:(?:сегодня|больше|почти|вообще)\s+)*"
+_NIL = r"(?:ничего|ничо|ниче)"
 _NOTHING = re.compile(
-    rf"(?:нет[,.!…]?\s+(?={_SOFTLY}ничего))?"
+    rf"(?:(?:нет|да|ну)[,.!…]?\s+(?={_SOFTLY}{_NIL}))?"
     + _SOFTLY
-    + r"(?:ничего|не\s+ел[аио]?|не\s+было)"
-    r"(?:\s+не\s+ел[аио]?|\s+не\s+было)?[.!…]*"
+    + rf"(?:{_NIL}|не\s+ел[аио]?(?:\s+{_NIL})?|не\s+было)"
+    r"(?:\s+не\s+ел[аио]?|\s+не\s+было)?"
+    r"(?:\s+(?:сегодня|больше))*[.!…]*"
     r"(?:,?\s*спасибо)?[.!…]*"
 )
 
@@ -761,7 +765,9 @@ def says_now(text: str | None) -> bool:
 
 def is_nothing(text: str | None) -> bool:
     """«ничего», «почти ничего не ела», «сегодня не было»: no dish, only an answer."""
-    return bool(text) and _NOTHING.fullmatch(text.strip().casefold()) is not None
+    if not text:
+        return False
+    return _NOTHING.fullmatch(text.strip().casefold().replace("ё", "е")) is not None
 
 
 def window_end(send: ReminderSend) -> datetime:

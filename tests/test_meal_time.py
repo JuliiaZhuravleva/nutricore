@@ -205,15 +205,15 @@ def test_n5d_the_yesterday_chip_is_approximate_and_a_second_tap_is_the_toast(db,
             PLEASE,
         ]
     )
+    # Already there: no «Вчера» is drawn again, its tap would change nothing.
     assert _rows(screen) == [
-        ["−15 мин", "−1 ч", "Вчера, 30 окт"],
+        ["−15 мин", "−1 ч"],
         ["Не помню", UNDO],
         ["⬅️ К приёму"],
     ]
     db.refresh(meal)
     assert meal.time_precision == "approx"
-    # The re-drawn chip is the same target: the second tap changes nothing.
-    assert _button(screen, "Вчера, 30 окт") == chip
+    # The chip of the screen before still changes nothing.
     again = _sat(db, chip)
     assert (again.text, again.toast) == ("", "Уже так")
     assert len(_events(db)) == 1
@@ -364,6 +364,20 @@ def test_the_chip_on_a_meal_already_yesterday_says_no_new_day(db, owner):
     assert "в этом дне" not in screen.text
 
 
+def test_an_exact_meal_already_yesterday_keeps_its_yesterday_chip(db, owner):
+    """The control of the no-op rule: on an exact meal the chip still makes it
+    approximate, so it is drawn; on a meal of today it moves the day."""
+    meal, _item = _one(db, owner, meal_time=datetime(2026, 10, 30, 9, 20, tzinfo=UTC))
+    assert "Вчера, 30 окт" in _rows(_sat(db, f"ml:t:{meal.id}:t"))[0]
+    today, _item = _one(db, owner)
+    assert "Вчера, 30 окт" in _rows(_sat(db, f"ml:t:{today.id}:t"))[0]
+
+
+def test_a_day_only_meal_of_today_keeps_its_yesterday_chip(db, owner):
+    meal = _day_only(db, owner, date(2026, 10, 31), datetime(2026, 10, 31, 13, 50))
+    assert "Вчера, 30 окт" in _rows(_sat(db, f"ml:t:{meal.id}:t"))[1]
+
+
 # --- R0: a day and no clock (§3.5) ------------------------------------------
 
 
@@ -383,9 +397,10 @@ def test_r0_a_day_only_meal_of_yesterday_gets_every_part_and_its_sent_moment(db,
     assert screen.text == "\n".join(
         [TIME_TITLE, "Записано на: пт 30 октября, без времени.", PLEASE]
     )
+    # No «Вчера, 30 окт»: the meal is on that day already, the tap was «Уже так».
     assert _rows(screen) == [
         ["Утром", "Днём", "Вечером"],
-        ["В 21:40", "Вчера, 30 окт"],
+        ["В 21:40"],
         ["⬅️ К приёму"],
     ]
     clocks = [datetime(2026, 10, 30, hour, 0, tzinfo=ZONE) for hour in (9, 14, 20)]
@@ -401,8 +416,9 @@ def test_r0_a_part_tap_is_approximate_on_the_meals_day_and_edited(db, owner):
     db.refresh(meal)
     assert _eaten(db, meal) == datetime(2026, 10, 30, 14, 0, tzinfo=ZONE)
     assert (meal.time_precision, meal.time_source) == ("approx", "edited")
-    # With a clock again, the screen is the exact branch's (control).
-    assert _rows(screen)[0] == ["−15 мин", "−1 ч", "Вчера, 30 окт"]
+    # With a clock again, the screen is the exact branch's (control); no «Вчера»:
+    # the meal is on that day already, approximate.
+    assert _rows(screen)[0] == ["−15 мин", "−1 ч"]
     assert len(_events(db)) == 1
 
 
@@ -419,7 +435,7 @@ def test_r0_a_sent_moment_on_the_next_day_says_today_and_lands_there(db, owner):
     # Yesterday's day, answered at 1:30 today: «В 1:30» would read as yesterday's.
     meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 31, 1, 30))
     screen = _sat(db, f"ml:t:{meal.id}:t")
-    assert _rows(screen)[1] == ["Сегодня, 1:30", "Вчера, 30 окт"]
+    assert _rows(screen)[1] == ["Сегодня, 1:30"]
     assert "В 1:30" not in [label for row in _rows(screen) for label in row]
     screen = _sat(db, _button(screen, "Сегодня, 1:30"))
     assert screen.text.startswith(
@@ -451,7 +467,10 @@ def test_r0_a_meal_with_no_sent_moment_offers_the_parts_only(db, owner):
     meal = _day_only(db, owner, date(2026, 10, 30), datetime(2026, 10, 30, 21, 40))
     meal.sent_at = None
     db.commit()
-    assert _rows(_sat(db, f"ml:t:{meal.id}:t"))[1] == ["Вчера, 30 окт"]
+    assert _rows(_sat(db, f"ml:t:{meal.id}:t")) == [
+        ["Утром", "Днём", "Вечером"],
+        ["⬅️ К приёму"],
+    ]
 
 
 def test_r0_the_exact_branch_offers_no_parts(db, owner):
