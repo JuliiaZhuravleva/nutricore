@@ -62,7 +62,52 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02
 
+- [ ] **TD-245**: Time words that were wrong before stage 6 R0 and are still wrong: «утром каша» sent at 6:30 lands on yesterday, «вчера суп в 13:00» lands on today, and «ночью» has edge cases. R0 deliberately kept the old behaviour (tests/test_time_phrase_corpus.py freezes it), so any fix must update that corpus row by row.
+  - **Priority:** Medium
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-246**: A «без цифр» mode for people for whom counting is harmful: no КБЖУ in cards, the week picture or answers, only what was eaten. ED safety (docs/researches/reminders-retention-evidence.md, «Риски»).
+  - **Priority:** Medium (needs the owner's yes and wording)
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-247**: Reminder metrics, aggregate only (owner screens show usage, never chats): logging-day rate, share of reminders followed by a record within 3 h, ✖ turn-offs (also within 48 h of a send), recovery within 7 days after a re-entry message, records per 100 reminders.
+  - **Priority:** Medium
+  - **Source:** owner decision 2026-11-07 («Позже, отдельной задачей»)
+  - **Created:** 2026-11-07
+
 ## Low
+
+- [ ] **TD-248**: The 🔔 custom-emoji tile is in the sticker-set source but the set was not rebuilt and uploaded; until then the reminder title falls back to the plain emoji. Verify the fallback before release, upload with the telegram-emoji-pack flow.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-249**: R3 «По записям» should learn the hours when reminders lead to a record (response-to-prompt), not only the hours of past records.
+  - **Priority:** Low (for the R3 branch)
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-250**: The week card's progress line should describe («5 из 7 дней с записями»), never evaluate. Check the current wording against R10 and the research.
+  - **Priority:** Low
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-251**: Voice «ничего» (R16): `capture.read_said_nothing` stores no reading row, unlike `read_no_speech`, so the voice leaves no trace for diagnostics. Also confirm the «✓ Принято.» wording on the voice's own line with the owner.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-252**: Inside a reminder's recall window, a reply to a meal line that changes only grams («300») or time («в 14») does not renew the window. Owner to decide; renewing means routing those two `_on_reply` branches through `capture._renews`. Related: `_renews` marks the reminder answered for a correction of a meal that is not bound to it (review probe P19).
+  - **Priority:** Low (owner's call)
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-253**: Stage 6 review minors: flake8 E203 in tests/sim/cli.py:776; `tick` followed by `advance --tick` can run the same beat twice in the simulator; `_reply_moment` with rule day_only and of_day=True has no test; the voice path of «вчера утром каша, вечером суп» on the next day is not tested.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
 
 - [ ] **TD-244**: HTMLBubbles (interactive widgets in a message) — prototype once Bot API 10.4 ships them publicly
   - **Priority:** Low

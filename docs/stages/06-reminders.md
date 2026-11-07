@@ -1,6 +1,6 @@
 # Stage 6: 🔔 Напоминания о еде (revision 2)
 
-Status: spec accepted 2026-11-06; R0 + R1 (evening) building on `feat/meal-reminders`. Written by
+Status: spec accepted 2026-11-06, amended 2026-11-07 (D6–D9); R0 + R1 (evening) + R1c building on `feat/meal-reminders`. Written by
 three design agents, merged, then critiqued by four persona agents (busy owner, hard days, rare
 logger, shift worker). The **owner's decisions below override the text further down** wherever
 they disagree.
@@ -29,6 +29,93 @@ they disagree.
   stage may make or price a paid call; tests and the simulator use fakes only.
 - Q3 (answer without a time → that day, no clock), Q4 (🗓 Итог недели moves into 🔔; hub keeps
   5 rows) and Q6 (meal names → fixed ≈ clock) stay at the defaults the spec took.
+
+## Owner's decisions (2026-11-07, from docs/researches/reminders-retention-evidence.md) — these win too
+
+Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §10 or §9, these win.
+
+- **D6. Re-entry after a lapse: one message at 7, one at 14, then silence** («Как в исследовании:
+  7 и 14»). R3 keeps «no regular reminder when the last meal row is older than 7 local days» and
+  «no meal row ever → nothing». On top of it, for a person whose evening reminders are on (not ✖,
+  mode evening):
+  - Let L = the local day of the last meal row (any row, drafts and deleted included), and
+    gap = today − L in local days, at the evening slot time.
+    - **Re-entry #1** is due when 7 ≤ gap < 14 and no `reentry7` send exists after L's last row.
+    - **Re-entry #2** is due when 14 ≤ gap < 30 and no `reentry14` send exists after L's last row.
+    - gap ≥ 30 → nothing ever (the report's «stop at 30»; this also keeps people who left long
+      before the release from getting anything at launch).
+    - Any new meal row starts a new count: the next lapse may get #1 and #2 again.
+  - The slot names `reentry7` / `reentry14` live in `reminder_sends.slot`, so
+    UNIQUE(user_id, local_day, slot) still claims once. No new settings keys and no migration
+    change.
+  - It goes **even when the ladder has paused** (D7): this is the one designed message for someone
+    who stopped. It does not go after ✖, nor for anyone R2/R7 excludes. The same due checks apply
+    as §5.3 except rules 4 (R3), 8 (ladder) and R8 (a fresh record means gap = 0 anyway). On a
+    Sunday with the week card on (R17), it moves to the next evening.
+  - **Copy**, constant title, no footnote, keyboard `[✅ ОК] [✖ Выключить]` only (no ⭐ chips):
+    ```
+    🔔 <b>Еда за сегодня</b>
+    Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно.
+    ```
+    ```
+    🔔 <b>Еда за сегодня</b>
+    Могу больше не напоминать. Если захочется — можно просто отправить еду в любой момент.
+    ```
+    The owner chose these words; R10's «never names an absence» is waived for exactly these two
+    strings (they hold no count of days and none of the banned words).
+  - A re-entry send is **neutral** for the ladder (like `ok`). It never opens a recall window
+    (§3.2): an answer after it is an ordinary capture at the moment it arrives. R4 still holds: it
+    deletes the previous untouched reminder, and the next send deletes it.
+- **D7. Unanswered ladder: rarer, then a pause** («Реже, раз в 3 дня»). Replaces §5.6's
+  single-slot rule:
+  - streak ≥ 3 → `quiet = {"level": "sparse", "on": local_day}`: a regular reminder is due only
+    when its local day ≥ the local day of the last regular send + 3.
+  - streak ≥ 6 → `quiet = {"level": "off", "on": local_day}`: the pause as before, ended only by
+    the return rule or a ⚙️ tap.
+  - `fragile` (after a resume): streak ≥ 1 → `off`, as before.
+  - An answered send breaks the streak, so the level drops back to daily (`quiet = null`) at the
+    next ladder write. ✅ ОК stays neutral.
+  - The resume rule (a day without records, then 2 record days) applies to `off` only. `sparse`
+    needs no resume: it ends on an answer or a ⚙️ tap on the ✓ mode (same as the pause).
+  - Multi-slot modes (R2/R3, later branch): ≥ k → `one`, ≥ 2k → `sparse`, ≥ 3k → `off`.
+  - The 🔔 sub-screen, while sparse: `Сейчас приходят реже, потому что остаются без ответа. Как
+    раньше — кнопкой ✓ 🕘 Вечером.` Nothing is said in the chat.
+- **D8. «Можно примерно и не всё»** («Добавить «можно примерно»»). The reminder text:
+  - first: `Можно не отвечать. Если что-то вспоминается, можно рассказать голосовым или написать — примерно и не всё. Время можно назвать: «в 13 суп». Без времени запишется на этот день, без часов.`
+  - later, with ⭐: `Можно не отвечать. Если что-то вспоминается — голосовым, текстом или блюдом из ⭐, можно примерно и не всё:`
+  - later, no ⭐: `Можно не отвечать. Если что-то вспоминается — голосовым или текстом, можно примерно и не всё.`
+  - §10 `what`: `…можно рассказать голосовым, написать или нажать на блюдо из ⭐, примерно и не всё. Отвечать не обязательно.`
+- **§10 `how`, ladder and re-entry sentence** (no counts of days, R10): replace «Если три
+  напоминания подряд остаются без ответа, они перестают приходить и возвращаются после перерыва в
+  записях или кнопкой в настройках.» with «Если напоминания подряд остаются без ответа, они
+  приходят реже, а потом перестают и возвращаются после перерыва в записях или кнопкой в
+  настройках. Если записей долго нет, придут одно-два коротких сообщения о том, что можно начать с
+  любого дня, и дальше бот молчит, пока не придёт еда.»
+- **D9. Metrics later** («Позже, отдельной задачей»): TD-247.
+- **Acceptance changes (§9):**
+  - B1: messages Tue, Wed, Thu; sparse after Thu; Sunday is the week card; Monday (gap 7) is
+    re-entry #1; the Monday after (gap 14) is re-entry #2; nothing after.
+  - B3: sparse after the 3rd evening (one every 3rd evening), pause after the 6th. Breakfasts never
+    resume it; ⚙️ does, the same evening.
+  - B4: ≤ 3 in week 1, then about one every 3 days while unanswered, then the pause.
+  - C2: last record 20 days ago → at launch **re-entry #2 only** (14 ≤ gap < 30), and nothing
+    after. Last record 40 days ago → nothing. Either way, a new record makes rule 4 pass again.
+  - New L1: gap 7 with the ladder at `off` → re-entry #1 goes. After ✖ → nothing.
+  - New L2: a text «суп» 10 min after re-entry #1 → an exact-time record at its arrival, no
+    day_only; the re-entry send stays neutral.
+
+## Built differently from the text below (R1a/R1b, recorded 2026-11-07)
+
+- The 🗓 week toggle lives in the 🔔 sub-screen (Q4), the hub keeps 5 rows.
+- The first reminder can have 4 rows (the extra `[🕐 Часовой пояс]` row of D1).
+- «снова» is removed from all reminder copy (R10), including the sub-screen paused text: it reads
+  «Сейчас не приходят. Включить — кнопкой ✓ 🕘 Вечером.»
+- `reminder_sends` is purged by its own beat task at 04:15 (`purge-reminder-sends`).
+- R16 is wider than the text: «нет, ничего» and a trailing «, спасибо» also close a reminder.
+  A «ничего» over a reminder that already holds a ⭐ log is answer `fav_none` (answered).
+- A voice R16 edits the voice's own line to «✓ Принято.» with no buttons.
+- Inside the window, a reply to a meal line that changes only grams or time does **not** renew the
+  window (open question for the owner; TD-252).
 
 ## S0. Chat simulator for persona acceptance (test-only, no runtime change)
 
