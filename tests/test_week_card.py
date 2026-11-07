@@ -21,7 +21,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
 from app.models.meal import Meal
 from app.models.user import User
-from app.services import explain_screen, routines, settings_screen
+from app.services import explain_screen, reminders, routines, settings_screen
 from app.services import stats_screen as st
 from app.services import week_card, week_push
 from app.services.card_delivery import CardDelivery, may_have_arrived
@@ -389,7 +389,11 @@ def test_the_summary_says_where_to_turn_it_off_only_the_first_time(db):
     _meal(db, _at(19), _item("овёс", "grain"))
     first = st.summary_view(db, _user(db), MONDAY, SUNDAY, first=True)
     later = st.summary_view(db, _user(db), MONDAY, SUNDAY)
-    note = "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
+    # The toggle lives in 🔔: the note names the way there (acceptance 2026-11-07).
+    note = (
+        "Итог приходит по воскресеньям в 22:00 без звука. "
+        "Выключить — ⚙️ Настройки → 🔔 Напоминания."
+    )
     assert first.text.endswith(f"<i>{note}</i>")
     assert note not in later.text
 
@@ -462,7 +466,7 @@ def test_sunday_evening_sends_the_week_once_with_the_note_first_time(db):
     _bot, chat_id, screen = delivery.push.await_args.args
     assert chat_id == 42
     assert screen.text.startswith("<b>📊 Неделя, 19–25 октября</b>")
-    assert "Выключить — ⚙️ Настройки" in screen.text
+    assert "Выключить — ⚙️ Настройки → 🔔 Напоминания." in screen.text
     assert _user(db).settings[WEEK_PUSH_SENT] == "2026-10-19"
 
 
@@ -728,9 +732,13 @@ def test_no_subscription_no_summary_as_with_the_screens_themselves(db, monkeypat
 def test_settings_turn_the_summary_off_with_one_tap_and_back(db):
     screen = settings_screen.open_view(db, 42)
     assert "🗓 Итог недели: вс, 22:00\n" in screen.text
+    # The switch lives in ⚙️ → 🔔 now (stage 6, §4.1); an old set:week still works.
     labels = [b.text for row in screen.markup.inline_keyboard for b in row]
-    assert "🗓 Итог недели: вкл" in labels
+    assert "🔔 Напоминания" in labels and "🗓 Итог недели: вкл" not in labels
     assert len(screen.markup.inline_keyboard) <= 5
+    sub = reminders.handle_callback(db, 42, "rm:o")
+    labels = [b.text for row in sub.markup.inline_keyboard for b in row]
+    assert "🗓 Итог недели: вкл" in labels
 
     off = settings_screen.handle_callback(db, 42, "set:week")
     assert off.text.startswith("<i>✓ Итог недели выключен</i>")

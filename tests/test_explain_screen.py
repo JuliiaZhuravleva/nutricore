@@ -68,15 +68,20 @@ def test_the_list_offers_every_topic_and_goes_back_to_settings():
         ["📊 Карточка дня", "📊 Карточка недели"],
         ["👣 Один шаг", "🏷 Группы еды"],
         ["📷 Запись сразу", "🎙 Голосовые"],
-        ["◀️", "1/2", "▶️"],
+        ["◀️", "1/3", "▶️"],
         ["⬅️ Настройки"],
     ]
     pages = _pages()
     assert _rows(pages[1]) == [
         ["💊 Рутины", "🍽 Приём и блюда"],
-        ["🕐 Время приёма", "🍲 Мои блюда"],
-        ["🧪 Витамины", "💬 Фидбэк"],
-        ["◀️", "2/2", "▶️"],
+        ["🕐 Время приёма", "🔔 Напоминания"],
+        ["🍲 Мои блюда", "🧪 Витамины"],
+        ["◀️", "2/3", "▶️"],
+        ["⬅️ Настройки"],
+    ]
+    assert _rows(pages[2]) == [
+        ["💬 Фидбэк"],
+        ["◀️", "3/3", "▶️"],
         ["⬅️ Настройки"],
     ]
     for page in pages:
@@ -104,11 +109,13 @@ def test_every_page_of_the_list_keeps_the_layout_limits():
 
 
 def test_the_pager_says_where_it_is_and_walks_round():
-    first, second = _pages()
+    first, second, third = _pages()
     pager = first.markup.inline_keyboard[-2]
-    assert [b.callback_data for b in pager] == ["hw:p:1", "hw:nop", "hw:p:1"]
+    assert [b.callback_data for b in pager] == ["hw:p:2", "hw:nop", "hw:p:1"]
     pager = second.markup.inline_keyboard[-2]
-    assert [b.callback_data for b in pager] == ["hw:p:0", "hw:nop", "hw:p:0"]
+    assert [b.callback_data for b in pager] == ["hw:p:0", "hw:nop", "hw:p:2"]
+    pager = third.markup.inline_keyboard[-2]
+    assert [b.callback_data for b in pager] == ["hw:p:1", "hw:nop", "hw:p:0"]
     assert _rows(_tap("hw:p:0")) == _rows(first)
     assert _tap("hw:p:1").toast is None
 

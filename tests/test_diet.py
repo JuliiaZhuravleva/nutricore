@@ -370,7 +370,7 @@ def test_the_hub_has_the_row_and_keeps_its_budget(Session):
     text, markup = _tap_settings("set:open")
     assert _rows(markup) == [
         ["🔢 Цифры сразу: выкл", "📋 Черновик: выкл"],
-        ["🗓 Итог недели: вкл", "💸 Стоимость: выкл"],
+        ["🔔 Напоминания", "💸 Стоимость: выкл"],
         ["🧺 Надёжная еда", "✋ Не предлагать"],
         ["🕐 Пояс", "💊 Рутины", "💬 Фидбэк"],
         ["🍽 Обычная еда", "ℹ️ Как это работает"],
@@ -389,7 +389,8 @@ def test_no_label_on_the_hub_is_long_enough_for_telegram_to_cut():
 def test_the_hub_says_each_thing_on_a_line_of_its_own_and_explains_nothing():
     hub = settings_screen.screen(True, "Asia/Tbilisi", NOW, draft=True)
     lines = hub.text.split("\n")
-    assert len(lines) <= 9 and all(len(line) <= 40 for line in lines), lines
+    # 10: the 🔔 line joined the first group (stage 6, §4.1).
+    assert len(lines) <= 10 and all(len(line) <= 40 for line in lines), lines
     assert "🔢" not in hub.text and "📋" not in hub.text and "💸" not in hub.text
 
 

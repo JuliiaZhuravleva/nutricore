@@ -340,15 +340,18 @@ def _datas_of(screen, label: str) -> str:
 def test_the_row_in_how_it_works_opens_it_and_every_page_keeps_the_budget(
     db, nutrients
 ):
-    pages = [explain_screen.list_screen(p, nutrients=nutrients) for p in (0, 1)]
+    # 🔔 Напоминания (stage 6) made it three pages with the vitamins, two without.
+    count = 3 if nutrients else 2
+    pages = [explain_screen.list_screen(p, nutrients=nutrients) for p in range(count)]
     for page in pages:
         _within_limits(_labels(page.markup))
-    assert "💬 Фидбэк" not in sum(_labels(pages[0].markup), [])
-    assert "💬 Фидбэк" in sum(_labels(pages[1].markup), [])
-    assert _datas_of(pages[1], "💬 Фидбэк") == feedback_screen.OPEN
-    assert _labels(explain_screen.list_screen(2, nutrients=nutrients).markup) == (
+    for page in pages[:-1]:
+        assert "💬 Фидбэк" not in sum(_labels(page.markup), [])
+    assert "💬 Фидбэк" in sum(_labels(pages[-1].markup), [])
+    assert _datas_of(pages[-1], "💬 Фидбэк") == feedback_screen.OPEN
+    assert _labels(explain_screen.list_screen(count, nutrients=nutrients).markup) == (
         _labels(pages[0].markup)
-    )  # still two pages: a third would have come back to the second
+    )  # no page past the last: it comes back to the first
 
 
 def test_the_preview_is_the_owners_words_with_a_named_back(db):

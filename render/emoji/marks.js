@@ -61,6 +61,7 @@ Object.assign(ICONS, {
   lotus: '<circle cx="12" cy="5" r="2.5" ' + F + '/><g ' + S + ' stroke-width="2.6"><path d="M12 9.5v5.5"/><path d="M12 9.5l-5.5 5"/><path d="M12 9.5l5.5 5"/><path d="M4 20c3-2.8 5.2-4 8-4s5 1.2 8 4"/></g>',
   // time
   clock9: '<g ' + S + '><circle cx="12" cy="12" r="9"/><path d="M12 7v5H7.5"/></g>',
+  bell: '<path d="M12 2.8a6.2 6.2 0 0 0-6.2 6.2v4.3L3.8 17.2h16.4l-2-3.9V9A6.2 6.2 0 0 0 12 2.8z" ' + F + '/><circle cx="12" cy="19.6" r="2.2" ' + F + '/>',
   calendar: CAL + '<g ' + F + '><circle cx="8" cy="15" r="1.5"/><circle cx="12" cy="15" r="1.5"/><circle cx="16" cy="15" r="1.5"/></g>',
   calendar2: CAL + '<g ' + S + '><path d="M7.5 15.5l3 2.5 5.5-5"/></g>',
   // the service around the record
@@ -86,7 +87,7 @@ Object.assign(MARKS, {
   thumb: "#CDE3C2", wave: "#F2D6A8", dizzy: "#D9D3EA", digits: "#D6D0C4",
   scale: "#C8D7E8", dish: "#F0C79A", fire: "#F2B98A", meat: "#E3A9A0", egg: "#F2DDA0", can: "#E3C08F", carrot: "#F2B98A", salt: "#D9DEE4",
   drop: "#A9CBE3", blood: "#E3A9A0", sun: "#F5D88A", walk: "#CBE3B4", lotus: "#E2CDE6",
-  clock9: "#E7DFD1", calendar: "#C8D7E8", calendar2: "#CFE0D9", target: "#F2C27B", gem: "#BFD0E4",
+  clock9: "#E7DFD1", bell: "#F2DDA0", calendar: "#C8D7E8", calendar2: "#CFE0D9", target: "#F2C27B", gem: "#BFD0E4",
   money: "#D9CF9E", bankcard: "#BFD0E4", box: "#E3C08F", phone: "#D6D0C4", globe: "#BFD0E4",
   robot: "#CFE0D9", camera: "#D6D0C4", mic: "#E9B8C9", brain: "#E2CDE6"
 });

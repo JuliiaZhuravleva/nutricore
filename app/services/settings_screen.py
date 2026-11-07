@@ -2,7 +2,7 @@
 
     ⚙️ Настройки → <b>⚙️ Настройки</b> — time zone, numbers, routines, the cost line
     [🔢 Цифры сразу: выкл] [📋 Черновик: выкл]
-    [🗓 Итог недели: вкл] [💸 Стоимость: выкл]
+    [🔔 Напоминания] [💸 Стоимость: выкл]
     [🧺 Надёжная еда] [✋ Не предлагать]
     [🕐 Пояс] [💊 Рутины] [💬 Фидбэк]
     [🍽 Обычная еда] [ℹ️ Как это работает]
@@ -57,6 +57,7 @@ _PICK = ZONES_CALLBACK + ":"  # + the zone's IANA name
 _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
 _DIET_CB = CALLBACK_PREFIX + "diet"
 _DIET_PICK = _DIET_CB + ":"  # + the answer
+REMINDERS_OPEN = "rm:o"  # == reminders.OPEN, which imports this module
 
 CITIES = (
     ("Тбилиси", "Asia/Tbilisi"),
@@ -68,8 +69,20 @@ CITIES = (
     ("Минск", "Europe/Minsk"),
     ("Берлин", "Europe/Berlin"),
     ("Лондон", "Europe/London"),
+    ("Новосибирск", "Asia/Novosibirsk"),
 )
 _CITY = {zone: city for city, zone in CITIES}
+# After «по времени»: the genitive. Тбилиси and Баку do not change.
+_CITY_OF = {
+    "Asia/Yerevan": "Еревана",
+    "Europe/Moscow": "Москвы",
+    "Europe/Istanbul": "Стамбула",
+    "Europe/Kyiv": "Киева",
+    "Europe/Minsk": "Минска",
+    "Europe/Berlin": "Берлина",
+    "Europe/London": "Лондона",
+    "Asia/Novosibirsk": "Новосибирска",
+}
 # Whole-hour offsets UTC−12 … UTC+14. The Etc names count the other way round:
 # Etc/GMT-4 is UTC+4.
 OFFSETS = tuple(
@@ -134,6 +147,13 @@ def zone_label(name: str, now: datetime) -> str:
     return f"{html.escape(_CITY.get(name, name))} ({offset})"
 
 
+def zone_label_of(name: str, now: datetime) -> str:
+    """What follows «по времени»: «Москвы (UTC+3)», «Тбилиси (UTC+4)», «UTC+4»."""
+    if name in _CITY_OF:
+        return f"{_CITY_OF[name]} ({_offset(name, now)})"
+    return zone_label(name, now)
+
+
 def _btn(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=data)
 
@@ -153,6 +173,7 @@ def screen(
     never: int = 0,
     draft: bool = False,
     eats: str | None = None,
+    reminders: str = "🔔 Напоминания: вечером, 21:00",
 ) -> Screen:
     lines = [f"<i>{notice}</i>", ""] if notice else []
     # One short line each, in two groups. A switch's state is on its button; what a
@@ -163,6 +184,7 @@ def screen(
         f"🕐 Часовой пояс: {zone_label(zone, now)}",
         _diet_line(eats),
         "🗓 Итог недели: " + ("вс, 22:00" if week_push else "не присылаю"),
+        reminders,
         "",
         f"💊 Рутины: {routines or 'пока нет'}",
         f"🧺 Надёжная еда: {reliable or 'пока нет'}",
@@ -176,7 +198,8 @@ def screen(
             _btn(f"📋 Черновик: {'вкл' if draft else 'выкл'}", _DRAFT_CB),
         ],
         [
-            _btn(f"🗓 Итог недели: {'вкл' if week_push else 'выкл'}", _WEEK_CB),
+            # The week's switch lives in 🔔 now; an old set:week button still works.
+            _btn("🔔 Напоминания", REMINDERS_OPEN),
             _btn(f"💸 Стоимость: {'вкл' if on else 'выкл'}", _COSTS_CB),
         ],
         [
@@ -217,25 +240,54 @@ def _now_line(zone: str, now: datetime) -> str:
     return f"Сейчас: {zone_label(zone, now)}, там {there}."
 
 
-def zones_screen(zone: str, now: datetime) -> Screen:
+def _balanced(buttons: list, most: int = 3) -> list:
+    """Rows of at most ``most``, as even as they go: ten are 3, 3, 2, 2, so no
+    city is left alone on a row and none is cut to «…» on a phone."""
+    count = -(-len(buttons) // most)
+    rows, start = [], 0
+    for index in range(count):
+        size = len(buttons) // count + (index < len(buttons) % count)
+        rows.append(buttons[start : start + size])
+        start += size
+    return rows
+
+
+def known_zone(name: str) -> bool:
+    """A zone the picker offers: a city's or a whole-hour offset's."""
+    return name in _CITY or name in _OFFSET_ZONES
+
+
+def zones_screen(
+    zone: str,
+    now: datetime,
+    *,
+    pick: str = _PICK,
+    offsets: str = _OFFSETS,
+    back: list | None = None,
+) -> Screen:
+    """⚙️'s picker; a reminder opens the same one with its own data and way back."""
     lines = [
         "<b>🕐 Часовой пояс</b>",
         "",
         _now_line(zone, now),
-        "По нему 📊 Статистика делит дни, а ⚖️ Вес ставит даты.",
+        "По нему 📊 Статистика делит дни, ⚖️ Вес ставит даты, а 🔔 Напоминания "
+        "приходят по местному времени.",
     ]
     cities = [
-        _btn(("✓ " if name == zone else "") + city, _PICK + name)
+        _btn(("✓ " if name == zone else "") + city, pick + name)
         for city, name in CITIES
     ]
-    rows = [cities[i : i + 3] for i in range(0, len(cities), 3)]
-    rows.append([_btn("🌐 Другой: UTC±", f"{_OFFSETS}{_page_of(zone)}")])
-    rows.append([_btn("⬅️ Настройки", CALLBACK_PREFIX + "open")])
+    rows = _balanced(cities)
+    rows.append([_btn("🌐 Другой: UTC±", f"{offsets}{_page_of(zone)}")])
+    rows.append(back or [_btn("⬅️ Настройки", CALLBACK_PREFIX + "open")])
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
 def _pages() -> int:
     return -(-len(OFFSETS) // PAGE)
+
+
+pages = _pages  # the reminder's picker checks a page as this one does
 
 
 def _page_of(zone: str) -> int:
@@ -245,7 +297,15 @@ def _page_of(zone: str) -> int:
     return index // PAGE
 
 
-def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
+def offsets_screen(
+    zone: str,
+    now: datetime,
+    page: int,
+    *,
+    pick: str = _PICK,
+    offsets: str = _OFFSETS,
+    back: list | None = None,
+) -> Screen:
     lines = [
         "<b>🕐 Часовой пояс: UTC±</b>",
         "",
@@ -254,19 +314,19 @@ def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
     ]
     chunk = OFFSETS[page * PAGE : (page + 1) * PAGE]
     buttons = [
-        _btn(("✓ " if name == zone else "") + _offset(name, now), _PICK + name)
+        _btn(("✓ " if name == zone else "") + _offset(name, now), pick + name)
         for _hours, name in chunk
     ]
     rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
     last = _pages() - 1
     rows.append(
         [
-            _btn("‹", f"{_OFFSETS}{max(page - 1, 0)}"),
-            _btn(f"{page + 1}/{last + 1}", f"{_OFFSETS}{page}"),
-            _btn("›", f"{_OFFSETS}{min(page + 1, last)}"),
+            _btn("‹", f"{offsets}{max(page - 1, 0)}"),
+            _btn(f"{page + 1}/{last + 1}", f"{offsets}{page}"),
+            _btn("›", f"{offsets}{min(page + 1, last)}"),
         ]
     )
-    rows.append([_btn("⬅️ Часовой пояс", ZONES_CALLBACK)])
+    rows.append(back or [_btn("⬅️ Часовой пояс", ZONES_CALLBACK)])
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
@@ -294,7 +354,14 @@ def open_view(
         never,
         draft_on(user),
         diet.chosen((user.settings or {}) if user else {}),
+        _reminders_line(user),
     )
+
+
+def _reminders_line(user: User | None) -> str:
+    from app.services import reminders  # it imports this module
+
+    return reminders.hub_line(user)
 
 
 def _save(db, telegram_id: int, **values) -> None:
@@ -358,7 +425,7 @@ def handle_callback(
         return zones_screen(zone, now)
     if data.startswith(_PICK):
         name = data[len(_PICK) :]
-        if name in _CITY or name in _OFFSET_ZONES:
+        if known_zone(name):
             _save(db, telegram_id, **{TIMEZONE: name})
             notice = f"✓ Часовой пояс: {zone_label(name, now)}"
             return open_view(db, telegram_id, notice, now)

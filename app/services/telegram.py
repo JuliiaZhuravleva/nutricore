@@ -72,6 +72,7 @@ from app.services import (
     owner_buttons,
     people_screen,
     portion_suggestions,
+    reminders,
     routines,
     settings_screen,
     stats_screen,
@@ -716,7 +717,8 @@ async def _show_owed(application: Application) -> None:
 
 async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> None:
     """The original line, to the meal's new list. Silent, and best effort: it may be
-    too old to edit, and the person was answered anyway."""
+    too old to edit, and the person was answered anyway. A line that already says it
+    (➖ Отделить gives a meal back its own line as it was) is no failure."""
     if retouch is None:
         return
     try:
@@ -727,6 +729,9 @@ async def _retouch(bot, chat_id: int, retouch: Optional[meal_card.Retouch]) -> N
             parse_mode=ParseMode.HTML,
             reply_markup=retouch.markup,
         )
+    except BadRequest as e:
+        if not _is_not_modified(e):
+            logger.warning("Original line not edited: %s", type(e).__name__)
     except TelegramError as e:
         logger.warning("Original line not edited: %s", type(e).__name__)
 
@@ -855,6 +860,12 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
         with SessionLocal() as db:
             done = capture.read_no_speech(db, job)
         await _tell_read(bot, job, done.line)
+        return False, None
+    except capture.SaidNothing:
+        # R16: «ничего» said to a reminder; heard, never read.
+        with SessionLocal() as db:
+            done = capture.read_said_nothing(db, job)
+        await _tell_read(bot, job, done.line, retouch=done.retouch)
         return False, None
     except Exception as e:
         error = type(e).__name__
@@ -1484,6 +1495,7 @@ async def _capture(
         written = await _new_meal(update, context, came, route.note, route.words)
         return _Went.WRITTEN if written else _Went.REFUSED
     if route.action == capture.SILENT:
+        await _retouch(context.bot, came.chat_id, route.retouch)  # R16: «✓ Принято.»
         return _Went.NOTHING
     went = _Went.WRITTEN
     if route.action == capture.LINE:
@@ -1891,6 +1903,36 @@ async def favorites_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Favorites",
         deliver=_card_delivery.tap,
     )
+
+
+async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on a 🔔 reminder or its settings (``rm:…``). A ⭐ logged from a reminder
+    makes the message hold that meal, as a ⭐ from the list does."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+    strip = []
+
+    def handle(db, telegram_id: int, data: str):
+        screen = reminders.handle_callback(db, telegram_id, data, message_id=message_id)
+        if screen.text:
+            capture.tapped(db, chat_id, message_id, screen)
+        strip.append(screen.view == reminders.STRIP)
+        return screen
+
+    await _screen_callback(
+        update,
+        handle,
+        TERM_ENDED,
+        "Reminders",
+        deliver=_card_delivery.tap,
+    )
+    if strip and strip[0]:
+        # ✅ ОК: the buttons leave, the text stays.
+        try:
+            await update.callback_query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError as e:
+            logger.warning("reminders: buttons stayed on the message: %s", e)
 
 
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3047,6 +3089,13 @@ def create_bot_application() -> Application:
     application.add_handler(
         CallbackQueryHandler(
             favorites_callback, pattern=f"^{favorites.CALLBACK_PREFIX}"
+        )
+    )
+
+    # 🔔 reminders and their settings (stateless, like favorites).
+    application.add_handler(
+        CallbackQueryHandler(
+            reminders_callback, pattern=f"^{reminders.CALLBACK_PREFIX}"
         )
     )
 

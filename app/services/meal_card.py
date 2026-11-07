@@ -37,7 +37,14 @@ from app.models.meal_source import MealSource
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
-from app.services import favorites, food_groups, meal_items, next_step, stats_screen
+from app.services import (
+    favorites,
+    food_groups,
+    meal_items,
+    meal_words,
+    next_step,
+    stats_screen,
+)
 from app.services.close_row import ok_row
 from app.services.day_card import APPROX, DAY_ONLY
 from app.services.day_card import clock as _clock
@@ -61,6 +68,10 @@ EXACT = "exact"
 # A card opened on the bot's line: its time screen goes back to the card, while the
 # line's own 🕐, whose data is also ``r``, goes back to the line.
 FROM_CARD = "c"
+# A reminder's 🕐 (``n`` + the send's id): its time screen goes back to the reminder.
+# Only the time screen takes it (``_BACK_TIME``); nothing else opens from a reminder.
+REMINDER_BACK = "n"
+REMINDER_BACK_LABEL = "⬅️ К напоминанию"
 GRAMS_MIN, GRAMS_MAX = 1.0, 5000.0
 NAMES_MAX = 300
 LINE_NAME_MAX = 80
@@ -130,8 +141,18 @@ UNDO_LABEL = "↩️ Вернуть"
 NOTHING_SAME = "<i>Уже так</i>"
 TIME_FUTURE = "<i>Это время ещё не наступило. Напиши другое.</i>"
 # ``d``: without a time, on the meal's present day. ``y``: without a time, on the
-# button's day, for a meal that has no clock a day could be counted with.
-_PRECISION_OF = {"e": EXACT, "a": APPROX, "d": DAY_ONLY, "y": DAY_ONLY}
+# button's day, for a meal that has no clock a day could be counted with. ``p``: a
+# part of the day of a meal that had none (R0). ``s``: the moment it was sent.
+_PRECISION_OF = {
+    "e": EXACT,
+    "a": APPROX,
+    "d": DAY_ONLY,
+    "y": DAY_ONLY,
+    "p": APPROX,
+    "s": EXACT,
+}
+# R0: the parts of the day a day_only meal is offered, at meal_words' clocks.
+_PART_CHIPS = (("Утром", "утром"), ("Днём", "днем"), ("Вечером", "вечером"))
 # Two taps on one picked dish are one wish; the same dish a moment later is another.
 REPEAT_WINDOW = timedelta(seconds=3)
 
@@ -263,6 +284,8 @@ def line_head(meal: Meal, zone, plain: str = "Записано") -> str:
         return f"Записано на {_when(meal, zone)}"
     if meal.time_source == "edited" and meal.time_precision == DAY_ONLY:
         return f"Записано на {_when(meal, zone)}"  # O1b: a day, chosen on another day
+    if meal.time_source == "reminder":
+        return f"Записано на {_when(meal, zone)}"  # 🔔: the reminder's day, not now
     return plain
 
 
@@ -1199,14 +1222,22 @@ def _moment(meal: Meal) -> tuple:
     return (moment if moment.tzinfo else moment.replace(tzinfo=UTC), meal.id)
 
 
-def in_order(one: Meal, other: Meal) -> tuple:
-    """(earlier, later): the earlier one survives a join, whichever way it was asked."""
+def in_order(one: Meal, other: Meal, zone) -> tuple:
+    """(earlier, later): the earlier one survives a join, whichever way it was asked.
+    Of two meals of one local day of which one alone has no time (``day_only``), the
+    timed one survives: its clock is the record's, and the noon of the other is none."""
+    one_free, other_free = (m.time_precision == DAY_ONLY for m in (one, other))
+    if one_free != other_free:
+        days = {local_time(m.meal_time, zone).date() for m in (one, other)}
+        if len(days) == 1:
+            return (other, one) if one_free else (one, other)
     return (one, other) if _moment(one) <= _moment(other) else (other, one)
 
 
 def may_join(db, one: Meal, other: Meal) -> bool:
     """➖ Отделить takes a source: a later meal with none could never come back."""
-    return has_source(db, in_order(one, other)[1])
+    zone = user_zone(db.get(User, one.user_id))
+    return has_source(db, in_order(one, other, zone)[1])
 
 
 def _short_when(meal: Meal, zone) -> str:
@@ -1214,11 +1245,13 @@ def _short_when(meal: Meal, zone) -> str:
     return f"{stats_screen.day_title(day)}, {_clock(meal, zone)}"
 
 
-def join_button(db, earlier: Meal, later: Meal, back: str) -> InlineKeyboardButton:
-    zone = user_zone(db.get(User, earlier.user_id))
+def join_button(db, other: Meal, meal: Meal, back: str) -> InlineKeyboardButton:
+    """Under ``meal``'s message: it names the OTHER meal, whichever of the two survives
+    (``in_order`` says that at the tap)."""
+    zone = user_zone(db.get(User, other.user_id))
     return _button(
-        f"🔗 Объединить с {_short_when(earlier, zone)}",
-        f"ml:j:{earlier.id}:{later.id}:{back}",
+        f"🔗 Объединить с {_short_when(other, zone)}",
+        f"ml:j:{other.id}:{meal.id}:{back}",
     )
 
 
@@ -1244,8 +1277,8 @@ def join_row(db, meal: Meal) -> Optional[list]:
         return None
     if abs(_sent_moment(meal) - _sent_moment(previous)) >= JOIN_ROW_WINDOW:
         return None
-    earlier, later = in_order(previous, meal)
-    return [join_button(db, earlier, later, "r")]
+    # The chip names the meal it is not under, even when this line's meal survives.
+    return [join_button(db, previous, meal, "r")]
 
 
 def join_candidates(db, meal: Meal) -> list:
@@ -1802,6 +1835,8 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
         return _unknown(t, data)
     if back == FROM_CARD and event.kind != TIME:
         back = "r"
+    if back.startswith(REMINDER_BACK) and event.kind != TIME:
+        back = "r"  # only the time screen knows the way back to a reminder
     if done is not None:
         # A second tap: the state is what the first left.
         if meal.deleted_at:
@@ -1830,6 +1865,8 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
 def _time_back(meal: Meal, back: str) -> list:
     if back == "r":
         return [_button("⬅️ К ответу бота", f"ml:r:{meal.id}")]
+    if back.startswith(REMINDER_BACK):
+        return [_button(REMINDER_BACK_LABEL, f"rm:v:{back[1:]}")]
     return _to_card(meal.id, "r" if back == FROM_CARD else back)
 
 
@@ -1847,6 +1884,39 @@ def _yesterday_of(t: _Tap) -> date:
 
 def _time_chip(meal: Meal, label: str, moment: datetime, kind: str, back: str):
     return _button(label, f"ml:ts:{meal.id}:{int(moment.timestamp())}:{kind}:{back}")
+
+
+def _sent_chip(t: _Tap, meal: Meal, back: str) -> list:
+    """«В 21:40»: the moment it was sent, exact. On another day than the meal's, the
+    label says which, so a tap after midnight never reads as the meal's own day."""
+    if meal.sent_at is None:
+        return []
+    sent = local_time(meal.sent_at, t.zone)
+    if sent.date() == meal_day(meal, t.user):
+        label = f"В {plain_time(sent)}"
+    elif sent.date() == local_time(t.now, t.zone).date():
+        label = f"Сегодня, {plain_time(sent)}"
+    else:
+        label = f"{_day_label(sent.date())}, {plain_time(sent)}"
+    return [_time_chip(meal, label, sent, "s", back)]
+
+
+def _day_only_rows(t: _Tap, meal: Meal, back: str, yesterday, undo_row) -> list:
+    """R0, §3.5: a day and no clock gets the parts of that day and the sent moment,
+    each one tap. A part still ahead of now is not offered."""
+    day = meal_day(meal, t.user)
+    parts = []
+    for label, word in _PART_CHIPS:
+        moment = datetime.combine(day, meal_words._PARTS[word], tzinfo=t.zone)
+        if moment <= t.now:
+            parts.append(_time_chip(meal, label, moment, "p", back))
+    rows = [parts] if parts else []
+    last = [*_sent_chip(t, meal, back), *([yesterday] if yesterday else [])]
+    if last:
+        rows.append(last)
+    if undo_row:
+        rows.append(undo_row)
+    return rows
 
 
 def _time_screen(
@@ -1871,16 +1941,18 @@ def _time_screen(
         back,
     )
     undo_row = [_undo_button(undo, back)] if undo else []
+    # A meal already where «Вчера» would put it gets none: the tap would change nothing.
+    there = moment.date() == day
     if meal.time_precision == DAY_ONLY:
         # No clock to carry over: the day moves, and it still claims no time (N5c).
         yesterday = _time_chip(meal, label, _noon(day, zone), "y", back)
-        rows = [[yesterday, *undo_row]]
+        rows = _day_only_rows(t, meal, back, None if there else yesterday, undo_row)
     else:
         rows = [
             [
                 _time_chip(meal, "−15 мин", moment - timedelta(minutes=15), "e", back),
                 _time_chip(meal, "−1 ч", moment - timedelta(hours=1), "e", back),
-                yesterday,
+                *([] if there else [yesterday]),
             ],
             [
                 _time_chip(meal, "Не помню", _noon(moment.date(), zone), "d", back),
@@ -1936,6 +2008,10 @@ def _typed_time(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
         return None
     yesterday, clock = parsed
     back = ask.get("back") or "r"
+    if back.startswith(REMINDER_BACK):
+        # The answer comes in a new message: a way back to the reminder there
+        # would draw a second live reminder (R4), so it is the meal's own line.
+        back = "r"
     meal = _own_meal(t, ask["meal_id"], "slot")
     day = _yesterday_of(t) if yesterday else meal_day(meal, t.user)
     moment = datetime.combine(day, clock, tzinfo=t.zone)
@@ -2092,7 +2168,7 @@ def _v_day_add(t: _Tap, data: str, code: str, origin: str) -> Screen:
 
 _ID = r"(\d{1,18})"
 _BACK = r"(r|t|y|w|h\d{1,18})"
-_BACK_TIME = r"(r|c|t|y|w|h\d{1,18})"
+_BACK_TIME = r"(r|c|t|y|w|h\d{1,18}|n\d{1,12})"
 _VERBS: tuple = (
     (re.compile(rf"ml:r:{_ID}"), _v_line),
     (re.compile(rf"ml:o:{_ID}:{_BACK}"), _v_open),
@@ -2109,7 +2185,7 @@ _VERBS: tuple = (
     (re.compile(rf"ml:d:{_ID}:{_BACK}"), _v_delete),
     (re.compile(rf"ml:u:{_ID}:{_BACK_TIME}"), _v_undo),
     (re.compile(rf"ml:t:{_ID}:{_BACK_TIME}"), _v_time),
-    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d|y):{_BACK_TIME}"), _v_time_set),
+    (re.compile(rf"ml:ts:{_ID}:(\d{{1,12}}):(e|a|d|y|p|s):{_BACK_TIME}"), _v_time_set),
     (re.compile(rf"ml:pk:{_ID}:(a|r):{_BACK}:(\d{{1,2}})"), _v_pick),
     (re.compile(rf"ml:pa:{_ID}:{_ID}:{_BACK}"), _v_pick_add),
     (re.compile(rf"ml:pr:{_ID}:{_ID}:{_BACK}"), _v_pick_replace),

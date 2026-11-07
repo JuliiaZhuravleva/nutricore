@@ -38,13 +38,32 @@ _AGO = re.compile(r"\b(полчаса|час)\s+назад\b", _FLAGS)
 _YESTERDAY = re.compile(r"\bвчера\b", _FLAGS)
 _NIGHT_WORD = re.compile(r"\bночью\b", _FLAGS)
 _PART = re.compile(r"\b(утром|дн[её]м|вечером)\b", _FLAGS)
+_TODAY = re.compile(r"\bсегодня\b", _FLAGS)
+# A meal's name said as when: «в обед суп». It gives no clock: on its own the meal
+# keeps its moment, as before R0. Only R0's rule counts it as a time a clause says, at
+# these clocks (ASSUMED, «на ужин» as «вечером»): «утром овсянка, в обед суп» is two
+# meals of one day, and the record keeps the day alone.
+_MEAL_NAME_CLOCKS = {
+    "завтрак": time(9),
+    "обед": time(13),
+    "полдник": time(16),
+    "ужин": time(20),
+}
+_MEAL_NAME = re.compile(
+    r"\b(?:(?:в|на)\s+(обед)|за\s+(обед)ом|на\s+(завтрак)|за\s+(завтрак)ом"
+    r"|на\s+(ужин)|за\s+(ужин)ом|на\s+(полдник))\b",
+    _FLAGS,
+)
+# R0: what parts one clause from the next, «утром каша, в 19:30 паста»: a comma, a
+# semicolon, a dash, and a standalone «и» or «а» between words.
+_CLAUSE_EDGE = re.compile(r"[,;—]|(?<!\S)[иа](?!\S)", _FLAGS)
 
 
 @dataclass(frozen=True)
 class SaidTime:
     moment: datetime  # in UTC
     precision: str
-    phrase: str
+    phrase: Optional[str]  # None when clauses said different times (R0)
     rest: str  # the text without the phrase
     of_day: bool = False  # a clock of a day that the words did not name
 
@@ -153,14 +172,11 @@ def _without(text: str, match: re.Match) -> str:
     return " ".join(left.split()).strip(" ,.;:—-")
 
 
-def time_words(
-    text: Optional[str], sent: datetime, zone, *, bare_ok: bool = False
+def _first_phrase(
+    text: str, local: datetime, zone, bare_ok: bool
 ) -> Optional[SaidTime]:
     """The first phrase of the table. None if there is none, or, unless ``bare_ok``,
     if nothing else is there: a time word alone is nobody's dish, and nobody's time."""
-    if not text:
-        return None
-    local = sent.astimezone(zone)
     for find in _FINDERS:
         found = find(text, local, zone)
         if found is None:
@@ -176,6 +192,56 @@ def time_words(
             found.of_day,
         )
     return None
+
+
+def clauses(text: str) -> list:
+    """The text cut at every clause edge. Some may be empty."""
+    return _CLAUSE_EDGE.split(text)
+
+
+def _meal_name(text: str, local: datetime, zone) -> Optional[datetime]:
+    """The moment R0's rule counts for a meal's name in a clause, else None."""
+    match = _MEAL_NAME.search(text)
+    if match is None:
+        return None
+    name = _plain(next(word for word in match.groups() if word))
+    return _latest(local, _MEAL_NAME_CLOCKS[name], zone).astimezone(UTC)
+
+
+def _common_day(moments: list, text: str, local: datetime):
+    """The day several said moments share; else yesterday, if «вчера» is said and
+    «сегодня» is not; else the day it was sent."""
+    days = {moment.astimezone(local.tzinfo).date() for moment in moments}
+    if len(days) == 1:
+        return days.pop()
+    if _YESTERDAY.search(text) and not _TODAY.search(text):
+        return local.date() - timedelta(days=1)
+    return local.date()
+
+
+def time_words(
+    text: Optional[str], sent: datetime, zone, *, bare_ok: bool = False
+) -> Optional[SaidTime]:
+    """The time the words say, as ``_first_phrase`` reads the whole text, with one
+    rule over it (R0): when two or more clauses each say a time and those times
+    differ, no phrase is the meal's. Then it is the day alone, and no clock: «утром
+    каша, в 19:30 паста» is two meals, and neither time is the record's. In this rule
+    alone a clause with no time phrase but a meal's name says that meal's time: «утром
+    овсянка, в обед суп»."""
+    if not text:
+        return None
+    local = sent.astimezone(zone)
+    moments = []
+    for one in clauses(text):
+        said = _first_phrase(one, local, zone, True)
+        moment = said.moment if said else _meal_name(one, local, zone)
+        if moment is not None:
+            moments.append(moment)
+    if len(moments) >= 2 and len(set(moments)) > 1:
+        day = _common_day(moments, text, local)
+        noon = _at(day, _NOON, zone).astimezone(UTC)
+        return SaidTime(noon, DAY_ONLY, None, text, of_day=True)
+    return _first_phrase(text, local, zone, bare_ok)
 
 
 # --- 5.4 corrective words -------------------------------------------------------------

@@ -52,6 +52,7 @@ and no medical logic or medical data storage lives in the bot.
 | 3 | [03-retention.md](03-retention.md) | Reminders, streaks, weekly digest (streaks dropped by stage 5; digest → week card) | ⛔ not started |
 | 4 | [04-ai-coaching.md](04-ai-coaching.md) | "What to eat", insights, voice logging ("what to eat" → stage 5 next step) | ⛔ not started |
 | 5 | [05-gentle-review.md](05-gentle-review.md) | Day and week cards, numbers behind «🔢 Цифры», food groups, routine ticks, one next step | 📝 planned 2026-10-29; decisions recorded the same day ([05-gentle-review-decisions.md](05-gentle-review-decisions.md)). **Revises** stage 1 (no "remaining"), 3 (no streaks), 4 (no "what to eat from the remaining macros") |
+| 6 | [06-reminders.md](06-reminders.md) | 🔔 Meal reminders: evening by default for everyone, voice or ⭐ answer, quiet when unanswered; own times and learned hours later | 🟡 spec accepted 2026-11-06; R0 + R1 building on `feat/meal-reminders` |
 | 90 | [90-deferred-hub-integration.md](90-deferred-hub-integration.md) | my-health indicators in chat | 🧊 deferred |
 | — | [access-control.md](access-control.md) | Bot access modes (open/whitelist/closed) + whitelist | ✅ shipped (runtime `/mode` deferred) |
 

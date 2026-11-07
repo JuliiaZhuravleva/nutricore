@@ -400,7 +400,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _labels(markup) == [
         "🔢 Цифры сразу: выкл",
         "📋 Черновик: выкл",
-        "🗓 Итог недели: вкл",
+        "🔔 Напоминания",
         "💸 Стоимость: выкл",
         "🧺 Надёжная еда",
         "✋ Не предлагать",
@@ -413,7 +413,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
     assert _callbacks(markup) == [
         "set:num",
         "set:draft",
-        "set:week",
+        "rm:o",  # the week's switch moved into 🔔 (stage 6, §4.1)
         "set:costs",
         "fl:rel",
         "fl:nev",
@@ -500,10 +500,16 @@ def test_zone_screen_marks_the_current_city_and_goes_back_to_settings(Session):
     screen = _tap(Session, "set:tz")
     assert screen.text.startswith("<b>🕐 Часовой пояс</b>")
     assert "Сейчас: Тбилиси (UTC+4), там 12:00." in screen.text
+    assert (
+        "По нему 📊 Статистика делит дни, ⚖️ Вес ставит даты, а 🔔 Напоминания "
+        "приходят по местному времени." in screen.text
+    )
+    # Ten cities in rows of 3, 3, 2, 2: none alone, none cut to «…».
     assert _rows(screen.markup) == [
         ["✓ Тбилиси", "Ереван", "Баку"],
         ["Москва", "Стамбул", "Киев"],
-        ["Минск", "Берлин", "Лондон"],
+        ["Минск", "Берлин"],
+        ["Лондон", "Новосибирск"],
         ["🌐 Другой: UTC±"],
         ["⬅️ Настройки"],
     ]
@@ -635,7 +641,9 @@ def test_zone_screens_fit_telegram(Session):
     for screen in screens:
         rows = _rows(screen.markup)
         assert all(len(row) <= 3 for row in rows)
-        assert len(rows) <= 5  # four rows of choices + the back row
+        # About 12 characters fit at three a row on a 390 px phone, 18 at two.
+        assert all(len(label) <= 36 // len(row) for row in rows for label in row)
+        assert len(rows) <= 6  # four rows of choices + UTC± or the pager + back
         assert all(len(data.encode()) <= 64 for data in _callbacks(screen.markup))
 
 

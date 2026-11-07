@@ -14,9 +14,11 @@ import socket
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from openai.resources.audio.transcriptions import AsyncTranscriptions
@@ -768,6 +770,53 @@ def test_a_time_the_person_set_meanwhile_is_not_moved(db, seen, reader, whisper,
     db.commit()
     assert capture.spoken_words(db, job, "утром суп") == "суп"
     assert _meal(db).meal_time == moment
+
+
+MORNING = datetime(2026, 10, 26, 6, 30, tzinfo=UTC)  # 10:30 in the owner's zone
+TBILISI = ZoneInfo("Asia/Tbilisi")
+
+
+def _morning_voice(monkeypatch, whisper, words: str) -> None:
+    monkeypatch.setattr(capture, "_now", lambda: MORNING)
+    whisper.answers(words)
+    send(_voice() | {"date": int(MORNING.timestamp())})
+
+
+def _local_time(meal: Meal) -> datetime:
+    moment = meal.meal_time  # SQLite gives it back with no zone
+    return moment.replace(tzinfo=UTC).astimezone(TBILISI).replace(tzinfo=None)
+
+
+def test_r0_two_times_in_a_note_before_noon_keep_the_day_and_no_clock(
+    db, seen, reader, whisper, monkeypatch
+):
+    # The day's noon is still ahead at 10:30, and it claims no clock: it is applied.
+    _morning_voice(monkeypatch, whisper, "в 8:00 каша, в 10:00 кофе")
+    meal = _meal(db)
+    assert (meal.time_precision, meal.time_source) == ("day_only", "said")
+    assert _local_time(meal) == datetime(2026, 10, 26, 12, 0)
+
+
+def test_r0_control_one_time_in_a_morning_note_is_that_time(
+    db, seen, reader, whisper, monkeypatch
+):
+    _morning_voice(monkeypatch, whisper, "в 8:00 каша")
+    meal = _meal(db)
+    assert (meal.time_precision, meal.time_source) == ("exact", "said")
+    assert _local_time(meal) == datetime(2026, 10, 26, 8, 0)
+
+
+def test_r0_control_a_real_time_still_ahead_does_not_move_the_meal(
+    db, seen, reader, whisper, monkeypatch
+):
+    _morning_voice(monkeypatch, whisper, "каша")
+    meal = _meal(db)
+    assert meal.time_source == "sent"
+    job = capture.read_again(db, meal.id)
+    early = datetime(2026, 10, 26, 3, 0, tzinfo=UTC)  # 7:00, before the said 8:00
+    monkeypatch.setattr(capture, "_now", lambda: early)
+    assert capture.spoken_words(db, job, "в 8:00 каша") == "каша"
+    assert _meal(db).time_source == "sent"
 
 
 # --- M4b: the toggle ----------------------------------------------------------------

@@ -26,9 +26,9 @@ from app import main as app_main
 from app.core.config import settings
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import Meal, MealItem, MealMessage, MealSource, RecordEvent, User
-from app.services import close_row
 from app.services import (
     capture,
+    close_row,
     explain_screen,
     food_groups,
     meal_card,
@@ -591,6 +591,68 @@ def test_a_deleted_survivor_separates_nothing(db, owner, reader):
     wire = tap(f"ml:z:{_only_source(db, second.id).id}:r")
     assert STALE_DELETED in _screen(wire)["text"]
     assert _get(db, second.id).merged_into_id == first.id
+
+
+@pytest.fixture
+def same_refused(monkeypatch):
+    """Telegram's own refusal of an edit that changes nothing, across every wire of
+    the test: «message is not modified». Each refusal is kept."""
+    shown, refused = {}, []
+    original = Wire.do_request
+
+    async def do_request(self, url, method, request_data=None, **kwargs):
+        name = url.rsplit("/", 1)[-1]
+        params = dict(request_data.parameters) if request_data else {}
+        if name == "editMessageText":
+            mid = params.get("message_id")
+            now = (params.get("text"), params.get("reply_markup"))
+            if shown.get(mid) == now:
+                refused.append(mid)
+                body = {
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: message is not modified: specified "
+                    "new message content and reply markup are exactly the same",
+                }
+                return 400, json.dumps(body).encode()
+            shown[mid] = now
+        code, body = await original(self, url, method, request_data, **kwargs)
+        if name == "sendMessage":
+            mid = json.loads(body)["result"]["message_id"]
+            shown[mid] = (params.get("text"), params.get("reply_markup"))
+        return code, body
+
+    monkeypatch.setattr(Wire, "do_request", do_request)
+    return refused
+
+
+def test_separate_after_a_join_logs_no_failed_edit_of_its_own_line(
+    db, owner, reader, same_refused, caplog
+):
+    """Persona finding: ➖ re-drew the separated meal's own line as it already was, and
+    the refusal was logged as «Original line not edited: BadRequest»."""
+    first, second = _two(db, reader)
+    tap(f"ml:j:{first.id}:{second.id}:r")
+    with caplog.at_level(logging.WARNING):
+        wire = tap(f"ml:z:{_only_source(db, second.id).id}:r")
+    assert _screen(wire)["text"].startswith("Отделено: сыр.")
+    assert same_refused  # the known positive: an edit that changed nothing was asked
+    assert "Original line not edited" not in caplog.text
+
+
+def test_a_line_that_cannot_be_edited_is_still_logged(caplog):
+    """The control: any other refusal of the retouch is a warning, as before."""
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock(side_effect=BadRequest("Message can't be edited"))
+    retouch = meal_card.Retouch(7, "x", None)
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(tg._retouch(bot, CHAT, retouch))
+    assert "Original line not edited: BadRequest" in caplog.text
+    caplog.clear()
+    bot.edit_message_text = AsyncMock(side_effect=BadRequest("Message is not modified"))
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(tg._retouch(bot, CHAT, retouch))
+    assert caplog.text == ""
 
 
 def test_someone_elses_source_is_refused(db, owner, reader, caplog):

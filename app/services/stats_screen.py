@@ -73,7 +73,8 @@ STEP_FIRST_BUTTON = "🎯 Выбрать один шаг"
 STEP_OTHER_BUTTON = "🎯 Выбрать другое"
 _CHOICE_DAYS = 14  # records the «earlier» hour is taken from
 SUMMARY_NOTE = (
-    "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
+    "Итог приходит по воскресеньям в 22:00 без звука. "
+    "Выключить — ⚙️ Настройки → 🔔 Напоминания."
 )
 _LONG_AGO = datetime(2000, 1, 1, tzinfo=UTC)
 TICK_ROW = 3

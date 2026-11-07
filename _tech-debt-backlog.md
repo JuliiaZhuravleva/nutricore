@@ -62,8 +62,101 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02
 
+- [ ] **TD-245**: Time words that were wrong before stage 6 R0 and are still wrong: «утром каша» sent at 6:30 lands on yesterday, «вчера суп в 13:00» lands on today, and «ночью» has edge cases. R0 deliberately kept the old behaviour (tests/test_time_phrase_corpus.py freezes it), so any fix must update that corpus row by row.
+  - **Priority:** Medium
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-246**: A «без цифр» mode for people for whom counting is harmful: no КБЖУ in cards, the week picture or answers, only what was eaten. ED safety (docs/researches/reminders-retention-evidence.md, «Риски»).
+  - **Priority:** Medium (needs the owner's yes and wording)
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-247**: Reminder metrics, aggregate only (owner screens show usage, never chats): logging-day rate, share of reminders followed by a record within 3 h, ✖ turn-offs (also within 48 h of a send), recovery within 7 days after a re-entry message, records per 100 reminders.
+  - **Priority:** Medium
+  - **Source:** owner decision 2026-11-07 («Позже, отдельной задачей»)
+  - **Created:** 2026-11-07
+
 ## Low
 
+- [ ] **TD-248**: The 🔔 custom-emoji tile is in the sticker-set source but the set was not rebuilt and uploaded; until then the reminder title falls back to the plain emoji. Verify the fallback before release, upload with the telegram-emoji-pack flow.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-249**: R3 «По записям» should learn the hours when reminders lead to a record (response-to-prompt), not only the hours of past records.
+  - **Priority:** Low (for the R3 branch)
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-250**: The week card's progress line should describe («5 из 7 дней с записями»), never evaluate. Check the current wording against R10 and the research.
+  - **Priority:** Low
+  - **Source:** owner research 2026-11-07
+  - **Created:** 2026-11-07
+
+- [ ] **TD-251**: Voice «ничего» (R16): `capture.read_said_nothing` stores no reading row, unlike `read_no_speech`, so the voice leaves no trace for diagnostics. Also confirm the «✓ Принято.» wording on the voice's own line with the owner.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [x] **TD-252** (closed 2026-11-08, owner: keep as is): Inside a reminder's recall window, a reply to a meal line that changes only grams («300») or time («в 14») does not renew the window. Owner to decide; renewing means routing those two `_on_reply` branches through `capture._renews`. Related: `_renews` marks the reminder answered for a correction of a meal that is not bound to it (review probe P19).
+  - **Priority:** Low (owner's call)
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-253**: Stage 6 review minors: flake8 E203 in tests/sim/cli.py:776; `tick` followed by `advance --tick` can run the same beat twice in the simulator; `_reply_moment` with rule day_only and of_day=True has no test; the voice path of «вчера утром каша, вечером суп» on the next day is not tested.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-254**: «ничего» (R16) outside a live recall window costs a model read: after ✅ ОК, after an R16 answer, or more than 30 minutes after the send («почти ничего не ела» at 21:48). Option: a full `is_nothing` match within the evening of today's send, closed or not, is swallowed with no read and a short neutral line. The meal added after an R16 answer also gets the exact arrival time, not the reminder's day without a clock.
+  - **Priority:** Low (owner's call)
+  - **Source:** feat/meal-reminders (stage 6 persona acceptance)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-255**: A bare «да», «ок» or «окей» inside a reminder's window gets no reply and leaves the reminder's buttons in place. Option: treat it like ✅ ОК (neutral, buttons removed). A bare «нет» stays silent and counts as unanswered (F2).
+  - **Priority:** Low (owner's call)
+  - **Source:** feat/meal-reminders (stage 6 persona acceptance)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-256**: Stage 6 acceptance copy questions for the owner:
+  - Re-entry #2, «Могу больше не напоминать…», with [✅ ОК] [✖ Выключить] reads like an offer, so ОК looks like «yes, stop». Options: a statement, or no ✖ on #2.
+  - The week card's «✨ Снова с записями — после паузы» (stage-5 copy, week_card.py:29) points at the pause.
+  - The 🔔 sub-screen goes «rarer» only on the sweep after the 3rd unanswered evening, so for one day it still shows the daily line.
+  - **Priority:** Low (owner's call)
+  - **Source:** feat/meal-reminders (stage 6 persona acceptance)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-257**: Simulator polish:
+  - The fake `nutrition_of` gives no per-item numbers for multi-dish meals, so a ⭐ starred from 🍲 Блюда for one dish has null kcal.
+  - The clock line hides seconds after `advance 5s`, and the README does not list the `s` unit.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6 persona acceptance)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-258**: Stage 6 acceptance-fix review minors:
+  - When an old reminder holds a logged ⭐, the next send only strips its buttons, so the title still reads «🔔 Еда за сегодня».
+  - «Утром овсянка. В обед суп.» still gets ≈ 9:00, because a period or a newline is not a clause edge in R0 (pre-existing).
+  - «не было ничего», «ничего больше не было» and «ничего сегодня не ела» are not R16.
+  - The 🔔 sub-screen of a person who has never logged gives no stop line.
+  - A join chip tapped on the later line, then ➖ Отделить, leaves a join chip under both lines.
+  - On the first reminder, «Или нажать на блюдо из ⭐:» stands before the footnote.
+  - After 🕐 → ⬅️, a voice line loses its trial paragraph.
+  - The rm:v test has no @BACKENDS case.
+  - «по времени Новосибирск (UTC+7)» has the city in the nominative (pre-existing for every city).
+  - A return after a re-entry stays sparse, because D7 resets only on an answer.
+  - **Priority:** Low
+  - **Source:** feat/meal-reminders (stage 6 persona acceptance)
+  - **Created:** 2026-11-07
+
+- [ ] **TD-244**: HTMLBubbles (interactive widgets in a message) — prototype once Bot API 10.4 ships them publicly
+  - **Priority:** Low
+  - **Source:** owner, 2026-11-06 (her research note on Telegram Serverless + HTMLBubbles; facts there are after my knowledge cutoff, re-check before starting)
+  - **Created:** 2026-11-06
+  - **Wait for:** the widget methods in the public Bot API changelog (10.4); python-telegram-bot will lag, so the first send may go through the raw Bot API.
+  - **Candidates, in order:** (1) the week card as a live widget — day bars, tap a day for its meals; data baked in at send time, no request to the bot; the current PNG card stays as the fallback. (2) Portion choice in a draft — a horizontal scale or big S/M/L/150 г tiles instead of size chips Telegram cuts at ~12 chars; the choice goes back through the 64-byte `request()`. (3) ⭐ in the reminder as tiles — only after stage 6 shows how people answer.
+  - **Rules:** nothing personal in `publicData`/`chatData` (it travels with a forward); every widget has a plain message or card fallback (old clients see a stub, the server may refuse the send).
+  - **Not Telegram Serverless:** no scheduler (reminders, week card need the 15-min sweep), health data would live at Telegram with no described export.
 - [ ] **TD-226**: With no weight, the screen says «считаю 100 г» while an immediate 🍽 Записать logs the portion guess
   - **Priority:** Low
   - **Source:** stage 5 smart portions review; left until someone notices it

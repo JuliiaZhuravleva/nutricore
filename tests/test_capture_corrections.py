@@ -13,8 +13,7 @@ from telegram import Update
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import BodyMetric, Meal, MealItem, MealMessage, MealSource, RecordEvent
-from app.services import close_row
-from app.services import capture, meal_items
+from app.services import capture, close_row, meal_items
 from app.services import telegram as tg
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     CHAT,
@@ -264,6 +263,53 @@ def test_words_that_only_look_like_time_stay_food(db, owner, reader, clock, word
     assert wire.sent()[0]["text"].startswith("Записано: ")
 
 
+@pytest.mark.parametrize(
+    "words", ["утром каша, вечером суп", "утром каша, в 13:00 суп"]
+)
+def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
+    db, owner, reader, clock, words
+):
+    reader.answer = dict(SOUP)
+    wire = send(text(words))
+    meal = _meals(db)[0]
+    assert meal.time_precision == "day_only"
+    assert meal.time_source == "said"
+    assert meal.time_phrase is None
+    assert _local(meal) == datetime(2026, 10, 26, 12, 0)
+    # No phrase is cut: neither is the meal's, and the words keep both times.
+    assert reader.text == [words]
+    assert meal.description == words
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == f"Записано на пн 26 октября, без времени: {words}."
+
+
+def test_r0_control_one_timed_clause_is_still_its_time(db, owner, reader, clock):
+    # The second clause says no time: one timed clause, read as before R0.
+    reader.answer = dict(SOUP)
+    wire = send(text("утром суп, хлеб"))
+    meal = _meals(db)[0]
+    assert (meal.time_precision, meal.time_phrase) == ("approx", "утром")
+    assert _local(meal) == datetime(2026, 10, 26, 9, 0)
+    assert reader.text == ["суп, хлеб"]
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == "Записано на пн 26 октября, ≈ 9:00: суп, хлеб."
+
+
+def test_d2_a_meals_name_in_the_other_clause_makes_it_two_times(
+    db, owner, reader, clock
+):
+    # Stage 6, D2: «в обед» counts as a clause's time in R0's rule alone, so «утром»
+    # and «в обед» are two moments: the day and no clock, nothing cut.
+    reader.answer = dict(SOUP)
+    wire = send(text("утром суп, в обед"))
+    meal = _meals(db)[0]
+    assert (meal.time_precision, meal.time_phrase) == ("day_only", None)
+    assert _local(meal) == datetime(2026, 10, 26, 12, 0)
+    assert reader.text == ["утром суп, в обед"]
+    head = wire.sent()[0]["text"].split("\n")[0]
+    assert head == "Записано на пн 26 октября, без времени: утром суп, в обед."
+
+
 def test_a_time_word_alone_is_no_dish(db, owner, reader, clock):
     """Nothing is left of the text to read, so the words stay what the model gets."""
     reader.answer = {"foods": []}
@@ -478,7 +524,10 @@ def test_an_add_is_born_as_its_own_meal_then_joined(db, owner, reader, clock):
     db.expire_all()
     assert meal.description == "суп, сыр"
     assert _item_names(db, meal) == ["суп", "сыр"]
-    assert _kb(wire.sent()[0]) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(wire.sent()[0]) == [
+        [close_row.CALLBACK],
+        [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"],
+    ]
 
 
 def test_the_born_meal_counts_in_no_reader(db, owner, reader, clock):
@@ -1168,6 +1217,29 @@ def test_m5e_a_bare_time_in_a_reply_is_a_time_and_no_dish(
     assert _kb(wire.sent()[0])[1][0].startswith("ml:u:")
 
 
+@pytest.mark.parametrize(
+    "words, now, local, head",
+    [
+        # The part is still ahead of the sent clock: its own clock goes on the
+        # replied meal's day, never the minute it was typed.
+        ("вечером", (18, 30), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),
+        ("утром", (8, 0), datetime(2026, 10, 26, 9, 0), "≈ 9:00"),
+        ("вечером", (21, 0), datetime(2026, 10, 26, 20, 0), "≈ 20:00"),  # control
+    ],
+)
+def test_a_part_in_reply_to_yesterdays_meal_keeps_its_own_clock(
+    db, owner, reader, clock, monkeypatch, words, now, local, head
+):
+    meal = _meal_now(db, owner, minutes_ago=0)  # пн 26 октября, 13:20
+    sent = datetime(2026, 10, 27, *now, tzinfo=NOW.tzinfo) - timedelta(hours=4)
+    monkeypatch.setattr(capture, "_now", lambda: sent)
+    reply = _mapped(db, meal)
+    wire = send(text(words, date=int(sent.timestamp()), reply_to_message=reply))
+    db.expire_all()
+    assert (_local(meal), meal.time_precision) == (local, "approx")
+    assert wire.sent()[0]["text"] == f"Время приёма теперь пн 26 октября, {head}: суп."
+
+
 def test_m5e_yesterday_alone_in_a_reply_takes_the_clock_away(db, owner, reader, clock):
     meal = _meal_now(db, owner, minutes_ago=300)
     wire = send(text("вчера", reply_to_message=_mapped(db, meal)))
@@ -1215,7 +1287,10 @@ def test_a_photo_in_reply_joins_when_it_is_read(db, owner, reader, clock):
     assert source.meal_id == meal.id
     assert source.origin_meal_id == born.id
     assert born.merged_into_id == meal.id
-    assert _kb(line) == [[close_row.CALLBACK], [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"]]
+    assert _kb(line) == [
+        [close_row.CALLBACK],
+        [f"ml:z:{source.id}:r", f"ml:o:{meal.id}:r"],
+    ]
     # And the original line, with the new list.
     assert wire.edits()[1]["message_id"] == 700
     assert wire.edits()[1]["text"] == "Записано: суп, рис и курица."
