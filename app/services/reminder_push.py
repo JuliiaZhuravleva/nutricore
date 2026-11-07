@@ -83,7 +83,7 @@ async def _send(db, bot, user: User, slot: reminders.Slot, now: datetime) -> str
         db,
         user_id=user.id,
         local_day=local_day,
-        slot=slot.at,
+        slot=slot.key,
         kind=slot.kind,
         chat_id=telegram_id,
         now=now,
@@ -123,8 +123,8 @@ async def _send(db, bot, user: User, slot: reminders.Slot, now: datetime) -> str
     send.message_id = message.message_id
     send.status = "sent"
     db.commit()
-    if cfg.noted is None:
-        reminders._write(db, user, noted=send.id)
+    if cfg.noted is None and not reminders.is_reentry(send):
+        reminders._write(db, user, noted=send.id)  # D6: a re-entry is not the first
     return "sent"
 
 

@@ -46,6 +46,10 @@ EXEMPT = {
     ("app/services/model_watch.py", "Отключат … — осталось … дн."): (
         "admin notice: days left before an AI model shuts down, not about food"
     ),
+    (
+        "app/services/reminders.py",
+        "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно.",
+    ): "the owner's own words for re-entry #1 (stage 6 D6, 2026-11-07)",
 }
 
 
@@ -188,6 +192,17 @@ def test_control_the_exemption_is_scoped_to_its_file_and_string():
     assert findings("app/services/model_watch.py", text) == []
     assert findings("app/services/stats_screen.py", text) != []
     assert findings("app/services/model_watch.py", "Осталось 300 ккал") != []
+
+
+def test_every_exemption_names_a_string_the_scan_reads():
+    """An exemption whose string moved or changed would excuse nothing and hide
+    that; the D6 one would otherwise be caught for «нужно»."""
+    found = set(user_strings())
+    for key in EXEMPT:
+        assert key in found, key
+    reentry = "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно."
+    assert findings("app/services/reminders.py", reentry) == []
+    assert findings("app/services/settings_screen.py", reentry) != []
 
 
 @pytest.mark.parametrize(

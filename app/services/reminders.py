@@ -11,8 +11,13 @@
 On for everyone (owner's decision D1), silent unless the sound is switched on (D3), on
 the person's own clock. Nothing here calls a model: the text and the buttons come from
 the database, and a ⭐ copies stored numbers (R1). Three reminders in a row left without
-an answer stop them, and only a return after a break in the records, or a tap in ⚙️,
-starts them again (R9); none of this is ever said in the chat.
+an answer make them rarer, one every third evening, and six stop them; only a return
+after a break in the records, or a tap in ⚙️, starts them again (R9, D7). None of this
+is ever said in the chat.
+
+After a lapse in the records, one short message at the seventh day and one at the
+fourteenth, then silence until food comes (D6): neutral for the ladder, and no recall
+window, so whatever comes after one is a capture at its own time.
 
 What a reminder says never names an absence or the day's content (R10): no times, no
 counts, the same title every day. Every button's data carries the whole step, so a tap
@@ -68,7 +73,9 @@ WINDOW = timedelta(minutes=60)  # a slot goes out within its hour, or not that d
 FRESH = timedelta(hours=3)  # == capture.CORRECTION_WINDOW (R8, §6.4)
 STOPPED_AFTER_DAYS = 7  # no record for longer: the bot does not chase (R3)
 MAX_A_DAY = 3  # R4
-UNANSWERED = 3  # in a row, before they stop (R9)
+UNANSWERED = 3  # in a row, before they come rarer (D7)
+UNANSWERED_OFF = 6  # in a row, before they stop (D7, R9)
+SPARSE_EVERY = 3  # rarer: a regular one at most every third local day (D7)
 DELETE_WITHIN = timedelta(hours=48)  # Telegram deletes a bot's message for 48 hours
 LATE_DAYS = 2  # a chip on an older reminder opens ⭐ Избранное instead
 CHIPS = 4
@@ -76,7 +83,17 @@ RANK_DAYS = 28
 SUNDAY = 6
 _INT_MAX = 2**31 - 1
 
+# Re-entry after a lapse (D6): ReminderSend.kind, and its two slots. The spec's
+# «reentry7» / «reentry14», short enough for reminder_sends.slot (String(5)): the
+# UNIQUE(user_id, local_day, slot) claim holds them with no migration.
+REENTRY = "reentry"
+REENTRY_FIRST, REENTRY_SECOND = "re7", "re14"
+# Local days since the last meal row: [from, to) for each.
+REENTRY_DAYS = {REENTRY_FIRST: (7, 14), REENTRY_SECOND: (14, 30)}
+MONDAY = 0
+
 # The ladder (§5.6): what a send's ``answer`` and ``status`` mean.
+FULL, SPARSE = "full", "sparse"
 ANSWERED, NEUTRAL, UNANSWERED_SEND = "answered", "neutral", "unanswered"
 FAV, NONE = "fav", "none"
 # R16 over a ⭐: the ⭐ still holds the message (R4), and «ничего» closed it.
@@ -88,14 +105,28 @@ STRIP = "strip"  # Screen.view: take the buttons off the message, keep its text
 TITLE = "🔔 <b>Еда за сегодня</b>"
 _FIRST = (
     "Можно не отвечать. Если что-то вспоминается, можно рассказать голосовым или "
-    "написать. Время можно назвать: «в 13 суп». Без времени запишется на этот день, "
-    "без часов."
+    "написать — примерно и не всё. Время можно назвать: «в 13 суп». Без времени "
+    "запишется на этот день, без часов."
 )
 _FIRST_STARS = "Или нажать на блюдо из ⭐:"
 _LATER_STARS = (
-    "Можно не отвечать. Если что-то вспоминается — голосовым, текстом или блюдом из ⭐:"
+    "Можно не отвечать. Если что-то вспоминается — голосовым, текстом или блюдом из "
+    "⭐, можно примерно и не всё:"
 )
-_LATER = "Можно не отвечать. Если что-то вспоминается — голосовым или текстом."
+_LATER = (
+    "Можно не отвечать. Если что-то вспоминается — голосовым или текстом, можно "
+    "примерно и не всё."
+)
+# D6: the owner's own words; R10's «never names an absence» is waived for these two.
+REENTRY_TEXT = {
+    REENTRY_FIRST: (
+        "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно."
+    ),
+    REENTRY_SECOND: (
+        "Могу больше не напоминать. Если захочется — можно просто отправить еду в "
+        "любой момент."
+    ),
+}
 _FOOTNOTE = (
     "<i>Приходит в {slot} по времени {zone}, {sound}. Если были записи за три часа до "
     "него, не приходит. Выключить — кнопкой ✖. Текст на экране блокировки можно "
@@ -103,6 +134,11 @@ _FOOTNOTE = (
 )
 _MORE = "Можно нажать ещё или рассказать голосовым."
 _SETTINGS_TITLE = "<b>🔔 Напоминания</b>"
+PAUSED_LINE = "Сейчас не приходят. Включить — кнопкой ✓ 🕘 Вечером."
+SPARSE_LINE = (
+    "Сейчас приходят реже, потому что остаются без ответа. Как раньше — кнопкой "
+    "✓ 🕘 Вечером."
+)
 _OFF_TITLE = "🔔 <b>Напоминания</b>"
 _TURNED_OFF = "✓ Напоминания выключены. Включить: ⚙️ Настройки → 🔔 Напоминания."
 LATE_NOTICE = "<i>Это напоминание за прошлые дни. Вот ⭐ Избранное.</i>"
@@ -135,8 +171,14 @@ _NOTHING = re.compile(
 @dataclass(frozen=True)
 class Slot:
     at: str  # "21:00", local wall clock
-    kind: str  # evening, meal
+    kind: str  # evening, meal, reentry
     centre: str | None = None  # meal slots (R2, R3)
+    tag: str | None = None  # a re-entry's own slot name (D6)
+
+    @property
+    def key(self) -> str:
+        """What ``reminder_sends.slot`` holds: the clock, or a re-entry's name."""
+        return self.tag or self.at
 
 
 @dataclass(frozen=True)
@@ -147,7 +189,7 @@ class Config:
     since: datetime | None = None
     off_day: date | None = None
     noted: int | None = None  # the id of the first reminder ever sent
-    quiet: dict | None = None  # {"level": "off", "on": "2026-11-04"}
+    quiet: dict | None = None  # {"level": "off" | "sparse", "on": "2026-11-04"}
     fragile: bool = False
     count_from: datetime | None = None
     prev: dict | None = None
@@ -189,7 +231,9 @@ def config(user: User | None) -> Config:
     evening = raw.get("evening")
     quiet = raw.get("quiet")
     if not (
-        isinstance(quiet, dict) and quiet.get("level") == OFF and _day(quiet.get("on"))
+        isinstance(quiet, dict)
+        and quiet.get("level") in (OFF, SPARSE)
+        and _day(quiet.get("on"))
     ):
         quiet = None
     noted = raw.get("noted")
@@ -215,6 +259,16 @@ def _write(db, user: User, **values) -> None:
     # A new dict: SQLAlchemy does not see a JSON value changed in place.
     user.settings = {**(user.settings or {}), KEY: stored}
     db.commit()
+
+
+def paused(cfg: Config) -> bool:
+    """The pause: no regular reminder until a return or a tap in ⚙️ (R9)."""
+    return (cfg.quiet or {}).get("level") == OFF
+
+
+def rarer(cfg: Config) -> bool:
+    """Rarer: a regular reminder only every third evening (D7)."""
+    return (cfg.quiet or {}).get("level") == SPARSE
 
 
 def phrase(cfg: Config) -> str:
@@ -275,15 +329,16 @@ def skip_reason(db, user: User, slot: Slot, now: datetime) -> str | None:
         return "may not receive"
     if not crud_meal.any_live(db, user.id):
         return "no record ever"
-    last = crud_meal.last_sent_at(db, user.id)
-    if last is None or (local_day - last.astimezone(zone).date()).days > (
-        STOPPED_AFTER_DAYS
-    ):
+    gap = _gap(db, user, local_day, zone)
+    if gap is None or gap > STOPPED_AFTER_DAYS:
         return "no record for a week"
-    if quiet_now(db, user, local_day, now):
-        return "quiet"
-    if crud_reminder_send.exists(db, user.id, local_day, slot.at):
+    reason = ladder_reason(db, user, local_day, now)
+    if reason is not None:
+        return reason
+    if crud_reminder_send.exists(db, user.id, local_day, slot.key):
         return "already claimed"
+    if crud_reminder_send.count_on(db, user.id, local_day, kind=REENTRY):
+        return "a re-entry went out today"  # D6: the day's one message (B1)
     if crud_reminder_send.count_on(db, user.id, local_day) >= MAX_A_DAY:
         return "three today"
     if slot.kind == EVENING and crud_reminder_send.count_on(
@@ -298,8 +353,84 @@ def skip_reason(db, user: User, slot: Slot, now: datetime) -> str | None:
     return None
 
 
+def _gap(db, user: User, local_day: date, zone) -> int | None:
+    """Local days from the last meal row (any: drafts and deleted too) to
+    ``local_day``; None when there is none."""
+    last = crud_meal.last_sent_at(db, user.id)
+    if last is None:
+        return None
+    return (local_day - last.astimezone(zone).date()).days
+
+
+def reentry_wanted(gap: int, after_week_sunday: bool) -> list[str]:
+    """The re-entry messages a day ``gap`` local days after the last record may
+    carry, the first one first (D6). A first one that a Sunday's week card held
+    back goes the evening after it, even on the fourteenth day. Nothing from the
+    thirtieth day on."""
+    wanted = []
+    low, high = REENTRY_DAYS[REENTRY_FIRST]
+    if low <= gap < high or (after_week_sunday and gap == high):
+        wanted.append(REENTRY_FIRST)
+    low, high = REENTRY_DAYS[REENTRY_SECOND]
+    if low <= gap < high:
+        wanted.append(REENTRY_SECOND)
+    return wanted
+
+
+def reentry_check(db, user: User, now: datetime) -> tuple[Slot | None, str | None]:
+    """(the re-entry slot due now, None) or (None, why not) (D6). §5.3's checks but
+    the week without records (R3), the ladder and the fresh record (R8): it is the
+    one message for someone who stopped, so a pause does not hold it back. Each
+    goes once a lapse: not again after the last meal row."""
+    cfg = config(user)
+    if cfg.mode != EVENING:
+        return None, "off"
+    zone = settings_screen.user_zone(user)
+    local_now = now.astimezone(zone)
+    local_day = local_now.date()
+    start = slot_start(Slot(cfg.evening, REENTRY), local_day, zone)
+    if not start <= local_now < start + WINDOW:
+        return None, "not its hour"
+    if cfg.since is not None and start <= cfg.since:
+        return None, "turned on after the slot"
+    if cfg.off_day == local_day:
+        return None, "off today"
+    week = settings_screen.week_push_on(user)
+    if local_day.weekday() == SUNDAY and week:
+        return None, "the week's summary instead"  # R17: the next evening
+    if not access_control.may_receive(db, user.telegram_id):
+        return None, "may not receive"
+    if not crud_meal.any_live(db, user.id):
+        return None, "no record ever"
+    last = crud_meal.last_sent_at(db, user.id)
+    gap = (local_day - last.astimezone(zone).date()).days
+    after_sunday = local_day.weekday() == MONDAY and week
+    # In UTC: SQLite compares the stored text, written in UTC.
+    after = last.astimezone(UTC)
+    tag = next(
+        (
+            name
+            for name in reentry_wanted(gap, after_sunday)
+            if not crud_reminder_send.sent_after(db, user.id, name, after)
+        ),
+        None,
+    )
+    if tag is None:
+        return None, "no re-entry due"
+    if crud_reminder_send.count_on(db, user.id, local_day):
+        return None, "one went out today"
+    if meal_card.has_slot(db, user.telegram_id):
+        return None, "a question is open"
+    return Slot(cfg.evening, REENTRY, None, tag), None
+
+
 def due(db, user: User, now: datetime) -> Slot | None:
-    """The slot to send now, if any. Each skip is logged with its reason, no text."""
+    """The slot to send now, if any: a re-entry first, then the day's own. Each
+    skip is logged with its reason, no text."""
+    slot, reason = reentry_check(db, user, now)
+    if slot is not None:
+        return slot
+    logger.debug("reminders: %s re-entry skipped: %s", user.id, reason)
     zone = settings_screen.user_zone(user)
     local_day = now.astimezone(zone).date()
     for slot in slots_today(config(user), None, local_day):
@@ -313,6 +444,10 @@ def due(db, user: User, now: datetime) -> Slot | None:
 # --- unanswered → silent (§5.6) ---------------------------------------------------
 
 
+def is_reentry(send: ReminderSend | None) -> bool:
+    return send is not None and send.kind == REENTRY
+
+
 def holds_star(send: ReminderSend) -> bool:
     """A ⭐ was logged from it: its message stays in the chat (R4)."""
     return send.answer in (FAV, FAV_NONE)
@@ -324,6 +459,8 @@ def said_nothing(send: ReminderSend) -> bool:
 
 
 def outcome(send: ReminderSend) -> str:
+    if is_reentry(send):
+        return NEUTRAL  # D6: it asks nothing, so nothing counts either way
     if send.answer in _ANSWERS:
         return ANSWERED
     if send.answer in _NEUTRAL_ANSWERS or send.status == "maybe":
@@ -346,9 +483,13 @@ def streak(sends: list[ReminderSend]) -> int:
 
 
 def level(cfg: Config, unanswered: int) -> str:
-    """One slot a day: full, or off after ``k`` in a row (one after a return)."""
-    k = 1 if cfg.fragile else UNANSWERED
-    return OFF if unanswered >= k else "full"
+    """One slot a day: full; rarer after three in a row; off after six, or after
+    one once they came back (D7)."""
+    if cfg.fragile:
+        return OFF if unanswered >= 1 else FULL
+    if unanswered >= UNANSWERED_OFF:
+        return OFF
+    return SPARSE if unanswered >= UNANSWERED else FULL
 
 
 def resume_due(db, user: User, cfg: Config, local_day: date, now: datetime) -> bool:
@@ -370,16 +511,18 @@ def resume_due(db, user: User, cfg: Config, local_day: date, now: datetime) -> b
     return len({day for day in days if gap < day <= local_day}) >= 2
 
 
-def quiet_now(db, user: User, local_day: date, now: datetime) -> bool:
-    """The pause, kept up to date: a quiet person may have come back, and a person
-    who is not quiet may have left three days without an answer behind."""
+def ladder_reason(db, user: User, local_day: date, now: datetime) -> str | None:
+    """The ladder, kept up to date (D7): "quiet" while paused, "rarer" on a day
+    the rarer level skips, None when the regular reminder may go. A paused person
+    may have come back; anyone else may have left days without an answer behind,
+    or answered one, which is daily again."""
     cfg = config(user)
-    if cfg.quiet is not None:
+    if paused(cfg):
         if not resume_due(db, user, cfg, local_day, now):
-            return True
+            return "quiet"
         _write(db, user, quiet=None, fragile=True, count_from=now.isoformat())
         logger.info("reminders: %s back after a break", user.id)
-        return False
+        return None
     # A day still open can be answered, so only the days before it count.
     sends = crud_reminder_send.newest_first(
         db, user.id, after=cfg.count_from, before_day=local_day
@@ -388,13 +531,23 @@ def quiet_now(db, user: User, local_day: date, now: datetime) -> bool:
     if cfg.fragile and latest is not None and outcome(latest) == ANSWERED:
         _write(db, user, fragile=None)
         cfg = config(user)
-    if level(cfg, streak(sends)) == OFF:
+    now_level = level(cfg, streak(sends))
+    if now_level == FULL:
+        if cfg.quiet is not None:
+            _write(db, user, quiet=None)  # an answer: daily again
+            logger.info("reminders: %s daily again after an answer", user.id)
+        return None
+    if now_level != (cfg.quiet or {}).get("level"):
         # Dated by the send that completed the streak, not by this sweep: the
         # sweep runs a day later, and that day may be the return's gap day (B2).
-        _write(db, user, quiet={"level": OFF, "on": latest.local_day.isoformat()})
-        logger.info("reminders: %s quiet after unanswered ones", user.id)
-        return True
-    return False
+        _write(db, user, quiet={"level": now_level, "on": latest.local_day.isoformat()})
+        logger.info("reminders: %s %s after unanswered ones", user.id, now_level)
+    if now_level == OFF:
+        return "quiet"
+    last = crud_reminder_send.last_regular_day(db, user.id, besides=REENTRY)
+    if last is not None and local_day < last + timedelta(days=SPARSE_EVERY):
+        return "rarer"
+    return None
 
 
 # --- which ⭐ -----------------------------------------------------------------------
@@ -468,7 +621,18 @@ def is_first(cfg: Config, send: ReminderSend) -> bool:
     return cfg.noted is None or cfg.noted == send.id
 
 
+def reentry_view(send: ReminderSend) -> Screen:
+    """D6: the title, the owner's words, [✅ ОК] [✖ Выключить]; no ⭐, no footnote."""
+    text = REENTRY_TEXT.get(send.slot, REENTRY_TEXT[REENTRY_FIRST])
+    rows = [[_btn("✅ ОК", f"k:{send.id}"), _btn("✖ Выключить", f"x:{send.id}")]]
+    return Screen(
+        f"{TITLE}\n{text}", InlineKeyboardMarkup(rows), view=meal_card.NO_MEAL
+    )
+
+
 def reminder_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
+    if is_reentry(send):
+        return reentry_view(send)
     cfg = config(user)
     zone = settings_screen.user_zone(user)
     picks = pick_favorites(db, user, send.local_day, zone, before=send.sent_at)
@@ -605,8 +769,8 @@ def replied_send(
         .limit(1)
     )
     send = db.scalars(stmt).first()
-    if send is None:
-        return None
+    if send is None or is_reentry(send):
+        return None  # D6: a re-entry binds nothing, a reply to it is a capture
     zone = settings_screen.user_zone(user)
     day = meal_items._utc(sent_at).astimezone(zone).date()
     return send if (day - send.local_day).days <= LATE_DAYS else None
@@ -617,10 +781,15 @@ def _replied(db, user: User, came) -> ReminderSend | None:
 
 
 def _in_window(db, user: User, came) -> ReminderSend | None:
-    """(b) The latest reminder, while it is live and its window is open."""
+    """(b) The latest reminder, while it is live and its window is open. A
+    re-entry opens none (D6), nor hides the one before it."""
     stmt = (
         select(ReminderSend)
-        .where(ReminderSend.user_id == user.id, ReminderSend.status.in_(_LIVE))
+        .where(
+            ReminderSend.user_id == user.id,
+            ReminderSend.status.in_(_LIVE),
+            ReminderSend.kind != REENTRY,
+        )
         .order_by(ReminderSend.sent_at.desc(), ReminderSend.id.desc())
         .limit(1)
     )
@@ -743,8 +912,10 @@ def settings_view(
     lines += [_SETTINGS_TITLE, ""]
     if cfg.mode == OFF:
         lines.append("Сейчас: выключены.")
-    elif cfg.quiet is not None:
-        lines.append("Сейчас не приходят. Включить — кнопкой ✓ 🕘 Вечером.")
+    elif paused(cfg):
+        lines.append(PAUSED_LINE)
+    elif rarer(cfg):
+        lines.append(SPARSE_LINE)
     else:
         label = settings_screen.zone_label(settings_screen.zone_name(user), now)
         lines.append(f"Сейчас: {phrase(cfg)} по времени {label}.")
@@ -810,6 +981,8 @@ def _own_send(t, data: str, sid: str) -> ReminderSend:
 def _v_fav(t, data: str, sid: str, fid: str) -> Screen:
     """§3.3: on the reminder's day, without a clock; a late tap opens the list."""
     send = _own_send(t, data, sid)
+    if is_reentry(send):
+        return _unknown(t, data)  # it never shows a ⭐ (D6)
     zone = t.zone
     if (t.now.astimezone(zone).date() - send.local_day).days > LATE_DAYS:
         return favorites.open_list(t.db, t.telegram_id, 0, LATE_NOTICE)

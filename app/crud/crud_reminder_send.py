@@ -67,6 +67,27 @@ class CRUDReminderSend:
             stmt = stmt.where(ReminderSend.kind == kind)
         return db.scalar(stmt) or 0
 
+    def sent_after(
+        self, db: Session, user_id: int, slot: str, after: datetime.datetime
+    ) -> bool:
+        """A send of this slot claimed after ``after`` (pass it in UTC: SQLite
+        compares the stored text)."""
+        stmt = select(ReminderSend.id).where(
+            ReminderSend.user_id == user_id,
+            ReminderSend.slot == slot,
+            ReminderSend.sent_at > after,
+        )
+        return db.scalar(stmt.limit(1)) is not None
+
+    def last_regular_day(
+        self, db: Session, user_id: int, *, besides: str
+    ) -> datetime.date | None:
+        """The local day of the latest send whose kind is not ``besides``."""
+        stmt = select(func.max(ReminderSend.local_day)).where(
+            ReminderSend.user_id == user_id, ReminderSend.kind != besides
+        )
+        return db.scalar(stmt)
+
     def previous(
         self, db: Session, user_id: int, before_id: int
     ) -> ReminderSend | None:

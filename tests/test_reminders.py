@@ -192,6 +192,24 @@ def _send_now(db, now):
     )
 
 
+def _reentry_send(db, day, tag, *, answer=None):
+    """A re-entry message of an earlier day, as the sweep left it (D6)."""
+    row = crud_reminder_send.claim(
+        db,
+        user_id=1,
+        local_day=day,
+        slot=tag,
+        kind=reminders.REENTRY,
+        chat_id=42,
+        now=_utc(day, 21, 5),
+    )
+    row.status = "sent"
+    row.answer = answer
+    row.message_id = 500 + row.id
+    db.commit()
+    return row
+
+
 def _bot(**kw):
     return SimpleNamespace(
         send_message=AsyncMock(
@@ -415,14 +433,76 @@ def _days_before(*offsets):
     return [DAY - timedelta(days=n) for n in offsets]
 
 
-def test_three_unanswered_stop_them(db):
-    _usual(db)
-    for day in _days_before(3, 2, 1):
+def _unanswered(db, n):
+    """``n`` evenings in a row before DAY, each left without an answer."""
+    for day in _days_before(*range(n, 0, -1)):
         _send(db, day)
-    assert _reason(db) == "quiet"
+
+
+def test_three_unanswered_make_them_rarer(db):
+    """D7: from the third in a row, a regular one only every third evening."""
+    _usual(db)
+    _unanswered(db, 3)
+    assert _reason(db) == "rarer"
     # Dated by the 3rd unanswered one, not by the sweep that found it (B2).
     on = (DAY - timedelta(days=1)).isoformat()
+    assert reminders.config(_user(db)).quiet == {"level": "sparse", "on": on}
+    # The last regular one went out on DAY-1: DAY is rarer, DAY+2 goes.
+    _setting(db, WEEK_PUSH, False)  # DAY+2 is a Sunday
+    assert _reason(db, _utc(DAY + timedelta(days=1), 21, 5)) == "rarer"
+    assert _reason(db, _utc(DAY + timedelta(days=2), 21, 5)) is None
+
+
+def test_rarer_counts_from_the_last_regular_send(db):
+    """D7: «the last regular send + 3», whatever came of it; a re-entry is not one."""
+    _usual(db)
+    _set(db, quiet={"level": "sparse", "on": (DAY - timedelta(days=9)).isoformat()})
+    for n in (9, 6, 3):  # sparse already: one every third evening
+        _send(db, DAY - timedelta(days=n))
+    assert _reason(db) is None  # DAY-3 + 3
+    _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
+    assert _reason(db) is None  # the re-entry neither counts nor spaces
+    _send(db, DAY - timedelta(days=2), answer="ok")  # neutral, yet a regular send
+    assert _reason(db) == "rarer"
+
+
+def test_six_unanswered_stop_them(db):
+    _usual(db)
+    _unanswered(db, 6)
+    assert _reason(db) == "quiet"
+    on = (DAY - timedelta(days=1)).isoformat()
     assert reminders.config(_user(db)).quiet == {"level": "off", "on": on}
+
+
+def test_five_unanswered_while_rarer_still_send_on_the_third_day(db):
+    _usual(db)
+    _set(db, quiet={"level": "sparse", "on": (DAY - timedelta(days=9)).isoformat()})
+    for n in (12, 11, 10, 6, 3):
+        _send(db, DAY - timedelta(days=n))
+    assert _reason(db) is None
+    assert reminders.config(_user(db)).quiet["level"] == "sparse"
+
+
+def test_an_answer_ends_rarer(db):
+    """D7: an answered send breaks the streak: daily again at the next ladder write."""
+    _usual(db)
+    _set(db, quiet={"level": "sparse", "on": (DAY - timedelta(days=6)).isoformat()})
+    for n in (8, 7, 6):
+        _send(db, DAY - timedelta(days=n))
+    _send(db, DAY - timedelta(days=3), answer="words")
+    _send(db, DAY - timedelta(days=1))  # unanswered, after the answer
+    assert _reason(db) is None
+    assert reminders.config(_user(db)).quiet is None
+    assert _reason(db, _utc(DAY + timedelta(days=1), 21, 5)) is None  # daily
+
+
+def test_after_a_return_one_unanswered_stops_them_not_rarer(db):
+    """D7: fragile, streak ≥ 1 → off, not sparse."""
+    _usual(db)
+    _set(db, fragile=True, count_from=_utc(DAY - timedelta(days=2), 0).isoformat())
+    _send(db, DAY - timedelta(days=1))
+    assert _reason(db) == "quiet"
+    assert reminders.config(_user(db)).quiet["level"] == "off"
 
 
 def test_two_unanswered_still_send(db):
@@ -445,7 +525,7 @@ def test_ok_and_off_are_neutral(db, neutral):
         _send(db, day)
     for day in _days_before(4, 2):
         _send(db, day, **neutral)
-    assert _reason(db) == "quiet"
+    assert _reason(db) == "rarer"
 
 
 def test_maybe_is_neutral_and_blocked_is_unanswered(db):
@@ -458,7 +538,7 @@ def test_maybe_is_neutral_and_blocked_is_unanswered(db):
     db.commit()
     for day in _days_before(3, 2, 1):
         _send(db, day, status="blocked")
-    assert _reason(db) == "quiet"
+    assert _reason(db) == "rarer"
 
 
 def test_an_answer_breaks_the_streak(db):
@@ -528,11 +608,23 @@ def test_an_answer_clears_fragile(db):
 
 def test_a_tap_in_settings_resumes(db):
     _usual(db)
-    for day in _days_before(3, 2, 1):
-        _send(db, day)
+    _unanswered(db, 6)
     assert _reason(db) == "quiet"
     screen = _tap(db, "rm:m:evening", _utc(DAY, 20))
     assert "✓ Напоминания приходят" in screen.text
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is False
+    assert _reason(db) is None
+
+
+def test_a_tap_in_settings_ends_rarer(db):
+    """D7: ✓ 🕘 Вечером in ⚙️ clears sparse too, and that evening goes."""
+    _usual(db)
+    _unanswered(db, 3)
+    assert _reason(db) == "rarer"
+    screen = _tap(db, "rm:m:evening", _utc(DAY, 20))
+    assert "✓ Напоминания приходят" in screen.text
+    assert reminders.SPARSE_LINE not in screen.text
     cfg = reminders.config(_user(db))
     assert cfg.quiet is None and cfg.fragile is False
     assert _reason(db) is None
@@ -551,6 +643,172 @@ def test_the_purge_keeps_the_pause(db, monkeypatch):
     assert db.get(ReminderSend, old_id) is None
     assert db.get(ReminderSend, kept_id) is not None
     assert reminders.config(_user(db)).quiet == quiet
+
+
+# --- re-entry after a lapse (D6) ----------------------------------------------------
+
+RE7 = reminders.Slot("21:00", reminders.REENTRY, None, reminders.REENTRY_FIRST)
+RE14 = reminders.Slot("21:00", reminders.REENTRY, None, reminders.REENTRY_SECOND)
+
+
+def _last_record(db, gap, day=DAY):
+    """The last meal row ``gap`` local days before ``day``."""
+    return _row(db, _utc(day - timedelta(days=gap), 10))
+
+
+@pytest.mark.parametrize(
+    "gap, slot",
+    [(6, None), (7, RE7), (13, RE7), (14, RE14), (29, RE14), (30, None)],
+)
+def test_reentry_is_due_at_7_and_14_days_and_never_from_30(db, gap, slot):
+    _last_record(db, gap)
+    due = reminders.due(db, _user(db), AT_21)
+    if slot is None:
+        # Gap 6 is an ordinary evening; gap 30 gets nothing at all.
+        assert due == (reminders.Slot("21:00", "evening") if gap == 6 else None)
+    else:
+        assert due == slot
+
+
+def test_reentry_names_its_own_slot_short_enough_for_the_column():
+    """reminder_sends.slot is String(5) on Postgres: «reentry7» would not fit."""
+    assert RE7.key == "re7" and RE14.key == "re14"
+    assert all(len(tag) <= 5 for tag in reminders.REENTRY_DAYS)
+    assert reminders.Slot("21:00", reminders.EVENING).key == "21:00"
+
+
+def test_reentry_goes_within_the_evening_hour_only(db):
+    _last_record(db, 8)
+    assert reminders.due(db, _user(db), _utc(DAY, 20, 59)) is None
+    assert reminders.due(db, _user(db), _utc(DAY, 22, 0)) is None
+    _set(db, evening="22:00")
+    assert reminders.due(db, _user(db), _utc(DAY, 22, 5)) == reminders.Slot(
+        "22:00", reminders.REENTRY, None, reminders.REENTRY_FIRST
+    )
+
+
+def test_each_reentry_goes_once_a_lapse(db):
+    _last_record(db, 8)
+    _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
+    slot, reason = reminders.reentry_check(db, _user(db), AT_21)
+    assert (slot, reason) == (None, "no re-entry due")
+    later = DAY + timedelta(days=6)  # gap 14
+    assert reminders.due(db, _user(db), _utc(later, 21, 5)) == RE14
+    _reentry_send(db, later, reminders.REENTRY_SECOND)
+    for n in range(7, 22):  # gap 15 .. 29
+        assert (
+            reminders.due(db, _user(db), _utc(later + timedelta(days=n - 6), 21, 5))
+            is None
+        )
+
+
+def test_a_new_record_starts_a_new_lapse(db):
+    _last_record(db, 30)
+    _reentry_send(db, DAY - timedelta(days=23), reminders.REENTRY_FIRST)
+    _reentry_send(db, DAY - timedelta(days=16), reminders.REENTRY_SECOND)
+    _last_record(db, 7)  # a record, after both
+    assert reminders.due(db, _user(db), AT_21) == RE7
+    later = DAY + timedelta(days=7)  # gap 14
+    assert reminders.due(db, _user(db), _utc(later, 21, 5)) == RE14
+
+
+def test_any_row_is_the_last_record_drafts_and_deleted_too(db):
+    _last_record(db, 20)
+    _row(db, _utc(DAY - timedelta(days=8), 10), draft=True)
+    assert reminders.due(db, _user(db), AT_21) == RE7
+    _row(db, _utc(DAY - timedelta(days=3), 10), deleted=True)
+    assert reminders.due(db, _user(db), AT_21) == reminders.Slot("21:00", "evening")
+
+
+@pytest.mark.parametrize("level", ["off", "sparse"])
+def test_reentry_goes_whatever_the_ladder_says(db, level):
+    _last_record(db, 7)
+    _set(db, quiet={"level": level, "on": (DAY - timedelta(days=8)).isoformat()})
+    _send(db, DAY - timedelta(days=8))
+    assert reminders.due(db, _user(db), AT_21) == RE7
+
+
+def test_after_x_there_is_no_reentry(db):
+    _last_record(db, 7)
+    _set(db, mode="off")
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "off")
+    assert reminders.due(db, _user(db), AT_21) is None
+
+
+def test_no_reentry_for_who_may_not_receive_or_never_recorded(db, monkeypatch):
+    _row(db, _utc(DAY - timedelta(days=8), 10), draft=True)
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "no record ever")
+    _last_record(db, 8)
+    monkeypatch.setattr(
+        crud_subscription, "is_active_subscription", lambda _db, _id: False
+    )
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "may not receive")
+
+
+def test_reentry_keeps_the_other_day_checks(db):
+    _last_record(db, 8)
+    _set(db, off_day=DAY.isoformat())
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "off today")
+    _set(db, since=_utc(DAY, 21, 2).isoformat())
+    assert reminders.reentry_check(db, _user(db), AT_21) == (
+        None,
+        "turned on after the slot",
+    )
+    _set(db)
+    _setting(db, meal_card.ASK, {"kind": "time", "meal_id": 1})
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "a question is open")
+
+
+def test_on_a_week_sunday_reentry_moves_to_monday(db):
+    monday = SUNDAY + timedelta(days=1)
+    _last_record(db, 7, day=SUNDAY)
+    sunday = _utc(SUNDAY, 21, 5)
+    assert reminders.reentry_check(db, _user(db), sunday) == (
+        None,
+        "the week's summary instead",
+    )
+    assert reminders.due(db, _user(db), sunday) is None
+    assert reminders.due(db, _user(db), _utc(monday, 21, 5)) == RE7
+    # With the week card off, Sunday is an evening like any.
+    _setting(db, WEEK_PUSH, False)
+    assert reminders.due(db, _user(db), sunday) == RE7
+
+
+def test_a_first_held_back_on_the_13th_day_goes_on_the_14th(db):
+    """The Sunday shift wins over the window: #1 on Monday, #2 the evening after."""
+    monday = SUNDAY + timedelta(days=1)
+    _last_record(db, 13, day=SUNDAY)
+    assert reminders.due(db, _user(db), _utc(SUNDAY, 21, 5)) is None
+    assert reminders.due(db, _user(db), _utc(monday, 21, 5)) == RE7
+    _reentry_send(db, monday, reminders.REENTRY_FIRST)
+    tuesday = monday + timedelta(days=1)
+    assert reminders.due(db, _user(db), _utc(tuesday, 21, 5)) == RE14
+
+
+def test_the_day_of_a_reentry_gets_no_regular_one(db):
+    _last_record(db, 7)
+    _reentry_send(db, DAY, reminders.REENTRY_FIRST)
+    assert _reason(db, _utc(DAY, 21, 20)) == "a re-entry went out today"
+    assert reminders.due(db, _user(db), _utc(DAY, 21, 20)) is None
+
+
+def test_a_regular_one_today_holds_the_reentry(db):
+    _last_record(db, 7)
+    _send(db, DAY, slot="20:00", answer="ok")
+    assert reminders.reentry_check(db, _user(db), AT_21) == (None, "one went out today")
+
+
+def test_reentry_is_neutral_for_the_ladder(db):
+    _usual(db)
+    _send(db, DAY - timedelta(days=3))
+    _reentry_send(db, DAY - timedelta(days=2), reminders.REENTRY_FIRST)
+    _send(db, DAY - timedelta(days=1))
+    assert _reason(db) is None  # two in a row, the re-entry stepped over
+    reentry = db.query(ReminderSend).filter_by(kind=reminders.REENTRY).one()
+    assert reminders.outcome(reentry) == reminders.NEUTRAL
+    reentry.answer = "words"  # whatever is stored on it
+    db.commit()
+    assert reminders.outcome(reentry) == reminders.NEUTRAL
 
 
 # --- the claim and the send (§5.4) -------------------------------------------------
@@ -794,9 +1052,9 @@ def test_after_a_return_through_the_sweep_one_unanswered_quiets_again(db):
 
 @BACKENDS
 def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
-    """B1 + B2: last record Monday; sweeps every evening. Tue, Wed, Thu go out; the
-    pause is dated Thursday, so Friday is the gap day; a photo Saturday is the 1st
-    record day (nothing), Sunday is the week's, Monday's record makes the 2nd: sent."""
+    """B1 + B2: last record Monday; sweeps every evening. Tue, Wed, Thu go out; rarer
+    from Thursday (D7), so Friday and Saturday (a photo at 12:00) get nothing, Sunday
+    is the week's, and Monday, the third day after Thursday, is sent."""
     monday = date(2026, 11, 2)
     _row(db, _utc(monday, 10))
     bot = _counting_bot()
@@ -811,7 +1069,7 @@ def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
             sent_on.append(day)
         if day == date(2026, 11, 6):
             quiet = reminders.config(_user(db)).quiet
-            assert quiet == {"level": "off", "on": "2026-11-05"}
+            assert quiet == {"level": "sparse", "on": "2026-11-05"}  # D7
     assert sent_on == [
         date(2026, 11, 3),
         date(2026, 11, 4),
@@ -819,7 +1077,8 @@ def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
         date(2026, 11, 9),
     ]
     cfg = reminders.config(_user(db))
-    assert cfg.quiet is None and cfg.fragile is True
+    # Monday's went unanswered too: still rarer (D7 needs no resume).
+    assert cfg.quiet == {"level": "sparse", "on": "2026-11-05"} and not cfg.fragile
     assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
     # Thursday's untouched one leaves at Monday's send: four days old, so Telegram
     # no longer deletes it and only its buttons go (R4, §5.4's 48 h).
@@ -828,6 +1087,226 @@ def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
     bot.edit_message_reply_markup.assert_awaited_with(
         chat_id=42, message_id=thursday.message_id, reply_markup=None
     )
+
+
+def _texts(bot) -> list[str]:
+    return [call.kwargs["text"] for call in bot.send_message.await_args_list]
+
+
+def _sweep(db, bot, days, before=None) -> list[date]:
+    """One sweep at 21:05 on each day; the days that got a message. ``before(day)``
+    runs first on each (a record, a tap)."""
+    sent_on = []
+    for day in days:
+        if before is not None:
+            before(day)
+        if _run(db, bot, _utc(day, 21, 5))["sent"]:
+            sent_on.append(day)
+    return sent_on
+
+
+def _span(first, last):
+    return [first + timedelta(days=n) for n in range((last - first).days + 1)]
+
+
+REENTRY_1 = (
+    "🔔 <b>Еда за сегодня</b>\nМожно начать с сегодняшнего. Прошлые дни "
+    "восстанавливать не нужно."
+)
+REENTRY_2 = (
+    "🔔 <b>Еда за сегодня</b>\nМогу больше не напоминать. Если захочется — можно "
+    "просто отправить еду в любой момент."
+)
+
+
+def test_b1_a_hard_week_then_two_reentries_and_silence(db):
+    """§9 B1 (D6, D7): last record Monday; Tue, Wed, Thu; rarer after Thursday;
+    Sunday is the week card's; Monday (gap 7) re-entry #1, the Monday after (gap 14)
+    re-entry #2; nothing after."""
+    monday = date(2026, 11, 2)
+    _row(db, _utc(monday, 10))
+    bot = _counting_bot()
+    seen = {}
+
+    def look(day):
+        if day == date(2026, 11, 7):  # Saturday: after Thursday, rarer
+            seen["quiet"] = reminders.config(_user(db)).quiet
+            seen["screen"] = _tap(db, "rm:o", _utc(day, 12)).text
+
+    sent_on = _sweep(
+        db, bot, _span(monday + timedelta(days=1), date(2026, 12, 6)), look
+    )
+    assert sent_on == [
+        date(2026, 11, 3),
+        date(2026, 11, 4),
+        date(2026, 11, 5),
+        date(2026, 11, 9),
+        date(2026, 11, 16),
+    ]
+    assert seen["quiet"] == {"level": "sparse", "on": "2026-11-05"}
+    assert reminders.SPARSE_LINE in seen["screen"]
+    texts = _texts(bot)
+    assert texts[3:] == [REENTRY_1, REENTRY_2]
+    assert all(t.startswith(reminders.TITLE) for t in texts)
+    assert _banned(texts) == []
+    kinds = [s.kind for s in db.query(ReminderSend).order_by(ReminderSend.id)]
+    assert kinds == ["evening"] * 3 + [reminders.REENTRY] * 2
+    assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
+
+
+def test_b3_breakfasts_daily_evenings_ignored(db):
+    """§9 B3 (D7): rarer after the 3rd evening, one every 3rd evening, the pause
+    after the 6th reminder; breakfasts never resume it; ⚙️ does, the same evening."""
+    _setting(db, WEEK_PUSH, False)  # every evening is an evening
+    first = date(2026, 11, 9)
+    bot = _counting_bot()
+    days = _span(first, first + timedelta(days=24))
+    sent_on = _sweep(db, bot, days, lambda day: _row(db, _utc(day, 8)))
+    assert sent_on == [first + timedelta(days=n) for n in (0, 1, 2, 5, 8, 11)]
+    quiet = reminders.config(_user(db)).quiet
+    assert quiet == {"level": "off", "on": (first + timedelta(days=11)).isoformat()}
+    # ⚙️ ✓ 🕘 Вечером at 20:00: that evening goes.
+    tap_day = days[-1] + timedelta(days=1)
+
+    def resume(day):
+        _row(db, _utc(day, 8))
+        _tap(db, "rm:m:evening", _utc(day, 20))
+
+    assert _sweep(db, bot, [tap_day], resume) == [tap_day]
+
+
+def test_b4_logs_three_days_a_week_never_answers(db):
+    """§9 B4 (D7): ≤ 3 in week 1, then about one every three days while unanswered,
+    then the pause. Records at 19:30 Mon/Thu/Sat keep those evenings fresh (R8)."""
+    first = date(2026, 11, 9)  # a Monday
+    days = _span(first, first + timedelta(days=27))
+
+    def log(day):
+        if day.weekday() in (0, 3, 5):
+            _row(db, _utc(day, 19, 30))
+
+    bot = _counting_bot()
+    sent_on = _sweep(db, bot, days, log)
+    # Tue, Wed, Fri; then every third day or more; the 6th (Tue 24) pauses; a gap
+    # day and two record days resume it, fragile, and one unanswered pauses again.
+    assert sent_on == [
+        date(2026, 11, 10),
+        date(2026, 11, 11),
+        date(2026, 11, 13),
+        date(2026, 11, 17),
+        date(2026, 11, 20),
+        date(2026, 11, 24),
+        date(2026, 12, 1),
+    ]
+    weeks = [sum(1 for d in sent_on if (d - first).days // 7 == w) for w in range(4)]
+    assert weeks[0] <= 3
+    assert all(n <= 3 for n in weeks[1:])
+    # From the 3rd on, at least three days apart while unanswered.
+    gaps = [(b - a).days for a, b in zip(sent_on[2:], sent_on[3:])]
+    assert gaps and all(g >= 3 for g in gaps)
+    # The sixth unanswered one is followed by a pause of more than a day or two;
+    # the last Saturday's return resumed it again, fragile.
+    sixth = sent_on[5]
+    cfg = reminders.config(_user(db))
+    assert cfg.quiet is None and cfg.fragile is True
+    later = [d for d in sent_on if d > sixth]
+    assert not later or (later[0] - sixth).days > 3
+
+
+@pytest.mark.parametrize("gap, expected", [(20, [0]), (40, [])])
+def test_c2_long_gone_at_launch(db, gap, expected):
+    """§9 C2 (D6): last record 20 days ago → re-entry #2 only at launch, nothing
+    after; 40 days → nothing. A new record makes rule 4 pass again."""
+    _last_record(db, gap)
+    bot = _counting_bot()
+    sent_on = _sweep(db, bot, _span(DAY, DAY + timedelta(days=20)))
+    assert sent_on == [DAY + timedelta(days=n) for n in expected]
+    assert _texts(bot) == ([REENTRY_2] if expected else [])
+    back = DAY + timedelta(days=21)
+    _row(db, _utc(back, 10))
+    assert _sweep(db, bot, [back]) == [back]
+    # A re-entry is not the first reminder: the footnote is still to come.
+    assert "Приходит в 21:00" in _texts(bot)[-1]
+
+
+def test_l1_reentry_goes_while_paused_but_not_after_x(db):
+    """§9 L1 (D6): gap 7 with the ladder at off → re-entry #1 goes. After ✖ →
+    nothing."""
+    _last_record(db, 7)
+    _set(db, quiet={"level": "off", "on": (DAY - timedelta(days=9)).isoformat()})
+    bot = _counting_bot()
+    assert _sweep(db, bot, [DAY]) == [DAY]
+    assert _texts(bot) == [REENTRY_1]
+    send = db.query(ReminderSend).one()
+    assert (send.kind, send.slot, send.status) == (reminders.REENTRY, "re7", "sent")
+    _tap(db, f"rm:x:{send.id}", _utc(DAY, 21, 30))
+    assert reminders.config(_user(db)).mode == "off"
+    assert (
+        _sweep(db, bot, _span(DAY + timedelta(days=1), DAY + timedelta(days=30))) == []
+    )
+
+
+def test_reentry_through_the_sweep(db):
+    """D6: the owner's words, [✅ ОК] [✖ Выключить], no footnote, sound per ⚙️;
+    reminders.noted is not set; R4 both ways."""
+    _usual(db)
+    old = _send(db, DAY - timedelta(days=1))  # untouched, still in the chat
+    db.query(Meal).delete()
+    db.commit()
+    _last_record(db, 7)
+    bot = _bot(message_id=901)
+    assert _run(db, bot)["sent"] == 1
+    kw = bot.send_message.await_args.kwargs
+    assert kw["text"] == REENTRY_1
+    assert _labels(kw["reply_markup"]) == ["✅ ОК", "✖ Выключить"]
+    send = db.query(ReminderSend).filter_by(kind=reminders.REENTRY).one()
+    assert _callbacks(kw["reply_markup"]) == [f"rm:k:{send.id}", f"rm:x:{send.id}"]
+    assert kw["disable_notification"] is True
+    assert reminders.config(_user(db)).noted is None
+    bot.delete_message.assert_awaited_once_with(42, old.message_id)  # R4
+    # And the next send deletes the re-entry.
+    _row(db, _utc(DAY + timedelta(days=1), 10))
+    bot = _bot(message_id=902)
+    assert _run(db, bot, _utc(DAY + timedelta(days=1), 21, 5))["sent"] == 1
+    bot.delete_message.assert_awaited_once_with(42, 901)
+
+
+def test_reentry_views_hold_the_owners_words(db):
+    for tag, expected in (
+        (reminders.REENTRY_FIRST, REENTRY_1),
+        (reminders.REENTRY_SECOND, REENTRY_2),
+    ):
+        send = _reentry_send(db, DAY - timedelta(days=len(tag)), tag)
+        screen = reminders.reminder_view(db, _user(db), send, AT_21)
+        assert screen.text == expected
+        assert _labels(screen.markup) == ["✅ ОК", "✖ Выключить"]
+        assert "<i>" not in screen.text and "⭐" not in screen.text
+
+
+def test_reentry_shows_no_star_even_with_stars_saved(db):
+    for name in ("Суп", "Хумус"):
+        _fav(db, name)
+    _last_record(db, 7)
+    bot = _bot()
+    _run(db, bot)
+    kw = bot.send_message.await_args.kwargs
+    assert kw["text"] == REENTRY_1
+    assert len(kw["reply_markup"].inline_keyboard) == 1
+
+
+def test_a_crafted_star_on_a_reentry_logs_nothing(db):
+    fav = _fav(db, "Суп")
+    send = _reentry_send(db, DAY, reminders.REENTRY_FIRST)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", AT_21)
+    assert _favorite_meals(db) == []
+
+
+def test_ok_on_a_reentry_is_neutral(db):
+    send = _reentry_send(db, DAY, reminders.REENTRY_FIRST)
+    screen = _tap(db, f"rm:k:{send.id}", AT_21)
+    assert screen.toast == reminders.OK_TOAST
+    db.refresh(send)
+    assert send.answer == "ok" and reminders.outcome(send) == reminders.NEUTRAL
 
 
 # --- the message (§3.1) ------------------------------------------------------------
@@ -1132,8 +1611,7 @@ def test_a_stale_back_leaves_the_settings_alone(db):
 
 def test_a_stale_hour_while_off_keeps_them_off(db):
     _usual(db)
-    for day in _days_before(3, 2, 1):
-        _send(db, day)
+    _unanswered(db, 6)
     assert _reason(db) == "quiet"
     _tap(db, "rm:m:off", AT_21)
     screen = _tap(db, "rm:e:2200", AT_21)
@@ -1146,8 +1624,7 @@ def test_a_stale_hour_while_off_keeps_them_off(db):
 
 def test_resuming_inside_the_hour_waits_for_the_next_slot(db):
     _usual(db)
-    for day in _days_before(3, 2, 1):
-        _send(db, day)
+    _unanswered(db, 6)
     assert _reason(db) == "quiet"
     _tap(db, "rm:m:evening", _utc(DAY, 21, 10))
     assert _reason(db, now=_utc(DAY, 21, 15)) == "turned on after the slot"
@@ -1328,11 +1805,85 @@ def test_r10_words_never_said(db):
     texts += [topic.label, topic.what, topic.how, topic.why]
     _send_, screen = _first_view(db)
     texts.append(screen.text)
+    # D6, D7, D8: every new text, as shown.
+    for tag in reminders.REENTRY_DAYS:
+        send = _reentry_send(db, DAY - timedelta(days=len(tag)), tag)
+        texts.append(reminders.reminder_view(db, _user(db), send, AT_21).text)
+    for level in ("sparse", "off"):
+        _set(db, quiet={"level": level, "on": DAY.isoformat()})
+        texts.append(_tap(db, "rm:o", AT_21).text)
+    texts += [reminders._FIRST, reminders._LATER_STARS, reminders._LATER]
+    for new in (*reminders.REENTRY_TEXT.values(), reminders.SPARSE_LINE):
+        assert new in texts  # the scan reads the new literals too
     assert len(texts) > 20  # the scan did read the module
     assert _banned(texts) == []
     # The control: the same check catches a banned word.
     assert _banned(["Сегодня пропущено"]) == ["Сегодня пропущено"]
     assert _banned(["Уже 3 дня"]) == ["Уже 3 дня"]
+
+
+def test_d8_the_reminder_says_roughly_and_not_all():
+    """D8, the owner's words."""
+    assert reminders._FIRST == (
+        "Можно не отвечать. Если что-то вспоминается, можно рассказать голосовым или "
+        "написать — примерно и не всё. Время можно назвать: «в 13 суп». Без времени "
+        "запишется на этот день, без часов."
+    )
+    assert reminders._LATER_STARS == (
+        "Можно не отвечать. Если что-то вспоминается — голосовым, текстом или блюдом "
+        "из ⭐, можно примерно и не всё:"
+    )
+    assert reminders._LATER == (
+        "Можно не отвечать. Если что-то вспоминается — голосовым или текстом, можно "
+        "примерно и не всё."
+    )
+
+
+def test_d8_the_shown_reminders_carry_the_new_words(db):
+    send, screen = _first_view(db)
+    assert screen.text.split("\n")[1] == reminders._FIRST
+    _set(db, noted=send.id)
+    later = _send(db, DAY + timedelta(days=1))
+    assert reminders.reminder_view(db, _user(db), later, AT_21).text.endswith(
+        "можно примерно и не всё."
+    )
+    _fav(db, "Суп")
+    starred = _send(db, DAY + timedelta(days=2))
+    text = reminders.reminder_view(db, _user(db), starred, AT_21).text
+    assert text.endswith("блюдом из ⭐, можно примерно и не всё:")
+
+
+def test_the_explanation_holds_the_new_sentences():
+    """§10 as D8 and the ladder/re-entry sentence have it."""
+    topic = explain_screen.TOPICS["reminders"]
+    assert topic.what == (
+        "Короткое сообщение вечером: если что-то из еды вспоминается, можно рассказать "
+        "голосовым, написать или нажать на блюдо из ⭐, примерно и не всё. Отвечать не "
+        "обязательно."
+    )
+    assert topic.how.endswith(
+        "Если напоминания подряд остаются без ответа, они приходят реже, а потом "
+        "перестают и возвращаются после перерыва в записях или кнопкой в настройках. "
+        "Если записей долго нет, придут одно-два коротких сообщения о том, что можно "
+        "начать с любого дня, и дальше бот молчит, пока не придёт еда."
+    )
+    assert "Если три" not in topic.how
+
+
+def test_the_sub_screen_says_rarer_or_paused(db):
+    _set(db, quiet={"level": "sparse", "on": DAY.isoformat()})
+    text = _tap(db, "rm:o", AT_21).text
+    assert (
+        "Сейчас приходят реже, потому что остаются без ответа. Как раньше — кнопкой "
+        "✓ 🕘 Вечером." in text
+    )
+    assert "Сейчас:" not in text and "не приходят" not in text
+    _set(db, quiet={"level": "off", "on": DAY.isoformat()})
+    text = _tap(db, "rm:o", AT_21).text
+    assert "Сейчас не приходят. Включить — кнопкой ✓ 🕘 Вечером." in text
+    assert reminders.SPARSE_LINE not in text
+    _set(db)
+    assert "Сейчас: вечером" in _tap(db, "rm:o", AT_21).text
 
 
 def test_the_explanation_says_what_the_time_screen_offers():

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, time, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -18,6 +19,7 @@ from sqlalchemy import select
 from app.crud.crud_reminder_send import crud_reminder_send
 from app.models import Meal, MealSource
 from app.models.reminder_send import ReminderSend
+from app.models.user import User
 from app.services import capture, favorites, meal_card, reminders, routines
 from app.services import telegram as tg
 from app.services import voice
@@ -880,3 +882,61 @@ def _accepted_under_the_star(wire) -> None:
 def _time_rows(db, meal: Meal) -> list:
     screen = meal_card.handle_callback(db, OWNER, f"ml:t:{meal.id}:r", now=at(21, 21))
     return screen.markup.inline_keyboard
+
+
+# --- re-entry binds nothing (D6, §9 L2) ---------------------------------------------
+
+
+@pytest.fixture
+def reentry(db, owner, reader):
+    """Re-entry #1 of DAY, sent at 21:00 as the sweep sends it: no recall window."""
+    row = crud_reminder_send.claim(
+        db,
+        user_id=owner.id,
+        local_day=DAY,
+        slot=reminders.REENTRY_FIRST,
+        kind=reminders.REENTRY,
+        chat_id=CHAT,
+        now=at(21),
+    )
+    row.status = "sent"
+    row.message_id = REMINDER
+    db.commit()
+    return row
+
+
+def test_l2_soup_ten_minutes_after_a_reentry_is_eaten_now(db, reentry, monkeypatch):
+    """§9 L2: an exact-time record at its arrival, no day_only; the send stays
+    neutral."""
+    wire = arrive(monkeypatch, say(at(21, 10), "суп"))
+    (meal,) = _meals(db)
+    _is_sent(meal, at(21, 10))
+    assert DAY_LINE not in wire.sent()[0]["text"]
+    row = _send_row(db, reentry.id)
+    assert (row.answer, row.answered_at, row.closed_at) == (None, None, None)
+    assert reminders.outcome(row) == reminders.NEUTRAL
+
+
+def test_a_reply_to_a_reentry_is_an_ordinary_capture(db, reentry, monkeypatch):
+    arrive(monkeypatch, say(at(21, 10), "суп", reply_to_message=_reminder_message()))
+    (meal,) = _meals(db)
+    _is_sent(meal, at(21, 10))
+    assert _send_row(db, reentry.id).answer is None
+
+
+def test_capture_finds_no_reminder_behind_a_reentry(db, reentry):
+    """The seams capture asks (bound_send, answering, replied_send): a reply to
+    the re-entry and a text inside what would be its window both find none."""
+    person = db.get(User, reentry.user_id)
+    for reply_to in (REMINDER, None):
+        came = SimpleNamespace(
+            kind="text",
+            chat_id=CHAT,
+            text="суп",
+            sent_at=at(21, 10),
+            reply_to=reply_to,
+            forward_date=None,
+        )
+        assert reminders.bound_send(db, person, came) is None
+        assert reminders.answering(db, person, came) is None
+    assert reminders.replied_send(db, person, CHAT, REMINDER, at(21, 10)) is None
