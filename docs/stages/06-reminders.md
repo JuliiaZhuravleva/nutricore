@@ -59,12 +59,14 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
     ```
     ```
     🔔 <b>Еда за сегодня</b>
-    Могу больше не напоминать. Если захочется — можно просто отправить еду в любой момент.
+    Дальше без напоминаний. Если дневник пригодится — можно просто отправить еду в любой момент.
     ```
     The owner chose these words; R10's «never names an absence» is waived for exactly these two
     strings. They hold no count of days. #1 first read «Прошлые дни восстанавливать не нужно.»;
     the owner asked on 2026-11-08 for «прошлые дни просто пропускаем» «или что-то такое»; the
     built «…можно оставить как есть.» keeps that sense without R10's banned «пропуск» or «нужно».
+    #2 first read «Могу больше не напоминать. Если захочется — …»; reworded 2026-11-08 into a
+    statement so that ✅ ОК is an acknowledgement.
   - A re-entry send is **neutral** for the ladder (like `ok`). It never opens a recall window
     (§3.2): an answer after it is an ordinary capture at the moment it arrives. R4 still holds: it
     deletes the previous untouched reminder, and the next send deletes it.
@@ -107,6 +109,23 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
   - New L1: gap 7 with the ladder at `off` → re-entry #1 goes. After ✖ → nothing.
   - New L2: a text «суп» 10 min after re-entry #1 → an exact-time record at its arrival, no
     day_only; the re-entry send stays neutral.
+
+## Owner's decisions (2026-11-08, from docs/researches/reminder-copy-caring-evidence.md)
+
+- Re-entry #1: «Можно начать с сегодняшнего. Прошлые дни можно оставить как есть.»
+- Re-entry #2 is a statement, so ✅ ОК reads «понятно», not «yes, stop»: «Дальше без
+  напоминаний. Если дневник пригодится — можно просто отправить еду в любой момент.»
+- The week card names no pause (stage-5 «✨ Снова с записями — после паузы» removed); the
+  finding is only a food new to the records.
+- Grams-or-time corrections keep not renewing the recall window (TD-252 closed).
+- **Next branch, after this one is released** (all four chosen; not built here):
+  1. rotate the evening body among 4–6 variants of the same meaning (research library 1–6);
+  2. a rare purpose line, about one evening in six, never two special evenings in a row;
+  3. the observation «this dish was in the records several times → add to ⭐?» (≥ 3 times on
+     ≥ 2 different days, not already in ⭐);
+  4. descriptive observations of time of day and variety: at most one a week, data thresholds
+     from the research table, worded about «the records there are», a switch in 🔔 settings to
+     turn them off. No causes, no moral words about food, no weight, no inferred «hard day».
 
 ## Built differently from the text below (R1a/R1b, recorded 2026-11-07)
 

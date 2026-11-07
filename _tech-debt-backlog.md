@@ -120,8 +120,8 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Created:** 2026-11-07
 
 - [ ] **TD-256**: Stage 6 acceptance copy questions for the owner:
-  - Re-entry #2, «Могу больше не напоминать…», with [✅ ОК] [✖ Выключить] reads like an offer, so ОК looks like «yes, stop». Options: a statement, or no ✖ on #2.
-  - The week card's «✨ Снова с записями — после паузы» (stage-5 copy, week_card.py:29) points at the pause.
+  - ~~Re-entry #2 reads like an offer~~ resolved 2026-11-08: reworded into a statement.
+  - ~~The week card's «✨ Снова с записями — после паузы»~~ resolved 2026-11-08: removed.
   - The 🔔 sub-screen goes «rarer» only on the sweep after the 3rd unanswered evening, so for one day it still shows the daily line.
   - **Priority:** Low (owner's call)
   - **Source:** feat/meal-reminders (stage 6 persona acceptance)

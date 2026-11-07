@@ -238,16 +238,16 @@ def test_without_any_history_nothing_is_called_new(db):
     assert "✨" not in _week(db).text
 
 
-def test_coming_back_after_a_pause_is_the_finding(db):
+def test_coming_back_after_a_pause_is_not_named(db):
+    """The owner, 2026-11-08: the week card says nothing about a pause; a food new
+    to the records is still the finding."""
     _meal(db, _at(10), _item("овёс", "grain"))
     _meal(db, _at(26), _item("булгур", "grain"))
     screen = _week(db)
-    assert "✨ Снова с записями — после паузы" in screen.text
-    assert "Новое" not in screen.text  # one finding, not two
-    assert screen.picture["win"] == {
-        "kick": "После паузы",
-        "text": "Снова с записями",
-    }
+    assert "пауз" not in screen.text.lower()
+    assert "Снова" not in screen.text
+    assert "✨ Новое за 7 дней: булгур" in screen.text
+    assert screen.picture["win"]["text"].startswith("Булгур")
 
 
 def test_a_short_gap_is_not_a_pause(db):
