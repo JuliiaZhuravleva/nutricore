@@ -2161,6 +2161,9 @@ def _v_join(t, data: str, one: str, other: str, back: str) -> meal_card.Screen:
     if not meal_card.has_source(t.db, later):
         return meal_card._card(t, a, back)
     known, rev = _record_text(t.db, earlier, t.user), earlier.rev
+    own = _line_of(t.db, earlier.id)
+    flipped = own is not None and own.message_id == t.message_id
+    absorbed = _line_of(t.db, later.id) if flipped else None
     change = meal_items.join(t.db, t.user.id, earlier.id, later.id)
     if change.status != meal_items.DONE:
         return meal_card._stale_meal(t)
@@ -2168,14 +2171,36 @@ def _v_join(t, data: str, one: str, other: str, back: str) -> meal_card.Screen:
     text = M8_JOINED.format(
         when=meal_card._when(earlier, t.zone), what=meal_card._what(t.db, earlier)
     )
+    split = _split_markup(part.sources[0].id, earlier.id)
+    if flipped:
+        return _joined_onto_own_line(t, earlier, own, absorbed, text, split)
     return meal_card.Screen(
         text,
-        _split_markup(part.sources[0].id, earlier.id),
+        split,
         meal_id=earlier.id,
         view="other",
         retouch=_elsewhere(
             _retouch_of(t.db, t.user, earlier, known, rev), t.message_id
         ),
+    )
+
+
+def _joined_onto_own_line(t, survivor, own, absorbed, text, split) -> meal_card.Screen:
+    """The tap was under the survivor's own line (a day_only meal sent first joins the
+    timed one sent after it). That line stays the survivor's, with both lists; the
+    absorbed meal's line says it was joined and holds ➖ Отделить, as it would had the
+    chip been under it. With no such line left, ➖ is on the card."""
+    view = own.view
+    retouch = None
+    if absorbed is not None:
+        map_message(t.db, absorbed.chat_id, absorbed.message_id, survivor.id, "other")
+        retouch = Retouch(absorbed.message_id, text, split)
+    return meal_card.Screen(
+        _record_text(t.db, survivor, t.user),
+        meal_card.line_markup(t.db, survivor),
+        meal_id=survivor.id,
+        view=view,
+        retouch=retouch,
     )
 
 

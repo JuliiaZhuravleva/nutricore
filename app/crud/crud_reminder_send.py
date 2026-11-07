@@ -131,6 +131,15 @@ class CRUDReminderSend:
         )
         return db.scalars(stmt).first()
 
+    def has_later(self, db: Session, user_id: int, after_id: int) -> bool:
+        """Whether a send newer than ``after_id`` reached the chat (has a message)."""
+        stmt = select(ReminderSend.id).where(
+            ReminderSend.user_id == user_id,
+            ReminderSend.id > after_id,
+            ReminderSend.message_id.is_not(None),
+        )
+        return db.scalar(stmt.limit(1)) is not None
+
     def newest_first(
         self,
         db: Session,

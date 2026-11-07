@@ -357,18 +357,14 @@ def test_yesterday_after_not_remembered_moves_the_day_and_invents_no_clock(db, o
     assert meal.time_precision == "day_only"
 
 
-def test_the_chip_on_a_meal_already_yesterday_says_no_new_day(db, owner):
+def test_an_exact_meal_already_yesterday_has_no_yesterday_chip(db, owner):
+    """Review finding: on an exact meal already on yesterday «Вчера» said the day
+    changes, and all its tap did was make the clock approximate. Control: a meal of
+    today keeps the chip, it moves the day."""
     meal, _item = _one(db, owner, meal_time=datetime(2026, 10, 30, 9, 20, tzinfo=UTC))
-    screen = _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "Вчера, 30 окт"))
-    assert screen.text.startswith("<i>✓ Время примерное: ≈ 13:20</i>\n\n")
-    assert "в этом дне" not in screen.text
-
-
-def test_an_exact_meal_already_yesterday_keeps_its_yesterday_chip(db, owner):
-    """The control of the no-op rule: on an exact meal the chip still makes it
-    approximate, so it is drawn; on a meal of today it moves the day."""
-    meal, _item = _one(db, owner, meal_time=datetime(2026, 10, 30, 9, 20, tzinfo=UTC))
-    assert "Вчера, 30 окт" in _rows(_sat(db, f"ml:t:{meal.id}:t"))[0]
+    assert _rows(_sat(db, f"ml:t:{meal.id}:t"))[0] == ["−15 мин", "−1 ч"]
+    db.refresh(meal)
+    assert meal.time_precision == "exact"
     today, _item = _one(db, owner)
     assert "Вчера, 30 окт" in _rows(_sat(db, f"ml:t:{today.id}:t"))[0]
 

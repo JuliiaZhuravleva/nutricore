@@ -72,6 +72,17 @@ CITIES = (
     ("Новосибирск", "Asia/Novosibirsk"),
 )
 _CITY = {zone: city for city, zone in CITIES}
+# After «по времени»: the genitive. Тбилиси and Баку do not change.
+_CITY_OF = {
+    "Asia/Yerevan": "Еревана",
+    "Europe/Moscow": "Москвы",
+    "Europe/Istanbul": "Стамбула",
+    "Europe/Kyiv": "Киева",
+    "Europe/Minsk": "Минска",
+    "Europe/Berlin": "Берлина",
+    "Europe/London": "Лондона",
+    "Asia/Novosibirsk": "Новосибирска",
+}
 # Whole-hour offsets UTC−12 … UTC+14. The Etc names count the other way round:
 # Etc/GMT-4 is UTC+4.
 OFFSETS = tuple(
@@ -134,6 +145,13 @@ def zone_label(name: str, now: datetime) -> str:
     if name in _OFFSET_ZONES:
         return offset
     return f"{html.escape(_CITY.get(name, name))} ({offset})"
+
+
+def zone_label_of(name: str, now: datetime) -> str:
+    """What follows «по времени»: «Москвы (UTC+3)», «Тбилиси (UTC+4)», «UTC+4»."""
+    if name in _CITY_OF:
+        return f"{_CITY_OF[name]} ({_offset(name, now)})"
+    return zone_label(name, now)
 
 
 def _btn(text: str, data: str) -> InlineKeyboardButton:

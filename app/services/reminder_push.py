@@ -55,7 +55,8 @@ async def _close_previous(
     left at an earlier send, the second delete only fails, as a retried claim's
     does, and that is harmless. One a tap made another screen (✖'s, ⭐ Избранное,
     the zone picker) is that screen now, and stays as it is. One too old to delete
-    keeps only its dated title, so it never reads as today's."""
+    keeps only its dated title, so it never reads as today's; one that holds a ⭐
+    record keeps its text and its ✓ lines, and only loses its buttons."""
     previous = crud_reminder_send.previous(db, send.user_id, send.id)
     if previous is None:
         return

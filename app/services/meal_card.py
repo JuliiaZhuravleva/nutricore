@@ -1245,11 +1245,13 @@ def _short_when(meal: Meal, zone) -> str:
     return f"{stats_screen.day_title(day)}, {_clock(meal, zone)}"
 
 
-def join_button(db, earlier: Meal, later: Meal, back: str) -> InlineKeyboardButton:
-    zone = user_zone(db.get(User, earlier.user_id))
+def join_button(db, other: Meal, meal: Meal, back: str) -> InlineKeyboardButton:
+    """Under ``meal``'s message: it names the OTHER meal, whichever of the two survives
+    (``in_order`` says that at the tap)."""
+    zone = user_zone(db.get(User, other.user_id))
     return _button(
-        f"🔗 Объединить с {_short_when(earlier, zone)}",
-        f"ml:j:{earlier.id}:{later.id}:{back}",
+        f"🔗 Объединить с {_short_when(other, zone)}",
+        f"ml:j:{other.id}:{meal.id}:{back}",
     )
 
 
@@ -1275,9 +1277,8 @@ def join_row(db, meal: Meal) -> Optional[list]:
         return None
     if abs(_sent_moment(meal) - _sent_moment(previous)) >= JOIN_ROW_WINDOW:
         return None
-    zone = user_zone(db.get(User, meal.user_id))
-    earlier, later = in_order(previous, meal, zone)
-    return [join_button(db, earlier, later, "r")]
+    # The chip names the meal it is not under, even when this line's meal survives.
+    return [join_button(db, previous, meal, "r")]
 
 
 def join_candidates(db, meal: Meal) -> list:
@@ -1941,7 +1942,7 @@ def _time_screen(
     )
     undo_row = [_undo_button(undo, back)] if undo else []
     # A meal already where «Вчера» would put it gets none: the tap would change nothing.
-    there = moment.date() == day and meal.time_precision in (DAY_ONLY, APPROX)
+    there = moment.date() == day
     if meal.time_precision == DAY_ONLY:
         # No clock to carry over: the day moves, and it still claims no time (N5c).
         yesterday = _time_chip(meal, label, _noon(day, zone), "y", back)

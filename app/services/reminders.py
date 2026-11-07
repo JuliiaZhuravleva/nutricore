@@ -167,7 +167,7 @@ _NOTHING = re.compile(
     rf"(?:(?:нет|да|ну)[,.!…]?\s+(?={_SOFTLY}{_NIL}))?"
     + _SOFTLY
     + rf"(?:{_NIL}|не\s+ел[аио]?(?:\s+{_NIL})?|не\s+было)"
-    r"(?:\s+не\s+ел[аио]?|\s+не\s+было)?"
+    r"(?:(?:\s+(?:сегодня|больше))*(?:\s+не\s+ел[аио]?|\s+не\s+было))?"
     r"(?:\s+(?:сегодня|больше))*[.!…]*"
     r"(?:,?\s*спасибо)?[.!…]*"
 )
@@ -693,12 +693,12 @@ def reminder_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
     zone = settings_screen.user_zone(user)
     picks = pick_favorites(db, user, send.local_day, zone, before=send.sent_at)
     first = is_first(cfg, send)
-    lines = [TITLE]
+    lines = [_title(send, now.astimezone(zone).date())]
     if first:
         lines.append(_FIRST)
         if picks:
             lines.append(_FIRST_STARS)
-        label = settings_screen.zone_label(settings_screen.zone_name(user), now)
+        label = settings_screen.zone_label_of(settings_screen.zone_name(user), now)
         lines.append(_FOOTNOTE.format(slot=send.slot, zone=label, sound=_sound(cfg)))
     else:
         lines.append(_LATER_STARS if picks else _LATER)
@@ -712,6 +712,12 @@ def reminder_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
 def dated_title(send: ReminderSend) -> str:
     """What a reminder too old to delete keeps (R4): «🔔 Еда за пн 9 ноября»."""
     return f"🔔 <b>Еда за {stats_screen._card_title(send.local_day)}</b>"
+
+
+def _title(send: ReminderSend, today: date) -> str:
+    """«сегодня» only on its own day: a ⭐ under it logs onto ``local_day``, and a
+    zone picked across midnight, or a tap the next morning, is another day by then."""
+    return TITLE if send.local_day == today else dated_title(send)
 
 
 def _logs(db, user: User, send: ReminderSend) -> list[Meal]:
@@ -759,7 +765,7 @@ def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
     if accepted and not live:
         return accepted_view()
     today = now.astimezone(zone).date()
-    lines = [TITLE] + [_logged_line(meal, zone, today) for meal in logs]
+    lines = [_title(send, today)] + [_logged_line(meal, zone, today) for meal in logs]
     lines.append(ACCEPTED if accepted else _MORE)
     rows = []
     if live:
@@ -977,7 +983,7 @@ def settings_view(
     elif paused(cfg):
         lines.append(PAUSED_LINE)
     else:
-        label = settings_screen.zone_label(settings_screen.zone_name(user), now)
+        label = settings_screen.zone_label_of(settings_screen.zone_name(user), now)
         lines.append(f"Сейчас: {phrase(cfg)} по времени {label}.")
         if user is not None and stopped(db, user, now):
             lines.append(STOPPED_LINE)
@@ -1181,9 +1187,18 @@ def _back_home(t, send: ReminderSend) -> None:
         _write(t.db, t.user, moved=None)
 
 
+def _superseded(t, send: ReminderSend) -> bool:
+    """A newer reminder reached the chat: this one is no live reminder any more, and
+    drawing its chips again would make two (R4)."""
+    return crud_reminder_send.has_later(t.db, t.user.id, send.id)
+
+
 def _v_view(t, data: str, sid: str) -> Screen:
-    """⬅️ К напоминанию: the reminder as it was, its lines, chips and buttons."""
+    """⬅️ К напоминанию: the reminder as it was, its lines, chips and buttons. One a
+    newer reminder came after is only its dated title: that one is the live one."""
     send = _own_send(t, data, sid)
+    if _superseded(t, send):
+        return Screen(dated_title(send), None, view=meal_card.NO_MEAL)
     _back_home(t, send)
     return _redraw(t, send, None)
 
@@ -1233,8 +1248,13 @@ def _v_zone_pick(t, data: str, sid: str, name: str) -> Screen:
         return _unknown(t, data)
     settings_screen._save(t.db, t.telegram_id, **{settings_screen.TIMEZONE: name})
     t.db.refresh(t.user)
-    _back_home(t, send)
     notice = f"✓ Часовой пояс: {settings_screen.zone_label(name, t.now)}"
+    if _superseded(t, send):
+        text = f"<i>{notice}</i>\n\n{dated_title(send)}"
+        return Screen(text, None, view=meal_card.NO_MEAL)
+    _back_home(t, send)
+    # The view reads the zone from the refreshed user (t.zone too): its «сегодня»
+    # is the new zone's.
     screen = _redraw(t, send, None)
     return replace(screen, text=f"<i>{notice}</i>\n\n{screen.text}")
 

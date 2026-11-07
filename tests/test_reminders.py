@@ -1490,7 +1490,8 @@ def test_later_ones_are_short_with_no_zone_row(db):
     send, _screen = _first_view(db)
     _set(db, noted=send.id)
     later = _send(db, DAY + timedelta(days=1))
-    screen = reminders.reminder_view(db, _user(db), later, AT_21)
+    on_its_day = AT_21 + timedelta(days=1)
+    screen = reminders.reminder_view(db, _user(db), later, on_its_day)
     assert screen.text == f"{reminders.TITLE}\n{reminders._LATER}"
     assert "set:tz" not in _callbacks(screen.markup)
     assert len(screen.markup.inline_keyboard) == 1
@@ -2171,18 +2172,66 @@ def test_the_first_reminders_zone_button_comes_back_to_it(db):
     picks = [d for d in _callbacks(page.markup) if "zp" in d]
     assert picks and all(d.startswith(f"rm:zp:{send.id}:") for d in picks)
     assert _callbacks(page.markup)[-1] == f"rm:z:{send.id}"
-    # A pick saves the zone and comes back to the reminder with a notice.
+    # A pick saves the zone and comes back to the reminder with a notice. 21:10 in
+    # Tbilisi is 0:10 of Saturday in Novosibirsk: the reminder is Friday's now, as
+    # the day its ⭐ would log onto (review finding: it still said «сегодня»).
     screen = _tap(db, f"rm:zp:{send.id}:Asia/Novosibirsk", now)
     assert _user(db).settings[TIMEZONE] == "Asia/Novosibirsk"
     assert screen.text.startswith(
-        "<i>✓ Часовой пояс: Новосибирск (UTC+7)</i>\n\n🔔 <b>Еда за сегодня</b>"
+        "<i>✓ Часовой пояс: Новосибирск (UTC+7)</i>\n\n🔔 <b>Еда за пт 6 ноября</b>"
     )
+    assert "по времени Новосибирска (UTC+7)" in screen.text  # after «по времени»
     assert f"rm:z:{send.id}" not in _callbacks(screen.markup)  # chosen: not offered
     assert f"rm:k:{send.id}" in _callbacks(screen.markup)
     assert reminders.config(_user(db)).moved is None
     # A zone the picker never offered changes nothing.
     _tap(db, f"rm:zp:{send.id}:Mars/Base", now)
     assert _user(db).settings[TIMEZONE] == "Asia/Novosibirsk"
+
+
+@BACKENDS
+def test_a_zone_picked_on_the_same_day_keeps_today(db):
+    """The control of the dated title: Yerevan is still Friday at 21:10."""
+    _usual(db)
+    _run(db, _bot())
+    send = db.query(ReminderSend).one()
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:z:{send.id}", now)
+    screen = _tap(db, f"rm:zp:{send.id}:Asia/Yerevan", now)
+    assert screen.text.startswith(
+        "<i>✓ Часовой пояс: Ереван (UTC+4)</i>\n\n🔔 <b>Еда за сегодня</b>"
+    )
+    assert "по времени Еревана (UTC+4)" in screen.text
+    assert f"rm:k:{send.id}" in _callbacks(screen.markup)
+
+
+@BACKENDS
+def test_an_old_picker_after_a_newer_reminder_brings_back_no_chips(db):
+    """Review finding (R4): the first reminder left on its zone picker stays at the
+    next send; a pick on it later saved the zone and drew the old reminder again
+    with ⭐ chips and ✅ ОК beside the new one. Now: the notice and its dated title."""
+    _usual(db)
+    _fav(db, "Суп")
+    _run(db, _bot())  # Friday's, message 900
+    first = db.query(ReminderSend).one()
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:z:{first.id}", now)
+    saturday = DAY + timedelta(days=1)
+    _row(db, _utc(saturday, 13))
+    assert _run(db, _bot(message_id=901), _utc(saturday, 21, 5))["sent"] == 1
+    later = _utc(saturday, 21, 10)
+    screen = _tap(db, f"rm:zp:{first.id}:Asia/Yerevan", later)
+    assert _user(db).settings[TIMEZONE] == "Asia/Yerevan"  # the pick still counts
+    assert screen.text == (
+        "<i>✓ Часовой пояс: Ереван (UTC+4)</i>\n\n🔔 <b>Еда за пт 6 ноября</b>"
+    )
+    assert screen.markup is None and screen.view == meal_card.NO_MEAL
+    view = _tap(db, f"rm:v:{first.id}", later)
+    assert (view.text, view.markup) == ("🔔 <b>Еда за пт 6 ноября</b>", None)
+    # The control: the newest one still goes back to itself, chips and all.
+    newest = db.query(ReminderSend).order_by(ReminderSend.id.desc()).first()
+    again = _tap(db, f"rm:v:{newest.id}", later)
+    assert f"rm:k:{newest.id}" in _callbacks(again.markup)
 
 
 def _late_tap(db, send):

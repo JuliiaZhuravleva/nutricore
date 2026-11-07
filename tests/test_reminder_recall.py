@@ -8,6 +8,7 @@ paid call. The reminder went out on Friday 6 November at 21:00 in Tbilisi (UTC+4
 
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
@@ -17,18 +18,19 @@ import pytest
 from sqlalchemy import select
 
 from app.crud.crud_reminder_send import crud_reminder_send
-from app.models import Meal, MealSource
+from app.models import Meal, MealMessage, MealSource
 from app.models.reminder_send import ReminderSend
 from app.models.user import User
 from app.services import capture, favorites, meal_card, reminders, routines
 from app.services import telegram as tg
 from app.services import voice
-from tests.test_capture_join import _datas, _labels, tap
+from tests.test_capture_join import _datas, _labels, _only_source, tap
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     CHAT,
     OWNER,
     PHOTO,
     Session,
+    Wire,
     _item_names,
     _kb,
     _message,
@@ -741,21 +743,126 @@ def test_the_join_chip_under_a_day_only_meal_names_the_timed_one(
     assert _datas(line)[-1] == [f"ml:j:{pasta.id}:{soup.id}:r"]
 
 
+@pytest.fixture
+def own_ids(monkeypatch):
+    """Each fake Telegram numbers its messages from 5001: two lines sent through two
+    wires would be one message. Here they go on from one counter, as in a chat."""
+    counter = itertools.count()
+    original = Wire.__init__
+
+    def init(self):
+        original(self)
+        self.next_id = 5000 + 100 * next(counter)
+
+    monkeypatch.setattr(Wire, "__init__", init)
+
+
+def _line_id(db, meal: Meal) -> int:
+    db.expire_all()
+    return db.scalars(
+        select(MealMessage.message_id).where(
+            MealMessage.meal_id == meal.id, MealMessage.view == "line"
+        )
+    ).one()
+
+
+def _edits_by_id(wire) -> dict:
+    return {p["message_id"]: p for p in wire.edits()}
+
+
+def _said(db, meal: Meal) -> str:
+    """The meal's line as the bot words it now (the fake read names the same dishes)."""
+    db.expire_all()
+    meal = db.get(Meal, meal.id)
+    return capture._record_text(db, meal, db.get(User, meal.user_id))
+
+
+def _join_both_ways(db, monkeypatch, first: str, second: str):
+    """Two lines, the second with the chip; the chip is tapped on the second line."""
+    wires = arrive(monkeypatch, say(at(21, 3), first), say(at(21, 5), second))
+    one, two = _meals(db)
+    lines = {one.id: _line_id(db, one), two.id: _line_id(db, two)}
+    assert lines[one.id] != lines[two.id]
+    chip = wires[1].sent()[-1]
+    return one, two, lines, chip
+
+
 def test_a_join_of_a_day_only_meal_into_a_timed_one_keeps_the_clock(
-    db, evening, reader, monkeypatch
+    db, evening, reader, own_ids, monkeypatch
 ):
-    """Whichever way it is asked, and whichever came first: the timed one survives."""
-    soup_first, pasta_later = arrive(
-        monkeypatch, say(at(21, 5), "суп"), say(at(21, 10), "вечером паста с сыром")
+    """Review finding: «суп» (day_only) first, «паста» (≈ 20:00) second. The chip under
+    «паста» named «паста» itself; the tap left «суп»'s line stale and put the joined
+    words, and ➖ Отделить, on «паста»'s line, whose buttons then acted on «суп»."""
+    soup, pasta, lines, chip = _join_both_ways(
+        db, monkeypatch, "суп", "вечером паста с сыром"
     )
-    soup, pasta = _meals(db)
-    line = pasta_later.sent()[-1]
-    assert _labels(line)[-1] == ["🔗 Объединить с пт 6 ноя, ≈ 20:00"]
-    tap(f"ml:j:{soup.id}:{pasta.id}:r")
+    _is_day_only(soup)
+    assert (pasta.time_precision, _local(pasta).time()) == ("approx", time(20))
+    assert _labels(chip)[-1] == ["🔗 Объединить с пт 6 ноя, без времени"]
+    assert _datas(chip)[-1] == [f"ml:j:{soup.id}:{pasta.id}:r"]
+
+    alone = _said(db, pasta)
+    wire = tap(f"ml:j:{soup.id}:{pasta.id}:r", message_id=lines[pasta.id])
     db.expire_all()
     pasta, soup = db.get(Meal, pasta.id), db.get(Meal, soup.id)
     assert soup.merged_into_id == pasta.id and pasta.merged_into_id is None
     assert (pasta.time_precision, _local(pasta).time()) == ("approx", time(20))
+    edits = _edits_by_id(wire)
+    # «паста»'s line stays «паста»'s, with both lists and its own buttons
+    own = edits[lines[pasta.id]]
+    assert own["text"] == _said(db, pasta) != alone
+    assert own["text"].startswith("Записано на пт 6 ноября, ≈ 20:00: ")
+    assert f"ml:t:{pasta.id}:r" in str(_datas(own))
+    # «суп»'s line is no longer a record of its own: it says where it went
+    gone = edits[lines[soup.id]]
+    what = meal_card._what(db, pasta)
+    assert gone["text"] == f"Объединено с приёмом пт 6 ноября, ≈ 20:00: {what}."
+    split = _datas(gone)[1][0]
+    assert split == f"ml:z:{_only_source(db, soup.id).id}:r"
+    assert f"ml:t:{soup.id}" not in str(_datas(gone))
+
+    # ➖ Отделить on «суп»'s line gives both lines back
+    wire = tap(split, message_id=lines[soup.id])
+    db.expire_all()
+    pasta, soup = db.get(Meal, pasta.id), db.get(Meal, soup.id)
+    assert soup.merged_into_id is None and soup.deleted_at is None
+    _is_day_only(soup)
+    assert (pasta.time_precision, _local(pasta).time()) == ("approx", time(20))
+    edits = _edits_by_id(wire)
+    back = edits[lines[soup.id]]
+    assert back["text"].startswith("Отделено: "), back["text"]
+    assert back["text"].endswith("пт 6 ноября, без времени."), back["text"]
+    assert f"ml:d:{soup.id}:r" in str(_datas(back))
+    assert _labels(back)[0] == ["🔗 Объединить с пт 6 ноя, ≈ 20:00"]
+    assert edits[lines[pasta.id]]["text"] == alone
+
+
+def test_a_join_of_a_timed_meal_sent_first_still_lands_on_the_day_only_line(
+    db, evening, reader, own_ids, monkeypatch
+):
+    """The other order, as before: the chip is under «суп» and names «паста»; the
+    joined words and ➖ are on «суп»'s line, «паста»'s line is retouched."""
+    pasta, soup, lines, chip = _join_both_ways(
+        db, monkeypatch, "вечером паста с сыром", "суп"
+    )
+    assert _labels(chip)[-1] == ["🔗 Объединить с пт 6 ноя, ≈ 20:00"]
+    assert _datas(chip)[-1] == [f"ml:j:{pasta.id}:{soup.id}:r"]
+    alone = _said(db, pasta)
+    wire = tap(f"ml:j:{pasta.id}:{soup.id}:r", message_id=lines[soup.id])
+    db.expire_all()
+    pasta = db.get(Meal, pasta.id)
+    assert db.get(Meal, soup.id).merged_into_id == pasta.id
+    edits = _edits_by_id(wire)
+    what = meal_card._what(db, pasta)
+    assert edits[lines[soup.id]]["text"] == (
+        f"Объединено с приёмом пт 6 ноября, ≈ 20:00: {what}."
+    )
+    assert edits[lines[pasta.id]]["text"] == _said(db, pasta) != alone
+    split = _datas(edits[lines[soup.id]])[1][0]
+    wire = tap(split, message_id=lines[soup.id])
+    edits = _edits_by_id(wire)
+    assert edits[lines[soup.id]]["text"].startswith("Отделено: ")
+    assert edits[lines[pasta.id]]["text"] == alone
 
 
 def test_two_timed_meals_still_join_into_the_earlier(db, owner):
@@ -900,6 +1007,8 @@ NOTHING_TOO = [
     "нет ничего",
     "ничего больше",
     "больше ничего не было",
+    "ничего больше не было",  # review: the mirror forms of the two around them
+    "ничего сегодня не ела",
     "ничего не было",
     "ничо",
     "ничё",
@@ -914,6 +1023,7 @@ STILL_READ = [
     "не ела ничего кроме супа",
     "да, суп",
     "ничего, но потом суп",
+    "ничего больше не было кроме супа",
 ]
 STILL_NO = ["нет", "нет, не ел"]  # the silent «нет» of §3.2 (says_no)
 
