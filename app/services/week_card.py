@@ -1,7 +1,8 @@
 """What the week card says about the food (stage 5, slice E). Pure, no Telegram.
 
 Different plants by name (G5-R09), the days each food group was there, and at most one
-finding: coming back after a pause, else one food new to the records.
+finding: one food new to the records. A return after a pause is not named (the owner,
+2026-11-08: a pause is neither a success nor a failure).
 Only what was there is named, so two records read the same way as seven. Plants
 are counted from tagged foods only: a group ticked by hand has no name to count,
 and the number is a plain count with no target (the research behind «30» does not
@@ -15,18 +16,16 @@ from zoneinfo import ZoneInfo
 
 from app.models.meal import Meal
 from app.services import food_groups
-from app.services.day_card import local_time, short, tags
+from app.services.day_card import short, tags
 
 PLANT_GROUPS = frozenset({"legumes", "veg", "fruit", "grain", "nuts", "omega"})
 _OMEGA = "omega"
-PAUSE_DAYS = 7
 _ROW = 2  # groups on one line of the text
 _FINDING_NAME_MAX = 20  # longer, and the words after it no longer fit on the card
 _SHORT_WORDS = {"anchor": "опора", "nuts": "орехи"}  # the rest use their own word
 NO_NAMES = "В записях пока нет названий еды"
 FOODS_TITLE = "Что было"
 _FOODS_NAMED = 4  # past this the rest are a count, as on the day card
-BACK_LINE = "✨ Снова с записями — после паузы"
 
 
 @dataclass(frozen=True)
@@ -34,7 +33,6 @@ class WeekFacts:
     plants: int = 0
     groups: tuple = ()  # (key, days), in the order of ``food_groups.GROUPS``
     new_food: Optional[str] = None  # as first written
-    back: bool = False  # the records start again after a pause
 
 
 def _key(name: str) -> str:
@@ -107,17 +105,8 @@ def _known_names(meals: list) -> set:
     return known
 
 
-def _came_back(logged: list, earlier: list, zone: ZoneInfo) -> bool:
-    moments = [m.meal_time for m in earlier if m.meal_time]
-    if not logged or not moments:
-        return False
-    last = local_time(max(moments), zone).date()
-    return (logged[0] - last).days >= PAUSE_DAYS
-
-
 def facts(days: list, earlier: list, zone: ZoneInfo) -> WeekFacts:
     """``days``: (date, meals), oldest first; ``earlier``: the meals before them."""
-    logged = [day for day, meals in days if meals]
     plants, new_food = {}, None
     known = _known_names(earlier)
     group_days = {key: set() for key in food_groups.GROUPS}
@@ -130,12 +119,10 @@ def facts(days: list, earlier: list, zone: ZoneInfo) -> WeekFacts:
                 plants.setdefault(_key(name), name)
                 if new_food is None and known and _key(name) not in known:
                     new_food = name
-    back = _came_back(logged, earlier, zone)
     return WeekFacts(
         plants=len(plants),
         groups=tuple((key, len(found)) for key, found in group_days.items() if found),
-        new_food=None if back else new_food,
-        back=back,
+        new_food=new_food,
     )
 
 
@@ -201,8 +188,6 @@ def lines(week: WeekFacts) -> list:
 
 
 def finding_line(week: WeekFacts, new_label: str, escape: Callable) -> Optional[str]:
-    if week.back:
-        return BACK_LINE
     if week.new_food:
         return f"✨ {new_label}: {escape(short(week.new_food))}"
     return None
@@ -210,8 +195,6 @@ def finding_line(week: WeekFacts, new_label: str, escape: Callable) -> Optional[
 
 def finding_block(week: WeekFacts, new_label: str) -> Optional[dict]:
     """The same finding on the picture."""
-    if week.back:
-        return {"kick": "После паузы", "text": "Снова с записями"}
     if week.new_food:
         name = short(week.new_food)
         text = f"{name[:1].upper()}{name[1:]}"

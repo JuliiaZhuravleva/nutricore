@@ -149,8 +149,8 @@ so these stand until changed. Stories: [`05-gentle-review-stories.md`](05-gentle
 - Plants are counted by the names of tagged foods whose group the meal still confirms. A group ticked by hand has no name
   and adds no plant. Names match after case, «ё» and spaces are evened out, and nothing more: «гречка» and «гречневая
   каша» count as two. Merging them would take a dictionary or a paid call, and the number is a plain count with no target.
-- The finding is one at most: «Снова с записями» when 7 or more days without records came before the period's first
-  record, else the first plant food no earlier meal named. With no earlier meals nothing is «new». The 7 days are the
+- The finding is one at most: the first plant food no earlier meal named. (Until 2026-11-08 a return after 7 days
+  without records was named «Снова с записями»; the owner dropped it: a pause is neither a success nor a failure.) With no earlier meals nothing is «new». The 7 days are the
   project's choice. **Departs from the design:** «three steady mornings» is not built, since the card has no way to say
   it that is not a count of days.
 - Meals with no tags: «Записи есть, группы в них пока не отмечены», with the numbers still a tap away.
