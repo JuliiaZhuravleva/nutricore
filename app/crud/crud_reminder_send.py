@@ -88,6 +88,31 @@ class CRUDReminderSend:
         )
         return db.scalar(stmt)
 
+    def latest(
+        self, db: Session, user_id: int, *, kind: str, statuses: tuple[str, ...]
+    ) -> ReminderSend | None:
+        """The newest send of ``kind`` whose status is one of ``statuses``."""
+        stmt = (
+            select(ReminderSend)
+            .where(
+                ReminderSend.user_id == user_id,
+                ReminderSend.kind == kind,
+                ReminderSend.status.in_(statuses),
+            )
+            .order_by(ReminderSend.sent_at.desc(), ReminderSend.id.desc())
+            .limit(1)
+        )
+        return db.scalars(stmt).first()
+
+    def any_received(
+        self, db: Session, user_id: int, *, statuses: tuple[str, ...]
+    ) -> bool:
+        """Whether any send of any kind has one of ``statuses``."""
+        stmt = select(ReminderSend.id).where(
+            ReminderSend.user_id == user_id, ReminderSend.status.in_(statuses)
+        )
+        return db.scalar(stmt.limit(1)) is not None
+
     def previous(
         self, db: Session, user_id: int, before_id: int
     ) -> ReminderSend | None:

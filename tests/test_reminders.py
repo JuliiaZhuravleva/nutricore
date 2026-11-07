@@ -218,6 +218,7 @@ def _bot(**kw):
         ),
         delete_message=AsyncMock(side_effect=kw.get("delete_error")),
         edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(side_effect=kw.get("edit_error")),
     )
 
 
@@ -462,7 +463,8 @@ def test_rarer_counts_from_the_last_regular_send(db):
     for n in (9, 6, 3):  # sparse already: one every third evening
         _send(db, DAY - timedelta(days=n))
     assert _reason(db) is None  # DAY-3 + 3
-    _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
+    _reentry_send(db, DAY - timedelta(days=2), reminders.REENTRY_FIRST)
+    _row(db, _utc(DAY - timedelta(days=1), 10))  # the return was the day before
     assert _reason(db) is None  # the re-entry neither counts nor spaces
     _send(db, DAY - timedelta(days=2), answer="ok")  # neutral, yet a regular send
     assert _reason(db) == "rarer"
@@ -658,8 +660,20 @@ RE7 = reminders.Slot("21:00", reminders.REENTRY, None, reminders.REENTRY_FIRST)
 RE14 = reminders.Slot("21:00", reminders.REENTRY, None, reminders.REENTRY_SECOND)
 
 
-def _last_record(db, gap, day=DAY):
-    """The last meal row ``gap`` local days before ``day``."""
+def _got_one(db, before):
+    """A reminder answered with ✅ ОК weeks before ``before``: neutral for the
+    ladder, and the person has had one, so a re-entry may go (rule 12). None when
+    one is there already."""
+    if crud_reminder_send.any_received(db, 1, statuses=("sent", "maybe")):
+        return None
+    return _send(db, before - timedelta(days=40), answer="ok")
+
+
+def _last_record(db, gap, day=DAY, got_one=True):
+    """The last meal row ``gap`` local days before ``day``, after a reminder unless
+    ``got_one`` is False."""
+    if got_one:
+        _got_one(db, day - timedelta(days=gap))
     return _row(db, _utc(day - timedelta(days=gap), 10))
 
 
@@ -852,6 +866,7 @@ def test_rarer_is_dated_by_the_streak_not_by_a_later_reentry(db):
     for n in (5, 4, 3):
         _send(db, DAY - timedelta(days=n))
     _reentry_send(db, DAY - timedelta(days=2), reminders.REENTRY_FIRST)
+    _row(db, _utc(DAY - timedelta(days=1), 10))  # the return: the day before
     _usual(db)
     assert _reason(db) is None  # the third day after the last regular one
     quiet = reminders.config(_user(db)).quiet
@@ -878,6 +893,7 @@ def test_reentry_is_neutral_for_the_ladder(db):
     _usual(db)
     _send(db, DAY - timedelta(days=3))
     _reentry_send(db, DAY - timedelta(days=2), reminders.REENTRY_FIRST)
+    _row(db, _utc(DAY - timedelta(days=1), 10))  # the return: the day before
     _send(db, DAY - timedelta(days=1))
     assert _reason(db) is None  # two in a row, the re-entry stepped over
     reentry = db.query(ReminderSend).filter_by(kind=reminders.REENTRY).one()
@@ -1052,17 +1068,44 @@ def test_a_reminder_with_a_logged_dish_only_loses_its_buttons(db, then_nothing):
 
 
 @BACKENDS
-def test_too_old_to_delete_loses_its_buttons_and_a_failed_delete_too(db):
+def test_too_old_to_delete_keeps_a_dated_title_and_a_failed_delete_too(db):
+    """R4 (acceptance 2026-11-07): one Telegram no longer deletes keeps only its
+    title with its own day, no buttons, so it never reads as today's."""
     _send(db, DAY - timedelta(days=3))  # unanswered, three days old
     _usual(db)
     bot = _bot()
     _run(db, bot)
     bot.delete_message.assert_not_awaited()
-    bot.edit_message_reply_markup.assert_awaited_once()
+    bot.edit_message_text.assert_awaited_once_with(
+        chat_id=42,
+        message_id=501,
+        text="🔔 <b>Еда за вт 3 ноября</b>",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    bot.edit_message_reply_markup.assert_not_awaited()
     bot = _bot(message_id=902, delete_error=BadRequest("message can't be deleted"))
     _next_evening(db, bot)
     bot.delete_message.assert_awaited_once()
-    bot.edit_message_reply_markup.assert_awaited_once()
+    bot.edit_message_text.assert_awaited_once_with(
+        chat_id=42,
+        message_id=900,
+        text="🔔 <b>Еда за пт 6 ноября</b>",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+
+
+@BACKENDS
+def test_a_title_that_cannot_be_set_still_loses_the_buttons(db):
+    _send(db, DAY - timedelta(days=3))
+    _usual(db)
+    bot = _bot(edit_error=BadRequest("message can't be edited"))
+    _run(db, bot)
+    bot.edit_message_text.assert_awaited_once()
+    bot.edit_message_reply_markup.assert_awaited_once_with(
+        chat_id=42, message_id=501, reply_markup=None
+    )
 
 
 @BACKENDS
@@ -1087,9 +1130,13 @@ def test_a_message_behind_a_killed_claim_still_loses_its_buttons(db):
     _row(db, _utc(sunday, 10))
     bot = _bot(message_id=902)
     assert _run(db, bot, _utc(sunday, 21, 5))["sent"] == 1
-    # Exactly 48 h old: too old to delete, so only its buttons go.
-    bot.edit_message_reply_markup.assert_awaited_once_with(
-        chat_id=42, message_id=900, reply_markup=None
+    # Exactly 48 h old: too old to delete, so only its dated title stays.
+    bot.edit_message_text.assert_awaited_once_with(
+        chat_id=42,
+        message_id=900,
+        text="🔔 <b>Еда за пт 6 ноября</b>",
+        parse_mode="HTML",
+        reply_markup=None,
     )
 
 
@@ -1103,6 +1150,7 @@ def _counting_bot():
         send_message=AsyncMock(side_effect=send_message),
         delete_message=AsyncMock(),
         edit_message_reply_markup=AsyncMock(),
+        edit_message_text=AsyncMock(),
     )
 
 
@@ -1157,11 +1205,15 @@ def test_b2_a_hard_week_then_a_return_through_the_sweep(db):
     assert cfg.quiet == {"level": "sparse", "on": "2026-11-05"} and not cfg.fragile
     assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
     # Thursday's untouched one leaves at Monday's send: four days old, so Telegram
-    # no longer deletes it and only its buttons go (R4, §5.4's 48 h).
+    # no longer deletes it; it keeps only its dated title (R4, §5.4's 48 h).
     thursday = db.query(ReminderSend).filter_by(local_day=date(2026, 11, 5)).one()
     assert thursday.closed_at is not None
-    bot.edit_message_reply_markup.assert_awaited_with(
-        chat_id=42, message_id=thursday.message_id, reply_markup=None
+    bot.edit_message_text.assert_awaited_with(
+        chat_id=42,
+        message_id=thursday.message_id,
+        text="🔔 <b>Еда за чт 5 ноября</b>",
+        parse_mode="HTML",
+        reply_markup=None,
     )
 
 
@@ -1292,16 +1344,15 @@ def test_b4_logs_three_days_a_week_never_answers(db):
     assert not later or (later[0] - sixth).days > 3
 
 
-@pytest.mark.parametrize("gap, expected", [(20, [0]), (40, [])])
+@pytest.mark.parametrize("gap", [20, 40])
 @BACKENDS
-def test_c2_long_gone_at_launch(db, gap, expected):
-    """§9 C2 (D6): last record 20 days ago → re-entry #2 only at launch, nothing
-    after; 40 days → nothing. A new record makes rule 4 pass again."""
-    _last_record(db, gap)
+def test_c2_long_gone_at_launch(db, gap):
+    """§9 C2, rule 12 (acceptance 2026-11-07): at launch nobody has had a reminder,
+    and a re-entry is never the first message, so 20 days ago gets nothing, as 40
+    does. A new record makes rule 4 pass again, and no re-entry holds that day."""
+    _last_record(db, gap, got_one=False)
     bot = _counting_bot()
-    sent_on = _sweep(db, bot, _span(DAY, DAY + timedelta(days=20)))
-    assert sent_on == [DAY + timedelta(days=n) for n in expected]
-    assert _texts(bot) == ([REENTRY_2] if expected else [])
+    assert _sweep(db, bot, _span(DAY, DAY + timedelta(days=20))) == []
     back = DAY + timedelta(days=21)
     _row(db, _utc(back, 10))
     assert _sweep(db, bot, [back]) == [back]
@@ -1318,7 +1369,7 @@ def test_l1_reentry_goes_while_paused_but_not_after_x(db):
     bot = _counting_bot()
     assert _sweep(db, bot, [DAY]) == [DAY]
     assert _texts(bot) == [REENTRY_1]
-    send = db.query(ReminderSend).one()
+    send = db.query(ReminderSend).filter_by(kind=reminders.REENTRY).one()
     assert (send.kind, send.slot, send.status) == (reminders.REENTRY, "re7", "sent")
     _tap(db, f"rm:x:{send.id}", _utc(DAY, 21, 30))
     assert reminders.config(_user(db)).mode == "off"
@@ -1346,10 +1397,13 @@ def test_reentry_through_the_sweep(db):
     assert kw["disable_notification"] is True
     assert reminders.config(_user(db)).noted is None
     bot.delete_message.assert_awaited_once_with(42, old.message_id)  # R4
-    # And the next send deletes the re-entry.
+    # The day of the return has no reminder (rule 11); the next send deletes the
+    # re-entry.
     _row(db, _utc(DAY + timedelta(days=1), 10))
     bot = _bot(message_id=902)
-    assert _run(db, bot, _utc(DAY + timedelta(days=1), 21, 5))["sent"] == 1
+    assert _run(db, bot, _utc(DAY + timedelta(days=1), 21, 5))["sent"] == 0
+    _setting(db, WEEK_PUSH, False)  # Sunday: no summary in the way
+    assert _run(db, bot, _utc(DAY + timedelta(days=2), 21, 1))["sent"] == 1
     bot.delete_message.assert_awaited_once_with(42, 901)
 
 
@@ -1415,14 +1469,15 @@ def test_the_first_names_the_zone_once_and_offers_it(db):
     assert "в 21:00 по времени Тбилиси (UTC+4), без звука" in screen.text
     assert "⭐" not in screen.text  # no ⭐ saved: no word of them
     assert screen.markup.inline_keyboard[-1][0].text == "🕐 Часовой пояс"
-    assert screen.markup.inline_keyboard[-1][0].callback_data == "set:tz"
+    # Its own verb: the picker comes back to this reminder, not to ⚙️.
+    assert screen.markup.inline_keyboard[-1][0].callback_data == f"rm:z:{send.id}"
     assert _callbacks(screen.markup)[:2] == [f"rm:k:{send.id}", f"rm:x:{send.id}"]
     assert screen.view == meal_card.NO_MEAL
     # A chosen zone: named, not offered.
     _setting(db, TIMEZONE, "Asia/Tbilisi")
     screen = reminders.reminder_view(db, _user(db), send, AT_21)
     assert "Тбилиси (UTC+4)" in screen.text
-    assert "set:tz" not in _callbacks(screen.markup)
+    assert f"rm:z:{send.id}" not in _callbacks(screen.markup)
 
 
 def test_the_first_says_with_sound_when_on(db):
@@ -1515,7 +1570,7 @@ def test_a_star_logs_on_the_reminders_day_without_a_clock(db):
     assert rows[0][0].text == "✅ ОК"
     assert _callbacks(screen.markup)[1:3] == [
         f"rm:u:{send.id}:{meal.id}",
-        f"ml:t:{meal.id}:r",
+        f"ml:t:{meal.id}:n{send.id}",  # its ⬅️ comes back to the reminder
     ]
     assert f"rm:f:{send.id}:{fav.id}" in _callbacks(screen.markup)  # chips stay
 
@@ -1570,7 +1625,7 @@ def test_undo_of_one_of_two_stars_keeps_the_answer(db):
     assert screen.markup.inline_keyboard[0][0].text == "✅ ОК"
     assert _callbacks(screen.markup)[1:3] == [
         f"rm:u:{send.id}:{first.id}",
-        f"ml:t:{first.id}:r",
+        f"ml:t:{first.id}:n{send.id}",
     ]
     assert screen.meal_id == first.id
     assert screen.view is None
@@ -1896,7 +1951,11 @@ def test_r10_words_never_said(db):
         _set(db, quiet={"level": level, "on": DAY.isoformat()})
         texts.append(_tap(db, "rm:o", AT_21).text)
     texts += [reminders._FIRST, reminders._LATER_STARS, reminders._LATER]
-    for new in (*reminders.REENTRY_TEXT.values(), reminders.SPARSE_LINE):
+    for new in (
+        *reminders.REENTRY_TEXT.values(),
+        reminders.SPARSE_LINE,
+        reminders.STOPPED_LINE,
+    ):
         assert new in texts  # the scan reads the new literals too
     assert len(texts) > 20  # the scan did read the module
     assert _banned(texts) == []
@@ -1947,8 +2006,8 @@ def test_the_explanation_holds_the_new_sentences():
     assert topic.how.endswith(
         "Если напоминания подряд остаются без ответа, они приходят реже, а потом "
         "перестают и возвращаются после перерыва в записях или кнопкой в настройках. "
-        "Если записей долго нет, придут одно-два коротких сообщения о том, что можно "
-        "начать с любого дня, и дальше бот молчит, пока не придёт еда."
+        "Если записей долго нет, придут одно-два коротких сообщения, и дальше бот "
+        "молчит, пока не придёт еда."
     )
     assert "Если три" not in topic.how
 
@@ -1956,11 +2015,13 @@ def test_the_explanation_holds_the_new_sentences():
 def test_the_sub_screen_says_rarer_or_paused(db):
     _set(db, quiet={"level": "sparse", "on": DAY.isoformat()})
     text = _tap(db, "rm:o", AT_21).text
+    # Rarer: the time and the zone are still said, why it is rarer under them.
     assert (
+        "Сейчас: вечером, в 21:00 по времени Тбилиси (UTC+4).\n"
         "Сейчас приходят реже, потому что остаются без ответа. Как раньше — кнопкой "
         "✓ 🕘 Вечером." in text
     )
-    assert "Сейчас:" not in text and "не приходят" not in text
+    assert "не приходят" not in text
     _set(db, quiet={"level": "off", "on": DAY.isoformat()})
     text = _tap(db, "rm:o", AT_21).text
     assert "Сейчас не приходят. Включить — кнопкой ✓ 🕘 Вечером." in text
@@ -2043,3 +2104,204 @@ def test_task_builds_a_bot_and_sends_when_someone_is_due(db, monkeypatch):
     assert len(built) == 1
     assert counts["sent"] == 1
     bot.send_message.assert_awaited_once()
+
+
+# --- persona acceptance, part 2 (2026-11-07) -------------------------------------
+
+
+@BACKENDS
+def test_time_from_a_reminder_comes_back_to_the_reminder(db):
+    """🕐 from a ⭐'s result: ⬅️ is the reminder as it was, not a plain meal line,
+    and a chip under it still records."""
+    send, fav = _sent(db)
+    now = AT_21 + timedelta(minutes=5)
+    chip = _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    (meal,) = _favorite_meals(db)
+    clock = meal_card.handle_callback(db, 42, f"ml:t:{meal.id}:n{send.id}", now=now)
+    assert clock.text.startswith("<b>🕐")
+    back = [(b.text, b.callback_data) for b in clock.markup.inline_keyboard[-1]]
+    assert back == [("⬅️ К напоминанию", f"rm:v:{send.id}")]
+    view = _tap(db, f"rm:v:{send.id}", now)
+    assert (view.text, _callbacks(view.markup)) == (chip.text, _callbacks(chip.markup))
+    assert (view.meal_id, view.view, view.toast) == (meal.id, None, None)
+    # A time set there and its undo keep the way back.
+    stamp = next(d for d in _callbacks(clock.markup) if d.startswith("ml:ts:"))
+    after = meal_card.handle_callback(db, 42, stamp, now=now)
+    assert _callbacks(after.markup)[-1] == f"rm:v:{send.id}"
+    undo = next(d for d in _callbacks(after.markup) if d.startswith("ml:u:"))
+    assert undo.endswith(f":n{send.id}")
+    undone = meal_card.handle_callback(db, 42, undo, now=now)
+    assert _callbacks(undone.markup)[-1] == f"rm:v:{send.id}"
+    # Back on the reminder, a chip records the next one.
+    view = _tap(db, f"rm:v:{send.id}", now)
+    assert "✅ ОК" in _labels(view.markup)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now + timedelta(seconds=10))
+    assert len(_favorite_meals(db)) == 2
+
+
+def test_back_to_a_reminder_is_only_for_its_owner(db):
+    send, _fav_ = _sent(db)
+    db.add(User(id=2, telegram_id=43, settings={}))
+    db.commit()
+    screen = reminders.handle_callback(db, 43, f"rm:v:{send.id}", now=AT_21)
+    assert "🔔" not in screen.text  # the stranger's own day, not the reminder
+
+
+@BACKENDS
+def test_the_first_reminders_zone_button_comes_back_to_it(db):
+    _usual(db)
+    _run(db, _bot())
+    send = db.query(ReminderSend).one()
+    now = AT_21 + timedelta(minutes=5)
+    picker = _tap(db, f"rm:z:{send.id}", now)
+    db.refresh(send)
+    # Neutral and closed, as ✅ ОК; the picker in the message's place.
+    assert (send.answer, send.closed_at is not None) == ("ok", True)
+    assert picker.view == meal_card.NO_MEAL
+    assert picker.text.startswith("<b>🕐 Часовой пояс</b>")
+    data = _callbacks(picker.markup)
+    assert f"rm:zp:{send.id}:Asia/Novosibirsk" in data
+    assert not any(d.startswith("set:") for d in data)
+    assert all(len(d.encode()) <= 64 for d in data)
+    back = [(b.text, b.callback_data) for b in picker.markup.inline_keyboard[-1]]
+    assert back == [("⬅️ К напоминанию", f"rm:v:{send.id}")]
+    assert reminders.config(_user(db)).moved == send.id
+    # UTC±: its own picks, and back to this picker.
+    page = _tap(db, f"rm:zo:{send.id}:1", now)
+    picks = [d for d in _callbacks(page.markup) if "zp" in d]
+    assert picks and all(d.startswith(f"rm:zp:{send.id}:") for d in picks)
+    assert _callbacks(page.markup)[-1] == f"rm:z:{send.id}"
+    # A pick saves the zone and comes back to the reminder with a notice.
+    screen = _tap(db, f"rm:zp:{send.id}:Asia/Novosibirsk", now)
+    assert _user(db).settings[TIMEZONE] == "Asia/Novosibirsk"
+    assert screen.text.startswith(
+        "<i>✓ Часовой пояс: Новосибирск (UTC+7)</i>\n\n🔔 <b>Еда за сегодня</b>"
+    )
+    assert f"rm:z:{send.id}" not in _callbacks(screen.markup)  # chosen: not offered
+    assert f"rm:k:{send.id}" in _callbacks(screen.markup)
+    assert reminders.config(_user(db)).moved is None
+    # A zone the picker never offered changes nothing.
+    _tap(db, f"rm:zp:{send.id}:Mars/Base", now)
+    assert _user(db).settings[TIMEZONE] == "Asia/Novosibirsk"
+
+
+def _late_tap(db, send):
+    fav = _fav(db, "Суп")
+    _tap(db, f"rm:f:{send.id}:{fav.id}", _utc(DAY + timedelta(days=3), 12))
+
+
+@pytest.mark.parametrize(
+    "how, deleted",
+    [
+        ("untouched", True),
+        ("x", False),  # ✖'s screen, and maybe ⚙️'s after it
+        ("late chip", False),  # ⭐ Избранное
+        ("zone", False),  # the zone picker
+        ("zone picked", True),  # the reminder again
+        ("time and back", True),  # the reminder again
+    ],
+)
+@BACKENDS
+def test_a_message_made_another_screen_stays_at_the_next_send(db, how, deleted):
+    """R4 (acceptance 2026-11-07): the next send leaves a message that is another
+    screen now as it is, and still deletes one that is the reminder."""
+    _usual(db)
+    _run(db, _bot())  # Friday's, message 900
+    send = db.query(ReminderSend).one()
+    now = AT_21 + timedelta(minutes=5)
+    if how == "x":
+        _tap(db, f"rm:x:{send.id}", now)
+        _tap(db, "rm:m:evening", now)  # on again in ⚙️, from the same message
+    elif how == "late chip":
+        _late_tap(db, send)
+    elif how.startswith("zone"):
+        _tap(db, f"rm:z:{send.id}", now)
+        if how == "zone picked":
+            _tap(db, f"rm:zp:{send.id}:Asia/Tbilisi", now)
+    elif how == "time and back":
+        _tap(db, f"rm:v:{send.id}", now)
+    day = DAY + timedelta(days=3) if how == "late chip" else DAY + timedelta(days=1)
+    _row(db, _utc(day, 13))
+    bot = _bot(message_id=901)
+    assert _run(db, bot, _utc(day, 21, 5))["sent"] == 1
+    if deleted:
+        assert bot.delete_message.await_count + bot.edit_message_text.await_count == 1
+    else:
+        bot.delete_message.assert_not_awaited()
+        bot.edit_message_text.assert_not_awaited()
+        bot.edit_message_reply_markup.assert_not_awaited()
+
+
+@BACKENDS
+def test_no_reminder_on_the_day_of_the_return_after_a_reentry(db):
+    """Rule 11 (acceptance 2026-11-07): the first record after a re-entry holds
+    that evening's reminder; the usual rules from the next day."""
+    _last_record(db, 8)
+    reentry = _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
+    _usual(db)  # the return, 10:00
+    assert _reason(db) == "back after a re-entry"
+    assert reminders.due(db, _user(db), AT_21) is None
+    assert _reason(db, now=_utc(DAY + timedelta(days=1), 21, 5)) is None
+    # A second record that day changes nothing; a re-entry that never reached the
+    # chat holds nothing.
+    _row(db, _utc(DAY, 14))
+    assert _reason(db) == "back after a re-entry"
+    reentry.status = "claimed"
+    db.commit()
+    assert _reason(db) is None
+
+
+@BACKENDS
+def test_a_return_without_a_reentry_gets_the_evening(db):
+    _last_record(db, 5)
+    _usual(db)
+    assert _reason(db) is None
+
+
+@BACKENDS
+def test_no_reentry_to_someone_who_never_got_a_reminder(db):
+    """Rule 12 (acceptance 2026-11-07): a re-entry is never the first message; a
+    claim that never reached the chat is not one received, any kind that did is."""
+    _last_record(db, 7, got_one=False)
+    _send(db, DAY - timedelta(days=60), status="claimed")
+    assert reminders.reentry_check(db, _user(db), AT_21) == (
+        None,
+        "never got a reminder",
+    )
+    _send(db, DAY - timedelta(days=61), slot="13:00", status="maybe")
+    assert reminders.reentry_check(db, _user(db), AT_21) == (RE7, None)
+
+
+@BACKENDS
+def test_the_sub_screen_says_when_they_have_stopped(db):
+    """Rule 13: past R3's week, and on the day of a return after a re-entry, the
+    time and the zone, then that none come until a record."""
+    stopped = (
+        "Сейчас: вечером, в 21:00 по времени Тбилиси (UTC+4).\n"
+        "Сейчас не приходят: придут на следующий день после любой записи."
+    )
+    _last_record(db, 8)
+    assert stopped in _tap(db, "rm:o", AT_21).text
+    _set(db, quiet={"level": "sparse", "on": DAY.isoformat()})
+    text = _tap(db, "rm:o", AT_21).text
+    assert stopped in text and reminders.SPARSE_LINE not in text
+    _set(db, quiet={"level": "off", "on": DAY.isoformat()})
+    text = _tap(db, "rm:o", AT_21).text
+    assert reminders.PAUSED_LINE in text and "Сейчас: вечером" not in text
+    _set(db)
+    _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
+    _usual(db)
+    assert stopped in _tap(db, "rm:o", AT_21).text
+    tomorrow = _tap(db, "rm:o", _utc(DAY + timedelta(days=1), 12)).text
+    assert "Сейчас: вечером" in tomorrow and "не приходят" not in tomorrow
+
+
+def test_the_sub_screen_names_stars_only_when_there_are_some(db):
+    about = (
+        "Не больше одного сообщения в день без звука: можно рассказать голосовым, "
+        "что было{}. Если были записи за три часа до него, оно не приходит."
+    )
+    assert about.format("") in _tap(db, "rm:o", AT_21).text
+    _fav(db, "Суп")
+    text = _tap(db, "rm:o", AT_21).text
+    assert about.format(", или нажать на блюдо из ⭐") in text

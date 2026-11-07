@@ -68,6 +68,10 @@ EXACT = "exact"
 # A card opened on the bot's line: its time screen goes back to the card, while the
 # line's own 🕐, whose data is also ``r``, goes back to the line.
 FROM_CARD = "c"
+# A reminder's 🕐 (``n`` + the send's id): its time screen goes back to the reminder.
+# Only the time screen takes it (``_BACK_TIME``); nothing else opens from a reminder.
+REMINDER_BACK = "n"
+REMINDER_BACK_LABEL = "⬅️ К напоминанию"
 GRAMS_MIN, GRAMS_MAX = 1.0, 5000.0
 NAMES_MAX = 300
 LINE_NAME_MAX = 80
@@ -1830,6 +1834,8 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
         return _unknown(t, data)
     if back == FROM_CARD and event.kind != TIME:
         back = "r"
+    if back.startswith(REMINDER_BACK) and event.kind != TIME:
+        back = "r"  # only the time screen knows the way back to a reminder
     if done is not None:
         # A second tap: the state is what the first left.
         if meal.deleted_at:
@@ -1858,6 +1864,8 @@ def _v_undo(t: _Tap, data: str, eid: str, back: str) -> Screen:
 def _time_back(meal: Meal, back: str) -> list:
     if back == "r":
         return [_button("⬅️ К ответу бота", f"ml:r:{meal.id}")]
+    if back.startswith(REMINDER_BACK):
+        return [_button(REMINDER_BACK_LABEL, f"rm:v:{back[1:]}")]
     return _to_card(meal.id, "r" if back == FROM_CARD else back)
 
 
@@ -2155,7 +2163,7 @@ def _v_day_add(t: _Tap, data: str, code: str, origin: str) -> Screen:
 
 _ID = r"(\d{1,18})"
 _BACK = r"(r|t|y|w|h\d{1,18})"
-_BACK_TIME = r"(r|c|t|y|w|h\d{1,18})"
+_BACK_TIME = r"(r|c|t|y|w|h\d{1,18}|n\d{1,12})"
 _VERBS: tuple = (
     (re.compile(rf"ml:r:{_ID}"), _v_line),
     (re.compile(rf"ml:o:{_ID}:{_BACK}"), _v_open),

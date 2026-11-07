@@ -69,6 +69,7 @@ CITIES = (
     ("Минск", "Europe/Minsk"),
     ("Берлин", "Europe/Berlin"),
     ("Лондон", "Europe/London"),
+    ("Новосибирск", "Asia/Novosibirsk"),
 )
 _CITY = {zone: city for city, zone in CITIES}
 # Whole-hour offsets UTC−12 … UTC+14. The Etc names count the other way round:
@@ -221,25 +222,54 @@ def _now_line(zone: str, now: datetime) -> str:
     return f"Сейчас: {zone_label(zone, now)}, там {there}."
 
 
-def zones_screen(zone: str, now: datetime) -> Screen:
+def _balanced(buttons: list, most: int = 3) -> list:
+    """Rows of at most ``most``, as even as they go: ten are 3, 3, 2, 2, so no
+    city is left alone on a row and none is cut to «…» on a phone."""
+    count = -(-len(buttons) // most)
+    rows, start = [], 0
+    for index in range(count):
+        size = len(buttons) // count + (index < len(buttons) % count)
+        rows.append(buttons[start : start + size])
+        start += size
+    return rows
+
+
+def known_zone(name: str) -> bool:
+    """A zone the picker offers: a city's or a whole-hour offset's."""
+    return name in _CITY or name in _OFFSET_ZONES
+
+
+def zones_screen(
+    zone: str,
+    now: datetime,
+    *,
+    pick: str = _PICK,
+    offsets: str = _OFFSETS,
+    back: list | None = None,
+) -> Screen:
+    """⚙️'s picker; a reminder opens the same one with its own data and way back."""
     lines = [
         "<b>🕐 Часовой пояс</b>",
         "",
         _now_line(zone, now),
-        "По нему 📊 Статистика делит дни, а ⚖️ Вес ставит даты.",
+        "По нему 📊 Статистика делит дни, ⚖️ Вес ставит даты, а 🔔 Напоминания "
+        "приходят по местному времени.",
     ]
     cities = [
-        _btn(("✓ " if name == zone else "") + city, _PICK + name)
+        _btn(("✓ " if name == zone else "") + city, pick + name)
         for city, name in CITIES
     ]
-    rows = [cities[i : i + 3] for i in range(0, len(cities), 3)]
-    rows.append([_btn("🌐 Другой: UTC±", f"{_OFFSETS}{_page_of(zone)}")])
-    rows.append([_btn("⬅️ Настройки", CALLBACK_PREFIX + "open")])
+    rows = _balanced(cities)
+    rows.append([_btn("🌐 Другой: UTC±", f"{offsets}{_page_of(zone)}")])
+    rows.append(back or [_btn("⬅️ Настройки", CALLBACK_PREFIX + "open")])
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
 def _pages() -> int:
     return -(-len(OFFSETS) // PAGE)
+
+
+pages = _pages  # the reminder's picker checks a page as this one does
 
 
 def _page_of(zone: str) -> int:
@@ -249,7 +279,15 @@ def _page_of(zone: str) -> int:
     return index // PAGE
 
 
-def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
+def offsets_screen(
+    zone: str,
+    now: datetime,
+    page: int,
+    *,
+    pick: str = _PICK,
+    offsets: str = _OFFSETS,
+    back: list | None = None,
+) -> Screen:
     lines = [
         "<b>🕐 Часовой пояс: UTC±</b>",
         "",
@@ -258,19 +296,19 @@ def offsets_screen(zone: str, now: datetime, page: int) -> Screen:
     ]
     chunk = OFFSETS[page * PAGE : (page + 1) * PAGE]
     buttons = [
-        _btn(("✓ " if name == zone else "") + _offset(name, now), _PICK + name)
+        _btn(("✓ " if name == zone else "") + _offset(name, now), pick + name)
         for _hours, name in chunk
     ]
     rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
     last = _pages() - 1
     rows.append(
         [
-            _btn("‹", f"{_OFFSETS}{max(page - 1, 0)}"),
-            _btn(f"{page + 1}/{last + 1}", f"{_OFFSETS}{page}"),
-            _btn("›", f"{_OFFSETS}{min(page + 1, last)}"),
+            _btn("‹", f"{offsets}{max(page - 1, 0)}"),
+            _btn(f"{page + 1}/{last + 1}", f"{offsets}{page}"),
+            _btn("›", f"{offsets}{min(page + 1, last)}"),
         ]
     )
-    rows.append([_btn("⬅️ Часовой пояс", ZONES_CALLBACK)])
+    rows.append(back or [_btn("⬅️ Часовой пояс", ZONES_CALLBACK)])
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 
 
@@ -369,7 +407,7 @@ def handle_callback(
         return zones_screen(zone, now)
     if data.startswith(_PICK):
         name = data[len(_PICK) :]
-        if name in _CITY or name in _OFFSET_ZONES:
+        if known_zone(name):
             _save(db, telegram_id, **{TIMEZONE: name})
             notice = f"✓ Часовой пояс: {zone_label(name, now)}"
             return open_view(db, telegram_id, notice, now)

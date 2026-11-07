@@ -389,7 +389,11 @@ def test_the_summary_says_where_to_turn_it_off_only_the_first_time(db):
     _meal(db, _at(19), _item("овёс", "grain"))
     first = st.summary_view(db, _user(db), MONDAY, SUNDAY, first=True)
     later = st.summary_view(db, _user(db), MONDAY, SUNDAY)
-    note = "Итог приходит по воскресеньям в 22:00 без звука. Выключить — ⚙️ Настройки."
+    # The toggle lives in 🔔: the note names the way there (acceptance 2026-11-07).
+    note = (
+        "Итог приходит по воскресеньям в 22:00 без звука. "
+        "Выключить — ⚙️ Настройки → 🔔 Напоминания."
+    )
     assert first.text.endswith(f"<i>{note}</i>")
     assert note not in later.text
 
@@ -462,7 +466,7 @@ def test_sunday_evening_sends_the_week_once_with_the_note_first_time(db):
     _bot, chat_id, screen = delivery.push.await_args.args
     assert chat_id == 42
     assert screen.text.startswith("<b>📊 Неделя, 19–25 октября</b>")
-    assert "Выключить — ⚙️ Настройки" in screen.text
+    assert "Выключить — ⚙️ Настройки → 🔔 Напоминания." in screen.text
     assert _user(db).settings[WEEK_PUSH_SENT] == "2026-10-19"
 
 

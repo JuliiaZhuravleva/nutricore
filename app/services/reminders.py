@@ -138,6 +138,8 @@ SPARSE_LINE = (
     "Сейчас приходят реже, потому что остаются без ответа. Как раньше — кнопкой "
     "✓ 🕘 Вечером."
 )
+# No record for longer than R3 allows, or the day of a return after a re-entry.
+STOPPED_LINE = "Сейчас не приходят: придут на следующий день после любой записи."
 _OFF_TITLE = "🔔 <b>Напоминания</b>"
 _TURNED_OFF = "✓ Напоминания выключены. Включить: ⚙️ Настройки → 🔔 Напоминания."
 LATE_NOTICE = "<i>Это напоминание за прошлые дни. Вот ⭐ Избранное.</i>"
@@ -196,6 +198,7 @@ class Config:
     fragile: bool = False
     count_from: datetime | None = None
     prev: dict | None = None
+    moved: int | None = None  # the send whose message a tap made another screen (R4)
 
 
 # --- the config -------------------------------------------------------------------
@@ -241,6 +244,7 @@ def config(user: User | None) -> Config:
         quiet = None
     noted = raw.get("noted")
     prev = raw.get("prev")
+    moved = raw.get("moved")
     return Config(
         mode=mode,
         evening=evening if evening in EVENING_TIMES else DEFAULT_EVENING,
@@ -252,6 +256,7 @@ def config(user: User | None) -> Config:
         fragile=raw.get("fragile") is True,
         count_from=_moment(raw.get("count_from")),
         prev=prev if isinstance(prev, dict) else None,
+        moved=moved if isinstance(moved, int) and not isinstance(moved, bool) else None,
     )
 
 
@@ -335,6 +340,8 @@ def skip_reason(db, user: User, slot: Slot, now: datetime) -> str | None:
     gap = _gap(db, user, local_day, zone)
     if gap is None or gap > STOPPED_AFTER_DAYS:
         return "no record for a week"
+    if back_after_reentry(db, user, local_day, zone):
+        return "back after a re-entry"  # not watched the same evening
     reason = ladder_reason(db, user, local_day, now)
     if reason is not None:
         return reason
@@ -363,6 +370,29 @@ def _gap(db, user: User, local_day: date, zone) -> int | None:
     if last is None:
         return None
     return (local_day - last.astimezone(zone).date()).days
+
+
+def back_after_reentry(db, user: User, local_day: date, zone) -> bool:
+    """``local_day`` is the day of the first record after the latest re-entry that
+    reached the chat: no regular reminder that evening, the usual rules from the
+    next one (acceptance 2026-11-07). The re-entry went out after the record before
+    that one, or it would not have gone."""
+    reentry = crud_reminder_send.latest(db, user.id, kind=REENTRY, statuses=_LIVE)
+    if reentry is None:
+        return False
+    first = crud_meal.first_sent_after(db, user.id, meal_items._utc(reentry.sent_at))
+    return first is not None and first.astimezone(zone).date() == local_day
+
+
+def stopped(db, user: User, now: datetime) -> bool:
+    """No regular reminder until a record: none for longer than R3 allows (while a
+    record was ever made), or today is the return after a re-entry."""
+    zone = settings_screen.user_zone(user)
+    local_day = now.astimezone(zone).date()
+    gap = _gap(db, user, local_day, zone)
+    if gap is not None and gap > STOPPED_AFTER_DAYS:
+        return True
+    return gap is not None and back_after_reentry(db, user, local_day, zone)
 
 
 def reentry_wanted(gap: int, held: bool) -> list[str]:
@@ -423,6 +453,9 @@ def reentry_check(db, user: User, now: datetime) -> tuple[Slot | None, str | Non
         return None, "may not receive"
     if not crud_meal.any_live(db, user.id):
         return None, "no record ever"
+    if not crud_reminder_send.any_received(db, user.id, statuses=_LIVE):
+        # Never the first message a person gets (acceptance 2026-11-07, C2).
+        return None, "never got a reminder"
     last = crud_meal.last_sent_at(db, user.id)
     gap = (local_day - last.astimezone(zone).date()).days
     held = held_by_sunday(user, cfg, local_day, zone)
@@ -672,14 +705,13 @@ def reminder_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
     rows = _chip_rows(send, picks)
     rows.append([_btn("✅ ОК", f"k:{send.id}"), _btn("✖ Выключить", f"x:{send.id}")])
     if first and not (user.settings or {}).get(settings_screen.TIMEZONE):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    ZONE_LABEL, callback_data=settings_screen.ZONES_CALLBACK
-                )
-            ]
-        )
+        rows.append([_btn(ZONE_LABEL, f"z:{send.id}")])  # its own: back here
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows), view=meal_card.NO_MEAL)
+
+
+def dated_title(send: ReminderSend) -> str:
+    """What a reminder too old to delete keeps (R4): «🔔 Еда за пн 9 ноября»."""
+    return f"🔔 <b>Еда за {stats_screen._card_title(send.local_day)}</b>"
 
 
 def _logs(db, user: User, send: ReminderSend) -> list[Meal]:
@@ -732,10 +764,13 @@ def tap_view(db, user: User, send: ReminderSend, now: datetime) -> Screen:
     rows = []
     if live:
         rows.append(ok_row())
+        back = f"{meal_card.REMINDER_BACK}{send.id}"  # ⬅️ К напоминанию
         rows.append(
             [
                 _btn("↩️ Отменить", f"u:{send.id}:{latest.id}"),
-                InlineKeyboardButton("🕐 Время", callback_data=f"ml:t:{latest.id}:r"),
+                InlineKeyboardButton(
+                    "🕐 Время", callback_data=f"ml:t:{latest.id}:{back}"
+                ),
             ]
         )
     if not accepted:
@@ -929,8 +964,10 @@ def accept_nothing(
 
 
 def settings_view(
-    user: User | None, now: datetime, notice: str | None = None
+    db, user: User | None, now: datetime, notice: str | None = None
 ) -> Screen:
+    """§4.2. Rarer or stopped, the time and the zone are still said, with why
+    under them; the pause says only how to end it."""
     cfg = config(user)
     week = settings_screen.week_push_on(user)
     lines = [f"<i>{notice}</i>", ""] if notice else []
@@ -939,15 +976,19 @@ def settings_view(
         lines.append("Сейчас: выключены.")
     elif paused(cfg):
         lines.append(PAUSED_LINE)
-    elif rarer(cfg):
-        lines.append(SPARSE_LINE)
     else:
         label = settings_screen.zone_label(settings_screen.zone_name(user), now)
         lines.append(f"Сейчас: {phrase(cfg)} по времени {label}.")
+        if user is not None and stopped(db, user, now):
+            lines.append(STOPPED_LINE)
+        elif rarer(cfg):
+            lines.append(SPARSE_LINE)
+    stars = user is not None and crud_favorite_meal.list_active(db, user.id)
     about = (
-        f"Одно сообщение в день {_sound(cfg)}: можно рассказать голосовым, что было, "
-        "или нажать на блюдо из ⭐. Если были записи за три часа до него, оно не "
-        "приходит."
+        f"Не больше одного сообщения в день {_sound(cfg)}: можно рассказать "
+        "голосовым, что было"
+        + (", или нажать на блюдо из ⭐" if stars else "")
+        + ". Если были записи за три часа до него, оно не приходит."
     )
     if week:
         about += " В воскресенье вместо него приходит итог недели."
@@ -1010,6 +1051,7 @@ def _v_fav(t, data: str, sid: str, fid: str) -> Screen:
         return _unknown(t, data)  # it never shows a ⭐ (D6)
     zone = t.zone
     if (t.now.astimezone(zone).date() - send.local_day).days > LATE_DAYS:
+        _moved(t, send)  # the message is ⭐ Избранное now: the next send leaves it
         return favorites.open_list(t.db, t.telegram_id, 0, LATE_NOTICE)
     if int(fid) > _INT_MAX:
         return _unknown(t, data)  # no row ever had it: malformed, not stale
@@ -1087,12 +1129,13 @@ def _v_off(t, data: str, sid: str) -> Screen:
     if send.closed_at is None:
         send.closed_at = t.now
     cfg = config(t.user)
+    # The message is ✖'s screen now, and may be ⚙️'s: the next send leaves it (R4).
     if cfg.mode != OFF:
         # Tied to this message: its ↩️ only puts back what this ✖ took away.
         prev = {"mode": cfg.mode, "evening": cfg.evening, "send": send.id}
-        _write(t.db, t.user, mode=OFF, prev=prev)
+        _write(t.db, t.user, mode=OFF, prev=prev, moved=send.id)
     else:
-        t.db.commit()  # the send's answer; the settings stay as they are
+        _write(t.db, t.user, moved=send.id)  # and the send's answer
     rows = [
         ok_row(),
         [_btn(meal_card.UNDO_LABEL, f"b:{send.id}"), _btn("⚙️ Настроить", "o")],
@@ -1126,8 +1169,78 @@ def _v_back(t, data: str, sid: str) -> Screen:
     return Screen(f"{_OFF_TITLE}\n{said}", None, view=meal_card.NO_MEAL)
 
 
+def _moved(t, send: ReminderSend) -> None:
+    """The message is another screen now: the next send leaves it as it is (R4)."""
+    if config(t.user).moved != send.id:
+        _write(t.db, t.user, moved=send.id)
+
+
+def _back_home(t, send: ReminderSend) -> None:
+    """The message is this reminder again: the next send deletes or strips it."""
+    if config(t.user).moved == send.id:
+        _write(t.db, t.user, moved=None)
+
+
+def _v_view(t, data: str, sid: str) -> Screen:
+    """⬅️ К напоминанию: the reminder as it was, its lines, chips and buttons."""
+    send = _own_send(t, data, sid)
+    _back_home(t, send)
+    return _redraw(t, send, None)
+
+
+def _zone_back(send: ReminderSend) -> list:
+    return [_btn(meal_card.REMINDER_BACK_LABEL, f"v:{send.id}")]
+
+
+def _v_zone(t, data: str, sid: str) -> Screen:
+    """The first reminder's 🕐 Часовой пояс: answered as neutral and closed, as
+    ✅ ОК, and the picker in its place; a pick comes back to the reminder."""
+    send = _own_send(t, data, sid)
+    if send.answer is None:
+        send.answer = "ok"
+    if send.closed_at is None:
+        send.closed_at = t.now
+    t.db.commit()
+    _moved(t, send)
+    screen = settings_screen.zones_screen(
+        settings_screen.zone_name(t.user),
+        t.now,
+        pick=f"{CALLBACK_PREFIX}zp:{send.id}:",
+        offsets=f"{CALLBACK_PREFIX}zo:{send.id}:",
+        back=_zone_back(send),
+    )
+    return replace(screen, view=meal_card.NO_MEAL)
+
+
+def _v_zone_page(t, data: str, sid: str, page: str) -> Screen:
+    send = _own_send(t, data, sid)
+    if int(page) >= settings_screen.pages():
+        return _unknown(t, data)
+    screen = settings_screen.offsets_screen(
+        settings_screen.zone_name(t.user),
+        t.now,
+        int(page),
+        pick=f"{CALLBACK_PREFIX}zp:{send.id}:",
+        offsets=f"{CALLBACK_PREFIX}zo:{send.id}:",
+        back=[_btn("⬅️ Часовой пояс", f"z:{send.id}")],
+    )
+    return replace(screen, view=meal_card.NO_MEAL)
+
+
+def _v_zone_pick(t, data: str, sid: str, name: str) -> Screen:
+    send = _own_send(t, data, sid)
+    if not settings_screen.known_zone(name):
+        return _unknown(t, data)
+    settings_screen._save(t.db, t.telegram_id, **{settings_screen.TIMEZONE: name})
+    t.db.refresh(t.user)
+    _back_home(t, send)
+    notice = f"✓ Часовой пояс: {settings_screen.zone_label(name, t.now)}"
+    screen = _redraw(t, send, None)
+    return replace(screen, text=f"<i>{notice}</i>\n\n{screen.text}")
+
+
 def _v_open(t, data: str) -> Screen:
-    return settings_view(t.user, t.now)
+    return settings_view(t.db, t.user, t.now)
 
 
 def _v_mode(t, data: str, mode: str) -> Screen:
@@ -1140,7 +1253,7 @@ def _v_mode(t, data: str, mode: str) -> Screen:
                 mode=OFF,
                 prev={"mode": cfg.mode, "evening": cfg.evening},
             )
-        return settings_view(t.user, t.now, "✓ Напоминания выключены")
+        return settings_view(t.db, t.user, t.now, "✓ Напоминания выключены")
     stamp = t.now.isoformat()
     values = {"mode": EVENING, "off_day": None, "prev": None}
     if cfg.mode == OFF or cfg.quiet is not None:
@@ -1152,7 +1265,7 @@ def _v_mode(t, data: str, mode: str) -> Screen:
         notice = "✓ Напоминания приходят"
     else:
         notice = f"✓ Напоминания: {phrase(config(t.user))}"
-    return settings_view(t.user, t.now, notice)
+    return settings_view(t.db, t.user, t.now, notice)
 
 
 def _v_evening(t, data: str, digits: str) -> Screen:
@@ -1164,7 +1277,7 @@ def _v_evening(t, data: str, digits: str) -> Screen:
         _write(t.db, t.user, evening=at)
     else:
         _write(t.db, t.user, evening=at, since=t.now.isoformat(), prev=None)
-    return settings_view(t.user, t.now, f"✓ Время: {at}")
+    return settings_view(t.db, t.user, t.now, f"✓ Время: {at}")
 
 
 def _v_week(t, data: str) -> Screen:
@@ -1172,13 +1285,13 @@ def _v_week(t, data: str) -> Screen:
     settings_screen._save(t.db, t.telegram_id, **{settings_screen.WEEK_PUSH: on})
     t.db.refresh(t.user)
     notice = "✓ Итог недели включён" if on else "✓ Итог недели выключен"
-    return settings_view(t.user, t.now, notice)
+    return settings_view(t.db, t.user, t.now, notice)
 
 
 def _v_sound(t, data: str) -> Screen:
     on = not config(t.user).sound
     _write(t.db, t.user, sound=on)
-    return settings_view(t.user, t.now, "✓ Со звуком" if on else "✓ Без звука")
+    return settings_view(t.db, t.user, t.now, "✓ Со звуком" if on else "✓ Без звука")
 
 
 _N = r"(\d{1,12})"
@@ -1188,6 +1301,10 @@ _VERBS = [
     (re.compile(rf"rm:k:{_N}"), _v_ok),
     (re.compile(rf"rm:x:{_N}"), _v_off),
     (re.compile(rf"rm:b:{_N}"), _v_back),
+    (re.compile(rf"rm:v:{_N}"), _v_view),
+    (re.compile(rf"rm:z:{_N}"), _v_zone),
+    (re.compile(rf"rm:zo:{_N}:(\d{{1,2}})"), _v_zone_page),
+    (re.compile(rf"rm:zp:{_N}:([A-Za-z0-9_+/-]{{1,40}})"), _v_zone_pick),
     (re.compile(r"rm:o"), _v_open),
     (re.compile(rf"rm:m:({OFF}|{EVENING})"), _v_mode),
     (re.compile(r"rm:e:(\d{4})"), _v_evening),

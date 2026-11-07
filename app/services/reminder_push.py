@@ -45,29 +45,49 @@ def users_due(db, now: datetime) -> list:
     return due
 
 
-async def _close_previous(db, bot, send: ReminderSend, now: datetime) -> None:
-    """At most one live reminder in the chat (R4). One closed by ✅ ОК or ✖ is
-    still in the chat, so it leaves too: ``closed_at`` says it was dismissed, not
-    that it is gone. The previous one is the latest that got a message, so a
-    message behind a maybe, a block or a killed claim is not left with its buttons;
-    when it already left at an earlier send, the second delete only fails, as a
-    retried claim's does, and that is harmless."""
+async def _close_previous(
+    db, bot, user: User, send: ReminderSend, now: datetime
+) -> None:
+    """At most one live reminder in the chat (R4). One closed by ✅ ОК is still in
+    the chat, so it leaves too: ``closed_at`` says it was dismissed, not that it is
+    gone. The previous one is the latest that got a message, so a message behind a
+    maybe, a block or a killed claim is not left with its buttons; when it already
+    left at an earlier send, the second delete only fails, as a retried claim's
+    does, and that is harmless. One a tap made another screen (✖'s, ⭐ Избранное,
+    the zone picker) is that screen now, and stays as it is. One too old to delete
+    keeps only its dated title, so it never reads as today's."""
     previous = crud_reminder_send.previous(db, send.user_id, send.id)
     if previous is None:
         return
     if previous.closed_at is None:
         previous.closed_at = now
         db.commit()
+    if previous.answer == "off" or reminders.config(user).moved == previous.id:
+        logger.info("reminders: previous one is another screen now, left as it is")
+        return
     sent_at = previous.sent_at
     if sent_at.tzinfo is None:
         sent_at = sent_at.replace(tzinfo=UTC)  # SQLite drops it
     young = now - sent_at < reminders.DELETE_WITHIN
+    star = reminders.holds_star(previous)
     try:
-        if not reminders.holds_star(previous) and young:
+        if not star and young:
             await bot.delete_message(previous.chat_id, previous.message_id)
             return
     except TelegramError as error:
         logger.info("reminders: previous one not deleted: %s", error)
+    if not star:
+        try:
+            await bot.edit_message_text(
+                chat_id=previous.chat_id,
+                message_id=previous.message_id,
+                text=reminders.dated_title(previous),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+            return
+        except TelegramError as error:
+            logger.info("reminders: previous one kept its text: %s", error)
     try:
         await bot.edit_message_reply_markup(
             chat_id=previous.chat_id, message_id=previous.message_id, reply_markup=None
@@ -92,7 +112,7 @@ async def _send(db, bot, user: User, slot: reminders.Slot, now: datetime) -> str
     if send is None:
         return "skipped"
     try:
-        await _close_previous(db, bot, send, now)
+        await _close_previous(db, bot, user, send, now)
         cfg = reminders.config(user)
         screen = reminders.reminder_view(db, user, send, now)
         message = await bot.send_message(

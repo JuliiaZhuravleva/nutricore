@@ -149,6 +149,20 @@ class CRUDMeal:
             moment = moment.replace(tzinfo=UTC)
         return moment
 
+    def first_sent_after(
+        self, db: Session, user_id: int, after: datetime
+    ) -> datetime | None:
+        """When the first meal row after ``after`` arrived, any row (pass ``after``
+        in UTC: SQLite compares the stored text); naive from SQLite means UTC."""
+        moment = db.scalar(
+            select(func.min(Meal.sent_at)).where(
+                Meal.user_id == user_id, Meal.sent_at > after
+            )
+        )
+        if moment is not None and moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return moment
+
     def record_days(
         self, db: Session, user_id: int, start: datetime, end: datetime, zone
     ) -> set[date]:
