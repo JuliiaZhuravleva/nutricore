@@ -62,7 +62,9 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
     Могу больше не напоминать. Если захочется — можно просто отправить еду в любой момент.
     ```
     The owner chose these words; R10's «never names an absence» is waived for exactly these two
-    strings (they hold no count of days and none of the banned words).
+    strings. They hold no count of days, but #1 holds «нужно» (in «не нужно»), which
+    tests/test_user_text.py bans: that one string is in its EXEMPT list (owner to confirm the
+    wording or give another).
   - A re-entry send is **neutral** for the ladder (like `ok`). It never opens a recall window
     (§3.2): an answer after it is an ordinary capture at the moment it arrives. R4 still holds: it
     deletes the previous untouched reminder, and the next send deletes it.
@@ -114,6 +116,11 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
 - R16 is wider than the text: «нет, ничего» and a trailing «, спасибо» also close a reminder.
   A «ничего» over a reminder that already holds a ⭐ log is answer `fav_none` (answered).
 - A voice R16 edits the voice's own line to «✓ Принято.» with no buttons.
+- Re-entry slot names are `re7` / `re14` (kind `reentry`), not `reentry7` / `reentry14`:
+  `reminder_sends.slot` is String(5) and Postgres enforces it.
+- Re-entry on gap 7 stops that day's regular reminder; R3 stays «older than 7 days». A #1 held
+  back by a Sunday week card on gap 13 goes on Monday (gap 14), and #2 the evening after.
+- Sparse counts its +3 from the last non-re-entry send of any outcome, ✅ ОК included.
 - Inside the window, a reply to a meal line that changes only grams or time does **not** renew the
   window (open question for the owner; TD-252).
 
