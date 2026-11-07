@@ -53,6 +53,7 @@ from app.services.close_row import ok_row
 from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
+from app.services.meal_card import M4T_READING
 from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
     AGAIN,
     DEAD_FILE,
@@ -471,16 +472,20 @@ def _record_text(
     note: Optional[str] = None,
     cost: Optional[str] = None,
     voice_hint: bool = False,
+    reading: bool = False,
 ) -> str:
+    """``reading``: a read of the words is out, and the line says so until it ends."""
     what = line_what(db, meal, user)
     if meal.is_draft:
-        return _draft_text(meal, user, what, note, cost, voice_hint)
+        text = _draft_text(meal, user, what, note, cost, voice_hint)
+        return f"{text}\n{M4T_READING}" if reading else text
     head = line_head(meal, user_zone(user), line_plain(meal))
     first = f"{head}: {what}." if what else f"{head}."
     if note:
         first += f" {note}"
     lines = (
         first,
+        M4T_READING if reading else None,
         M1B_HINT if hint else None,
         M4C_VOICE_HINT if voice_hint else None,
         cost,
@@ -1385,7 +1390,7 @@ def _v_again(t, data: str, mid: str, back: str) -> meal_card.Screen:
         other.view = "line"
     t.db.commit()
     if job.kind == TEXT:
-        first = _record_text(t.db, meal, t.user)
+        first = _record_text(t.db, meal, t.user, reading=True)
         markup = _first_markup(t.db, meal)
     else:
         first, markup = meal_card.pending_text(job.kind, meal), None
@@ -1426,7 +1431,7 @@ def _read_anew(t, meal: Meal) -> meal_card.Screen:
     meal.read_attempts = (meal.read_attempts or 0) + 1
     t.db.commit()
     if job.kind == TEXT:
-        first = _record_text(t.db, meal, t.user)
+        first = _record_text(t.db, meal, t.user, reading=True)
         markup = _first_markup(t.db, meal)
     else:
         first, markup = meal_card.pending_text(job.kind, meal), None
@@ -1543,7 +1548,7 @@ def _words_to_read(t, meal: Meal, text: str) -> meal_card.Screen:
     if row is not None:
         crud_inbound_message.mark_analyzed(t.db, row, {"meal": meal.id})
     note = M7_NOTE if meal.photos else None
-    shown = _record_text(t.db, meal, t.user, note=note)
+    shown = _record_text(t.db, meal, t.user, note=note, reading=True)
     return meal_card.Screen(
         shown,
         _first_markup(t.db, meal),
@@ -1922,7 +1927,7 @@ def born(
     hint = False
     if kind == TEXT:
         hint = _take_hint(db, user)
-        words = _record_text(db, meal, user, hint=hint, note=note)
+        words = _record_text(db, meal, user, hint=hint, note=note, reading=True)
         markup = _first_markup(db, meal, meal_card.join_row(db, meal))
         first = Line(words, markup, meal_id=meal.id)
     else:

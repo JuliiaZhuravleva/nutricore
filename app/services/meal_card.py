@@ -92,6 +92,9 @@ M4_PENDING = "Голосовое в дневнике, слушаю…"
 M1_DRAFT_PENDING = "Фото сохранено, читаю…"
 M2_DRAFT_PENDING = "{count} фото сохранено, читаю…"
 M4_DRAFT_PENDING = "Голосовое сохранено, слушаю…"
+# Typed words show at once, so the line says the numbers are still on their way: without
+# it a line in a read looks finished (owner 2026-11-08). The answer takes it away.
+M4T_READING = "Считаю…"
 M10B_TITLE = "<b>📋 Черновик, {when}</b>"
 M10B_WAITS = "В дневнике появится после кнопки «✅ Записать»."
 RECORD = "✅ Записать"
@@ -1356,6 +1359,9 @@ def _v_line(t: _Tap, data: str, mid: str) -> Screen:
     text = f"{head}: {what}." if what else f"{head}."
     if meal.is_draft:
         text = "\n".join(draft_lines(meal, t.zone, what))
+    # No «Считаю…» here: this message may not be the one the read edits at its end (a
+    # retry queued while it was a card, a reply's message), and a marker no answer takes
+    # away would say «counting» for good (review 2026-11-08, TD-260).
     view = "pending" if status == "pending" else "line"
     return Screen(text, line_markup(t.db, meal), meal_id=meal.id, view=view)
 

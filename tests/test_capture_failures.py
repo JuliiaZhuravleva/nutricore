@@ -485,7 +485,7 @@ def test_written_words_become_the_reading_and_the_photo_stays(db, reader):
     meal = _failed_photo(db, reader)
     wire = _writing(db, meal, "суп")
     answer = wire.sent()[-1]
-    assert answer["text"] == "Записано: суп. Фото хранится при этой записи."
+    assert answer["text"] == "Записано: суп. Фото хранится при этой записи.\nСчитаю…"
     db.expire_all()
     fresh = _one(db)
     assert fresh.reading_status == "read" and fresh.photos == ["big"]
@@ -549,7 +549,7 @@ def test_written_words_replace_the_words_that_failed(db, reader):
     meal = _one(db)
     reader.error = None
     wire = _writing(db, meal, "суп")
-    assert wire.sent()[-1]["text"] == "Записано: суп."
+    assert wire.sent()[-1]["text"] == "Записано: суп.\nСчитаю…"
     db.expire_all()
     names = [i.name for i in crud_meal_item.live(db, meal.id)]
     assert names == NUTRITION["foods"] and "что-то непонятное" not in names
@@ -629,7 +629,7 @@ def test_written_words_on_a_voice_keep_the_voice(db, reader):
     send(_voice())
     meal = _one(db)
     wire = _writing(db, meal, "суп")
-    assert wire.sent()[-1]["text"] == "Записано: суп."
+    assert wire.sent()[-1]["text"] == "Записано: суп.\nСчитаю…"
     assert [s.kind for s in _sources(db)] == ["voice", "text"]
 
 
@@ -703,7 +703,9 @@ def test_m7d_written_words_too(db, reader):
     meal = _one(db)
     reader.answer = dict(NUTRITION)
     wire = _writing(db, meal, "суп")
-    assert wire.sent()[-1]["text"] == "Записано: суп. Фото хранится при этой записи."
+    assert wire.sent()[-1]["text"] == (
+        "Записано: суп. Фото хранится при этой записи.\nСчитаю…"
+    )
     assert _one(db).reading_status == "read"
 
 
