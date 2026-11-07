@@ -90,7 +90,6 @@ REENTRY = "reentry"
 REENTRY_FIRST, REENTRY_SECOND = "re7", "re14"
 # Local days since the last meal row: [from, to) for each.
 REENTRY_DAYS = {REENTRY_FIRST: (7, 14), REENTRY_SECOND: (14, 30)}
-MONDAY = 0
 
 # The ladder (§5.6): what a send's ``answer`` and ``status`` mean.
 FULL, SPARSE = "full", "sparse"
@@ -362,19 +361,37 @@ def _gap(db, user: User, local_day: date, zone) -> int | None:
     return (local_day - last.astimezone(zone).date()).days
 
 
-def reentry_wanted(gap: int, after_week_sunday: bool) -> list[str]:
+def reentry_wanted(gap: int, held: bool) -> list[str]:
     """The re-entry messages a day ``gap`` local days after the last record may
     carry, the first one first (D6). A first one that a Sunday's week card held
     back goes the evening after it, even on the fourteenth day. Nothing from the
     thirtieth day on."""
     wanted = []
     low, high = REENTRY_DAYS[REENTRY_FIRST]
-    if low <= gap < high or (after_week_sunday and gap == high):
+    if low <= gap < high or (held and gap == high):
         wanted.append(REENTRY_FIRST)
     low, high = REENTRY_DAYS[REENTRY_SECOND]
     if low <= gap < high:
         wanted.append(REENTRY_SECOND)
     return wanted
+
+
+def held_by_sunday(user: User, cfg: Config, local_day: date, zone) -> bool:
+    """Yesterday was a Sunday whose evening slot a re-entry was due at but for the
+    week card (R17), so that card is the only thing that held it back (D6): the
+    week card on, the evening mode and its hour set before that slot (``since`` is
+    written whenever ✓ turns them on and whenever the hour moves), and that day not
+    taken off. With no
+    ``since`` and no reminder ever sent, nothing says the sweep ran for this person
+    then (the launch), so nothing was held back."""
+    sunday = local_day - timedelta(days=1)
+    if sunday.weekday() != SUNDAY or not settings_screen.week_push_on(user):
+        return False
+    if cfg.mode != EVENING or cfg.off_day == sunday:
+        return False
+    if cfg.since is None:
+        return cfg.noted is not None
+    return cfg.since < slot_start(Slot(cfg.evening, REENTRY), sunday, zone)
 
 
 def reentry_check(db, user: User, now: datetime) -> tuple[Slot | None, str | None]:
@@ -404,13 +421,13 @@ def reentry_check(db, user: User, now: datetime) -> tuple[Slot | None, str | Non
         return None, "no record ever"
     last = crud_meal.last_sent_at(db, user.id)
     gap = (local_day - last.astimezone(zone).date()).days
-    after_sunday = local_day.weekday() == MONDAY and week
+    held = held_by_sunday(user, cfg, local_day, zone)
     # In UTC: SQLite compares the stored text, written in UTC.
     after = last.astimezone(UTC)
     tag = next(
         (
             name
-            for name in reentry_wanted(gap, after_sunday)
+            for name in reentry_wanted(gap, held)
             if not crud_reminder_send.sent_after(db, user.id, name, after)
         ),
         None,
@@ -527,6 +544,8 @@ def ladder_reason(db, user: User, local_day: date, now: datetime) -> str | None:
     sends = crud_reminder_send.newest_first(
         db, user.id, after=cfg.count_from, before_day=local_day
     )
+    # Neutral ones (re-entries, ✅ ОК) are stepped over: with a streak, this is
+    # its newest unanswered send, the one that completed it.
     latest = next((s for s in sends if outcome(s) != NEUTRAL), None)
     if cfg.fragile and latest is not None and outcome(latest) == ANSWERED:
         _write(db, user, fragile=None)

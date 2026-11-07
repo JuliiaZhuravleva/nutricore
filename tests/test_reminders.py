@@ -439,6 +439,7 @@ def _unanswered(db, n):
         _send(db, day)
 
 
+@BACKENDS
 def test_three_unanswered_make_them_rarer(db):
     """D7: from the third in a row, a regular one only every third evening."""
     _usual(db)
@@ -453,6 +454,7 @@ def test_three_unanswered_make_them_rarer(db):
     assert _reason(db, _utc(DAY + timedelta(days=2), 21, 5)) is None
 
 
+@BACKENDS
 def test_rarer_counts_from_the_last_regular_send(db):
     """D7: «the last regular send + 3», whatever came of it; a re-entry is not one."""
     _usual(db)
@@ -466,6 +468,7 @@ def test_rarer_counts_from_the_last_regular_send(db):
     assert _reason(db) == "rarer"
 
 
+@BACKENDS
 def test_six_unanswered_stop_them(db):
     _usual(db)
     _unanswered(db, 6)
@@ -474,6 +477,7 @@ def test_six_unanswered_stop_them(db):
     assert reminders.config(_user(db)).quiet == {"level": "off", "on": on}
 
 
+@BACKENDS
 def test_five_unanswered_while_rarer_still_send_on_the_third_day(db):
     _usual(db)
     _set(db, quiet={"level": "sparse", "on": (DAY - timedelta(days=9)).isoformat()})
@@ -483,6 +487,7 @@ def test_five_unanswered_while_rarer_still_send_on_the_third_day(db):
     assert reminders.config(_user(db)).quiet["level"] == "sparse"
 
 
+@BACKENDS
 def test_an_answer_ends_rarer(db):
     """D7: an answered send breaks the streak: daily again at the next ladder write."""
     _usual(db)
@@ -496,6 +501,7 @@ def test_an_answer_ends_rarer(db):
     assert _reason(db, _utc(DAY + timedelta(days=1), 21, 5)) is None  # daily
 
 
+@BACKENDS
 def test_after_a_return_one_unanswered_stops_them_not_rarer(db):
     """D7: fragile, streak ≥ 1 → off, not sparse."""
     _usual(db)
@@ -617,6 +623,7 @@ def test_a_tap_in_settings_resumes(db):
     assert _reason(db) is None
 
 
+@BACKENDS
 def test_a_tap_in_settings_ends_rarer(db):
     """D7: ✓ 🕘 Вечером in ⚙️ clears sparse too, and that evening goes."""
     _usual(db)
@@ -660,6 +667,7 @@ def _last_record(db, gap, day=DAY):
     "gap, slot",
     [(6, None), (7, RE7), (13, RE7), (14, RE14), (29, RE14), (30, None)],
 )
+@BACKENDS
 def test_reentry_is_due_at_7_and_14_days_and_never_from_30(db, gap, slot):
     _last_record(db, gap)
     due = reminders.due(db, _user(db), AT_21)
@@ -677,6 +685,7 @@ def test_reentry_names_its_own_slot_short_enough_for_the_column():
     assert reminders.Slot("21:00", reminders.EVENING).key == "21:00"
 
 
+@BACKENDS
 def test_reentry_goes_within_the_evening_hour_only(db):
     _last_record(db, 8)
     assert reminders.due(db, _user(db), _utc(DAY, 20, 59)) is None
@@ -687,6 +696,7 @@ def test_reentry_goes_within_the_evening_hour_only(db):
     )
 
 
+@BACKENDS
 def test_each_reentry_goes_once_a_lapse(db):
     _last_record(db, 8)
     _reentry_send(db, DAY - timedelta(days=1), reminders.REENTRY_FIRST)
@@ -702,6 +712,7 @@ def test_each_reentry_goes_once_a_lapse(db):
         )
 
 
+@BACKENDS
 def test_a_new_record_starts_a_new_lapse(db):
     _last_record(db, 30)
     _reentry_send(db, DAY - timedelta(days=23), reminders.REENTRY_FIRST)
@@ -712,6 +723,7 @@ def test_a_new_record_starts_a_new_lapse(db):
     assert reminders.due(db, _user(db), _utc(later, 21, 5)) == RE14
 
 
+@BACKENDS
 def test_any_row_is_the_last_record_drafts_and_deleted_too(db):
     _last_record(db, 20)
     _row(db, _utc(DAY - timedelta(days=8), 10), draft=True)
@@ -721,6 +733,7 @@ def test_any_row_is_the_last_record_drafts_and_deleted_too(db):
 
 
 @pytest.mark.parametrize("level", ["off", "sparse"])
+@BACKENDS
 def test_reentry_goes_whatever_the_ladder_says(db, level):
     _last_record(db, 7)
     _set(db, quiet={"level": level, "on": (DAY - timedelta(days=8)).isoformat()})
@@ -745,6 +758,7 @@ def test_no_reentry_for_who_may_not_receive_or_never_recorded(db, monkeypatch):
     assert reminders.reentry_check(db, _user(db), AT_21) == (None, "may not receive")
 
 
+@BACKENDS
 def test_reentry_keeps_the_other_day_checks(db):
     _last_record(db, 8)
     _set(db, off_day=DAY.isoformat())
@@ -759,6 +773,7 @@ def test_reentry_keeps_the_other_day_checks(db):
     assert reminders.reentry_check(db, _user(db), AT_21) == (None, "a question is open")
 
 
+@BACKENDS
 def test_on_a_week_sunday_reentry_moves_to_monday(db):
     monday = SUNDAY + timedelta(days=1)
     _last_record(db, 7, day=SUNDAY)
@@ -774,10 +789,21 @@ def test_on_a_week_sunday_reentry_moves_to_monday(db):
     assert reminders.due(db, _user(db), sunday) == RE7
 
 
-def test_a_first_held_back_on_the_13th_day_goes_on_the_14th(db):
+@BACKENDS
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {"noted": 1},  # reminders went out before: the sweep ran on that Sunday
+        {"since": _utc(SUNDAY - timedelta(days=3), 12).isoformat()},
+        {"noted": 1, "since": _utc(SUNDAY, 20, 59).isoformat()},
+    ],
+    ids=["sent-before", "on-since-thursday", "on-just-before-the-slot"],
+)
+def test_a_first_held_back_on_the_13th_day_goes_on_the_14th(db, stored):
     """The Sunday shift wins over the window: #1 on Monday, #2 the evening after."""
     monday = SUNDAY + timedelta(days=1)
     _last_record(db, 13, day=SUNDAY)
+    _set(db, **stored)
     assert reminders.due(db, _user(db), _utc(SUNDAY, 21, 5)) is None
     assert reminders.due(db, _user(db), _utc(monday, 21, 5)) == RE7
     _reentry_send(db, monday, reminders.REENTRY_FIRST)
@@ -785,6 +811,54 @@ def test_a_first_held_back_on_the_13th_day_goes_on_the_14th(db):
     assert reminders.due(db, _user(db), _utc(tuesday, 21, 5)) == RE14
 
 
+@BACKENDS
+@pytest.mark.parametrize(
+    "stored",
+    [
+        {},
+        {"noted": 1, "since": _utc(SUNDAY, 21, 30).isoformat()},
+        {"noted": 1, "since": _utc(SUNDAY + timedelta(days=1), 9).isoformat()},
+        {"noted": 1, "off_day": SUNDAY.isoformat()},
+    ],
+    ids=["launch", "on-after-sundays-slot", "on-on-monday", "sunday-off"],
+)
+def test_no_first_on_the_14th_unless_the_week_card_held_it(db, stored):
+    """D6: the 14th day's catch-up of #1 is only for a #1 the week card alone held
+    back on the Sunday. Otherwise it is #2, and never two on consecutive evenings."""
+    monday = SUNDAY + timedelta(days=1)
+    _last_record(db, 13, day=SUNDAY)
+    _set(db, **stored)
+    assert reminders.due(db, _user(db), _utc(monday, 21, 5)) == RE14
+    _reentry_send(db, monday, reminders.REENTRY_SECOND)
+    tuesday = monday + timedelta(days=1)
+    assert reminders.due(db, _user(db), _utc(tuesday, 21, 5)) is None
+
+
+@BACKENDS
+def test_launch_on_a_monday_at_the_14th_day_is_the_second_only(db):
+    """Through the sweep: nothing ran on the Sunday before the launch, so the
+    Monday at gap 14 is #2, and nothing after."""
+    monday = SUNDAY + timedelta(days=1)
+    _last_record(db, 14, day=monday)
+    bot = _counting_bot()
+    assert _sweep(db, bot, _span(monday, monday + timedelta(days=20))) == [monday]
+    assert _texts(bot) == [REENTRY_2]
+
+
+@BACKENDS
+def test_rarer_is_dated_by_the_streak_not_by_a_later_reentry(db):
+    """D7: quiet.on is the day of the unanswered send that completed the streak; a
+    neutral re-entry after it does not move it."""
+    for n in (5, 4, 3):
+        _send(db, DAY - timedelta(days=n))
+    _reentry_send(db, DAY - timedelta(days=2), reminders.REENTRY_FIRST)
+    _usual(db)
+    assert _reason(db) is None  # the third day after the last regular one
+    quiet = reminders.config(_user(db)).quiet
+    assert quiet == {"level": "sparse", "on": (DAY - timedelta(days=3)).isoformat()}
+
+
+@BACKENDS
 def test_the_day_of_a_reentry_gets_no_regular_one(db):
     _last_record(db, 7)
     _reentry_send(db, DAY, reminders.REENTRY_FIRST)
@@ -792,12 +866,14 @@ def test_the_day_of_a_reentry_gets_no_regular_one(db):
     assert reminders.due(db, _user(db), _utc(DAY, 21, 20)) is None
 
 
+@BACKENDS
 def test_a_regular_one_today_holds_the_reentry(db):
     _last_record(db, 7)
     _send(db, DAY, slot="20:00", answer="ok")
     assert reminders.reentry_check(db, _user(db), AT_21) == (None, "one went out today")
 
 
+@BACKENDS
 def test_reentry_is_neutral_for_the_ladder(db):
     _usual(db)
     _send(db, DAY - timedelta(days=3))
@@ -1119,6 +1195,7 @@ REENTRY_2 = (
 )
 
 
+@BACKENDS
 def test_b1_a_hard_week_then_two_reentries_and_silence(db):
     """§9 B1 (D6, D7): last record Monday; Tue, Wed, Thu; rarer after Thursday;
     Sunday is the week card's; Monday (gap 7) re-entry #1, the Monday after (gap 14)
@@ -1154,6 +1231,7 @@ def test_b1_a_hard_week_then_two_reentries_and_silence(db):
     assert reminders.hub_line(_user(db)) == "🔔 Напоминания: вечером, 21:00"
 
 
+@BACKENDS
 def test_b3_breakfasts_daily_evenings_ignored(db):
     """§9 B3 (D7): rarer after the 3rd evening, one every 3rd evening, the pause
     after the 6th reminder; breakfasts never resume it; ⚙️ does, the same evening."""
@@ -1175,6 +1253,7 @@ def test_b3_breakfasts_daily_evenings_ignored(db):
     assert _sweep(db, bot, [tap_day], resume) == [tap_day]
 
 
+@BACKENDS
 def test_b4_logs_three_days_a_week_never_answers(db):
     """§9 B4 (D7): ≤ 3 in week 1, then about one every three days while unanswered,
     then the pause. Records at 19:30 Mon/Thu/Sat keep those evenings fresh (R8)."""
@@ -1214,6 +1293,7 @@ def test_b4_logs_three_days_a_week_never_answers(db):
 
 
 @pytest.mark.parametrize("gap, expected", [(20, [0]), (40, [])])
+@BACKENDS
 def test_c2_long_gone_at_launch(db, gap, expected):
     """§9 C2 (D6): last record 20 days ago → re-entry #2 only at launch, nothing
     after; 40 days → nothing. A new record makes rule 4 pass again."""
@@ -1229,6 +1309,7 @@ def test_c2_long_gone_at_launch(db, gap, expected):
     assert "Приходит в 21:00" in _texts(bot)[-1]
 
 
+@BACKENDS
 def test_l1_reentry_goes_while_paused_but_not_after_x(db):
     """§9 L1 (D6): gap 7 with the ladder at off → re-entry #1 goes. After ✖ →
     nothing."""
@@ -1246,6 +1327,7 @@ def test_l1_reentry_goes_while_paused_but_not_after_x(db):
     )
 
 
+@BACKENDS
 def test_reentry_through_the_sweep(db):
     """D6: the owner's words, [✅ ОК] [✖ Выключить], no footnote, sound per ⚙️;
     reminders.noted is not set; R4 both ways."""
@@ -1283,6 +1365,7 @@ def test_reentry_views_hold_the_owners_words(db):
         assert "<i>" not in screen.text and "⭐" not in screen.text
 
 
+@BACKENDS
 def test_reentry_shows_no_star_even_with_stars_saved(db):
     for name in ("Суп", "Хумус"):
         _fav(db, name)
