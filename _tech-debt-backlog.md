@@ -99,7 +99,7 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Source:** feat/meal-reminders (stage 6)
   - **Created:** 2026-11-07
 
-- [ ] **TD-252**: Inside a reminder's recall window, a reply to a meal line that changes only grams («300») or time («в 14») does not renew the window. Owner to decide; renewing means routing those two `_on_reply` branches through `capture._renews`. Related: `_renews` marks the reminder answered for a correction of a meal that is not bound to it (review probe P19).
+- [x] **TD-252** (closed 2026-11-08, owner: keep as is): Inside a reminder's recall window, a reply to a meal line that changes only grams («300») or time («в 14») does not renew the window. Owner to decide; renewing means routing those two `_on_reply` branches through `capture._renews`. Related: `_renews` marks the reminder answered for a correction of a meal that is not bound to it (review probe P19).
   - **Priority:** Low (owner's call)
   - **Source:** feat/meal-reminders (stage 6)
   - **Created:** 2026-11-07

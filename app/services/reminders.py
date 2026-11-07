@@ -119,7 +119,7 @@ _LATER = (
 # D6: the owner's own words; R10's «never names an absence» is waived for these two.
 REENTRY_TEXT = {
     REENTRY_FIRST: (
-        "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно."
+        "Можно начать с сегодняшнего. Прошлые дни можно оставить как есть."
     ),
     REENTRY_SECOND: (
         "Могу больше не напоминать. Если захочется — можно просто отправить еду в "

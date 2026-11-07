@@ -46,10 +46,6 @@ EXEMPT = {
     ("app/services/model_watch.py", "Отключат … — осталось … дн."): (
         "admin notice: days left before an AI model shuts down, not about food"
     ),
-    (
-        "app/services/reminders.py",
-        "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно.",
-    ): "the owner's own words for re-entry #1 (stage 6 D6, 2026-11-07)",
 }
 
 
@@ -196,13 +192,15 @@ def test_control_the_exemption_is_scoped_to_its_file_and_string():
 
 def test_every_exemption_names_a_string_the_scan_reads():
     """An exemption whose string moved or changed would excuse nothing and hide
-    that; the D6 one would otherwise be caught for «нужно»."""
+    that. Re-entry #1 needs none since the owner reworded it (2026-11-08)."""
     found = set(user_strings())
     for key in EXEMPT:
         assert key in found, key
-    reentry = "Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно."
+    reentry = "Можно начать с сегодняшнего. Прошлые дни можно оставить как есть."
+    assert ("app/services/reminders.py", reentry) in found
     assert findings("app/services/reminders.py", reentry) == []
-    assert findings("app/services/settings_screen.py", reentry) != []
+    # Control: the old wording would still be caught for «нужно».
+    assert findings("app/services/reminders.py", "Прошлые дни не нужно.") != []
 
 
 @pytest.mark.parametrize(

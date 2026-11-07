@@ -55,16 +55,16 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
   - **Copy**, constant title, no footnote, keyboard `[✅ ОК] [✖ Выключить]` only (no ⭐ chips):
     ```
     🔔 <b>Еда за сегодня</b>
-    Можно начать с сегодняшнего. Прошлые дни восстанавливать не нужно.
+    Можно начать с сегодняшнего. Прошлые дни можно оставить как есть.
     ```
     ```
     🔔 <b>Еда за сегодня</b>
     Могу больше не напоминать. Если захочется — можно просто отправить еду в любой момент.
     ```
     The owner chose these words; R10's «never names an absence» is waived for exactly these two
-    strings. They hold no count of days, but #1 holds «нужно» (in «не нужно»), which
-    tests/test_user_text.py bans: that one string is in its EXEMPT list (owner to confirm the
-    wording or give another).
+    strings. They hold no count of days. #1 first read «Прошлые дни восстанавливать не нужно.»;
+    the owner asked on 2026-11-08 for «прошлые дни просто пропускаем» «или что-то такое»; the
+    built «…можно оставить как есть.» keeps that sense without R10's banned «пропуск» or «нужно».
   - A re-entry send is **neutral** for the ladder (like `ok`). It never opens a recall window
     (§3.2): an answer after it is an ordinary capture at the moment it arrives. R4 still holds: it
     deletes the previous untouched reminder, and the next send deletes it.
@@ -124,7 +124,7 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
   back by a Sunday week card on gap 13 goes on Monday (gap 14), and #2 the evening after.
 - Sparse counts its +3 from the last non-re-entry send of any outcome, ✅ ОК included.
 - Inside the window, a reply to a meal line that changes only grams or time does **not** renew the
-  window (open question for the owner; TD-252).
+  window. The owner confirmed on 2026-11-08 that it should stay so (TD-252 closed).
 
 Persona acceptance (2026-11-07), the lead's calls:
 - Re-entry goes only to a person who has received a reminder send before. At launch a long-quiet
