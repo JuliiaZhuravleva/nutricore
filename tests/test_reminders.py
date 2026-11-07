@@ -2140,6 +2140,22 @@ def test_time_from_a_reminder_comes_back_to_the_reminder(db):
     assert len(_favorite_meals(db)) == 2
 
 
+def test_a_typed_time_from_a_reminder_has_no_way_back_to_it(db):
+    """R4: the typed clock's answer is a new message, so ⬅️ there is the meal's
+    own line; a way back to the reminder would draw a second live one."""
+    send, fav = _sent(db)
+    now = AT_21 + timedelta(minutes=5)
+    _tap(db, f"rm:f:{send.id}:{fav.id}", now)
+    (meal,) = _favorite_meals(db)
+    clock = meal_card.handle_callback(db, 42, f"ml:t:{meal.id}:n{send.id}", now=now)
+    assert _callbacks(clock.markup)[-1] == f"rm:v:{send.id}"  # control: tap path
+    typed = meal_card.take_typed(db, 42, "12:40", now=now + timedelta(seconds=20))
+    assert typed is not None and typed.screen is not None
+    datas = _callbacks(typed.screen.markup)
+    assert not any(d.startswith("rm:v:") for d in datas)
+    assert not any(d.endswith(f":n{send.id}") for d in datas)
+
+
 def test_back_to_a_reminder_is_only_for_its_owner(db):
     send, _fav_ = _sent(db)
     db.add(User(id=2, telegram_id=43, settings={}))

@@ -99,9 +99,11 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
     re-entry #1; the Monday after (gap 14) is re-entry #2; nothing after.
   - B3: sparse after the 3rd evening (one every 3rd evening), pause after the 6th. Breakfasts never
     resume it; ⚙️ does, the same evening.
-  - B4: ≤ 3 in week 1, then about one every 3 days while unanswered, then the pause.
-  - C2: last record 20 days ago → at launch **re-entry #2 only** (14 ≤ gap < 30), and nothing
-    after. Last record 40 days ago → nothing. Either way, a new record makes rule 4 pass again.
+  - B4: ≤ 3 in the first calendar week (≤ 4 in the first 7 days), then about one every 3 days
+    while unanswered, then the pause.
+  - C2: last record 20 days ago and no reminder ever sent → nothing at launch (no «Могу больше не
+    напоминать…» as a first message; acceptance 2026-11-07). Last record 40 days ago → nothing.
+    Either way, a new record makes rule 4 pass again.
   - New L1: gap 7 with the ladder at `off` → re-entry #1 goes. After ✖ → nothing.
   - New L2: a text «суп» 10 min after re-entry #1 → an exact-time record at its arrival, no
     day_only; the re-entry send stays neutral.
@@ -123,6 +125,22 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
 - Sparse counts its +3 from the last non-re-entry send of any outcome, ✅ ОК included.
 - Inside the window, a reply to a meal line that changes only grams or time does **not** renew the
   window (open question for the owner; TD-252).
+
+Persona acceptance (2026-11-07), the lead's calls:
+- Re-entry goes only to a person who has received a reminder send before. At launch a long-quiet
+  person gets nothing until they log.
+- The return after a re-entry: no regular reminder on the local day of the first record after it.
+  From the next evening the usual rules apply.
+- The 🔔 sub-screen keeps the time and zone line when sparse or stopped. During a stop it reads
+  «Сейчас не приходят: придут на следующий день после любой записи.»
+- R4: a reminder message that ✖, a zone pick or a late ⭐ list turned into another screen is left
+  alone at the next send. One too old to delete is edited to a dated title only, «🔔 Еда за пн
+  9 ноября», with no buttons. B2's «deleted» therefore means «deleted or titled».
+- The first reminder's 🕐 Часовой пояс closes the send as neutral and comes back to the reminder.
+- D2 «в обед» etc. count as a timed clause only in the several-times rule. On their own they give
+  no clock (Q6 stays unbuilt; R0 shrink e6ae630).
+- R16 is wider again («не ела ничего», «да ничего», «ничего больше», «ничо»). «ничего особенного»
+  and «ничего кроме …» are still read as food.
 
 ## S0. Chat simulator for persona acceptance (test-only, no runtime change)
 

@@ -2008,6 +2008,10 @@ def _typed_time(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
         return None
     yesterday, clock = parsed
     back = ask.get("back") or "r"
+    if back.startswith(REMINDER_BACK):
+        # The answer comes in a new message: a way back to the reminder there
+        # would draw a second live reminder (R4), so it is the meal's own line.
+        back = "r"
     meal = _own_meal(t, ask["meal_id"], "slot")
     day = _yesterday_of(t) if yesterday else meal_day(meal, t.user)
     moment = datetime.combine(day, clock, tzinfo=t.zone)
