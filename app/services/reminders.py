@@ -48,6 +48,7 @@ from app.models.reminder_send import ReminderSend
 from app.models.user import User
 from app.services import (
     access_control,
+    bot_news,
     favorites,
     meal_card,
     meal_items,
@@ -1000,6 +1001,11 @@ def settings_view(
         about += " В воскресенье вместо него приходит итог недели."
     lines.append(about)
     lines.append("🗓 Итог недели: " + ("вс, 22:00." if week else "не присылаю."))
+    news = bot_news.news_on(user)
+    lines.append(
+        "📣 Новости бота: "
+        + ("после больших обновлений, без звука." if news else "не присылаю.")
+    )
     off = cfg.mode == OFF
     rows = [
         [
@@ -1024,7 +1030,12 @@ def settings_view(
             ),
         ]
     )
-    rows.append([_btn(f"🔔 Звук: {'вкл' if cfg.sound else 'выкл'}", "snd")])
+    rows.append(
+        [
+            _btn(f"🔔 Звук: {'вкл' if cfg.sound else 'выкл'}", "snd"),
+            _btn(f"📣 Новости: {'вкл' if news else 'выкл'}", "news"),
+        ]
+    )
     rows.append(
         [
             InlineKeyboardButton(
@@ -1308,6 +1319,14 @@ def _v_week(t, data: str) -> Screen:
     return settings_view(t.db, t.user, t.now, notice)
 
 
+def _v_news(t, data: str) -> Screen:
+    on = not bot_news.news_on(t.user)
+    settings_screen._save(t.db, t.telegram_id, **{bot_news.NEWS_ON: on})
+    t.db.refresh(t.user)
+    notice = "✓ Новости бота включены" if on else "✓ Новости бота выключены"
+    return settings_view(t.db, t.user, t.now, notice)
+
+
 def _v_sound(t, data: str) -> Screen:
     on = not config(t.user).sound
     _write(t.db, t.user, sound=on)
@@ -1330,6 +1349,7 @@ _VERBS = [
     (re.compile(r"rm:e:(\d{4})"), _v_evening),
     (re.compile(r"rm:week"), _v_week),
     (re.compile(r"rm:snd"), _v_sound),
+    (re.compile(r"rm:news"), _v_news),
 ]
 
 

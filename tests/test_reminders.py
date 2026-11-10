@@ -1781,7 +1781,7 @@ def test_the_settings_screen(db):
         ["rm:m:off", "rm:m:evening"],
         ["rm:e:2000", "rm:e:2100", "rm:e:2200", "rm:e:2300"],
         ["rm:week", "set:tz"],
-        ["rm:snd"],
+        ["rm:snd", "rm:news"],
         ["set:open"],
     ]
     assert "✓ 21:00" in _labels(screen.markup)
