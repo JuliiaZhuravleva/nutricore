@@ -629,7 +629,10 @@ def test_a_slot_on_a_meal_deleted_meanwhile_answers_with_today(db, owner):
 
 
 def _recent(db, owner, hours=3):
-    return _one(db, owner, meal_time=datetime.now(UTC) - timedelta(hours=hours))
+    # At :45, never the minute a test types («13.20», «0:01»): a meal already at the
+    # typed time changes nothing, and a run at 19:20 in Tbilisi saw no event.
+    when = datetime.now(UTC) - timedelta(hours=hours)
+    return _one(db, owner, meal_time=when.replace(minute=45, second=0, microsecond=0))
 
 
 def test_handler_answers_strips_the_old_keyboard_and_the_new_message_is_the_slots(
