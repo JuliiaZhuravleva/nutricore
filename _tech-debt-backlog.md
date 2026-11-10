@@ -79,6 +79,16 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
+- [ ] **TD-261**: Where "yesterday" ends should be a per-person setting (night shifts). Today a day ends at local midnight, and the planned morning question «how much of yesterday is recorded» (stage 06) asks about that calendar day. Someone who works 20:00–08:00 and eats at 2 a.m. has that meal on another "day" than they feel it is. Default stays midnight.
+  - **Priority:** Low
+  - **Source:** owner decision 2026-11-11 (ux-fresh-eyes run on the morning question: a night-shift persona could not tell which day «вчера» meant)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-262**: Review the 🔔 Напоминания settings screen as a whole once more switches land there. With the morning question's row it has 5 action rows + back, over the ≤4 rows rule, and its long paragraph is skipped by readers. «Звук: выкл»-style labels read as both a state and an action (4 of 4 fresh readers), and «✖ Выкл» does not say it stops only the evening message.
+  - **Priority:** Low
+  - **Source:** owner decision 2026-11-11 («настройки надо будет пересмотреть, когда появится ещё какое-то количество»)
+  - **Created:** 2026-11-11
+
 - [ ] **TD-260**: «⬅️ К ответу бота» on a typed meal still in its read draws the line with no «Считаю…». The marker was dropped there because the tapped message may not be the one the read edits at its end: a retry queued while the line was a card (`job.line_id=None`), a reply's message (time, «и сыр»), or a retry whose `shown` is the M7 text (no edit when it fails again). A marker there could stay for good. To bring it back, the tap must know the live read's line (and that read's end must always edit it). Photos and voice have the same issue with `pending_text` on a back tap. Also `_read_kind` takes the first source, so a typed meal made from a failed photo (M7c) shows the photo's «читаю…» on a back tap.
   - **Priority:** Low (needs a tap into the card and back within the seconds of a read)
   - **Source:** feat/text-reading-marker review
