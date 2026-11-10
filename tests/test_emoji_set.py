@@ -25,9 +25,16 @@ def _is_mark(ch: str) -> bool:
     return ch in _LOW_MARKS or (unicodedata.category(ch) == "So" and ord(ch) >= 0x2300)
 
 
+# A dish's picture, not a mark of the bot: shown as the phone's own emoji on purpose
+# (``dish_emoji.SEP`` keeps it from becoming an icon), so the set need not draw it.
+_STOCK = {ROOT / "app" / "services" / "dish_emoji.py"}
+
+
 def _marks_in_bot() -> set:
     found = set()
     for path in (ROOT / "app" / "services").glob("*.py"):
+        if path in _STOCK:
+            continue
         found |= {ch for ch in path.read_text(encoding="utf-8") if _is_mark(ch)}
     return found
 
@@ -35,6 +42,13 @@ def _marks_in_bot() -> set:
 def test_scan_sees_known_marks():
     """Control: an empty scan would pass the coverage test below for nothing."""
     assert {"🍽", "⬅", "💊", "⚖"} <= _marks_in_bot()
+
+
+def test_the_stock_file_is_there_and_holds_undrawn_pictures():
+    """Control for ``_STOCK``: a renamed file would skip nothing, a moved one silently."""
+    (path,) = _STOCK
+    drawn = {mark for mark, _, _ in build_tiles.SET}
+    assert {ch for ch in path.read_text(encoding="utf-8") if _is_mark(ch)} - drawn
 
 
 def test_every_mark_in_the_bot_is_drawn():
@@ -46,6 +60,8 @@ def test_every_mark_outside_the_services_is_drawn_too():
     """bot.py and the rest of ``app``: the scan above reads ``app/services`` only."""
     found = set()
     for path in [ROOT / "bot.py", *(ROOT / "app").rglob("*.py")]:
+        if path in _STOCK:
+            continue
         found |= {ch for ch in path.read_text(encoding="utf-8") if _is_mark(ch)}
     assert found >= _marks_in_bot()  # control: it reads at least as much
     assert found - {mark for mark, _, _ in build_tiles.SET} == set()

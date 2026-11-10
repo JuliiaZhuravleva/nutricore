@@ -408,7 +408,7 @@ def test_a_search_with_more_than_fits_says_so_and_keeps_listening(db, owner):
     assert len(_labels(shown)) <= 5
     narrowed = _typed_reply("суп 5")
     assert "Показаны" not in narrowed["text"]
-    assert _flat(narrowed)[0].startswith("Суп 5")
+    assert _flat(narrowed)[0].startswith("🍲 Суп 5")
 
 
 def test_control_a_search_that_fits_says_nothing_of_it(db, owner):

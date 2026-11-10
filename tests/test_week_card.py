@@ -735,7 +735,7 @@ def test_settings_turn_the_summary_off_with_one_tap_and_back(db):
     # The switch lives in ⚙️ → 🔔 now (stage 6, §4.1); an old set:week still works.
     labels = [b.text for row in screen.markup.inline_keyboard for b in row]
     assert "🔔 Напоминания" in labels and "🗓 Итог недели: вкл" not in labels
-    assert len(screen.markup.inline_keyboard) <= 5
+    assert len(screen.markup.inline_keyboard) <= 6
     sub = reminders.handle_callback(db, 42, "rm:o")
     labels = [b.text for row in sub.markup.inline_keyboard for b in row]
     assert "🗓 Итог недели: вкл" in labels

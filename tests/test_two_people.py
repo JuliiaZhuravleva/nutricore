@@ -587,6 +587,7 @@ PROBES = {
     "dh:jl": lambda w: f"dh:jl:{w.soup}:0",
     "dh:jf": lambda w: f"dh:jf:{w.soup}",
     "dh:j": lambda w: f"dh:j:{w.porridge}:{w.soup}",
+    "dh:jq": lambda w: f"dh:jq:{w.porridge}:{w.soup}",
     "fav:o": lambda w: f"fav:o:{w.star}:0",
     "fav:l": lambda w: f"fav:l:{w.star}:n",
     "fav:u": lambda w: f"fav:u:{w.logged}",
@@ -606,6 +607,8 @@ MIXED = {
     "ml:ka": lambda w: f"ml:ka:{w.b_source}:{w.item}",
     "dh:j": lambda w: f"dh:j:{w.borscht}:{w.soup}",
     "dh:j reversed": lambda w: f"dh:j:{w.soup}:{w.borscht}",
+    "dh:jq": lambda w: f"dh:jq:{w.borscht}:{w.soup}",
+    "dh:jq reversed": lambda w: f"dh:jq:{w.soup}:{w.borscht}",
 }
 # No id in them, or only a date: B's own screens, which must not hold A's day.
 NO_ID = {

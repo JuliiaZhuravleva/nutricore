@@ -20,8 +20,15 @@ from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_personal_food import crud_personal_food
 from app.models import FavoriteMeal, Meal, MealItem, PersonalFood, RecordEvent, User
-from app.services import close_row
-from app.services import capture, dishes, meal_card, meal_items, next_step
+from app.services import (
+    capture,
+    close_row,
+    dish_emoji,
+    dishes,
+    meal_card,
+    meal_items,
+    next_step,
+)
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
 from tests.test_capture_corrections import tap as _tap
@@ -143,8 +150,14 @@ def _kb(params: dict) -> list:
     return markup["inline_keyboard"]
 
 
+def _text(button: dict) -> str:
+    """The label as read: the no-break space after a dish's emoji reads as a space
+    (``test_dish_emoji`` checks it is there)."""
+    return button["text"].replace(dish_emoji.SEP, " ")
+
+
 def _labels(params: dict) -> list:
-    return [[b["text"] for b in row] for row in _kb(params)]
+    return [[_text(b) for b in row] for row in _kb(params)]
 
 
 def _data(params: dict) -> list:
@@ -154,7 +167,7 @@ def _data(params: dict) -> list:
 def _on(params: dict, label: str) -> str:
     for row in _kb(params):
         for button in row:
-            if button["text"] == label:
+            if _text(button) == label:
                 return button["callback_data"]
     raise AssertionError(f"no {label!r} in {_labels(params)}")
 
@@ -197,8 +210,11 @@ def _fits(params: dict) -> None:
 # --- O2 the list ----------------------------------------------------------------
 
 
-def test_the_menu_keyboard_has_the_dishes_next_to_settings():
-    assert [b.text for b in tg.main_keyboard.keyboard[2]] == ["⚙️ Настройки", "🍲 Блюда"]
+def test_the_menu_keyboard_has_the_dishes_next_to_stats():
+    assert [b.text for b in tg.main_keyboard.keyboard[1]] == [
+        "📊 Статистика",
+        "🍲 Блюда",
+    ]
 
 
 def test_o2a_empty_says_they_come_by_themselves(db, owner, reader):
@@ -228,10 +244,10 @@ def test_o2_lists_by_latest_live_item_with_counts_and_stars(db, owner, reader):
     shown = send(text("🍲 Блюда")).sent()[-1]
     assert shown["text"] == "<b>🍲 Блюда</b>\nСначала недавние."
     assert _labels(shown) == [
-        ["Рис · 3 раза"],
-        ["⭐ Омлет с сыром · 12 раз"],
-        ["Суп с курицей · 2 раза"],
-        ["Овсянка"],  # no live item: the name only
+        ["🍚 Рис · 3 раза"],
+        ["⭐ 🍳 Омлет с сыром · 12 раз"],
+        ["🍲 Суп с курицей · 2 раза"],
+        ["🥣 Овсянка"],  # no live item: the name only
         ["🔍 Найти"],  # one page: no pager
     ]
     assert _data(shown) == [
@@ -251,7 +267,7 @@ def test_o2_counts_only_live_items_of_kept_meals(db, owner):
     _eat(db, owner, rice, TUE, is_draft=True)
     _eat(db, owner, rice, TUE, removed_at=GONE)
     shown = _shown("dh:l:0")
-    assert _labels(shown)[0] == ["Рис · 1 раз"]
+    assert _labels(shown)[0] == ["🍚 Рис · 1 раз"]
 
 
 def test_o2_leaves_out_hidden_and_merged_with_a_control(db, owner):
@@ -259,7 +275,7 @@ def test_o2_leaves_out_hidden_and_merged_with_a_control(db, owner):
     _dish(db, owner, "айран", hidden_at=GONE)
     _dish(db, owner, "тан", merged_into_id=target.id)
     labels = _labels(_shown("dh:l:0"))
-    assert labels == [["Кефир"], ["🔍 Найти"]]  # control: a live one stays
+    assert labels == [["🥛 Кефир"], ["🔍 Найти"]]  # control: a live one stays
 
 
 def test_o2_star_goes_by_the_link_not_by_the_name(db, owner):
@@ -267,12 +283,12 @@ def test_o2_star_goes_by_the_link_not_by_the_name(db, owner):
     fav = _star(db, owner, rice)
     fav.name = "мой рис"  # a favourite may be called otherwise
     db.commit()
-    assert _labels(_shown("dh:l:0"))[0] == ["⭐ Рис"]
+    assert _labels(_shown("dh:l:0"))[0] == ["⭐ 🍚 Рис"]
     # Control: a removed star marks nothing.
     fav.removed_at = GONE
     db.commit()
     tg._card_delivery._screens.clear()
-    assert _labels(_shown("dh:l:0"))[0] == ["Рис"]
+    assert _labels(_shown("dh:l:0"))[0] == ["🍚 Рис"]
 
 
 def test_o2_a_long_name_is_cut_and_its_count_stays_in_the_budget(db, owner):
@@ -282,7 +298,7 @@ def test_o2_a_long_name_is_cut_and_its_count_stays_in_the_budget(db, owner):
         _eat(db, owner, dish)
     shown = _shown("dh:l:0")
     label = _labels(shown)[0][0]
-    assert label.startswith("⭐ Очень")
+    assert label.startswith("⭐ 🍽 Очень")
     assert label.endswith("… · 12 раз")
     _fits(shown)
 
@@ -304,7 +320,7 @@ def test_o2_pages_say_where_they_are_and_a_page_past_the_end_shows_the_last(db, 
     assert first["text"] == "<b>🍲 Блюда</b>\nСначала недавние. Страница 1 из 3."
     assert _labels(first)[-1] == ["🔍 Найти", "▶️"]
     assert _data(first)[-1] == ["dh:f", "dh:l:1"]
-    assert _labels(first)[0] == ["Блюдо 0 · 1 раз"]
+    assert _labels(first)[0] == ["🍽 Блюдо 0 · 1 раз"]
 
     middle = _shown("dh:l:1")
     assert "Страница 2 из 3." in middle["text"]
@@ -314,7 +330,7 @@ def test_o2_pages_say_where_they_are_and_a_page_past_the_end_shows_the_last(db, 
 
     past = _shown("dh:l:99")
     assert "Страница 3 из 3." in past["text"]
-    assert _labels(past)[0] == ["Блюдо 8 · 1 раз"]
+    assert _labels(past)[0] == ["🍽 Блюдо 8 · 1 раз"]
     assert _labels(past)[-1] == ["◀️", "🔍 Найти"]
     _fits(middle)
 
@@ -326,12 +342,12 @@ def test_o2h_hides_the_counts_on_a_hard_day(db, owner, hard_day):
     _eat(db, owner, omelette, TUE)
     _star(db, owner, omelette)
     shown = _shown("dh:l:0")
-    assert _labels(shown)[:2] == [["Рис"], ["⭐ Омлет"]]
+    assert _labels(shown)[:2] == [["🍚 Рис"], ["⭐ 🍳 Омлет"]]
     # Control: the same rows on an ordinary day carry them.
     owner.settings = {k: v for k, v in owner.settings.items() if k != next_step.ENERGY}
     db.commit()
     tg._card_delivery._screens.clear()
-    assert _labels(_shown("dh:l:0"))[0] == ["Рис · 1 раз"]
+    assert _labels(_shown("dh:l:0"))[0] == ["🍚 Рис · 1 раз"]
 
 
 # --- what a bad button gets -----------------------------------------------------
@@ -343,7 +359,7 @@ def test_a_gone_dish_redraws_the_list_with_its_notice(db, owner):
     assert shown["text"].startswith(
         "<i>Этого блюда уже нет в списке.</i>\n\n<b>🍲 Блюда"
     )
-    assert _labels(shown)[0] == ["Рис"]
+    assert _labels(shown)[0] == ["🍚 Рис"]
 
 
 @pytest.mark.parametrize(
@@ -445,8 +461,8 @@ def test_o2b_asks_and_the_answer_is_a_search_not_a_meal(db, owner, reader):
     found = _typed_reply("РИС")  # Cyrillic case, in Python: SQLite's lower() is ASCII
     assert found["text"] == "<b>🍲 Блюда</b>\nНашлось по «РИС»:"
     assert _labels(found) == [
-        ["Рис · 1 раз"],
-        ["Рис с овощами · 1 раз"],
+        ["🍚 Рис · 1 раз"],
+        ["🍚 Рис с овощами · 1 раз"],
         ["⬅️ Все блюда"],
     ]
     assert _data(found)[0] == [f"dh:o:{rice.id}:l0"]
@@ -475,7 +491,7 @@ def test_search_finds_by_an_old_name_and_never_a_hidden_dish(db, owner):
     _dish(db, owner, "яичный салат", hidden_at=GONE)
     tap("dh:f")
     found = _typed_reply("яичн")
-    assert _labels(found) == [["Омлет"], ["⬅️ Все блюда"]]
+    assert _labels(found) == [["🍳 Омлет"], ["⬅️ Все блюда"]]
 
 
 def test_search_escapes_what_was_typed(db, owner):
@@ -497,7 +513,7 @@ def test_o2c_hides_counts_on_a_hard_day(db, owner, hard_day):
     rice = _dish(db, owner, "рис")
     _eat(db, owner, rice)
     tap("dh:f")
-    assert _labels(_typed_reply("рис"))[0] == ["Рис"]
+    assert _labels(_typed_reply("рис"))[0] == ["🍚 Рис"]
 
 
 def test_any_tap_closes_the_search_and_the_next_text_is_food(db, owner, reader):
@@ -1206,9 +1222,12 @@ def test_o7_picker_exact_and_a_shared_word_first(db, owner):
         "Прошлые приёмы и их цифры останутся как есть."
     )
     labels = _labels(shown)
-    assert labels[0:2] == [["Омлет с ветчиной", "Сыр"], ["Омлет", "Яичница"]]
+    assert labels[0:2] == [
+        ["🍳 Омлет с ветчиной", "🧀 Сыр"],
+        ["🍳 Омлет", "🍳 Яичница"],
+    ]
     assert labels[2:] == [["🔍 Найти"], ["⬅️ К блюду"]]
-    assert _on(shown, "Омлет") == f"dh:j:{source.id}:{near.id}"
+    assert _on(shown, "🍳 Омлет") == f"dh:jq:{source.id}:{near.id}"
     assert _on(shown, "🔍 Найти") == f"dh:jf:{source.id}"
     _fits(shown)
 
@@ -1235,10 +1254,54 @@ def test_merge_find_uses_o2b_text_and_lists_targets(db, owner, reader):
     assert "По «борщ» ничего не нашлось. Напиши иначе." in missed["text"]
     assert meal_card.has_slot(db, OWNER) is True
     found = _typed_reply("ЯИЧ")
-    assert _on(found, "Яичница") == f"dh:j:{source.id}:{target.id}"
+    assert _on(found, "🍳 Яичница") == f"dh:jq:{source.id}:{target.id}"
     assert _labels(found)[-1] == ["⬅️ К блюду"]
     assert reader.text == []
     assert _meals(db, owner) == []
+
+
+def test_a_merge_chip_asks_first_with_both_names_whole(db, owner):
+    # Owner 2026-11-10: a chip shows the start of a name and merged at once.
+    source = _dish(db, owner, "сырники со сметаной и ягодным вареньем")
+    target = _dish(db, owner, "сырники домашние из рыночного творога")
+    picker = _shown(f"dh:jl:{source.id}:0")
+    chip = next(label for row in _labels(picker) for label in row if "…" in label)
+    asked = _shown(_on(picker, chip))
+    assert "«Сырники со сметаной и ягодным вареньем»" in asked["text"]
+    assert "«Сырники домашние из рыночного творога»" in asked["text"]
+    assert "Прошлые приёмы и их цифры останутся как есть." in asked["text"]
+    assert _data(asked) == [
+        [f"dh:j:{source.id}:{target.id}"],
+        [f"dh:jl:{source.id}:0"],
+    ]
+    _fits(asked)
+    assert _fresh_dish(db, source).merged_into_id is None  # nothing moved yet
+    back = _shown(_on(asked, "⬅️ Выбрать другое"))
+    assert back["text"].startswith("<b>🔗 Сырники со сметаной")
+    _shown(_on(asked, "🔗 Да, объединить"))
+    assert _fresh_dish(db, source).merged_into_id == target.id
+
+
+def test_the_ask_carries_the_origin_on_both_buttons(db, owner):
+    source = _dish(db, owner, "омлет с сыром")
+    target = _dish(db, owner, "омлет")
+    asked = _shown(f"dh:jq:{source.id}:{target.id}:l2")
+    assert _data(asked) == [
+        [f"dh:j:{source.id}:{target.id}:l2"],
+        [f"dh:jl:{source.id}:0:l2"],
+    ]
+
+
+def test_the_ask_for_a_dish_merged_into_itself_shows_the_dish(db, owner):
+    source = _dish(db, owner, "омлет")
+    shown = _shown(f"dh:jq:{source.id}:{source.id}")
+    assert "Объединить блюда?" not in shown["text"]
+    assert _fresh_dish(db, source).merged_into_id is None
+
+
+def _fresh_dish(db, dish):
+    db.expire_all()
+    return db.get(PersonalFood, dish.id)
 
 
 def test_merge_find_never_offers_the_dish_itself(db, owner):
@@ -1563,7 +1626,11 @@ def test_o10_logs_a_portion_free_and_goes_back_to_the_dish(db, owner, reader):
     assert _toast(wire) == "Записано"
     meals = _meals(db, owner)
     assert len(meals) == 1
-    assert _labels(shown) == [[close_row.LABEL], ["↩️ Отменить", "🕐 Время"], ["⬅️ К блюду"]]
+    assert _labels(shown) == [
+        [close_row.LABEL],
+        ["↩️ Отменить", "🕐 Время"],
+        ["⬅️ К блюду"],
+    ]
     assert _data(shown) == [
         [close_row.CALLBACK],
         [f"fav:u:{meals[0].id}", f"ml:t:{meals[0].id}:r"],

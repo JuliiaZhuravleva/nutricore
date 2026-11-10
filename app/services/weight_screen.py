@@ -25,10 +25,13 @@ from app.schemas.body_metric import BodyMetricCreate
 from app.services.close_row import ok_row
 from app.services.favorites import Screen
 from app.services.meal_draft import num
+from app.services.settings_screen import CALLBACK_PREFIX as SETTINGS_PREFIX
 from app.services.settings_screen import user_zone
 from app.services.stats_screen import day_title, local_time
 
 logger = logging.getLogger(__name__)
+
+SETTINGS_OPEN = SETTINGS_PREFIX + "open"
 
 CALLBACK_PREFIX = "wt:"
 MIN_KG, MAX_KG = 20.0, 400.0
@@ -37,6 +40,7 @@ HISTORY = 5
 SOURCE = "bot"  # BodyMetric.metrics["source"] of a weight typed in the chat
 
 ASK = "Напиши вес в килограммах, например <code>72,5</code>."
+OPEN = CALLBACK_PREFIX + "open"  # from ⚙️ Настройки: the menu has no weight button
 
 KG_PATTERN = re.compile(r"^\s*(\d{2,3}(?:[.,]\d{1,2})?)\s*(?:кг|kg)?\.?\s*$", re.I)
 
@@ -75,15 +79,24 @@ def view_screen(
     week: list[BodyMetric],
     zone: ZoneInfo,
     notice: str | None = None,
+    back: bool = False,
 ) -> Screen:
-    """``weighings`` latest first (the last few); ``week`` the last 7 days'."""
+    """``weighings`` latest first (the last few); ``week`` the last 7 days'.
+    ``back``: opened from the settings, so it leads back there."""
+    markup = (
+        InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Настройки", callback_data=SETTINGS_OPEN)]]
+        )
+        if back
+        else None
+    )
     lines = ["<b>⚖️ Вес</b>"]
     if notice:
         lines.append(notice)
     lines.append("")
     if not weighings:
         lines += ["Записей пока нет.", "", ASK]
-        return Screen("\n".join(lines), None)
+        return Screen("\n".join(lines), markup)
     latest = weighings[0]
     when = day_title(local_time(latest.timestamp, zone).date())
     lines.append(f"<b>{_kg(latest.weight)}</b> · {when}")
@@ -100,7 +113,7 @@ def view_screen(
             when = local_time(metric.timestamp, zone)
             lines.append(f"{day_title(when.date())} · {_kg(metric.weight)}")
     lines += ["", ASK]
-    return Screen("\n".join(lines), None)
+    return Screen("\n".join(lines), markup)
 
 
 def saved_screen(metric: BodyMetric, previous: BodyMetric | None) -> Screen:
@@ -125,15 +138,19 @@ def _user(db, telegram_id: int, username: str | None = None, create=False):
 
 
 def open_view(
-    db, telegram_id: int, notice: str | None = None, now: datetime | None = None
+    db,
+    telegram_id: int,
+    notice: str | None = None,
+    now: datetime | None = None,
+    back: bool = False,
 ) -> Screen:
     user = _user(db, telegram_id)
     if user is None:
-        return view_screen([], [], user_zone(None), notice)
+        return view_screen([], [], user_zone(None), notice, back)
     since = (now or datetime.now(UTC)) - timedelta(days=AVERAGE_DAYS)
     weighings = crud_body_metric.latest_weights(db, user.id, HISTORY)
     week = crud_body_metric.get_user_weights_since(db, user.id, since)
-    return view_screen(weighings, week, user_zone(user), notice)
+    return view_screen(weighings, week, user_zone(user), notice, back)
 
 
 def record(db, telegram_id: int, kg: float, username: str | None = None) -> Screen:
@@ -151,6 +168,8 @@ def record(db, telegram_id: int, kg: float, username: str | None = None) -> Scre
 
 
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
+    if data == OPEN:
+        return open_view(db, telegram_id, back=True)
     parts = data[len(CALLBACK_PREFIX) :].split(":")
     if len(parts) == 2 and parts[0] == "u" and parts[1].isdigit():
         user = _user(db, telegram_id)

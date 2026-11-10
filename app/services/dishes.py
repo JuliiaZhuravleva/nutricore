@@ -29,7 +29,14 @@ from app.models.meal_item import MealItem
 from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
-from app.services import favorites, food_groups, meal_card, meal_items, stats_screen
+from app.services import (
+    dish_emoji,
+    favorites,
+    food_groups,
+    meal_card,
+    meal_items,
+    stats_screen,
+)
 from app.services.close_row import ok_row
 from app.services.day_card import local_time
 from app.services.favorites import BUTTON_NAME_MAX, FAVORITE_SOURCE, Screen
@@ -303,12 +310,18 @@ def _back_row(back: str) -> list:
     return [_button(ALL, f"dh:l:{back[1:]}")]
 
 
+def _with_emoji(name: str, room: int) -> str:
+    """The dish's emoji, then as much of its name as is left of ``room``."""
+    lead = dish_emoji.lead(name)
+    return lead + _cut(_capital(name), room - len(lead))
+
+
 def _to_dish(dish_id: int, back: str) -> list:
     return [_button(TO_DISH, f"dh:o:{dish_id}:{back}")]
 
 
 def _row_label(dish: PersonalFood, star: bool, count: int, simple: bool) -> str:
-    mark = "⭐ " if star else ""
+    mark = ("⭐ " if star else "") + dish_emoji.lead(dish.canonical_name)
     tail = f" · {count} {_times(count)}" if count and not simple else ""
     room = min(BUTTON_NAME_MAX, ROW_LABEL_MAX - len(mark) - len(tail))
     return f"{mark}{_cut(_capital(dish.canonical_name), room)}{tail}"
@@ -1032,8 +1045,9 @@ def _target_rows(dish: PersonalFood, shown: list, back: str) -> list:
     tail = _tail(back)
     chips = [
         _button(
-            _cut(_capital(other.canonical_name), PAIR_LABEL_MAX),
-            f"dh:j:{dish.id}:{other.id}{tail}",
+            _with_emoji(other.canonical_name, PAIR_LABEL_MAX),
+            # A chip cuts the name: a tap asks first, with both names whole.
+            f"dh:jq:{dish.id}:{other.id}{tail}",
         )
         for other in shown
     ]
@@ -1149,6 +1163,32 @@ def _merged_screen(
         f"«{_esc(target.canonical_name)}». Прошлые приёмы и их цифры на месте.</i>"
     )
     return _card(t, target, back, notice=notice, undo=event_id, together=True)
+
+
+def _v_join_ask(t: _Tap, data: str, fid: str, tid: str, back: Optional[str]) -> Screen:
+    """Both names whole before anything moves: a chip shows only the start of one
+    (owner 2026-11-10: a tap that merged at once was a surprise)."""
+    back = back or DEFAULT_BACK
+    source = _mergeable(t, fid, data, back)
+    target = crud_personal_food.live_of(t.db, _row(t, tid, data))
+    if target.id == source.id:
+        return _card(t, source, back)
+    tail = _tail(back)
+    return _screen(
+        [
+            "<b>🔗 Объединить блюда?</b>",
+            "",
+            f"«{_esc(_capital(source.canonical_name))}»",
+            "войдёт в",
+            f"«{_esc(_capital(target.canonical_name))}»",
+            "",
+            "Останется второе название, по первому блюдо тоже найдётся. " + MERGE_KEEPS,
+        ],
+        [
+            [_button("🔗 Да, объединить", f"dh:j:{source.id}:{target.id}{tail}")],
+            [_button("⬅️ Выбрать другое", f"dh:jl:{source.id}:0{tail}")],
+        ],
+    )
 
 
 def _v_join(t: _Tap, data: str, fid: str, tid: str, back: Optional[str]) -> Screen:
@@ -1418,6 +1458,7 @@ _VERBS: tuple = (
     (re.compile(rf"dh:u:{_ID}{_OPT}"), _v_undo),
     (re.compile(rf"dh:jl:{_ID}:{_PAGE}{_OPT}"), _v_merge_list),
     (re.compile(rf"dh:jf:{_ID}{_OPT}"), _v_merge_find),
+    (re.compile(rf"dh:jq:{_ID}:{_ID}{_OPT}"), _v_join_ask),
     (re.compile(rf"dh:j:{_ID}:{_ID}{_OPT}"), _v_join),
 )
 

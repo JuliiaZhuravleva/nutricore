@@ -70,16 +70,16 @@ def test_a_dish_starred_and_logged_from_the_star_list(tmp_path):
     assert "[✏️ Исправить]" in out
 
     out = _sim(w, "tap", "🍲 Блюда")  # a reply-keyboard key
-    assert "[Салат · 1 раз]" in out
-    _sim(w, "tap", "Салат")
+    assert "[🥗\u00a0Салат · 1 раз]" in out  # a no-break space: see dish_emoji.SEP
+    _sim(w, "tap", "🥗 Салат")
     out = _sim(w, "tap", "⭐ В избранное")
     assert "[✓ ⭐ В избранном]" in out
     assert re.search(r"^~ #\d+ bot \(edited\):$", out, re.M), out  # edited in place
 
     _sim(w, "advance", "2h")
     out = _sim(w, "tap", "⭐ Избранное")
-    assert "[Салат]" in out
-    out = _sim(w, "tap", "Салат")
+    assert "[🥗\u00a0Салат]" in out
+    out = _sim(w, "tap", "🥗 Салат")
     assert "Записано: салат." in out
     assert "toast: Записано" in out
 

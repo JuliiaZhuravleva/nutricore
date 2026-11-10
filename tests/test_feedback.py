@@ -281,7 +281,7 @@ def _datas(markup) -> list:
 
 
 def _within_limits(labels: list) -> None:
-    assert len(labels) <= 5
+    assert len(labels) <= 6
     assert all(len(row) <= 3 for row in labels)
 
 

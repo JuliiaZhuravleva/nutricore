@@ -35,7 +35,7 @@ from app.models.meal_message import MealMessage
 from app.models.personal_food import PersonalFood
 from app.models.user import User
 from app.schemas.meal import MealCreate
-from app.services import meal_items
+from app.services import dish_emoji, meal_items
 from app.services.close_row import ok_row
 from app.services.numbers import shows_numbers, toggle_label
 
@@ -186,12 +186,13 @@ def _row_label(db, fav: FavoriteMeal, numbers: bool) -> str:
     card = _card()
     dish = crud_favorite_meal.dish_if_any(db, fav)
     name = card._capital(dish.canonical_name if dish is not None else fav.name)
+    mark = dish_emoji.lead(name)
     held, grams = _numbers(db, fav, dish)
     calories = held.get("calories")
     if not numbers or calories is None:
-        return card._cut(name, PAIR_LABEL_MAX)
+        return mark + card._cut(name, PAIR_LABEL_MAX - len(mark))
     tail = f" · {_kcal(calories, dish, grams)}"
-    return card._cut(name, ROW_LABEL_MAX - len(tail)) + tail
+    return mark + card._cut(name, ROW_LABEL_MAX - len(mark) - len(tail)) + tail
 
 
 def _list_screen(db, favs: list, page: int, notice, numbers: bool) -> Screen:

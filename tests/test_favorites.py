@@ -90,7 +90,10 @@ def _callbacks(markup) -> list[str]:
 
 
 def _labels(markup) -> list[str]:
-    return [b.text for row in markup.inline_keyboard for b in row]
+    # The no-break space after a dish's emoji reads as a space (see test_dish_emoji).
+    return [
+        b.text.replace("\u00a0", " ") for row in markup.inline_keyboard for b in row
+    ]
 
 
 # --- naming ------------------------------------------------------------------
@@ -166,10 +169,10 @@ def test_list_is_most_recent_first_and_pages_by_four(Session):
         first = fv.open_list(db, 42, 0)
         labels = _labels(first.markup)
         assert labels[:8:2] == [
-            "Блюдо 0 · ≈ 420 ккал",
-            "Блюдо 5 · ≈ 420 ккал",
-            "Блюдо 4 · ≈ 420 ккал",
-            "Блюдо 3 · ≈ 420 ккал",
+            "🍽 Блюдо 0 · ≈ 420 ккал",
+            "🍽 Блюдо 5 · ≈ 420 ккал",
+            "🍽 Блюдо 4 · ≈ 420 ккал",
+            "🍽 Блюдо 3 · ≈ 420 ккал",
         ]
         # Pager on page 1 of 2: no ◀️ at the start.
         assert labels[8:] == ["1/2", "▶️"]
@@ -177,9 +180,9 @@ def test_list_is_most_recent_first_and_pages_by_four(Session):
 
         second = fv.open_list(db, 42, 1)
         assert _labels(second.markup) == [
-            "Блюдо 2 · ≈ 420 ккал",
+            "🍽 Блюдо 2 · ≈ 420 ккал",
             "✏️",
-            "Блюдо 1 · ≈ 420 ккал",
+            "🍽 Блюдо 1 · ≈ 420 ккал",
             "✏️",
             "◀️",
             "2/2",
@@ -192,7 +195,7 @@ def test_single_page_has_no_pager(Session):
     with Session() as db:
         _fav(db, _user(db, numbers=True))
         assert _labels(fv.open_list(db, 42).markup) == [
-            "Самса веган · ≈ 420 ккал",
+            "🍽 Самса веган · ≈ 420 ккал",
             "✏️",
         ]
 
@@ -200,7 +203,7 @@ def test_single_page_has_no_pager(Session):
 def test_list_names_dishes_only_while_numbers_are_off(Session):
     with Session() as db:
         _fav(db, _user(db))
-        assert _labels(fv.open_list(db, 42).markup) == ["Самса веган", "✏️"]
+        assert _labels(fv.open_list(db, 42).markup) == ["🍽 Самса веган", "✏️"]
 
 
 def test_list_shows_only_my_active_favorites(Session):
@@ -418,7 +421,7 @@ def test_menu_button_sends_the_list(Session):
     assert state == tg.CHOOSING_ACTION
     assert message.replies[-1].startswith("<b>⭐ Избранное</b>")
     assert message.kwargs[-1]["parse_mode"] == "HTML"
-    assert _labels(message.kwargs[-1]["reply_markup"]) == ["Самса веган", "✏️"]
+    assert _labels(message.kwargs[-1]["reply_markup"]) == ["🍽 Самса веган", "✏️"]
 
 
 def _query(data, telegram_id=42, edit=None):
