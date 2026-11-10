@@ -318,3 +318,19 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02
+- [ ] **TD-261**: A news send refused permanently (BadRequest: chat gone, bad HTML) is retried every 15 min for up to 14 days: ERROR logs, no duplicates. Treat a 400 as final like Forbidden.
+  - **Priority:** Low
+  - **Source:** feat/bot-news review (2026-11-10)
+  - **Created:** 2026-11-10
+- [ ] **TD-262**: `bot_news._joined_after` compares the UTC date of `created_at`: someone who joined after local midnight on the day after the news can still get it.
+  - **Priority:** Low
+  - **Source:** feat/bot-news review (2026-11-10)
+  - **Created:** 2026-11-10
+- [ ] **TD-263**: Settings writers that don't lock the user row (zone, switches) can overwrite `news_seen` / the week mark written meanwhile by a send; narrow window, worst case one repeat.
+  - **Priority:** Low
+  - **Source:** feat/bot-news review (2026-11-10)
+  - **Created:** 2026-11-10
+- [ ] **TD-264**: The news/week claim lock (`with_for_update` + populate_existing) is tested on SQLite only: the `dev` user on the mini has no Docker/Postgres, so TWO_PEOPLE_DB_URL cases did not run for feat/bot-news and feat/standard-dish-names.
+  - **Priority:** Medium
+  - **Source:** feat/bot-news review (2026-11-10)
+  - **Created:** 2026-11-10
