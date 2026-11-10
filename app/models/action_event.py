@@ -24,6 +24,7 @@ PERSON_KINDS = (PHOTO, TEXT, VOICE, BUTTON, COMMAND)
 # came. A button is its callback's verb, the text before the first colon.
 BUTTON_VERBS = (
     "dh",
+    "dy",
     "fav",
     "fb",
     "fl",
@@ -55,6 +56,7 @@ MENU_LABELS = (
 COMMANDS = (
     "cancel",
     "consult",
+    "diary",
     "feedback",
     "grant_sub",
     "invite",

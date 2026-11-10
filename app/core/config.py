@@ -165,6 +165,8 @@ class Settings(BaseSettings):
     # Weekly check of the models' shutdown dates; the bot messages the admins.
     MODEL_WATCH_ENABLED: bool = True
     MODEL_WATCH_WARN_DAYS: int = 90
+    # /diary as a widget in the message (Bot API 10.4); false sends the same day as text.
+    DIARY_WIDGET: bool = True
 
     def model_ref_for(self, task: str) -> Optional[str]:
         """The configured model for ``task`` (vision/text/barcode/label_ocr)."""

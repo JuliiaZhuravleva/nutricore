@@ -182,10 +182,10 @@ def test_the_command_is_in_each_admins_menu_and_nobody_elses(monkeypatch):
         raw = params.get("scope")
         return json.loads(raw) if isinstance(raw, str) else raw
 
-    assert names(sent_menus[0]) == ["start", "feedback"]
+    assert names(sent_menus[0]) == ["start", "diary", "feedback"]
     assert scope(sent_menus[0]) is None
     assert [names(p) for p in sent_menus[1:]] == [
-        ["start", "feedback", "invite", "users"]
+        ["start", "diary", "feedback", "invite", "users"]
     ] * 2
     assert [scope(p) for p in sent_menus[1:]] == [
         {"type": "chat", "chat_id": 1001},
