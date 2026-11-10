@@ -1,4 +1,4 @@
-"""📣 Что нового after a big release: see ``app.services.bot_news``."""
+"""✨ Что нового after a big release: see ``app.services.bot_news``."""
 
 import asyncio
 import logging

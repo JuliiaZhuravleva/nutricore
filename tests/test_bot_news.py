@@ -1,4 +1,4 @@
-"""📣 Что нового: quiet, once, in daytime, on by default, off in 🔔 (owner 2026-11-10)."""
+"""✨ Что нового: quiet, once, in daytime, on by default, off in 🔔 (owner 2026-11-10)."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def test_the_news_goes_once_silently_with_a_way_to_turn_it_off(db):
     kwargs = bot.send_message.await_args.kwargs
     assert kwargs["chat_id"] == 42
     assert kwargs["disable_notification"] is True
-    assert kwargs["text"].startswith("<b>📣 Что нового</b>\n\nНовое: <b>x</b>")
+    assert kwargs["text"].startswith("<b>✨ Что нового</b>\n\nНовое: <b>x</b>")
     assert "без звука" in kwargs["text"]
     buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
     assert [b.callback_data for b in buttons] == ["ok:close", reminders.OPEN]
@@ -174,12 +174,12 @@ def test_a_blocked_bot_is_counted_and_not_retried(db):
 def test_the_switch_lives_in_reminders_and_says_so(db):
     user = _user(db)
     view = reminders.settings_view(db, user, NOON)
-    assert "📣 Новости бота: после больших обновлений, без звука." in view.text
+    assert "✨ Новости бота: после больших обновлений, без звука." in view.text
     labels = [b.text for row in view.markup.inline_keyboard for b in row]
-    assert "📣 Новости: вкл" in labels
+    assert "✨ Новости: вкл" in labels
     off = reminders.handle_callback(db, 42, "rm:news", NOON)
     assert off.text.startswith("<i>✓ Новости бота выключены</i>")
-    assert "📣 Новости бота: не присылаю." in off.text
+    assert "✨ Новости бота: не присылаю." in off.text
     assert _user(db).settings[NEWS_ON] is False
     on = reminders.handle_callback(db, 42, "rm:news", NOON)
     assert on.text.startswith("<i>✓ Новости бота включены</i>")

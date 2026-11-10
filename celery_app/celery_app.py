@@ -45,7 +45,7 @@ app.conf.beat_schedule = {
         "schedule": crontab(minute="*/15"),
         "options": {"expires": 840},  # after a restart, no pile of old runs
     },
-    # 📣 after a big release, in each person's daytime; the task checks who.
+    # ✨ after a big release, in each person's daytime; the task checks who.
     "bot-news": {
         "task": "celery_app.tasks.bot_news.send_news",
         "schedule": crontab(minute="*/15"),

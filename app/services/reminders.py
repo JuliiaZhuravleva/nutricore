@@ -1003,7 +1003,7 @@ def settings_view(
     lines.append("🗓 Итог недели: " + ("вс, 22:00." if week else "не присылаю."))
     news = bot_news.news_on(user)
     lines.append(
-        "📣 Новости бота: "
+        "✨ Новости бота: "
         + ("после больших обновлений, без звука." if news else "не присылаю.")
     )
     off = cfg.mode == OFF
@@ -1033,7 +1033,7 @@ def settings_view(
     rows.append(
         [
             _btn(f"🔔 Звук: {'вкл' if cfg.sound else 'выкл'}", "snd"),
-            _btn(f"📣 Новости: {'вкл' if news else 'выкл'}", "news"),
+            _btn(f"✨ Новости: {'вкл' if news else 'выкл'}", "news"),
         ]
     )
     rows.append(

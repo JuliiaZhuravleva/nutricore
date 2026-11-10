@@ -1,7 +1,7 @@
-"""📣 Что нового: one quiet message after a big release (owner 2026-11-10).
+"""✨ Что нового: one quiet message after a big release (owner 2026-11-10).
 
-    the news → <b>📣 Что нового</b>, a few lines, a quiet note how to turn it off,
-      [✅ ОК] [⚙️ Настроить]; ⚙️ opens 🔔 Напоминания, where «📣 Новости» flips it
+    the news → <b>✨ Что нового</b>, a few lines, a quiet note how to turn it off,
+      [✅ ОК] [⚙️ Настроить]; ⚙️ opens 🔔 Напоминания, where «✨ Новости» flips it
 
 On for everyone unless turned off (the owner: «по дефолту присылаем»), silent always.
 A news item is written into ``NEWS`` in the release branch that ships what it tells;
@@ -41,7 +41,7 @@ FROM_HOUR = 10  # local hours a news item may go out in: [FROM_HOUR, TO_HOUR)
 TO_HOUR = 21
 FRESH_DAYS = 14
 SETTINGS_OPEN = "rm:o"  # == reminders.OPEN, which imports this module
-TITLE = "<b>📣 Что нового</b>"
+TITLE = "<b>✨ Что нового</b>"
 FOOT = (
     "<i>Такие сообщения приходят без звука и только после больших обновлений. "
     "Выключить: ⚙️ Настроить.</i>"
