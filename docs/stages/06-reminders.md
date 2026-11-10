@@ -127,6 +127,31 @@ Slice **R1c** on this branch. Where these disagree with R3, R9, §3.1, §5.6, §
      from the research table, worded about «the records there are», a switch in 🔔 settings to
      turn them off. No causes, no moral words about food, no weight, no inferred «hard day».
 
+## Owner's decisions (2026-11-11): the morning question «how much of yesterday is recorded»
+
+Not built. Idea: each morning ask how complete yesterday's records are, only when yesterday had
+at least one record, so averages are not drawn from days with only part of the food in them.
+Mock screens were read by 4 isolated fresh-eyes viewers (round 1: «Почти всё / Больше половины
+/ Малую часть»).
+
+- **D10. Sent at 10:00 local**, silent, a separate message (not attached to the day's first
+  interaction). Independent of the evening reminder.
+- **D11. An answer meaning "very little recorded" takes the day out of the 7-day averages
+  only.** Observations and the week summary still use the day and mark it. Records always stay.
+- **D12. The evening «✖ Выкл» does not stop the morning question**, and the 🔔 screen says so.
+  The morning question has its own switch there and its own «✖ Не спрашивать».
+- **D13. "Yesterday" ends at local midnight** by default; a per-person boundary for night
+  shifts is TD-261. The 🔔 screen as a whole (5 action rows with the new switch) is TD-262.
+- **Wording: open.** The owner wants a plain, informal yes/partly/no question with icons on the
+  buttons («Удалось вчера записать всю еду?» — нет / частично / да). Round 1 found that
+  «получилось записать» reads as a grade to 4 of 4 viewers while «…есть в записях» does not;
+  round 2 tests the owner's wording against a records-worded one and hands vs fill-bar icons.
+- Round-1 copy findings to keep in any wording: the effect of each answer in one plain line
+  under the question (not an italic footnote, which 4 of 4 skipped); the excluded day drawn
+  without its bar and number in 🔢 (a short bar read as "ate little" to 4 of 4); the stop
+  notice says «утром больше не спрашиваю…» (not «про вчерашний день», read as "only that day");
+  the 🔔 text no longer promises «не больше одного сообщения в день».
+
 ## Built differently from the text below (R1a/R1b, recorded 2026-11-07)
 
 - The 🗓 week toggle lives in the 🔔 sub-screen (Q4), the hub keeps 5 rows.
