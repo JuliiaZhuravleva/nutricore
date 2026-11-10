@@ -74,6 +74,7 @@ from app.services import (
     portion_suggestions,
     reminders,
     routines,
+    saved_dishes,
     settings_screen,
     stats_screen,
     voice,
@@ -475,7 +476,12 @@ def _schedule_personal_food_save(
 
 
 async def _analyze_and_parse(
-    *, kind: str, payload: str, input_ref: str, telegram_id: int | None
+    *,
+    kind: str,
+    payload: str,
+    input_ref: str,
+    telegram_id: int | None,
+    saved: tuple = (),
 ) -> dict:
     """Run the OpenAI analysis for `kind`, record it to ai_call_logs, and return
     the parsed nutrition.
@@ -483,22 +489,28 @@ async def _analyze_and_parse(
     The single analyze pipeline shared by the background read (``_read_one``)
     and the replay (``reprocess``) so both go through the same code AND the same
     audit trail. Raises ``ModelUnavailableError`` on a dead model and ``ValueError``
-    on a malformed response (both handled by the callers).
+    on a malformed response (both handled by the callers). ``saved``: the person's
+    nearest dishes (``saved_dishes.candidates``), offered to a text or voice read.
     """
     svc = telegram_service.openai_service
+    offer = {"saved": saved_dishes.prompt_list(saved)} if saved else {}
     if kind == "image":
         coro = svc.analyze_food_image(payload)
     elif kind == "voice":
-        coro = svc.analyze_food_entry(payload, spoken=True)
+        coro = svc.analyze_food_entry(payload, spoken=True, **offer)
     else:
-        coro = svc.analyze_food_entry(payload)
+        coro = svc.analyze_food_entry(payload, **offer)
     return await analyze_and_log(
         coro,
         kind=kind,
         input_ref=input_ref,
         telegram_id=telegram_id,
         model=svc.model_for("vision" if kind == "image" else "text"),
-        parse=_parse_nutrition,
+        parse=(
+            saved_dishes.parser(saved, _parse_nutrition)
+            if saved and kind != "image"
+            else _parse_nutrition
+        ),
     )
 
 
@@ -760,22 +772,30 @@ async def _reading(bot, job: capture.Read) -> tuple:
         )
         return resolution.nutrition, resolution
     if job.kind == capture.TEXT:
-        nutrition = await _analyze_and_parse(
-            kind="text",
-            payload=job.text,
-            input_ref=job.text,
-            telegram_id=job.telegram_id,
-        )
-        return nutrition, None
-    words = await _voice_words(bot, job)
-    nutrition = await _analyze_and_parse(
-        kind="voice",
-        payload=words,
+        kind, words, ref = "text", job.text, job.text
+    else:
         # What was said goes in no log: the row names the file.
-        input_ref=job.file_id,
-        telegram_id=job.telegram_id,
+        kind, words, ref = "voice", await _voice_words(bot, job), job.file_id
+    # The person's own dishes first: a known сырок is that сырок, not a new twin.
+    saved = await saved_dishes.candidates(
+        telegram_service.openai_service,
+        job.telegram_id,
+        words,
+        input_ref=ref,
+        sessions=SessionLocal,
     )
-    return nutrition, None
+    nutrition = await _analyze_and_parse(
+        kind=kind,
+        payload=words,
+        input_ref=ref,
+        telegram_id=job.telegram_id,
+        # Only when there is something to offer: a read without dishes stays as it was.
+        **({"saved": saved} if saved else {}),
+    )
+    found = saved_dishes.resolution_for(
+        nutrition, saved, job.telegram_id, sessions=SessionLocal
+    )
+    return (found.nutrition, found) if found else (nutrition, None)
 
 
 async def _voice_bytes(bot, job: capture.Read) -> bytes:

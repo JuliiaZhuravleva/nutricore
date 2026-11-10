@@ -110,6 +110,18 @@ _RUSSIAN_NAMES_RULE = """Write every "foods" item and "portion" in Russian ("о�
         exactly as printed ("Pringles Original", "Простоквашино")."""
 
 
+# A typed or spoken meal names one of the person's dishes (2026-11-10). The list is
+# only the nearest few by meaning; which one, if any, is the model's call, and the
+# answer is checked against the list sent (``saved_dishes``).
+_SAVED_DISHES_RULE = """The user message may end with "Saved dishes": the person's own
+        dishes, as a JSON list of {"n": number, "name": str, "serving_g": number|null}. When a
+        food in the entry is the same dish or product as one of them (the same kind and
+        variant, not merely a similar food), put "saved": n on its "food_items" entry and use
+        that name exactly in "foods" and "food_items". Otherwise "saved": null. If the entry
+        does not say how much of that food was eaten, count "serving_g" per piece or serving
+        for "portion_grams" and the numbers."""
+
+
 # Stage 5, slice B. Same call as the analysis, no extra one. Keys are the ones in
 # ``food_groups.GROUPS``. Presence only: an empty list is a normal answer.
 _FOOD_GROUPS_RULE = """Also return "food_items": one entry per item in "foods", same names:
@@ -308,9 +320,13 @@ class OpenAIService:
             raise voice.NoSpeech()
         return voice.Heard(text, voice.PAID, model)
 
-    async def analyze_food_entry(self, text: str, *, spoken: bool = False) -> Dict:
+    async def analyze_food_entry(
+        self, text: str, *, spoken: bool = False, saved: Optional[list] = None
+    ) -> Dict:
         """Analyze food entry text and extract nutritional information. ``spoken``:
-        the words of a voice note, where a person takes things back aloud."""
+        the words of a voice note, where a person takes things back aloud. ``saved``:
+        the person's nearest dishes (``saved_dishes.prompt_list``), to name one of them
+        when it is what was eaten."""
         system_prompt = (
             """You are a nutrition expert assistant. Analyze food entries and extract nutritional information.
         Return data in the following JSON format:
@@ -338,10 +354,15 @@ class OpenAIService:
         )
         if spoken:
             system_prompt += "\n\n        " + voice.LAST_CORRECTION_RULE
+        if saved:
+            system_prompt += "\n\n        " + _SAVED_DISHES_RULE
 
         user_prompt = (
             f"Analyze this food entry and extract nutritional information: {text}"
         )
+        if saved:
+            # The names are the person's own words, so they travel here, not above.
+            user_prompt += "\n\nSaved dishes: " + json.dumps(saved, ensure_ascii=False)
 
         response = await self._create(
             task="text",
@@ -792,7 +813,9 @@ class OpenAIService:
     # Embeddings (ADR-0003 §2 / B2)
     # -----------------------------------------------------------------------
 
-    async def embed_text(self, text: str) -> list[float]:
+    async def embed_text(
+        self, text: str, *, input_ref: Optional[str] = None
+    ) -> list[float]:
         """Embed ``text`` using the configured OpenAI embedding model.
 
         Uses the Embeddings API — NOT ``chat.completions`` (ADR-0002 split-client
@@ -818,7 +841,7 @@ class OpenAIService:
             embedding: list[float] = response.data[0].embedding
             record_ai_call(
                 kind="embedding",
-                input_ref=(text[:200] if text else None),
+                input_ref=input_ref or (text[:200] if text else None),
                 model=settings.OPENAI_EMBEDDING_MODEL,
                 telegram_id=None,
                 status="ok",
@@ -829,7 +852,7 @@ class OpenAIService:
         except Exception as exc:
             record_ai_call(
                 kind="embedding",
-                input_ref=(text[:200] if text else None),
+                input_ref=input_ref or (text[:200] if text else None),
                 model=settings.OPENAI_EMBEDDING_MODEL,
                 telegram_id=None,
                 status="error",
