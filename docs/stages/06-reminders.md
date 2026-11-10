@@ -142,15 +142,40 @@ Mock screens were read by 4 isolated fresh-eyes viewers (round 1: «Почти �
   The morning question has its own switch there and its own «✖ Не спрашивать».
 - **D13. "Yesterday" ends at local midnight** by default; a per-person boundary for night
   shifts is TD-261. The 🔔 screen as a whole (5 action rows with the new switch) is TD-262.
-- **Wording: open.** The owner wants a plain, informal yes/partly/no question with icons on the
-  buttons («Удалось вчера записать всю еду?» — нет / частично / да). Round 1 found that
-  «получилось записать» reads as a grade to 4 of 4 viewers while «…есть в записях» does not;
-  round 2 tests the owner's wording against a records-worded one and hands vs fill-bar icons.
-- Round-1 copy findings to keep in any wording: the effect of each answer in one plain line
-  under the question (not an italic footnote, which 4 of 4 skipped); the excluded day drawn
-  without its bar and number in 🔢 (a short bar read as "ate little" to 4 of 4); the stop
-  notice says «утром больше не спрашиваю…» (not «про вчерашний день», read as "only that day");
-  the 🔔 text no longer promises «не больше одного сообщения в день».
+- **D14. Wording (owner's yes, 2026-11-11, after fresh-eyes round 2).** Round 2 compared the
+  owner's «Удалось вчера записать всю еду?» (👍/✍️/✋ Нет), «Вчерашняя еда вся в записях?»
+  (👍/✍️/✋ Почти нет) and the same with fill bars ▰▰▱. The records wording with hands won
+  (10 of 12 points; «Удалось» read as a test to 3 of 4; bars read as a score of the day to 4 of 4
+  and were too small for 2). Copy, exact:
+  - **Question** (10:00 local, silent, only when yesterday has ≥ 1 record):
+    «☀️ <b>Записи за вчера, вт 10 ноября</b>
+    Вчерашняя еда вся в записях?
+    Можно не отвечать — тогда день считается как обычно. Да или частично — тоже.
+    Почти нет — вторник не войдёт в средние за 7 дней, а в итогах будет с пометкой.»
+    Buttons: `[👍 Да] [✍️ Частично] [✋ Почти нет]` / `[✖ Не спрашивать утром]`.
+  - **Effect:** Да, Частично or no answer → the day counts as usual. Почти нет → out of the 7-day
+    averages only; observations and the week summary keep it with a mark. Records never change.
+  - **After an answer** (the same message, edited): «✓ Ответ сохранён: почти нет. Вторник не
+    войдёт в средние за 7 дней, а в итогах будет с пометкой. Записи за него остаются в дневнике.»
+    (for Да/Частично: «✓ Ответ сохранён: частично. Вторник считается как обычно.»)
+    Buttons: `[✅ ОК]` / `[✏️ Изменить ответ]`. ✏️ brings the three answers back. The callback is
+    answered empty: a «Принято» toast read as a second, redundant confirmation to 3 of 4.
+  - **After «✖ Не спрашивать утром»:** «✓ Утром больше не спрашиваю, сколько записано за вчера.
+    Вечерние напоминания остаются. Включить потом — ⚙️ Настройки → 🔔 Напоминания → ☀️ Вопрос
+    утром.» Buttons: `[✅ ОК]` / `[☀️ Вернуть вопрос]` (hanging-undo rule: ✅ ОК first). The
+    return → «✓ Вопрос утром включён: завтра в 10:00, если за сегодня будут записи.»
+  - **🔢 week numbers:** «🔢 В среднем за день (пт, пн): …», bars and numbers only for the
+    averaged days, then «Вторник отдельно: в записях только часть дня.» («Вторник не
+    считается: там записана малая часть» read as a punishment to 2 of 4).
+  - **🔔 settings:** a line «☀️ Утром, в 10:00 — вопрос про вчерашние записи: присылаю / не
+    присылаю.», the sentence ««✖ Выкл» выключает только его.» after the evening paragraph, the
+    button `☀️ Вопрос утром: вкл/выкл`. Its state-or-action ambiguity (4 of 4) is TD-262.
+  - **Not drawn yet:** the mark on a «почти нет» day in the Sunday summary and in observations.
+- Round-1 findings kept above: the effect line in plain text, never an italic footnote (4 of 4
+  skipped it); the excluded day without its bar (a short bar read as "ate little" to 4 of 4, to
+  0 of 4 in round 2); «утром больше не спрашиваю…», not «про вчерашний день» (read as "only that
+  day" 4 of 4, 0 of 4 in round 2); the 🔔 text no longer promises «не больше одного сообщения в
+  день».
 
 ## Built differently from the text below (R1a/R1b, recorded 2026-11-07)
 
