@@ -776,7 +776,7 @@ async def _reading(bot, job: capture.Read) -> tuple:
     else:
         # What was said goes in no log: the row names the file.
         kind, words, ref = "voice", await _voice_words(bot, job), job.file_id
-    # The person's own dishes first: a known сырок is that сырок, not a new twin.
+    # The person's own dishes first: a known dish is that dish, not a new twin.
     saved = await saved_dishes.candidates(
         telegram_service.openai_service,
         job.telegram_id,

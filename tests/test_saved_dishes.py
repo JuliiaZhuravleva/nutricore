@@ -30,7 +30,7 @@ from tests.test_capture_router import (  # noqa: F401 (fixtures)
 )
 from tests.test_openai_service import _create_kwargs, _service_with_mock_client
 
-SAVED = "Сырок творожный глазированный"
+SAVED = "Запеканка творожная"
 
 
 class Model:
@@ -144,9 +144,9 @@ def _dishes(db) -> int:
 
 def test_a_typed_known_dish_is_that_dish_with_its_numbers(db, dish, near, model):
     near.ids = [dish.id]
-    asked = model(_answer(("глазированный сырок с варёной сгущёнкой", 1)))
+    asked = model(_answer(("запеканка творожная с изюмом", 1)))
 
-    wire = send(text("съела сырок глазированный с варёной сгущёнкой"))
+    wire = send(text("съела творожную запеканку с изюмом"))
 
     meal = _meal(db)
     (item,) = _items(db, meal)
@@ -165,8 +165,8 @@ def test_a_typed_known_dish_is_that_dish_with_its_numbers(db, dish, near, model)
     # The typed words name the embedding's log row; they are already in the text's.
     assert asked.embedded == [
         (
-            "съела сырок глазированный с варёной сгущёнкой",
-            "съела сырок глазированный с варёной сгущёнкой",
+            "съела творожную запеканку с изюмом",
+            "съела творожную запеканку с изюмом",
         )
     ]
 
@@ -175,9 +175,9 @@ def test_a_plate_links_the_known_dish_and_keeps_the_models_numbers(
     db, dish, near, model
 ):
     near.ids = [dish.id]
-    model(_answer(("сырок глазированный", 1), ("чай", None), calories=175.0))
+    model(_answer(("творожная запеканка", 1), ("чай", None), calories=175.0))
 
-    send(text("сырок и чай"))
+    send(text("запеканка и чай"))
 
     meal = _meal(db)
     first, second = _items(db, meal)
@@ -185,7 +185,7 @@ def test_a_plate_links_the_known_dish_and_keeps_the_models_numbers(
     assert second.name == "чай" and second.personal_food_id != dish.id
     assert meal.resolution_source is None
     assert float(meal.calories) == pytest.approx(175.0)
-    assert _dishes(db) == 2  # чай is new, the сырок is not
+    assert _dishes(db) == 2  # чай is new, the запеканка is not
 
 
 def test_a_dish_the_model_did_not_pick_is_a_new_one_as_before(db, dish, near, model):
@@ -203,19 +203,19 @@ def test_a_dish_the_model_did_not_pick_is_a_new_one_as_before(db, dish, near, mo
 
 def test_a_number_that_was_never_sent_names_nothing(db, dish, near, model):
     near.ids = [dish.id]
-    model(_answer(("сырок", 5)))
+    model(_answer(("запеканка", 5)))
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     (item,) = _items(db, _meal(db))
-    assert item.name == "сырок" and item.personal_food_id != dish.id
+    assert item.name == "запеканка" and item.personal_food_id != dish.id
 
 
 def test_no_dishes_to_find_costs_no_embedding_and_offers_nothing(db, dish, near, model):
     near.embeddings = False
-    asked = model(_answer(("сырок", None)))
+    asked = model(_answer(("запеканка", None)))
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     assert asked.embedded == []
     assert asked.asked[0]["saved"] is None
@@ -228,17 +228,17 @@ def test_a_failed_lookup_still_reads_the_meal(
         raise RuntimeError("pgvector gone")
 
     monkeypatch.setattr(crud_personal_food, "nearest", broken)
-    asked = model(_answer(("сырок", None)))
+    asked = model(_answer(("запеканка", None)))
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     assert asked.asked[0]["saved"] is None
-    assert _items(db, _meal(db))[0].name == "сырок"
+    assert _items(db, _meal(db))[0].name == "запеканка"
     assert "lookup failed at nearest" in caplog.text
 
 
 def test_a_failed_embedding_logs_no_words(db, dish, near, model, caplog):
-    asked = model(_answer(("сырок", None)))
+    asked = model(_answer(("запеканка", None)))
 
     async def broken(words, *, input_ref=None):
         raise RuntimeError(f"bad input: {words}")
@@ -249,21 +249,21 @@ def test_a_failed_embedding_logs_no_words(db, dish, near, model, caplog):
 
     assert "lookup failed at embed" in caplog.text
     assert "тайное слово" not in caplog.text
-    assert _items(db, _meal(db))[0].name == "сырок"
+    assert _items(db, _meal(db))[0].name == "запеканка"
 
 
 def test_a_broken_dish_lookup_after_the_read_keeps_the_meal(
     db, dish, near, model, monkeypatch, caplog
 ):
     near.ids = [dish.id]
-    model(_answer(("сырок", 1)))
+    model(_answer(("запеканка", 1)))
 
     def broken(*_, **__):
         raise RuntimeError("no macros today")
 
     monkeypatch.setattr(saved_dishes, "_has_usable_macros", broken)
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     meal = _meal(db)
     (item,) = _items(db, meal)
@@ -289,9 +289,9 @@ def test_a_dish_without_numbers_links_but_keeps_the_models_numbers(
     dish.per_100g_calories = None
     db.commit()
     near.ids = [dish.id]
-    model(_answer(("сырок", 1)))
+    model(_answer(("запеканка", 1)))
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     meal = _meal(db)
     (item,) = _items(db, meal)
@@ -307,7 +307,7 @@ def test_a_name_that_matches_without_the_mark_gets_no_dish_numbers(
     near.ids = [dish.id]
     model(_answer((SAVED, None)))
 
-    send(text("другой сырок"))
+    send(text("другая запеканка"))
 
     meal = _meal(db)
     assert meal.resolution_source is None
@@ -316,11 +316,11 @@ def test_a_name_that_matches_without_the_mark_gets_no_dish_numbers(
 
 def test_an_item_worded_apart_from_its_food_still_takes_the_dish(db, dish, near, model):
     near.ids = [dish.id]
-    answer = _answer(("сырок", 1))
-    answer["foods"] = ["сырок глазированный"]
+    answer = _answer(("запеканка", 1))
+    answer["foods"] = ["творожная запеканка"]
     model(answer)
 
-    send(text("сырок"))
+    send(text("запеканка"))
 
     meal = _meal(db)
     (item,) = _items(db, meal)
@@ -345,17 +345,17 @@ def test_a_default_weight_is_not_offered_as_the_usual_serving(db, dish, near, mo
 
 def test_spoken_words_go_in_no_log_row(db, dish, near, model, monkeypatch, Session):
     near.ids = [dish.id]
-    asked = model(_answer(("сырок", 1)))
+    asked = model(_answer(("запеканка", 1)))
 
     async def words(bot, job):
-        return "сырок глазированный"
+        return "творожная запеканка"
 
     monkeypatch.setattr(tg, "_voice_words", words)
     job = SimpleNamespace(kind=capture.VOICE, file_id="voice-file", telegram_id=OWNER)
 
     nutrition, found = asyncio.run(tg._reading(None, job))
 
-    assert asked.embedded == [("сырок глазированный", "voice-file")]
+    assert asked.embedded == [("творожная запеканка", "voice-file")]
     assert asked.asked[0]["spoken"] is True
     assert nutrition["foods"] == [SAVED]
     assert found.source == "saved_rag"
@@ -369,7 +369,7 @@ def test_the_model_sees_the_dishes_in_the_user_message_only():
     service = _service_with_mock_client()
     offered = [{"n": 1, "name": SAVED, "serving_g": 45}]
 
-    asyncio.run(service.analyze_food_entry("сырок", saved=offered))
+    asyncio.run(service.analyze_food_entry("запеканка", saved=offered))
 
     system, user = _create_kwargs(service)["messages"]
     assert SAVED not in system["content"]
@@ -380,7 +380,7 @@ def test_the_model_sees_the_dishes_in_the_user_message_only():
 def test_without_dishes_the_prompt_is_as_before():
     service = _service_with_mock_client()
 
-    asyncio.run(service.analyze_food_entry("сырок"))
+    asyncio.run(service.analyze_food_entry("запеканка"))
 
     system, user = _create_kwargs(service)["messages"]
     assert "Saved dishes" not in system["content"]
@@ -420,12 +420,167 @@ def test_embedding_log_names_the_given_reference(monkeypatch):
 def test_only_a_number_that_was_sent_renames(number, renamed):
     found = (saved_dishes.Candidate(7, SAVED, 0.4, 45.0),)
     data = {
-        "foods": ["сырок"],
-        "food_items": [{"name": "сырок", "groups": [], "saved": number}],
+        "foods": ["запеканка"],
+        "food_items": [{"name": "запеканка", "groups": [], "saved": number}],
     }
 
     saved_dishes._take_saved(data, found)
 
-    expected = SAVED if renamed else "сырок"
+    expected = SAVED if renamed else "запеканка"
     assert data["foods"] == [expected]
     assert data["food_items"] == [{"name": expected, "groups": []}]
+
+
+# --- review 2026-11-10: what the model says back never fails a read ---------------
+
+
+@pytest.mark.parametrize("number", ["²", "①", "1" * 5000, " 1 "])
+def test_a_number_int_cannot_read_is_dropped_not_raised(number):
+    found = (saved_dishes.Candidate(7, SAVED, 0.4, 45.0),)
+    data = {
+        "foods": ["запеканка"],
+        "food_items": [{"name": "запеканка", "saved": number}],
+    }
+
+    saved_dishes._take_saved(data, found)
+
+    expected = [7] if number == " 1 " else []
+    assert data[saved_dishes.MARKED] == expected
+
+
+def test_a_superscript_mark_still_saves_the_meal(db, dish, near, model, caplog):
+    near.ids = [dish.id]
+    model(_answer(("запеканка", "²")))
+
+    send(text("запеканка"))
+
+    (item,) = _items(db, _meal(db))
+    assert item.name == "запеканка" and item.personal_food_id != dish.id
+    assert "dish number is not a number" in caplog.text
+
+
+def test_marks_that_cannot_be_read_leave_the_read_standing(
+    db, dish, near, model, monkeypatch, caplog
+):
+    near.ids = [dish.id]
+    model(_answer(("запеканка", 1)))
+
+    def broken(*_):
+        raise RuntimeError("marks")
+
+    monkeypatch.setattr(saved_dishes, "_take_saved", broken)
+
+    send(text("запеканка"))
+
+    meal = _meal(db)
+    assert float(meal.calories) == pytest.approx(170.0)
+    assert meal.resolution_source is None
+    assert "could not read the model's dish marks" in caplog.text
+
+
+def test_one_dish_whose_serving_fails_leaves_out_only_itself(
+    db, dish, owner, near, model, monkeypatch, caplog
+):
+    other = PersonalFood(user_id=owner.id, canonical_name="Сломанное блюдо")
+    db.add(other)
+    db.commit()
+    near.ids = [other.id, dish.id]
+    real = saved_dishes.meal_items.dish_portion
+
+    def portion(session, row):
+        if row.id == other.id:
+            raise RuntimeError("bad favourite")
+        return real(session, row)
+
+    monkeypatch.setattr(saved_dishes.meal_items, "dish_portion", portion)
+    asked = model(_answer(("запеканка", 1)))
+
+    send(text("запеканка"))
+
+    assert asked.asked[0]["saved"] == [{"n": 1, "name": SAVED, "serving_g": 45}]
+    assert f"dish {other.id} left out" in caplog.text
+    assert "lookup failed" not in caplog.text
+
+
+def test_dishes_the_model_left_unmarked_leave_a_line(db, dish, near, model, caplog):
+    caplog.set_level("INFO", logger="app.services.saved_dishes")
+    near.ids = [dish.id]
+    model(_answer(("творог", None)))
+
+    send(text("творог"))
+
+    assert "0 of 1 sent marked, 1 foods eaten" in caplog.text
+
+
+def test_dishes_sent_but_never_checked_for_marks_is_a_warning(caplog):
+    found = (saved_dishes.Candidate(7, SAVED, 0.4, 45.0),)
+
+    assert saved_dishes.resolution_for({"foods": ["x"]}, found, None) is None
+    assert "the reply was not checked for marks" in caplog.text
+
+
+def test_no_candidates_after_an_embedding_is_a_warning(db, dish, near, model, caplog):
+    near.ids = []
+    model(_answer(("творог", None)))
+
+    send(text("творог"))
+
+    assert "0 candidates for user" in caplog.text
+    assert [r.levelname for r in caplog.records if "0 candidates" in r.message] == [
+        "WARNING"
+    ]
+
+
+def test_a_typed_dish_says_its_own_strategy(db, dish, near, model):
+    near.ids = [dish.id]
+    model(_answer(("запеканка", 1)))
+
+    send(text("запеканка"))
+
+    signals = _meal(db).resolution_signals
+    assert signals["strategy_chosen"] == signals["strategy_tried"][0] == "saved_text"
+
+
+def test_hidden_dishes_alone_cost_no_embedding(db, dish, owner):
+    from app.models.personal_food import PersonalFoodEmbedding
+
+    db.add(
+        PersonalFoodEmbedding(
+            personal_food_id=dish.id, text_embedded=SAVED, embedding=[0.25] * 1536
+        )
+    )
+    db.commit()
+    assert crud_personal_food.has_embeddings(db, owner.id)  # the known positive
+
+    dish.hidden_at = func.now()
+    db.commit()
+    assert not crud_personal_food.has_embeddings(db, owner.id)
+
+
+def test_a_plate_whose_foods_word_the_dish_apart_still_links_it(db, dish, near, model):
+    near.ids = [dish.id]
+    answer = _answer((SAVED, 1), ("чай", None), calories=175.0)
+    answer["foods"] = ["запеканка с изюмом", "чай"]
+    model(answer)
+
+    send(text("запеканка и чай"))
+
+    first = _items(db, _meal(db))[0]
+    assert (first.name, first.personal_food_id) == (SAVED, dish.id)
+    assert _dishes(db) == 2  # чай is new, the dish is not
+
+
+def test_one_dish_without_numbers_worded_apart_still_links(db, owner, near, model):
+    bare = PersonalFood(user_id=owner.id, canonical_name=SAVED)
+    db.add(bare)
+    db.commit()
+    near.ids = [bare.id]
+    answer = _answer((SAVED, 1))
+    answer["foods"] = ["запеканка с изюмом"]
+    model(answer)
+
+    send(text("запеканка"))
+
+    (item,) = _items(db, _meal(db))
+    assert item.personal_food_id == bare.id
+    assert _dishes(db) == 1
