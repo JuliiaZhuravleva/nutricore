@@ -144,12 +144,14 @@ def _mark(db, user: User, value: str | None) -> None:
 def _claim(db, user: User, news: News) -> tuple[bool, str | None]:
     """Mark the item under a row lock, reading the mark afresh: runs left queued by
     a restart overlap, and the second must find the first one's mark."""
-    db.execute(
+    # The rows must be read: an unread result neither locks on every dialect nor
+    # refreshes ``user`` (populate_existing works as rows are fetched).
+    db.scalars(
         select(User)
         .where(User.id == user.id)
         .with_for_update()
         .execution_options(populate_existing=True)
-    )
+    ).one()
     previous = (user.settings or {}).get(NEWS_SEEN)
     if previous == news.id or not news_on(user):
         db.rollback()
@@ -197,7 +199,12 @@ async def run(db, bot, now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     counts = {"sent": 0, "failed": 0, "blocked": 0}
     for user, news in users_due(db, now):
-        outcome = await _send(db, bot, user, news)
+        try:
+            outcome = await _send(db, bot, user, news)
+        except Exception:  # one person's row (deleted meanwhile…) must not stop all
+            logger.exception("news: send failed before it started")
+            db.rollback()
+            outcome = "failed"
         if outcome in counts:
             counts[outcome] += 1
     log = logger.error if counts["failed"] else logger.info

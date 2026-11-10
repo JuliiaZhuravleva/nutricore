@@ -82,12 +82,14 @@ def _mark(db, user: User, value: str | None) -> None:
 def _claim(db, user: User, monday: date) -> tuple[bool, str | None]:
     """Mark the week under a row lock, reading the mark afresh: runs left queued by a
     restart overlap, and the second must find the first one's mark."""
-    db.execute(
+    # The rows must be read: an unread result neither locks on every dialect nor
+    # refreshes ``user`` (populate_existing works as rows are fetched).
+    db.scalars(
         select(User)
         .where(User.id == user.id)
         .with_for_update()
         .execution_options(populate_existing=True)
-    )
+    ).one()
     previous = (user.settings or {}).get(WEEK_PUSH_SENT)
     if previous == monday.isoformat():
         db.rollback()

@@ -147,6 +147,34 @@ def test_a_run_left_queued_finds_the_first_runs_mark(db, monkeypatch):
     bot.send_message.assert_not_awaited()
 
 
+def test_a_claim_reads_the_mark_another_run_wrote_meanwhile(db):
+    """Two runs overlap: the second scanned before the first marked. Its claim must
+    see the mark through the lock, not its own copy from the scan."""
+    stale = _user(db)
+    assert NEWS_SEEN not in (stale.settings or {})
+    other = sessionmaker(bind=db.get_bind())()
+    row = other.get(User, 1)
+    row.settings = {NEWS_SEEN: ITEM.id}
+    other.commit()
+    other.close()
+    assert stale.settings.get(NEWS_SEEN) is None  # still the scan's copy
+    assert bot_news._claim(db, stale, ITEM) == (False, ITEM.id)
+
+
+def test_one_persons_broken_send_does_not_stop_the_others(db, monkeypatch):
+    db.add(User(id=2, telegram_id=43, settings={}, created_at=datetime(2026, 10, 1)))
+    db.commit()
+    real = bot_news._send
+
+    async def flaky(db, bot, user, news):
+        if user.id == 1:
+            raise RuntimeError("row gone")
+        return await real(db, bot, user, news)
+
+    monkeypatch.setattr(bot_news, "_send", flaky)
+    assert _run(db, _bot()) == {"sent": 1, "failed": 1, "blocked": 0}
+
+
 def test_a_send_that_never_left_is_tried_again(db):
     error = NetworkError("httpx.ConnectError: no route")
     error.__cause__ = httpx.ConnectError("no route")

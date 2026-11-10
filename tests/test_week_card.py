@@ -697,6 +697,18 @@ def test_a_run_left_queued_finds_the_first_runs_mark(db, monkeypatch):
     delivery.push.assert_not_awaited()
 
 
+def test_a_claim_reads_the_mark_another_run_wrote_meanwhile(db):
+    """The test above commits in this session, which expires the scan's copy anyway;
+    here the other run's commit is in another session, as in production."""
+    stale = _user(db)
+    other = sessionmaker(bind=db.get_bind())()
+    other.get(User, 1).settings = {WEEK_PUSH_SENT: "2026-10-19"}
+    other.commit()
+    other.close()
+    assert stale.settings.get(WEEK_PUSH_SENT) is None  # still the scan's copy
+    assert week_push._claim(db, stale, date(2026, 10, 19)) == (False, "2026-10-19")
+
+
 def test_one_users_bad_data_costs_nobody_else_their_summary(db, monkeypatch):
     _meal(db, _at(19), _item("овёс", "grain"))
     real = week_push._due_week
