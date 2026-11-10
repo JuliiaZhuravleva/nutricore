@@ -634,6 +634,13 @@ def _meal_favourite(db, meal: Meal):
     )
     if named is not None:
         return named
+    # A star made before 2026-11-10 was named by the meal's words, not its dishes.
+    old = favorites.favorite_name(
+        caption=None, description=meal.description, foods=None
+    )
+    named = crud_favorite_meal.find_active_by_name(db, meal.user_id, old)
+    if named is not None and not _is_dish_star(named):
+        return named
     for fav in crud_favorite_meal.list_active(db, meal.user_id):
         if fav.source_meal_id == meal.id and not _is_dish_star(fav):
             return fav

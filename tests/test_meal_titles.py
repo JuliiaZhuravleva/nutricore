@@ -1,4 +1,4 @@
-"""A meal is called by its dishes, not by the words it was sent with (owner 2026-11-10)."""
+"""A meal is called by its dishes, not by the words it was sent with (2026-11-10)."""
 
 from types import SimpleNamespace
 
@@ -46,6 +46,10 @@ def test_a_long_dish_list_is_cut_on_screens():
         ("Greek Yogurt", "Greek Yogurt"),
         # A name that is nothing but a tail keeps it: an empty dish name is worse.
         ("(82 g)", "(82 g)"),
+        # What tells one product from another is not a package.
+        ("Кефир (безлактозный)", "Кефир (безлактозный)"),
+        ("Йогурт (клубника)", "Йогурт (клубника)"),
+        ("Борщ — домашний", "Борщ — домашний"),
         (None, ""),
     ],
 )

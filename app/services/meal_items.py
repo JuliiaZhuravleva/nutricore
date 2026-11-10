@@ -143,7 +143,10 @@ def _foods(nutrients) -> list:
 
 
 # A shop's name carries its package: «… (Mondelez, 95 g)», «… — Молочный завод».
-_PACKAGE_TAIL = re.compile(r"(\s*\([^()]*\))+\s*$|\s+[—–]\s+[^—–]+$")
+# What tells one product from another stays: «Кефир (безлактозный)», «Борщ — домашний».
+_PACKAGE_TAIL = re.compile(
+    r"\s*\((?=[^()]*(?:\d|,|USDA))[^()]*\)\s*$|\s+[—–]\s+(?=[A-ZА-ЯЁ\d])[^—–]+$"
+)
 
 
 def product_dish_name(name) -> str:
@@ -618,6 +621,11 @@ def _write_reading(
     line of the plate and not the plate itself. ``first``: the position they start at.
     """
     wanted = names if names is not None else _names(meal_in)
+    foods = meal.nutrients.get("foods") if isinstance(meal.nutrients, dict) else None
+    if first == 0 and wanted and isinstance(foods, list) and foods != wanted:
+        # Screens call a meal by its foods (favorites.meal_title): the dishes written
+        # here, not a label with its package or a star's copy from before a rename.
+        meal.nutrients = {**meal.nutrients, "foods": list(wanted)}
     totals = _meal_totals(meal)
     read = any(value is not None for value in totals.values())
     one_dish = len(wanted) == 1 and not shared
