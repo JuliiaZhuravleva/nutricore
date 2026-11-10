@@ -2543,7 +2543,7 @@ def test_parse_portion_grams_rejects_implausible_values(vision_result, expected)
 def test_saved_rag_serves_unknown_macros_as_unknown(monkeypatch):
     """A saved row learned without a macro must not report it as 0.
 
-    _build_result coerced every NULL with `or 0`, so a row with calories but no
+    build_result coerced every NULL with `or 0`, so a row with calories but no
     protein was served as "Белки: 0г" under the "⭐ из твоей базы" badge — which
     carries no "проверь" qualifier at all.
     """
@@ -2560,7 +2560,7 @@ def test_saved_rag_serves_unknown_macros_as_unknown(monkeypatch):
     )
     signals = asyncio.run(_build_signals(None, _NUTRITION, "data:x"))
 
-    result = pls.SavedFoodRAGStrategy._build_result(
+    result = pls.SavedFoodRAGStrategy.build_result(
         pf=pf,
         signals_input=signals,
         distance=0.05,

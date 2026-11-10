@@ -1,8 +1,8 @@
 """A typed or spoken meal looks in the person's own dishes first (2026-11-10).
 
 A photo finds a saved dish by an embedding threshold (``SavedFoodRAGStrategy``). Typed
-words cannot: on 2026-11-10 a typed сырок sat 0.49 from the same сырок saved under its
-package name, against a threshold of 0.15, while unrelated dishes sat from 0.57. No
+words cannot: a dish typed in everyday words sat 0.49 from the same dish saved under
+its package name, against a threshold of 0.15, while unrelated dishes sat from 0.57. No
 threshold both finds it and keeps them apart.
 
 So the nearest few dishes go into the same analysis call, by name, and the model says
@@ -16,7 +16,9 @@ The lookup costs one embedding and never stops a read: any failure reads without
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
+
+from sqlalchemy.orm import Session
 
 from app.crud.crud_personal_food import crud_personal_food
 from app.crud.crud_user import crud_user
@@ -32,10 +34,12 @@ from app.services.product_lookup_service import (
     _parse_portion_grams,
 )
 
+if TYPE_CHECKING:  # pragma: no cover
+    from app.services.openai_service import OpenAIService
+
 logger = logging.getLogger(__name__)
 
-# How many dishes the model sees. On 2026-11-10 both of the person's сырки were the two
-# nearest to the typed one, the next dish was 0.57 away.
+# How many dishes the model sees: enough for a dish and its twins under other names.
 CANDIDATES = 8
 MATCH_SOURCE = "saved_text"
 
@@ -59,7 +63,7 @@ def _key(name: str) -> str:
 
 
 async def candidates(
-    svc,
+    svc: "OpenAIService",
     telegram_id: Optional[int],
     words: Optional[str],
     *,
@@ -93,12 +97,21 @@ async def candidates(
             near = crud_personal_food.nearest(
                 db, embedding=embedding, user_id=user_id, limit=CANDIDATES
             )
-            found = tuple(_candidate(db, dish, distance) for dish, distance in near)
+            found = tuple(
+                cand
+                for cand in (_candidate(db, dish, dist) for dish, dist in near)
+                if cand is not None
+            )
+        if not found:
+            # The user has embedded live dishes and no threshold applies, so none
+            # coming back means the base changed under us or something broke.
+            logger.warning("saved dishes: 0 candidates for user %s", user_id)
+            return found
         logger.info(
-            "saved dishes: %d candidates for user %s (nearest %s)",
+            "saved dishes: %d candidates for user %s (nearest %.3f)",
             len(found),
             user_id,
-            f"{found[0].distance:.3f}" if found else "none",
+            found[0].distance,
         )
         return found
     except Exception as exc:
@@ -114,8 +127,19 @@ async def candidates(
         return ()
 
 
-def _candidate(db, dish, distance: float) -> Candidate:
-    portion = meal_items.dish_portion(db, dish)
+def _candidate(db: Session, dish: PersonalFood, distance: float) -> Optional[Candidate]:
+    """One dish as the model sees it; None when its serving cannot be worked out, so
+    one broken dish costs only itself, not the lookup."""
+    try:
+        portion = meal_items.dish_portion(db, dish)
+    except Exception as exc:
+        logger.warning(
+            "saved dishes: dish %s left out, its serving failed (%s)",
+            dish.id,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return None
     return Candidate(
         dish_id=dish.id,
         name=dish.canonical_name,
@@ -149,30 +173,45 @@ def parser(found: tuple, parse: Callable) -> Callable:
     def run(raw):
         data = loads_model_json(raw) if isinstance(raw, str) else raw
         if isinstance(data, dict):
-            _take_saved(data, found)
+            try:
+                _take_saved(data, found)
+            except Exception as exc:
+                # An optional field never fails a paid read: read without the marks.
+                logger.warning(
+                    "saved dishes: could not read the model's dish marks (%s)",
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                data[MARKED] = []
         return parse(data)
 
     return run
 
 
-def _number(value) -> Optional[int]:
-    """The model's ``saved`` as a whole number: 2, "2" and 2.0 are 2; else None."""
+def _number(value: object) -> Optional[int]:
+    """The model's ``saved`` as a whole number: 2, "2" and 2.0 are 2; else None.
+    Only ASCII digits, and a few of them: "²".isdigit() is true and int() refuses it."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
     if isinstance(value, float) and value.is_integer():
         return int(value)
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value)
+    if isinstance(value, str):
+        value = value.strip()
+        if value.isascii() and value.isdigit() and len(value) <= 3:
+            return int(value)
     return None
 
 
 def _take_saved(data: dict, found: tuple) -> None:
+    """Pop each item's ``saved`` number; an item that names a dish sent takes the
+    dish's name, and the dish's id goes under ``MARKED``. Anything else is warned
+    about and dropped: the model's number counts only if it is one we sent."""
     by_number = dict(enumerate(found, 1))
-    renamed, marked = {}, []
+    renamed, marked, at = {}, [], {}
     items = data.get("food_items")
-    for entry in items if isinstance(items, list) else []:
+    for index, entry in enumerate(items if isinstance(items, list) else []):
         if not isinstance(entry, dict):
             continue
         raw = entry.pop("saved", None)
@@ -198,17 +237,26 @@ def _take_saved(data: dict, found: tuple) -> None:
             )
             continue
         renamed[_key(name)] = cand.name
+        at[index] = cand.name
         marked.append(cand.dish_id)
         entry["name"] = cand.name
     data[MARKED] = marked
     foods = data.get("foods")
     if isinstance(foods, str):
         foods = [foods]
-    if renamed and isinstance(foods, list):
-        data["foods"] = [
-            renamed.get(_key(food), food) if isinstance(food, str) else food
-            for food in foods
-        ]
+    if not renamed or not isinstance(foods, list):
+        return
+    # One item per food, in order (the food groups rule): the item's place names
+    # its food even when the two are worded apart, or the food makes a twin dish.
+    same_order = isinstance(items, list) and len(items) == len(foods)
+    data["foods"] = [
+        (
+            at[i]
+            if same_order and i in at
+            else renamed.get(_key(food), food) if isinstance(food, str) else food
+        )
+        for i, food in enumerate(foods)
+    ]
 
 
 def resolution_for(
@@ -221,7 +269,15 @@ def resolution_for(
     """One food eaten, and it is one of the dishes sent: the dish's numbers at the
     eaten grams. A plate keeps the model's numbers; its names still link to dishes.
     Never raises: the read is paid for by now, and the model's numbers still stand."""
-    marked = nutrition.pop(MARKED, None) or []
+    marked = nutrition.pop(MARKED, None)
+    if marked is None:
+        if found:
+            # Dishes were sent but the reply never passed ``parser``: a wiring bug.
+            logger.warning(
+                "saved dishes: %d dishes sent, the reply was not checked for marks",
+                len(found),
+            )
+        marked = []
     try:
         return _resolution(nutrition, found, marked, telegram_id, sessions)
     except Exception as exc:
@@ -234,13 +290,28 @@ def resolution_for(
 
 
 def _resolution(
-    nutrition, found, marked, telegram_id, sessions
+    nutrition: dict,
+    found: tuple,
+    marked: list,
+    telegram_id: Optional[int],
+    sessions: Callable,
 ) -> Optional[ResolutionResult]:
+    if not found:
+        return None
     foods = nutrition.get("foods") or []
-    if not found or len(foods) != 1 or len(marked) != 1:
+    # Every read with dishes sent says what the model did with them, so a model that
+    # never marks one is told apart from a lookup that never ran.
+    logger.info(
+        "saved dishes: %d of %d sent marked, %d foods eaten",
+        len(marked),
+        len(found),
+        len(foods),
+    )
+    if len(foods) != 1 or len(marked) != 1:
         return None
     cand = next((c for c in found if c.dish_id == marked[0]), None)
     if cand is None:
+        logger.warning("saved dishes: marked dish %s was not sent", marked[0])
         return None
     with sessions() as db:
         dish = db.get(PersonalFood, cand.dish_id)
@@ -263,7 +334,7 @@ def _resolution(
             portion_grams=_parse_portion_grams(nutrition),
             telegram_id=telegram_id,
         )
-        result = SavedFoodRAGStrategy._build_result(
+        result = SavedFoodRAGStrategy.build_result(
             pf=dish,
             signals_input=signals,
             distance=cand.distance,
@@ -272,6 +343,7 @@ def _resolution(
         )
         dish_id = dish.id
     result.signals["strategy_tried"] = [MATCH_SOURCE]
+    result.signals["strategy_chosen"] = MATCH_SOURCE
     result.signals["strategy_attempts"] = [{"strategy": MATCH_SOURCE, "outcome": "hit"}]
     result.signals["caption"] = None
     result.signals["portion_source"] = "text"

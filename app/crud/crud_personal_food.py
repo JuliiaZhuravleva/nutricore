@@ -22,7 +22,7 @@ import datetime
 import logging
 from typing import List, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -512,6 +512,14 @@ class CRUDPersonalFood:
                 PersonalFood, PersonalFood.id == PersonalFoodEmbedding.personal_food_id
             )
             .where(PersonalFood.user_id == user_id)
+            # The same rows the nearest-dish query reads, or a base of hidden dishes
+            # pays for an embedding on every meal and finds nothing.
+            .where(
+                or_(
+                    PersonalFood.hidden_at.is_(None),
+                    PersonalFood.merged_into_id.isnot(None),
+                )
+            )
             .limit(1)
         )
         return db.execute(stmt).first() is not None

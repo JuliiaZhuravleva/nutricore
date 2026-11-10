@@ -1163,7 +1163,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
                     signals.barcode,
                     pf.id,
                 )
-                return self._build_result(
+                return self.build_result(
                     pf=pf,
                     signals_input=signals,
                     distance=0.0,
@@ -1211,7 +1211,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
             distance,
             query_text,
         )
-        return self._build_result(
+        return self.build_result(
             pf=pf,
             signals_input=signals,
             distance=distance,
@@ -1220,7 +1220,7 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         )
 
     @staticmethod
-    def _build_result(
+    def build_result(
         *,
         pf: PersonalFood,
         signals_input: ImageSignals,
@@ -1233,6 +1233,9 @@ class SavedFoodRAGStrategy(ResolutionStrategy):
         Scales per-100g macros to the vision-estimated portion (same
         pattern as ``_scale_off_nutrition``). Confidence is always ``medium``
         (ADR-0003 §4b).
+
+        Public because a typed or spoken meal takes a saved dish the same way
+        (``saved_dishes``): a change here changes that path too, and its tests run.
         """
         portion_grams = signals_input.portion_grams
         # No weight read: the dish's guess, as its card counts it. Still nobody's weight.
