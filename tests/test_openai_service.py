@@ -619,6 +619,9 @@ def test_both_analyses_ask_for_russian_names_and_keep_brands_as_printed(method):
     system_prompt = _create_kwargs(service)["messages"][0]["content"]
     assert 'Write every "foods" item and "portion" in Russian' in system_prompt
     assert "stays\n        exactly as printed" in system_prompt
+    # Owner 2026-11-10: a dish gets a standard name, never the words it was sent with.
+    assert "a dish's standard name" in system_prompt
+    assert '"200 г", "2 штуки"' in system_prompt
     # The rule is appended, not a replacement: the JSON contract is still there.
     assert '"portion_grams"' in system_prompt
 

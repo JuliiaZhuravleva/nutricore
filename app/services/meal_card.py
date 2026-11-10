@@ -641,15 +641,7 @@ def _meal_favourite(db, meal: Meal):
 
 
 def _favourite_name(meal: Meal) -> str:
-    return favorites.favorite_name(
-        caption=None,
-        description=meal.description,
-        foods=(
-            (meal.nutrients or {}).get("foods")
-            if isinstance(meal.nutrients, dict)
-            else None
-        ),
-    )
+    return favorites.meal_title(meal)
 
 
 def _meal_star(db, meal: Meal, back: str) -> InlineKeyboardButton:

@@ -56,7 +56,7 @@ from app.services import (
 )
 from app.services.close_row import ok_row
 from app.services.day_card import DAY_ONLY, clock, local_time
-from app.services.favorites import Screen
+from app.services.favorites import Screen, meal_title
 
 logger = logging.getLogger(__name__)
 
@@ -739,7 +739,7 @@ def _logs(db, user: User, send: ReminderSend) -> list[Meal]:
 
 
 def _logged_line(meal: Meal, zone, today: date) -> str:
-    name = meal_card._esc(meal_card._capital(meal.description or "Блюдо"))
+    name = meal_card._esc(meal_card._capital(meal_title(meal)))
     if meal.deleted_at is not None:
         return f"↩️ Отменено: {name}."
     day = local_time(meal.meal_time, zone).date()
