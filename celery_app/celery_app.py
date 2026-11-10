@@ -13,6 +13,7 @@ app = Celery(
         "celery_app.tasks.model_watch",
         "celery_app.tasks.week_push",
         "celery_app.tasks.reminders",
+        "celery_app.tasks.bot_news",
     ],
 )
 
@@ -43,6 +44,12 @@ app.conf.beat_schedule = {
         "task": "celery_app.tasks.week_push.send_week_summaries",
         "schedule": crontab(minute="*/15"),
         "options": {"expires": 840},  # after a restart, no pile of old runs
+    },
+    # ✨ after a big release, in each person's daytime; the task checks who.
+    "bot-news": {
+        "task": "celery_app.tasks.bot_news.send_news",
+        "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},
     },
     "purge-reminder-sends": {
         "task": "celery_app.tasks.periodic.purge_reminder_sends",
