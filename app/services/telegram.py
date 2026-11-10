@@ -28,7 +28,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -55,6 +55,7 @@ from app.services import (
     capture,
     close_row,
     custom_emoji,
+    diary_widget,
     dishes,
     explain_screen,
     favorites,
@@ -1229,6 +1230,7 @@ async def _sweep_loop(application: Application, meals: list) -> None:
 # The few of every day; the rest stay out of the way, and the owner's get their own scope.
 _COMMANDS = (
     BotCommand("start", "Открыть меню"),
+    BotCommand("diary", "Дневник дня"),
     BotCommand("feedback", "Написать владельцу бота"),
 )
 _OWNER_COMMANDS = (
@@ -1976,6 +1978,115 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Stats",
         deliver=_card_delivery.tap,
     )
+
+
+async def _send_diary(bot, chat_id: int, diary) -> bool:
+    """The day as a widget; as text when widgets are off, the day does not fit one, or
+    Telegram refuses it (an old client, a chat it does not allow them in). True when
+    the day went out (or may have: a timed-out widget is not sent again as text)."""
+    if settings.DIARY_WIDGET and diary.html:
+        try:
+            await bot.do_api_request(
+                "sendWidget",
+                api_kwargs={
+                    "chat_id": chat_id,
+                    "html": diary.html,
+                    "caption": diary.caption,
+                    "reply_markup": diary.markup,
+                },
+            )
+            return True
+        except TimedOut:
+            # Telegram may have taken it: the text twin now could show the day twice.
+            logger.warning("Diary widget timed out, not sent again as text")
+            return True
+        except RetryAfter as e:
+            logger.warning(
+                "Diary widget hit the flood limit (%ss), nothing sent", e.retry_after
+            )
+            return False
+        except TelegramError as e:
+            logger.warning("Diary widget refused, sent as text: %s", str(e)[:200])
+    elif settings.DIARY_WIDGET:
+        logger.info("Diary day too big for a widget, sent as text")
+    try:
+        await bot.send_message(chat_id, diary.text, reply_markup=diary.markup)
+        return True
+    except TelegramError as e:
+        logger.error("Diary not sent, not even as text: %s", str(e)[:200])
+        return False
+
+
+DIARY_FAILED = "Не получилось открыть дневник, попробуй ещё раз: /diary"
+
+
+@subscription_required
+async def diary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/diary: today's meals, a widget inside the message (owner 2026-11-10)."""
+    try:
+        with SessionLocal() as db:
+            diary = diary_widget.open_day(
+                db, update.effective_user.id, datetime.now(UTC)
+            )
+    except Exception as e:
+        logger.error(
+            "Diary not built: %s",
+            type(e).__name__,
+            exc_info=not isinstance(e, SQLAlchemyError),
+        )
+        diary = None
+    if diary is not None and await _send_diary(
+        context.bot, update.effective_chat.id, diary
+    ):
+        return
+    try:
+        await update.message.reply_text(DIARY_FAILED)
+    except TelegramError as e:
+        logger.warning(
+            "Diary: the failure note did not go either: %s", type(e).__name__
+        )
+
+
+async def diary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """‹ › under a diary (``dy:d:<yyyymmdd>``): that day comes as a new message, since a
+    widget's code never changes, and the one tapped leaves first, so one diary stays:
+    a second quick tap finds it gone and sends nothing."""
+    query = update.callback_query
+    if not await check_subscription(update.effective_user.id):
+        await query.answer(TERM_ENDED, show_alert=True)
+        return
+    try:
+        with SessionLocal() as db:
+            diary = diary_widget.tapped(
+                db, update.effective_user.id, query.data or "", datetime.now(UTC)
+            )
+    except Exception as e:
+        logger.error(
+            "Diary callback %r failed: %s",
+            query.data,
+            type(e).__name__,
+            exc_info=not isinstance(e, SQLAlchemyError),
+        )
+        await query.answer("Не получилось, попробуй ещё раз", show_alert=True)
+        return
+    if diary is None:
+        logger.warning("Diary callback %r: no such day", query.data)
+        await query.answer("Этот день не открыть")
+        return
+    try:
+        await query.message.delete()
+    except BadRequest as e:
+        if "not found" in str(e).lower():
+            logger.info("Diary: another tap already took this day")
+            await query.answer()
+            return
+        logger.info("Diary: the old day stayed: %s", str(e)[:200])  # too old to delete
+    except (TelegramError, AttributeError) as e:
+        logger.info("Diary: the old day stayed: %s", type(e).__name__)
+    if await _send_diary(context.bot, update.effective_chat.id, diary):
+        await query.answer()
+    else:
+        await query.answer(DIARY_FAILED, show_alert=True)
 
 
 async def close_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3203,6 +3314,10 @@ def create_bot_application() -> Application:
     application.add_handler(CommandHandler("invite", invite_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("feedback", feedback_command))
+    application.add_handler(CommandHandler("diary", diary_command))
+    application.add_handler(
+        CallbackQueryHandler(diary_callback, pattern=f"^{diary_widget.CALLBACK_PREFIX}")
+    )
     application.add_handler(
         CallbackQueryHandler(
             feedback_callback, pattern=f"^{feedback_screen.CALLBACK_PREFIX}"

@@ -1244,7 +1244,7 @@ def test_the_command_menu_holds_the_daily_few():
     raw = sent[0]["commands"]
     commands = json.loads(raw) if isinstance(raw, str) else raw
     names = [c["command"] if isinstance(c, dict) else c.command for c in commands]
-    assert names == ["start", "feedback"]
+    assert names == ["start", "diary", "feedback"]
 
 
 def test_a_refused_menu_is_logged_and_the_start_goes_on(monkeypatch, caplog):

@@ -41,6 +41,7 @@ _OLD_MENU_LABELS = {"🍽 Добавить прием пищи": "🍽 Доба�
 # Translated when shown, so a name can change without touching a row.
 BUTTON_NAMES = {
     "dh": "🍲 Блюда",
+    "dy": "🗒 Дневник",
     "fav": "⭐ Избранное",
     "fb": "💬 Фидбэк",
     "fl": "🧺 Списки еды",
