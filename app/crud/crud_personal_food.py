@@ -489,6 +489,58 @@ class CRUDPersonalFood:
         the except below turns it into a permanent silent no-match (shipped that
         way until 2026-09-13).  Use CAST(:param AS type).
         """
+        rows = self._ann_rows(db, embedding, user_id)
+        # A merged row's words answer with the dish it went into. Whether that one is
+        # hidden takes the chain, so it is asked here, and the next nearest gets a turn.
+        for row in rows:
+            distance = float(row.cosine_distance)
+            if distance > threshold:
+                return None
+            pf = db.get(PersonalFood, row.personal_food_id)
+            if pf is None:
+                continue
+            dish = self.live_of(db, pf)
+            if dish.hidden_at is None and dish.merged_into_id is None:
+                return dish, distance
+        return None
+
+    def has_embeddings(self, db: Session, user_id: int) -> bool:
+        """Whether any of the user's dishes can be found by meaning at all."""
+        stmt = (
+            select(PersonalFoodEmbedding.personal_food_id)
+            .join(
+                PersonalFood, PersonalFood.id == PersonalFoodEmbedding.personal_food_id
+            )
+            .where(PersonalFood.user_id == user_id)
+            .limit(1)
+        )
+        return db.execute(stmt).first() is not None
+
+    def nearest(
+        self, db: Session, *, embedding: List[float], user_id: int, limit: int
+    ) -> list:
+        """The user's live dishes nearest the embedding, nearest first, each once, as
+        (dish, cosine distance), with no threshold: the caller decides what is near.
+        A merged row answers with the dish it went into. Raises ``AnnQueryError`` as
+        ``find_similar`` does."""
+        found, seen = [], set()
+        for row in self._ann_rows(db, embedding, user_id):
+            pf = db.get(PersonalFood, row.personal_food_id)
+            if pf is None:
+                continue
+            dish = self.live_of(db, pf)
+            if dish.hidden_at is not None or dish.merged_into_id is not None:
+                continue
+            if dish.id in seen:
+                continue
+            seen.add(dish.id)
+            found.append((dish, float(row.cosine_distance)))
+            if len(found) >= limit:
+                break
+        return found
+
+    def _ann_rows(self, db: Session, embedding: List[float], user_id: int) -> list:
+        """The 20 nearest embedding rows of the user's dishes (see ``find_similar``)."""
         emb_str = "[" + ",".join(str(v) for v in embedding) + "]"
         stmt = text(
             """
@@ -539,20 +591,7 @@ class CRUDPersonalFood:
             raise AnnQueryError(
                 f"ANN query failed for user_id={user_id}: {exc.__class__.__name__}"
             ) from exc
-
-        # A merged row's words answer with the dish it went into. Whether that one is
-        # hidden takes the chain, so it is asked here, and the next nearest gets a turn.
-        for row in rows:
-            distance = float(row.cosine_distance)
-            if distance > threshold:
-                return None
-            pf = db.get(PersonalFood, row.personal_food_id)
-            if pf is None:
-                continue
-            dish = self.live_of(db, pf)
-            if dish.hidden_at is None and dish.merged_into_id is None:
-                return dish, distance
-        return None
+        return rows
 
 
 crud_personal_food = CRUDPersonalFood()

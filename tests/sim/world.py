@@ -347,7 +347,7 @@ def _install_fakes(state: State) -> None:
     httpx.AsyncHTTPTransport.handle_async_request = no_async_network
     httpx.HTTPTransport.handle_request = no_sync_network
 
-    async def analyze(*, kind, payload, input_ref, telegram_id):
+    async def analyze(*, kind, payload, input_ref, telegram_id, saved=()):
         return nutrition_of(payload)
 
     async def resolve(payload, *, telegram_id, input_ref, caption=None, more_images=()):
