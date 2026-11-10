@@ -113,6 +113,22 @@ def favorite_name(
     return text
 
 
+def meal_title(meal: Meal) -> str:
+    """What a meal is called on screens: its dishes' standard names.
+
+    The words it was sent with stay the record's (``meal.description``), but they are
+    not a name: «съела ночью сырок» is a sentence (owner 2026-11-10). They name the
+    meal only when no dish was read from them.
+    """
+    foods = meal.nutrients.get("foods") if isinstance(meal.nutrients, dict) else None
+    named = ", ".join(
+        text for text in (" ".join(str(f).split()) for f in foods or []) if text
+    )
+    return favorite_name(
+        caption=None, description=named or meal.description, foods=None
+    )
+
+
 def _num(value) -> str | None:
     if value is None:
         return None
@@ -454,7 +470,7 @@ def _v_undo(t, data: str, mid: str) -> Screen:
         or meal.resolution_source != FAVORITE_SOURCE
     ):
         return _plain(_ALREADY_UNDONE, [_to_list()])
-    name = meal.description or "Блюдо"
+    name = meal_title(meal)
     # Soft, as every delete: a pull holding this row learns of it (3.3).
     meal_items.delete_meal(t.db, t.user.id, meal.id)
     return _plain(

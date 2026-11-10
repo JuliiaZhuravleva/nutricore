@@ -302,6 +302,32 @@ def test_a_product_with_two_read_foods_is_one_dish(Session, db, owner, delay):
     delay.assert_called_once()
 
 
+def test_a_product_dish_drops_its_package_tail(Session, db, owner, delay):
+    """Owner 2026-11-10: a dish is called by what it is, not by its whole label."""
+    signals = {
+        "product_name": "Oreo печенье с ванильным кремом (Mondelez, 95 g)",
+        "portion_grams": 95.0,
+    }
+    _confirm(
+        _draft(
+            ["печенье"],
+            calories=400.0,
+            resolution_source="name_web",
+            resolution_signals=signals,
+        )
+    )
+
+    meal = _only_meal(db)
+    (item,) = crud_meal_item.live(db, meal.id)
+    assert item.name == "Oreo печенье с ванильным кремом"
+    assert [d.canonical_name for d in _dishes(db)] == [
+        "Oreo печенье с ванильным кремом"
+    ]
+    assert delay.call_args.kwargs["canonical_name"] == "Oreo печенье с ванильным кремом"
+    # Screens call the meal by its dish too, not by the label (favorites.meal_title).
+    assert meal.nutrients["foods"] == ["Oreo печенье с ванильным кремом"]
+
+
 @pytest.mark.parametrize(
     "source, expected",
     [

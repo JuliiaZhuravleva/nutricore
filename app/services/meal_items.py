@@ -18,6 +18,7 @@ plain JSON column does not notice a change in place, or the day card and the num
 disagree.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Callable, Optional
@@ -141,13 +142,38 @@ def _foods(nutrients) -> list:
     return [name for name in map(_clean_name, foods) if name]
 
 
+# A shop's name carries its package: «… (Mondelez, 95 g)», «… — Молочный завод».
+# What tells one product from another stays: «Кефир (безлактозный)», «Борщ — домашний».
+_PACKAGE_TAIL = re.compile(
+    r"\s*\((?=[^()]*(?:\d|,|USDA))[^()]*\)\s*$|\s+[—–]\s+(?=[A-ZА-ЯЁ\d])[^—–]+$"
+)
+
+
+def product_dish_name(name) -> str:
+    """A product's name as a dish is called: without its package or maker's tail.
+
+    The brand stays in ``personal_foods.brand``; the name keeps what the thing is
+    (owner 2026-11-10: dish names are standard, not a label copied whole).
+    """
+    clean = _clean_name(name or "")
+    for _ in range(3):  # «… — Бренд (82 g)»: one tail at a time
+        cut = _PACKAGE_TAIL.sub("", clean).strip(" ,")
+        if not cut or cut == clean:
+            break
+        clean = cut
+    return clean
+
+
 def _names(meal_in: MealCreate) -> list:
     """One name per dish in the meal; a resolved product is one dish."""
     signals = meal_in.resolution_signals or {}
     if meal_in.resolution_source in _PRODUCT_SOURCES:
-        product = signals.get("saved_food_name") or signals.get("product_name")
-        if product and _clean_name(product):
-            return [_clean_name(product)]
+        saved = _clean_name(signals.get("saved_food_name") or "")
+        if saved:  # the person's own dish keeps the name it has
+            return [saved]
+        product = product_dish_name(signals.get("product_name"))
+        if product:
+            return [product]
     foods = _foods(meal_in.nutrients)
     if foods:
         return foods
@@ -595,6 +621,11 @@ def _write_reading(
     line of the plate and not the plate itself. ``first``: the position they start at.
     """
     wanted = names if names is not None else _names(meal_in)
+    foods = meal.nutrients.get("foods") if isinstance(meal.nutrients, dict) else None
+    if first == 0 and wanted and isinstance(foods, list) and foods != wanted:
+        # Screens call a meal by its foods (favorites.meal_title): the dishes written
+        # here, not a label with its package or a star's copy from before a rename.
+        meal.nutrients = {**meal.nutrients, "foods": list(wanted)}
     totals = _meal_totals(meal)
     read = any(value is not None for value in totals.values())
     one_dish = len(wanted) == 1 and not shared

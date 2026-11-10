@@ -48,7 +48,7 @@ from app.services import (
     week_card,
 )
 from app.services.day_card import local_time
-from app.services.favorites import Screen, favorite_name
+from app.services.favorites import Screen, meal_title
 from app.services.meal_draft import num
 from app.services.numbers import shows_numbers, toggle_label
 from app.services.settings_screen import user_zone
@@ -147,12 +147,7 @@ def _is_counted(meal: Meal) -> bool:
 
 
 def _meal_name(meal: Meal) -> str:
-    foods = (
-        (meal.nutrients or {}).get("foods")
-        if isinstance(meal.nutrients, dict)
-        else None
-    )
-    name = favorite_name(caption=None, description=meal.description, foods=foods)
+    name = meal_title(meal)
     if len(name) > NAME_MAX:
         name = name[: NAME_MAX - 1].rstrip() + "…"
     return name

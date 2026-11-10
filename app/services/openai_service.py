@@ -106,8 +106,16 @@ def _has_valid_gs1_check_digit(code: str) -> bool:
 # oatmeal» was the complaint). A brand stays as printed: it is also what the
 # name search and the personal food DB match on.
 _RUSSIAN_NAMES_RULE = """Write every "foods" item and "portion" in Russian ("овсянка",
-        "банан", "1 миска (300 г)"). A brand or any text printed on a package stays
-        exactly as printed ("Pringles Original", "Простоквашино")."""
+        "банан", "1 миска (300 г)"). A brand stays
+        exactly as printed ("Pringles Original", "Простоквашино").
+        Each "foods" item is a dish's standard name, the way a menu or a shop shelf
+        names it: short (at most 40 characters), in the nominative case, lower-case
+        except a brand. A name never holds an amount or a count ("200 г", "2 штуки"
+        go into "portion"), the eating ("съела", "выпила"), a time ("ночью", "на
+        завтрак"), a package size, a fat percentage or a maker's company. A product
+        known by its brand keeps it ("Nutella", "Oreo"). A composed dish is
+        named by its kind and main part ("салат с тунцом"), not by every
+        ingredient. The person's own words never become the name as they are."""
 
 
 # A typed or spoken meal names one of the person's dishes (2026-11-10). The list is

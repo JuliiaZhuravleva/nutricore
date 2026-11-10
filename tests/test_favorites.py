@@ -283,7 +283,10 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         assert meal.user_id == user.id
         assert meal.description == "Самса веган"
         assert meal.meal_type is None  # an old message's chip logs, with no label
-        assert meal.calories == 420.4 and meal.nutrients == _NUTRITION
+        # The meal is called by the star's name, not by its foods from before.
+        assert meal.calories == 420.4
+        assert meal.nutrients == {**_NUTRITION, "foods": ["Самса веган"]}
+        assert fv.meal_title(meal) == "Самса веган"
         assert not meal.photos and meal.ai_analysis is None
         assert meal.resolution_source == fv.FAVORITE_SOURCE
         assert meal.resolution_signals == {"favorite_id": fav.id}
@@ -314,6 +317,20 @@ def test_tap_logs_a_meal_without_analysis_and_undo_deletes_it(Session):
         again = fv.handle_callback(db, 42, f"fav:u:{meal.id}")
         assert "уже отменена" in again.text
         assert db.query(Meal).count() == meals_before + 1
+
+
+def test_a_star_named_before_dish_names_is_still_the_meals_star(Session):
+    """Stars before 2026-11-10 carry the meal's words; the card must still find
+    them, or a ⭐ tap would make a second star of the same meal."""
+    from app.services import meal_card
+
+    with Session() as db:
+        user = _user(db)
+        words = "savory pastry с кофе"
+        fav, _ = fv.save_from_meal(db, _meal(db, user, description=words), words)
+        again = _meal(db, user, description=words)
+        assert fv.meal_title(again) == "savory pastry"
+        assert meal_card._meal_favourite(db, again).id == fav.id
 
 
 def test_logged_line_names_the_dish_only_while_numbers_are_off(Session):
