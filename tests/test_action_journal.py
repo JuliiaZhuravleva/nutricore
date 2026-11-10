@@ -285,7 +285,8 @@ def _handlers(application) -> list:
 
 def test_the_menu_labels_are_the_real_keyboards():
     real = {button.text for row in tg.main_keyboard.keyboard for button in row}
-    assert real == set(model.MENU_LABELS)
+    assert real | set(model.RETIRED_MENU_LABELS) == set(model.MENU_LABELS)
+    assert not real & set(model.RETIRED_MENU_LABELS)
 
 
 def test_the_commands_are_the_real_commands(Session):  # noqa: F811

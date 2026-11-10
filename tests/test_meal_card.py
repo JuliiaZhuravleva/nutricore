@@ -24,8 +24,14 @@ from app.crud.crud_personal_food import crud_personal_food
 from app.db.base import Base
 from app.models import Meal, MealItem, PersonalFood, RecordEvent, User
 from app.schemas.meal import MealCreate
-from app.services import close_row
-from app.services import favorites, meal_card, meal_items, next_step, stats_screen
+from app.services import (
+    close_row,
+    favorites,
+    meal_card,
+    meal_items,
+    next_step,
+    stats_screen,
+)
 from app.services import telegram as tg
 from app.services.numbers import SHOW_NUMBERS
 from tests.test_emoji_set import _is_mark, build_tiles
@@ -902,7 +908,7 @@ def test_a_photo_a_command_and_a_menu_button_close_the_slot_and_go_on(db, owner)
 def test_every_main_menu_label_passes_a_name_slot(db, owner):
     meal, _item = _one(db, owner)
     labels = [b.text for row in tg.main_keyboard.keyboard for b in row]
-    assert len(labels) == 6
+    assert len(labels) == 5
     for label in labels:
         _tap(db, f"ml:pk:{meal.id}:a:r:0", now=datetime.now(UTC))
         _message, _bot, consumed = _send(label)
@@ -1246,7 +1252,11 @@ def test_n6_is_the_spec_screen_and_back_follows_the_origin(db, owner):
         ]
     )
     event = db.scalars(select(RecordEvent).order_by(RecordEvent.id.desc())).first()
-    assert _data(screen) == [[close_row.CALLBACK], [f"ml:u:{event.id}:t"], ["ml:dl:20261026:t"]]
+    assert _data(screen) == [
+        [close_row.CALLBACK],
+        [f"ml:u:{event.id}:t"],
+        ["ml:dl:20261026:t"],
+    ]
     assert _rows(screen)[2] == ["⬅️ Приёмы дня"]
     assert meal.calories == 620.0
 

@@ -362,7 +362,7 @@ def _rows(markup):
 
 def _within_limits(markup):
     rows = markup.inline_keyboard
-    assert len(rows) <= 5
+    assert len(rows) <= 6
     assert all(len(row) <= 3 for row in rows)
 
 
@@ -373,7 +373,8 @@ def test_the_hub_has_the_row_and_keeps_its_budget(Session):
         ["🔔 Напоминания", "💸 Стоимость: выкл"],
         ["🧺 Надёжная еда", "✋ Не предлагать"],
         ["🕐 Пояс", "💊 Рутины", "💬 Фидбэк"],
-        ["🍽 Обычная еда", "ℹ️ Как это работает"],
+        ["🍽 Обычная еда", "⚖️ Вес"],
+        ["ℹ️ Как это работает"],
     ]
     _within_limits(markup)
     assert "🍽 Обычная еда: не выбрано" in text

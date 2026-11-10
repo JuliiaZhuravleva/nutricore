@@ -16,8 +16,7 @@ from sqlalchemy import select
 
 from app.crud.crud_meal_item import crud_meal_item
 from app.models import FavoriteMeal, Meal, MealMessage, PersonalFood, RecordEvent
-from app.services import close_row
-from app.services import favorites, meal_card, meal_items
+from app.services import close_row, favorites, meal_card, meal_items
 from app.services.numbers import SHOW_NUMBERS
 from tests.test_capture_router import (  # noqa: F401 (fixtures)
     OWNER,
@@ -95,7 +94,7 @@ def test_o9_a_row_is_a_name_and_a_pencil_with_no_way_back(db, owner, reader):
     _, omelette = _starred(db, owner)
     shown = _shown("fav:p:0")
     assert shown["text"] == f"{HEAD}\n{HINT}"
-    assert _labels(shown) == [["Омлет с сыром", "✏️"]]
+    assert _labels(shown) == [["🍳 Омлет с сыром", "✏️"]]
     assert _data(shown) == [[f"fav:l:{omelette.id}:n", f"fav:o:{omelette.id}:0"]]
     _fits(shown)
     assert _meals(db, owner) == []
@@ -105,7 +104,7 @@ def test_o9_from_the_menu_is_the_same_screen(db, owner):
     _, omelette = _starred(db, owner)
     sent = send(text("⭐ Избранное")).sent()[-1]
     assert sent["text"] == f"{HEAD}\n{HINT}"
-    assert _labels(sent) == [["Омлет с сыром", "✏️"]]
+    assert _labels(sent) == [["🍳 Омлет с сыром", "✏️"]]
     assert _data(sent)[0][0] == f"fav:l:{omelette.id}:n"
 
 
@@ -120,12 +119,12 @@ def test_o9_says_an_estimate_with_numbers_on_and_a_checked_number_without(db, ow
     _numbers_on(db, owner)
     _starred(db, owner)
     label = _labels(_shown("fav:p:0"))[0][0]
-    assert label == "Омлет с сыром · ≈ 360 ккал"
+    assert label == "🍳 Омлет с сыром · ≈ 360 ккал"
 
     _starred(db, owner, "творог", grams=150, numbers_quality="barcode", calories=200.0)
     labels = [row[0] for row in _labels(_shown("fav:p:0"))]
-    assert "Творог · 200 ккал" in labels
-    assert "Омлет с сыром · ≈ 360 ккал" in labels
+    assert "🧀 Творог · 200 ккал" in labels
+    assert "🍳 Омлет с сыром · ≈ 360 ккал" in labels
 
 
 def test_o9_with_numbers_off_says_no_number(db, owner):
@@ -162,7 +161,7 @@ def test_o9_a_removed_favourite_redraws_with_the_notice_and_logs_nothing(
     tap(f"fav:r:{gone.id}:0")
     shown = _shown(f"fav:l:{gone.id}:n")
     assert shown["text"] == f"{STALE}\n\n{HEAD}\n{HINT}"
-    assert _labels(shown) == [["Овсянка", "✏️"]]
+    assert _labels(shown) == [["🥣 Овсянка", "✏️"]]
     assert _meals(db, owner) == []
     # The control: the very same tap on one still there does log.
     tap(f"fav:l:{kept.id}:n")
@@ -173,7 +172,7 @@ def test_o9_on_a_hard_day_is_the_same_screen(db, owner, hard_day):
     _starred(db, owner)
     shown = _shown("fav:p:0")
     assert shown["text"] == f"{HEAD}\n{HINT}"
-    assert _labels(shown) == [["Омлет с сыром", "✏️"]]
+    assert _labels(shown) == [["🍳 Омлет с сыром", "✏️"]]
 
 
 def test_o9a_the_empty_copy_names_a_button_that_is_there(db, owner):
@@ -197,7 +196,11 @@ def test_o10_a_row_logs_at_now_with_one_item_and_no_model(db, owner, reader):
     assert shown["text"] == "Записано: омлет с сыром."
     assert _toast(wire) == "Записано"
     meal = _newest(db, owner)
-    assert _labels(shown) == [[close_row.LABEL], ["↩️ Отменить", "🕐 Время"], ["⬅️ Избранное"]]
+    assert _labels(shown) == [
+        [close_row.LABEL],
+        ["↩️ Отменить", "🕐 Время"],
+        ["⬅️ Избранное"],
+    ]
     assert _data(shown) == [
         [close_row.CALLBACK],
         [f"fav:u:{meal.id}", f"ml:t:{meal.id}:r"],
@@ -715,7 +718,7 @@ def _rename(food, name: str) -> None:
 def test_a_renamed_dishs_star_goes_by_the_new_name(db, owner, reader):
     food, fav = _starred(db, owner, "омлет")
     _rename(food, "омлет с сыром")
-    assert _labels(_shown("fav:p:0"))[0][0] == "Омлет с сыром"
+    assert _labels(_shown("fav:p:0"))[0][0] == "🍳 Омлет с сыром"
     assert _shown(f"fav:o:{fav.id}:0")["text"].startswith("<b>⭐ Омлет с сыром</b>")
     assert _shown(f"fav:l:{fav.id}:n")["text"] == "Записано: омлет с сыром."
     meal = _newest(db, owner)
@@ -780,7 +783,7 @@ def test_a_merged_star_shows_and_logs_the_target(db, owner, reader):
     source, fav = _starred(db, owner, "омлетик")
     target = _dish(db, owner, "омлет", **_per_100(), usual_grams=200.0)
     tap(f"dh:j:{source.id}:{target.id}")
-    assert _labels(_shown("fav:p:0"))[0][0] == "Омлет"
+    assert _labels(_shown("fav:p:0"))[0][0] == "🍳 Омлет"
     assert _on(_shown(f"fav:o:{fav.id}:0"), "🍲 Всё о блюде") == (
         f"dh:o:{target.id}:f{fav.id}"
     )
@@ -794,7 +797,7 @@ def test_a_star_of_a_merge_undone_is_on_its_own_dish_again(db, owner):
     target = _dish(db, owner, "омлет")
     joined = _shown(f"dh:j:{source.id}:{target.id}")
     tap(_on(joined, "↩️ Вернуть"))
-    assert _labels(_shown("fav:p:0"))[0][0] == "Омлетик"
+    assert _labels(_shown("fav:p:0"))[0][0] == "🍳 Омлетик"
     assert _on(_shown(f"fav:o:{fav.id}:0"), "🍲 Всё о блюде").startswith(
         f"dh:o:{source.id}:"
     )

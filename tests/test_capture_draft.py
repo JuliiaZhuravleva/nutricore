@@ -161,12 +161,12 @@ def _day_card(db) -> str:
 # --- M10: the switch --------------------------------------------------------------
 
 
-def test_the_hub_has_the_switch_beside_the_week_and_stays_at_five_rows(db, owner):
+def test_the_hub_has_the_switch_beside_the_week_and_stays_at_six_rows(db, owner):
     wire = tap("set:open")
     params = wire.edits()[0]
     assert _labels(params)[0] == ["🔢 Цифры сразу: выкл", "📋 Черновик: выкл"]
     assert _datas(params)[0] == ["set:num", "set:draft"]
-    assert len(_keyboard(params)) == 5
+    assert len(_keyboard(params)) == 6  # ⚖️ Вес moved in (owner 2026-11-10)
 
 
 def test_the_switch_says_so_and_the_row_holds_it(db, owner):

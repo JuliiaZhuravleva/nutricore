@@ -425,7 +425,7 @@ def test_the_hub_counts_both_lists_and_opens_them(Session):
     assert "🧺 Надёжная еда: 1\n✋ Не предлагать: 2" in screen.text
     assert _data(screen, "🧺 Надёжная еда") == fl.RELIABLE_OPEN
     assert _data(screen, "✋ Не предлагать") == fl.NEVER_OPEN
-    assert len(screen.markup.inline_keyboard) <= 5
+    assert len(screen.markup.inline_keyboard) <= 6
 
 
 def test_the_hub_says_when_the_lists_are_empty(Session):

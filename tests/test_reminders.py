@@ -1819,8 +1819,8 @@ def test_the_pause_shows_in_the_sub_screen_never_in_the_hub(db):
     hub = settings_screen.open_view(db, 42, now=AT_21)
     assert "🔔 Напоминания: вечером, 21:00" in hub.text
     assert "не приходят" not in hub.text
-    assert len(hub.markup.inline_keyboard) == 5
-    assert len(_labels(hub.markup)) == 11
+    assert len(hub.markup.inline_keyboard) == 6
+    assert len(_labels(hub.markup)) == 12
     assert "rm:o" in _callbacks(hub.markup)
 
 

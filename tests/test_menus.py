@@ -365,6 +365,33 @@ def test_statistics_button_sends_today_with_tabs(Session):
     ]  # fmt: skip
 
 
+def test_the_weight_opens_from_settings_and_leads_back(Session):
+    with Session() as db:
+        hub = settings_screen.handle_callback(db, 42, "set:open")
+        data = [
+            b.callback_data
+            for row in hub.markup.inline_keyboard
+            for b in row
+            if b.text == "⚖️ Вес"
+        ]
+        view = wt.handle_callback(db, 42, data[0])
+    assert view.text.startswith("<b>⚖️ Вес</b>")
+    assert wt.ASK in view.text
+    rows = view.markup.inline_keyboard
+    assert [[(b.text, b.callback_data) for b in row] for row in rows] == [
+        [("⬅️ Настройки", "set:open")]
+    ]
+
+
+def test_the_old_menu_weight_screen_has_no_back_to_settings(Session):
+    state, message = _run(tg.show_weight, "⚖️ Мой вес")
+    assert message.kwargs[-1].get("reply_markup") is None or not any(
+        "Настройки" in getattr(b, "text", "")
+        for row in getattr(message.kwargs[-1]["reply_markup"], "inline_keyboard", ())
+        for b in row
+    )
+
+
 def test_weight_button_then_typed_weight_saves_with_undo(Session):
     state, message = _run(tg.show_weight, "⚖️ Мой вес")
     assert state == tg.ENTERING_WEIGHT
@@ -408,6 +435,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "💊 Рутины",
         "💬 Фидбэк",
         "🍽 Обычная еда",
+        "⚖️ Вес",
         "ℹ️ Как это работает",
     ]
     assert _callbacks(markup) == [
@@ -421,6 +449,7 @@ def test_settings_button_shows_the_cost_switch_off(Session):
         "rt:open",
         "fb:open",
         "set:diet",
+        "wt:open",
         "hw:open",
     ]
     assert "Цель" not in message.replies[-1]  # no calorie goal (G5-R03)
@@ -809,10 +838,11 @@ _MENU = {
     "🍽 Добавить приём пищи": "add_meal",
     "⭐ Избранное": "show_favorites",
     "📊 Статистика": "show_statistics",
-    "⚖️ Мой вес": "show_weight",
     "⚙️ Настройки": "show_settings",
     "🍲 Блюда": "show_dishes",
 }
+# Off the menu since 2026-11-10 (the weight is in ⚙️), still on phones that kept it.
+_OLD_MENU = {"⚖️ Мой вес": "show_weight"}
 
 
 def test_every_menu_button_has_a_handler_everywhere_the_menu_shows(conv):
@@ -826,6 +856,17 @@ def test_every_menu_button_has_a_handler_everywhere_the_menu_shows(conv):
     ):
         for text in buttons:
             assert _first_match(where, text) is getattr(tg, _MENU[text]), text
+        for text, handler in _OLD_MENU.items():
+            assert _first_match(where, text) is getattr(tg, handler), text
+
+
+def test_the_menu_has_no_weight_and_settings_open_it():
+    labels = [b.text for row in tg.main_keyboard.keyboard for b in row]
+    assert not any("вес" in label.casefold() for label in labels)
+    assert all(len(row) <= 2 for row in tg.main_keyboard.keyboard)
+    hub = settings_screen.screen(False, "Asia/Tbilisi", datetime.now(UTC))
+    weight = [b for row in hub.markup.inline_keyboard for b in row if b.text == "⚖️ Вес"]
+    assert [b.callback_data for b in weight] == [wt.OPEN]
 
 
 def test_inline_taps_are_registered_outside_the_conversation(conv):

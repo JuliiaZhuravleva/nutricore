@@ -58,6 +58,7 @@ _OFFSETS = CALLBACK_PREFIX + "tzo:"  # + the page
 _DIET_CB = CALLBACK_PREFIX + "diet"
 _DIET_PICK = _DIET_CB + ":"  # + the answer
 REMINDERS_OPEN = "rm:o"  # == reminders.OPEN, which imports this module
+WEIGHT_OPEN = "wt:open"  # == weight_screen.OPEN, which imports this module
 
 CITIES = (
     ("Тбилиси", "Asia/Tbilisi"),
@@ -190,7 +191,7 @@ def screen(
         f"🧺 Надёжная еда: {reliable or 'пока нет'}",
         f"✋ Не предлагать: {never or 'пока нет'}",
     ]
-    # Eleven buttons in five rows: the one row of three takes the shortest labels, and
+    # Twelve buttons in six rows: the one row of three takes the shortest labels, and
     # «🕐 Пояс» is short for the line above. Longer ones Telegram cuts on a phone.
     rows = [
         [
@@ -211,7 +212,9 @@ def screen(
             _btn("💊 Рутины", ROUTINES_PREFIX + "open"),
             _btn(FEEDBACK_TITLE, FEEDBACK_OPEN),
         ],
-        [_btn(diet.TITLE, _DIET_CB), _btn("ℹ️ Как это работает", EXPLAIN_OPEN)],
+        # The weight is here, not in the main menu (owner 2026-11-10).
+        [_btn(diet.TITLE, _DIET_CB), _btn("⚖️ Вес", WEIGHT_OPEN)],
+        [_btn("ℹ️ Как это работает", EXPLAIN_OPEN)],
     ]
     return Screen("\n".join(lines), InlineKeyboardMarkup(rows))
 

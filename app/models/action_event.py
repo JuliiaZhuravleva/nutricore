@@ -40,11 +40,14 @@ BUTTON_VERBS = (
     "wt",
 )
 # The reply keyboard's labels (``telegram.main_keyboard``); a test holds the two equal.
+# «⚖️ Мой вес» left the menu (owner 2026-11-10) but a keyboard already on a phone still
+# sends it, so it is still journaled as a tap.
+RETIRED_MENU_LABELS = ("⚖️ Мой вес",)
 MENU_LABELS = (
     "🍽 Добавить приём пищи",
     "⭐ Избранное",
     "📊 Статистика",
-    "⚖️ Мой вес",
+    *RETIRED_MENU_LABELS,
     "⚙️ Настройки",
     "🍲 Блюда",
 )

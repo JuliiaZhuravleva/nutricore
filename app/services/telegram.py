@@ -172,8 +172,10 @@ _OLD_LOCK_LABELS = ("❓ О боте", "💎 Получить подписку",
 main_keyboard = ReplyKeyboardMarkup(
     [
         ["🍽 Добавить приём пищи", "⭐ Избранное"],
-        ["📊 Статистика", "⚖️ Мой вес"],
-        ["⚙️ Настройки", "🍲 Блюда"],
+        # No weight here: the menu is not about numbers (owner 2026-11-10). It lives
+        # in ⚙️ Настройки; the old label phones still carry keeps working.
+        ["📊 Статистика", "🍲 Блюда"],
+        ["⚙️ Настройки"],
     ],
     resize_keyboard=True,
 )
