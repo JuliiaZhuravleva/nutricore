@@ -78,3 +78,6 @@ render/fonts/
 
 # Voice notes' bytes (AUDIO_DIR)
 /data/
+
+# local tool backups (not project files)
+.claude/backups/

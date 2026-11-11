@@ -13,6 +13,7 @@ app = Celery(
         "celery_app.tasks.model_watch",
         "celery_app.tasks.week_push",
         "celery_app.tasks.reminders",
+        "celery_app.tasks.morning",
         "celery_app.tasks.bot_news",
     ],
 )
@@ -60,6 +61,12 @@ app.conf.beat_schedule = {
         "task": "celery_app.tasks.reminders.send_reminders",
         "schedule": crontab(minute="*/15"),
         "options": {"expires": 840},  # after a restart, no pile of old runs
+    },
+    # ☀️ 10:00 on each person's clock, also in zones with :30 and :45; the task checks who.
+    "morning-question": {
+        "task": "celery_app.tasks.morning.send_morning_questions",
+        "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},
     },
     # Weekly, Monday 06:00 UTC (10:00 Tbilisi): model shutdown dates (ADR-0004).
     "model-watch": {

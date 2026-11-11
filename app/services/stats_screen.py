@@ -35,6 +35,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
+from app.crud.crud_morning_answer import crud_morning_answer
 from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.user import User
@@ -117,6 +118,18 @@ def _card_title(day: date) -> str:
 
 
 NOT_COUNTED = "не посчитано"
+_WEEKDAYS_NOMINATIVE = (
+    "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+)  # fmt: skip
+
+
+def little_note(days: list[date]) -> str:
+    """D14: the days answered «почти нет» stand apart from the averages, said plainly
+    and never as a mark against the person: «Вторник и четверг отдельно: …»."""
+    names = [_WEEKDAYS_NOMINATIVE[day.weekday()] for day in sorted(days)]
+    names[0] = names[0].capitalize()
+    named = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} и {names[-1]}"
+    return f"{named} отдельно: в записях только часть дня."
 
 
 def _sum(meals: list[Meal], field: str) -> float:
@@ -307,9 +320,12 @@ def day_screen(
     return Screen("\n".join(lines), markup, picture=picture)
 
 
-def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
-    """Only the days with records: an empty day is not a gap to look at."""
-    logged = [(day, meals) for day, meals in days if meals]
+def _week_numbers(
+    days: list[tuple[date, list[Meal]]], little: frozenset | set = frozenset()
+) -> str:
+    """Only the days with records: an empty day is not a gap to look at. A day the
+    person answered «почти нет» to is left out of the average and has no bar (D11)."""
+    logged = [(day, meals) for day, meals in days if meals and day not in little]
     counted = [
         (day, [meal for meal in meals if _is_counted(meal)]) for day, meals in logged
     ]
@@ -321,11 +337,15 @@ def _week_numbers(days: list[tuple[date, list[Meal]]]) -> str:
             f"{_numbers_mark(everything)}{_kcal(average)}",
             *_macros(everything, known_days),
         ]
-        rows = ["🔢 В среднем за день с записями: " + " · ".join(parts)]
+        # D14: with a day left out, the heading names the days averaged instead.
+        averaged = [_WEEKDAYS[day.weekday()] for day, meals in counted if meals]
+        left_out = any(meals and day in little for day, meals in days)
+        head = f"за день ({', '.join(averaged)})" if left_out else "за день с записями"
+        rows = [f"🔢 В среднем {head}: " + " · ".join(parts)]
     else:
         rows = [f"🔢 В среднем за день с записями: {NOT_COUNTED}"]
     totals = [_sum(meals, "calories") for _day, meals in counted]
-    top = max(totals) or 1.0
+    top = max(totals, default=0) or 1.0
     for (day, meals), total in zip(counted, totals):
         if not meals:
             empty = "▱" * BAR_WIDTH
@@ -376,6 +396,7 @@ def week_screen(
     count: step_count.Count | None = None,
     month: str = "",
     count_rows: tuple = (),
+    little: frozenset | set = frozenset(),
 ) -> Screen:
     """``days`` oldest first. The 7 days tab, or with ``summary`` (its Monday) the
     calendar week as Sunday's message. No count of days with records and no empty
@@ -436,7 +457,12 @@ def week_screen(
         "win": week_card.finding_block(week, new_label),
     }
     if opened is not False:
-        lines += ["", _week_numbers(days)]
+        lines += ["", _week_numbers(days, little)]
+    apart = [day for day, meals in days if meals and day in little]
+    if apart:
+        # Outside the expandable block: it must be read with the numbers hidden or
+        # folded (D11, «в итогах будет с пометкой»). The picture card has no mark yet.
+        lines.append(little_note(apart))
     if first:
         lines += ["", f"<i>{SUMMARY_NOTE}</i>"]
     rows = count_rows if counted else ()
@@ -678,6 +704,11 @@ def _week_view(
         start = _day_bounds(first, zone)[0]
         earlier = crud_meal.get_user_meals_between(db, user.id, _LONG_AGO, start)
     count, month = _step_count(db, user, dates[0], dates[-1], zone)
+    little = (
+        crud_morning_answer.little_days(db, user.id, dates[0], dates[-1])
+        if user
+        else set()
+    )
     return week_screen(
         [(day, _meals_on(db, user, day, zone)) for day in dates],
         zone,
@@ -691,6 +722,7 @@ def _week_view(
         count,
         month,
         _count_rows(user, count, opened),
+        little,
     )
 
 

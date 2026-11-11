@@ -70,6 +70,7 @@ from app.services import (
     meal_card,
     meal_draft,
     meal_items,
+    morning,
     owner_buttons,
     people_screen,
     portion_suggestions,
@@ -1959,6 +1960,17 @@ async def reminders_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.warning("reminders: buttons stayed on the message: %s", e)
 
 
+async def morning_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the ☀️ morning question (``mq:…``): the same message becomes the next
+    screen, and the callback is answered empty (D14: no «Принято» toast)."""
+    message_id = getattr(update.callback_query.message, "message_id", None)
+
+    def handle(db, telegram_id: int, data: str):
+        return morning.handle_callback(db, telegram_id, data, message_id=message_id)
+
+    await _screen_callback(update, handle, TERM_ENDED, "Morning")
+
+
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A statistics tab (``st:…``). The message shows no one meal from here on."""
     message = update.callback_query.message
@@ -3230,6 +3242,11 @@ def create_bot_application() -> Application:
         CallbackQueryHandler(
             reminders_callback, pattern=f"^{reminders.CALLBACK_PREFIX}"
         )
+    )
+
+    # ☀️ the morning question about yesterday (stateless, like favorites).
+    application.add_handler(
+        CallbackQueryHandler(morning_callback, pattern=f"^{morning.CALLBACK_PREFIX}")
     )
 
     # The dish base (stateless, like favorites). It holds a typed slot of its own, so

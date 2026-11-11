@@ -79,6 +79,31 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
+- [ ] **TD-261**: Where "yesterday" ends should be a per-person setting (night shifts). Today a day ends at local midnight, and the planned morning question «how much of yesterday is recorded» (stage 06) asks about that calendar day. Someone who works 20:00–08:00 and eats at 2 a.m. has that meal on another "day" than they feel it is. Default stays midnight.
+  - **Priority:** Low
+  - **Source:** owner decision 2026-11-11 (ux-fresh-eyes run on the morning question: a night-shift persona could not tell which day «вчера» meant)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-262**: Review the 🔔 Напоминания settings screen as a whole once more switches land there. With the morning question's row it has 5 action rows + back, over the ≤4 rows rule, and its long paragraph is skipped by readers. «Звук: выкл»-style labels read as both a state and an action (4 of 4 fresh readers), and «✖ Выкл» does not say it stops only the evening message.
+  - **Priority:** Low
+  - **Source:** owner decision 2026-11-11 («настройки надо будет пересмотреть, когда появится ещё какое-то количество»)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-263**: A «почти нет» Sunday is never marked in the Sunday summary that was sent. The summary goes Sunday 22:00; the question about Sunday goes Monday 10:00 (and about Saturday on Sunday 10:00, so a late answer misses it too). The mark and the changed 🔢 averages show only in the 7-day tab or when 🔢 is reopened on the old summary. The question still promises «в итогах будет с пометкой».
+  - **Priority:** Low (one day of seven; the 7-day tab is right)
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-264**: A morning question whose send timed out after Telegram took it is stored as «maybe» with no message_id, so the next day's question cannot strip its buttons: two live questions can sit in the chat (taps on both still work). Same pattern as the evening reminder's «maybe».
+  - **Priority:** Low
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-265**: Morning-question review nits left as they are. `morning.little_days` is called only by tests (stats reads `crud_morning_answer` directly); the weekday-name tuples are duplicated in `morning.py` and `stats_screen.py`; the ☀️ question has no «ℹ️ как считается» entry; `test_the_prefix_is_new_and_routed` greps the source instead of routing `mq:` through `create_bot_application()`. Also unchecked on a real phone: «✍️ Частично» / «✋ Почти нет» (~11 chars, 3 in a row) may be cut with «…».
+  - **Priority:** Low
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
 - [ ] **TD-260**: «⬅️ К ответу бота» on a typed meal still in its read draws the line with no «Считаю…». The marker was dropped there because the tapped message may not be the one the read edits at its end: a retry queued while the line was a card (`job.line_id=None`), a reply's message (time, «и сыр»), or a retry whose `shown` is the M7 text (no edit when it fails again). A marker there could stay for good. To bring it back, the tap must know the live read's line (and that read's end must always edit it). Photos and voice have the same issue with `pending_text` on a back tap. Also `_read_kind` takes the first source, so a typed meal made from a failed photo (M7c) shows the photo's «читаю…» on a back tap.
   - **Priority:** Low (needs a tap into the card and back within the seconds of a read)
   - **Source:** feat/text-reading-marker review

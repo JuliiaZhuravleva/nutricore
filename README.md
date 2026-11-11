@@ -22,11 +22,12 @@ Nutricore is a **personal** Telegram bot for tracking nutrition — capture meal
 - **Favorites** — "⭐ И в избранное" under the reply saves the dish (named by the photo's caption when there is one); "⭐ Избранное" in the menu lists them, and a tap on a dish plus "when" logs it again with the stored numbers — no new analysis, with an "↩️ Отменить" under the record. Removing a favorite can be undone the same way.
 - **Packaged-food lookup** — a barcode or product name read from the photo → the product's *actual* КБЖУ from [Open Food Facts](https://world.openfoodfacts.org/), then a label-OCR and a web-search fallback, and finally the vision estimate — each with a transparent source/confidence badge. A macro the source does not carry shows as "—", never as a confident 0.
 - **Models per task, any company** — each task (photo, text, barcode, label) can run on its own model, from OpenAI directly or from Anthropic, Google, Qwen and others through [OpenRouter](https://openrouter.ai/) (always with provider data collection denied). A weekly check asks each company for shutdown dates of the models in use and messages the owner once per news; `/models` shows the state and checks now. See [ADR-0004](docs/decisions/ADR-0004-model-providers-and-lifecycle-watch.md).
+- **Reminders** — ⚙️ Настройки → 🔔 Напоминания: an evening reminder, and a silent 10:00 question after a day with records: «is yesterday's food all in the records?». A «почти нет» day stays out of the 7-day averages and is marked in the week's summary; the records stay. Each switches off on its own.
 - **Access control** — open / whitelist / closed modes with a silent gate.
 - **Secured REST API** (`X-API-Token`, fail-closed) + Telegram webhook secret.
 - **`/consult` relay** to the my-health hub — medical questions never touch the bot's own AI.
 
-**Planned** (see [ROADMAP.md](ROADMAP.md)): goals & remaining-budget replies, statistics, weight tracking, reminders/digests, AI coaching. The domain models/CRUD/REST exist; the "intelligence" layer is staged, not built yet.
+**Planned** (see [ROADMAP.md](ROADMAP.md)): goals & remaining-budget replies, statistics, weight tracking, digests, AI coaching. The domain models/CRUD/REST exist; the "intelligence" layer is staged, not built yet.
 
 ## Project Structure
 

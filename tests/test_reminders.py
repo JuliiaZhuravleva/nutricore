@@ -1782,6 +1782,7 @@ def test_the_settings_screen(db):
         ["rm:e:2000", "rm:e:2100", "rm:e:2200", "rm:e:2300"],
         ["rm:week", "set:tz"],
         ["rm:snd", "rm:news"],
+        ["rm:morning"],
         ["set:open"],
     ]
     assert "✓ 21:00" in _labels(screen.markup)
@@ -1807,7 +1808,7 @@ def test_hour_and_mode(db):
     assert reminders.TITLE not in _tap(db, "rm:e:2130", AT_21).text  # not a choice
     screen = _tap(db, "rm:m:off", AT_21)
     assert "Сейчас: выключены." in screen.text
-    assert len(screen.markup.inline_keyboard) == 4  # no hours while off
+    assert len(screen.markup.inline_keyboard) == 5  # no hours while off
     screen = _tap(db, "rm:m:evening", AT_21)
     assert "✓ Напоминания: вечером, в 23:00" in screen.text
 
@@ -2363,7 +2364,7 @@ def test_the_sub_screen_says_when_they_have_stopped(db):
 
 def test_the_sub_screen_names_stars_only_when_there_are_some(db):
     about = (
-        "Не больше одного сообщения в день без звука: можно рассказать голосовым, "
+        "Напоминание приходит не чаще раза в день без звука: можно рассказать голосовым, "
         "что было{}. Если были записи за три часа до него, оно не приходит."
     )
     assert about.format("") in _tap(db, "rm:o", AT_21).text
