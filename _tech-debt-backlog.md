@@ -99,6 +99,11 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Source:** feat/morning-question review (Opus, 2026-11-11)
   - **Created:** 2026-11-11
 
+- [ ] **TD-265**: Morning-question review nits left as they are. `morning.little_days` is called only by tests (stats reads `crud_morning_answer` directly); the weekday-name tuples are duplicated in `morning.py` and `stats_screen.py`; the ☀️ question has no «ℹ️ как считается» entry; `test_the_prefix_is_new_and_routed` greps the source instead of routing `mq:` through `create_bot_application()`. Also unchecked on a real phone: «✍️ Частично» / «✋ Почти нет» (~11 chars, 3 in a row) may be cut with «…».
+  - **Priority:** Low
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
 - [ ] **TD-260**: «⬅️ К ответу бота» on a typed meal still in its read draws the line with no «Считаю…». The marker was dropped there because the tapped message may not be the one the read edits at its end: a retry queued while the line was a card (`job.line_id=None`), a reply's message (time, «и сыр»), or a retry whose `shown` is the M7 text (no edit when it fails again). A marker there could stay for good. To bring it back, the tap must know the live read's line (and that read's end must always edit it). Photos and voice have the same issue with `pending_text` on a back tap. Also `_read_kind` takes the first source, so a typed meal made from a failed photo (M7c) shows the photo's «читаю…» on a back tap.
   - **Priority:** Low (needs a tap into the card and back within the seconds of a read)
   - **Source:** feat/text-reading-marker review
