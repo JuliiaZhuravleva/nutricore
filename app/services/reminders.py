@@ -52,6 +52,7 @@ from app.services import (
     favorites,
     meal_card,
     meal_items,
+    morning,
     settings_screen,
     stats_screen,
 )
@@ -999,7 +1000,8 @@ def settings_view(
     )
     if week:
         about += " В воскресенье вместо него приходит итог недели."
-    lines.append(about)
+    lines.append(about + " «✖ Выкл» выключает только его.")
+    lines.append(morning.settings_line(user))
     lines.append("🗓 Итог недели: " + ("вс, 22:00." if week else "не присылаю."))
     news = bot_news.news_on(user)
     lines.append(
@@ -1036,6 +1038,8 @@ def settings_view(
             _btn(f"✨ Новости: {'вкл' if news else 'выкл'}", "news"),
         ]
     )
+    # The fifth action row (owner 2026-11-11); the whole screen is reviewed in TD-262.
+    rows.append([morning.settings_button(user)])
     rows.append(
         [
             InlineKeyboardButton(
@@ -1327,6 +1331,12 @@ def _v_news(t, data: str) -> Screen:
     return settings_view(t.db, t.user, t.now, notice)
 
 
+def _v_morning(t, data: str) -> Screen:
+    on = morning.toggle(t.db, t.user)
+    notice = "✓ Вопрос утром включён" if on else "✓ Вопрос утром выключен"
+    return settings_view(t.db, t.user, t.now, notice)
+
+
 def _v_sound(t, data: str) -> Screen:
     on = not config(t.user).sound
     _write(t.db, t.user, sound=on)
@@ -1350,6 +1360,7 @@ _VERBS = [
     (re.compile(r"rm:week"), _v_week),
     (re.compile(r"rm:snd"), _v_sound),
     (re.compile(r"rm:news"), _v_news),
+    (re.compile(re.escape(morning.SWITCH)), _v_morning),
 ]
 
 

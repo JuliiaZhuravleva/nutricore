@@ -135,7 +135,8 @@ def test_it_stands_on_the_edits_migration_and_one_head_follows():
     assert module.revision == "a7b8c9d0e1f2"
     assert module.down_revision == "f6a7b8c9d0e1"
     chain = _chain()
-    assert _heads(chain) == ["48df529b50ac"]
+    assert _heads(chain) == ["a1b2c3d4e5f6"]  # the morning answers sit on top
+    assert chain["a1b2c3d4e5f6"][0] == ("48df529b50ac",)
     assert chain["48df529b50ac"][0] == ("e7158dcd97a2",)
     assert chain["e7158dcd97a2"][0] == ("f2a3b4c5d6e7",)
     assert chain["f2a3b4c5d6e7"][0] == ("e1f2a3b4c5d6",)
@@ -144,6 +145,7 @@ def test_it_stands_on_the_edits_migration_and_one_head_follows():
     assert chain["c9d0e1f2a3b4"][0] == ("b8c9d0e1f2a3",)
     assert chain["b8c9d0e1f2a3"][0] == ("a7b8c9d0e1f2",)
     # Known-positive: the check would have seen the old head as a head without it.
+    del chain["a1b2c3d4e5f6"]
     del chain["48df529b50ac"]
     del chain["e7158dcd97a2"]
     del chain["f2a3b4c5d6e7"]

@@ -31,6 +31,7 @@ BUTTON_VERBS = (
     "hw",
     "meal",
     "ml",
+    "mq",
     "ok",
     "rm",
     "rt",
