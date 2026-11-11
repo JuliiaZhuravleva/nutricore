@@ -70,12 +70,23 @@ _SAVED_LITTLE = (
     "{Day} не войдёт в средние за 7 дней, а в итогах будет с пометкой. "
     "Записи за него остаются в дневнике."
 )
-STOPPED = (
-    "✓ Утром больше не спрашиваю, сколько записано за вчера. "
-    "Вечерние напоминания остаются. Включить потом — ⚙️ Настройки → "
-    "🔔 Напоминания → ☀️ Вопрос утром."
-)
+_STOPPED_HEAD = "✓ Утром больше не спрашиваю, сколько записано за вчера. "
+_EVENING_STAYS = "Вечерние напоминания остаются. "
+_STOPPED_FOOT = "Включить потом — ⚙️ Настройки → 🔔 Напоминания → ☀️ Вопрос утром."
+STOPPED = _STOPPED_HEAD + _EVENING_STAYS + _STOPPED_FOOT
+# Someone whose evening reminder is off is not promised that it stays (review 2026-11-11).
+STOPPED_NO_EVENING = _STOPPED_HEAD + _STOPPED_FOOT
 RETURNED = "✓ Вопрос утром включён: завтра в 10:00, если за сегодня будут записи."
+# Turned back on before 10:00: the next question goes out today, about yesterday.
+RETURNED_TODAY = "✓ Вопрос утром включён: сегодня в 10:00, если за вчера есть записи."
+# ✏️ on an answered question: the stored answer holds until another is tapped, so the
+# «можно не отвечать» line would say the opposite of what is kept (review 2026-11-11).
+_ASK_AGAIN = (
+    "Вчерашняя еда вся в записях?\n"
+    "Сейчас в ответе: {answer}. Он остаётся, пока не выбран другой.\n"
+    "Да или частично — день считается как обычно.\n"
+    "Почти нет — {day} не войдёт в средние за 7 дней, а в итогах будет с пометкой."
+)
 
 _WEEKDAYS_NOMINATIVE = (
     "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
@@ -151,7 +162,9 @@ def _title(day: date) -> str:
 
 
 def question_view(row: MorningAnswer) -> Screen:
-    text = _title(row.day) + "\n" + _ASK.format(day=weekday_name(row.day))
+    ask = _ASK_AGAIN if row.answer in ANSWERS else _ASK
+    answer = ANSWERS.get(row.answer, "")
+    text = _title(row.day) + "\n" + ask.format(day=weekday_name(row.day), answer=answer)
     rows = [
         [_btn(label, f"a:{row.id}:{code}") for code, label in _BUTTONS],
         [_btn(STOP_LABEL, f"x:{row.id}")],
@@ -168,13 +181,15 @@ def answered_view(row: MorningAnswer) -> Screen:
     return Screen(text, InlineKeyboardMarkup(rows), view=meal_card.NO_MEAL)
 
 
-def _stopped_view(row: MorningAnswer) -> Screen:
+def _stopped_view(row: MorningAnswer, evening_on: bool = True) -> Screen:
     rows = [ok_row(), [_btn(RETURN_LABEL, f"r:{row.id}")]]
-    return Screen(STOPPED, InlineKeyboardMarkup(rows), view=meal_card.NO_MEAL)
+    text = STOPPED if evening_on else STOPPED_NO_EVENING
+    return Screen(text, InlineKeyboardMarkup(rows), view=meal_card.NO_MEAL)
 
 
-def _returned_view() -> Screen:
-    return Screen(RETURNED, InlineKeyboardMarkup([ok_row()]), view=meal_card.NO_MEAL)
+def _returned_view(before_hour: bool = False) -> Screen:
+    text = RETURNED_TODAY if before_hour else RETURNED
+    return Screen(text, InlineKeyboardMarkup([ok_row()]), view=meal_card.NO_MEAL)
 
 
 # --- the verbs --------------------------------------------------------------------
@@ -210,13 +225,16 @@ def _v_stop(t, data: str, rid: str) -> Screen:
         row.answer = STOP  # the message is the stop screen now: its buttons go, not it
         row.answered_at = t.now
     _set_on(t.db, t.user, False)
-    return _stopped_view(row)
+    from app.services import reminders  # reminders imports this module
+
+    return _stopped_view(row, reminders.config(t.user).mode != reminders.OFF)
 
 
 def _v_return(t, data: str, rid: str) -> Screen:
     _own_row(t, data, rid)
     _set_on(t.db, t.user, True)
-    return _returned_view()
+    local = local_time(t.now, settings_screen.user_zone(t.user))
+    return _returned_view(before_hour=local.hour < HOUR)
 
 
 def toggle(db, user: User) -> bool:

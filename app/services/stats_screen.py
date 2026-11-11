@@ -337,7 +337,11 @@ def _week_numbers(
             f"{_numbers_mark(everything)}{_kcal(average)}",
             *_macros(everything, known_days),
         ]
-        rows = ["🔢 В среднем за день с записями: " + " · ".join(parts)]
+        # D14: with a day left out, the heading names the days averaged instead.
+        averaged = [_WEEKDAYS[day.weekday()] for day, meals in counted if meals]
+        left_out = any(meals and day in little for day, meals in days)
+        head = f"за день ({', '.join(averaged)})" if left_out else "за день с записями"
+        rows = [f"🔢 В среднем {head}: " + " · ".join(parts)]
     else:
         rows = [f"🔢 В среднем за день с записями: {NOT_COUNTED}"]
     totals = [_sum(meals, "calories") for _day, meals in counted]

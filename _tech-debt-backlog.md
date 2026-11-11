@@ -89,6 +89,16 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Source:** owner decision 2026-11-11 («настройки надо будет пересмотреть, когда появится ещё какое-то количество»)
   - **Created:** 2026-11-11
 
+- [ ] **TD-263**: A «почти нет» Sunday is never marked in the Sunday summary that was sent. The summary goes Sunday 22:00; the question about Sunday goes Monday 10:00 (and about Saturday on Sunday 10:00, so a late answer misses it too). The mark and the changed 🔢 averages show only in the 7-day tab or when 🔢 is reopened on the old summary. The question still promises «в итогах будет с пометкой».
+  - **Priority:** Low (one day of seven; the 7-day tab is right)
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
+- [ ] **TD-264**: A morning question whose send timed out after Telegram took it is stored as «maybe» with no message_id, so the next day's question cannot strip its buttons: two live questions can sit in the chat (taps on both still work). Same pattern as the evening reminder's «maybe».
+  - **Priority:** Low
+  - **Source:** feat/morning-question review (Opus, 2026-11-11)
+  - **Created:** 2026-11-11
+
 - [ ] **TD-260**: «⬅️ К ответу бота» on a typed meal still in its read draws the line with no «Считаю…». The marker was dropped there because the tapped message may not be the one the read edits at its end: a retry queued while the line was a card (`job.line_id=None`), a reply's message (time, «и сыр»), or a retry whose `shown` is the M7 text (no edit when it fails again). A marker there could stay for good. To bring it back, the tap must know the live read's line (and that read's end must always edit it). Photos and voice have the same issue with `pending_text` on a back tap. Also `_read_kind` takes the first source, so a typed meal made from a failed photo (M7c) shows the photo's «читаю…» on a back tap.
   - **Priority:** Low (needs a tap into the card and back within the seconds of a read)
   - **Source:** feat/text-reading-marker review

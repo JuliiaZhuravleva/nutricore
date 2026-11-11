@@ -993,14 +993,14 @@ def settings_view(
             lines.append(SPARSE_LINE)
     stars = user is not None and crud_favorite_meal.list_active(db, user.id)
     about = (
-        f"Не больше одного сообщения в день {_sound(cfg)}: можно рассказать "
+        f"Напоминание приходит не чаще раза в день {_sound(cfg)}: можно рассказать "
         "голосовым, что было"
         + (", или нажать на блюдо из ⭐" if stars else "")
         + ". Если были записи за три часа до него, оно не приходит."
     )
     if week:
         about += " В воскресенье вместо него приходит итог недели."
-    lines.append(about + " «✖ Выкл» выключает только его.")
+    lines.append(about + " «✖ Выкл» выключает только напоминание.")
     lines.append(morning.settings_line(user))
     lines.append("🗓 Итог недели: " + ("вс, 22:00." if week else "не присылаю."))
     news = bot_news.news_on(user)

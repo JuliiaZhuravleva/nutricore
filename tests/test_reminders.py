@@ -2364,7 +2364,7 @@ def test_the_sub_screen_says_when_they_have_stopped(db):
 
 def test_the_sub_screen_names_stars_only_when_there_are_some(db):
     about = (
-        "Не больше одного сообщения в день без звука: можно рассказать голосовым, "
+        "Напоминание приходит не чаще раза в день без звука: можно рассказать голосовым, "
         "что было{}. Если были записи за три часа до него, оно не приходит."
     )
     assert about.format("") in _tap(db, "rm:o", AT_21).text

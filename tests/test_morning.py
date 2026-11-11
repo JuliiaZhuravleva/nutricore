@@ -455,6 +455,38 @@ def test_change_brings_the_three_answers_back_and_a_new_answer_replaces(db):
     assert morning.little_days(db, _user(db), YESTERDAY, YESTERDAY) == set()
 
 
+def test_change_on_an_answered_question_says_what_is_kept(db):
+    row = _asked(db)
+    first = _tap(db, f"mq:c:{row.id}")  # never answered: the question as sent
+    assert "Можно не отвечать" in first.text
+    _tap(db, f"mq:a:{row.id}:little")
+    again = _tap(db, f"mq:c:{row.id}").text
+    assert "Можно не отвечать" not in again
+    assert "Сейчас в ответе: почти нет. Он остаётся, пока не выбран другой." in again
+    assert "Да или частично — день считается как обычно." in again
+    assert "Почти нет — вторник не войдёт в средние за 7 дней" in again
+
+
+def test_stop_with_the_evening_off_does_not_promise_the_evening(db):
+    _setting(db, reminders.KEY, {"mode": "off"})
+    row = _asked(db)
+    text = _tap(db, f"mq:x:{row.id}").text
+    assert "Вечерние напоминания" not in text
+    assert text == morning.STOPPED_NO_EVENING
+    assert text.startswith("✓ Утром больше не спрашиваю") and "☀️ Вопрос утром." in text
+
+
+def test_return_before_10_says_today(db):
+    row = _asked(db)
+    _tap(db, f"mq:x:{row.id}")
+    early = _tap(db, f"mq:r:{row.id}", now=_utc(TODAY, 9, 30)).text
+    assert early == (
+        "✓ Вопрос утром включён: сегодня в 10:00, если за вчера есть записи."
+    )
+    late = _tap(db, f"mq:r:{row.id}", now=_utc(TODAY, 11)).text
+    assert late == morning.RETURNED
+
+
 def test_ok_is_the_shared_close_row(db):
     row = _asked(db)
     for data in (
@@ -536,6 +568,7 @@ def test_a_foreign_row_is_refused_and_changes_nothing(db):
     db.refresh(theirs)
     assert theirs.answer is None
     assert morning.morning_on(_user(db, 2)) is True and morning.morning_on(_user(db))
+    db.refresh(mine)
     assert mine.answer is None
     # a row that does not exist, and a tapper who is nobody
     assert "Ответ сохранён" not in _tap(db, "mq:a:99999:all").text
@@ -582,10 +615,12 @@ def _settings(db):
 
 def test_the_settings_screen_has_the_line_the_sentence_and_the_button(db):
     screen = _settings(db)
-    assert "«✖ Выкл» выключает только его.\n" in screen.text
-    assert "приходит итог недели. «✖ Выкл» выключает только его." in screen.text
+    assert "«✖ Выкл» выключает только напоминание.\n" in screen.text
+    assert "приходит итог недели. «✖ Выкл» выключает только напоминание." in screen.text
     _setting(db, WEEK_PUSH, False)
-    assert "оно не приходит. «✖ Выкл» выключает только его." in _settings(db).text
+    assert (
+        "оно не приходит. «✖ Выкл» выключает только напоминание." in _settings(db).text
+    )
     assert "☀️ Утром, в 10:00 — вопрос про вчерашние записи: присылаю." in screen.text
     assert "☀️ Вопрос утром: вкл" in _labels(screen.markup)
     assert "rm:morning" in _callbacks(screen.markup)
@@ -657,7 +692,9 @@ def test_an_excluded_day_is_out_of_the_average_and_has_no_bar(db):
     plain = st.summary_view(db, _user(db), MONDAY, SUNDAY, opened=True).text
     _answer(db, date(2026, 11, 3))
     text = st.summary_view(db, _user(db), MONDAY, SUNDAY, opened=True).text
-    assert "🔢 В среднем за день с записями: " in text
+    # D14: with a day left out, the heading names the days averaged
+    assert "🔢 В среднем за день (ср, чт): " in text
+    assert "с записями" not in text and "с записями" in plain
     # (300 + 2000 + 1800) / 3 before; (2000 + 1800) / 2 = 1900 after
     assert "1 900" in text or "1900" in text
     assert "1 367" in plain or "1367" in plain
@@ -707,7 +744,10 @@ def test_the_seven_day_tab_reads_the_same_answers(db):
     _meal(db, TODAY - timedelta(days=2), calories=2000)
     _answer(db, TODAY - timedelta(days=3))
     screen = st.open_view(db, 42, st.WEEK, AT_10, True)
-    assert "Суббота отдельно" in screen.text or "отдельно: в записях" in screen.text
+    # TODAY - 3 is Sunday 8 November; Monday alone is averaged
+    assert "Воскресенье отдельно: в записях только часть дня." in screen.text
+    assert "🔢 В среднем за день (пн): " in screen.text
+    assert "300" not in screen.text
 
 
 def test_answers_of_other_people_and_other_weeks_do_not_leak(db):

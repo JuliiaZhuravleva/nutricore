@@ -171,6 +171,17 @@ Mock screens were read by 4 isolated fresh-eyes viewers (round 1: «Почти �
     присылаю.», the sentence ««✖ Выкл» выключает только его.» after the evening paragraph, the
     button `☀️ Вопрос утром: вкл/выкл`. Its state-or-action ambiguity (4 of 4) is TD-262.
   - **Not drawn yet:** the mark on a «почти нет» day in the Sunday summary and in observations.
+- **Built (feat/morning-question, 2026-11-11):** the mark is the same plain line «Вторник отдельно:
+  в записях только часть дня.» under the summary text, outside the folded 🔢 block, so it shows with
+  the numbers hidden; the picture card is unchanged; observations (🌱, groups, ✨) keep the day with
+  no mark. With a day left out, the 🔢 heading names the averaged days («(ср, чт)»); with none, it
+  keeps «с записями». Changed from the D14 text after review: the 🔔 paragraph says «Напоминание
+  приходит не чаще раза в день…» and ends ««✖ Выкл» выключает только напоминание.» («только его»
+  followed the week-summary sentence and read as the summary); ✏️ on an answered question says
+  «Сейчас в ответе: …. Он остаётся, пока не выбран другой.» instead of «Можно не отвечать…»; the stop
+  text drops «Вечерние напоминания остаются.» when the evening reminder is off; «Вернуть вопрос»
+  before 10:00 says «сегодня в 10:00, если за вчера есть записи». Open: TD-263 (a Sunday is never
+  marked in the sent summary), TD-264 (a «maybe» question keeps its buttons).
 - Round-1 findings kept above: the effect line in plain text, never an italic footnote (4 of 4
   skipped it); the excluded day without its bar (a short bar read as "ate little" to 4 of 4, to
   0 of 4 in round 2); «утром больше не спрашиваю…», not «про вчерашний день» (read as "only that
