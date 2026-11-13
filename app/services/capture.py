@@ -9,6 +9,7 @@ No text, transcript or message body goes to a log or to ``meal_readings.error``.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -2944,13 +2945,18 @@ def _routed_line(db, job: Read, meal: Meal, route: Route, words: str) -> Line:
         screen = weight_screen.typed(db, job.telegram_id, words)
         return Line(screen.text, screen.markup)
     if route.action == TICK:
-        return Line(f"✓ {route.tick}", stats_screen.day_card_markup())
+        # The line is HTML, as the typed tick is not: a «&» in a name must not break it.
+        return Line(f"✓ {html.escape(route.tick)}", stats_screen.day_card_markup())
     if route.action == SILENT and route.retouch is not None:
         # R16: «ничего» to a reminder, as a typed one and a voice bound to it say.
         return Line(reminders.ACCEPTED, retouch=route.retouch)
     if route.action == SILENT:
         return _no_food(db, job, meal)  # «спасибо»: what a read would have found
     return route.line
+
+
+def _waits(route: Route) -> bool:
+    return route.line is not None and route.line.text == STILL_READING
 
 
 def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
@@ -2976,9 +2982,35 @@ def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
     if not words:
         return None
     route = route_text(db, _heard_came(job, source, words), heard=meal.id)
-    if route.action == NEW_MEAL:
+    if route.action == NEW_MEAL or _waits(route):
+        # A voice before it is not heard yet: a typed change waits and stays in the
+        # chat; a spoken one would be lost, so it is read as food, as it always was.
         return None
-    line = _routed_line(db, job, meal, route, words)
+    logger.info("Heard voice %s routed: %s", meal.id, route.action)
+    # The words went somewhere already: from here the line must say something and the
+    # voice must never be read as food too, so nothing below may leave it «читаю…».
+    try:
+        line = _routed_line(db, job, meal, route, words)
+    except Exception as e:
+        logger.warning("Heard voice %s not answered: %s", meal.id, type(e).__name__)
+        db.rollback()
+        line = Line(M7F_REFUSED)
+    try:
+        claimed = _retire_heard(db, job, meal, source, line)
+    except Exception as e:
+        logger.warning("Heard voice %s not retired: %s", meal.id, type(e).__name__)
+        db.rollback()
+        return Routed(line)
+    if not claimed:
+        logger.info("Heard voice %s: its line is no longer the read's", meal.id)
+        return Routed(None)
+    return Routed(line)
+
+
+def _retire_heard(db, job: Read, meal: Meal, source: MealSource, line: Line) -> bool:
+    """The voice's own meal leaves the day, and its line maps as what it now says.
+    False: the line is no longer the read's to edit."""
+    db.refresh(meal)
     if meal.deleted_at is None:
         meal.reading_status = "no_food"
         meal.deleted_at = _now()
@@ -2992,12 +3024,12 @@ def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
     if voice_row is not None and voice_row.meal_id == meal.id:
         left_meal(db, source.chat_id, source.message_id)  # a reply to it: a new meal
     if not _claim_view(db, job):
-        return Routed(None)
-    if job.line_id is not None and line is not None and line.meal_id is not None:
+        return False
+    if job.line_id is not None and line.meal_id is not None:
         map_message(db, job.chat_id, job.line_id, line.meal_id, line.view)
     else:
         left_meal(db, job.chat_id, job.line_id)
-    return Routed(line)
+    return True
 
 
 def spoken_words(db, job: Read, transcript: str) -> str:

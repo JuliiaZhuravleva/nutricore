@@ -183,3 +183,90 @@ def test_a_routed_voice_whose_line_never_went_out_answers_as_its_own_view(
     rows = db.scalars(select(MealMessage).where(MealMessage.meal_id == before.id))
     # The voice itself points at the meal it joined, as typed words do ("source").
     assert sorted(row.view for row in rows) == ["other", "source"]
+
+
+def test_a_routed_answer_that_fails_says_so_and_the_voice_is_not_read_as_food(
+    db, seen, reader, whisper, clock, monkeypatch
+):
+    """The words went somewhere already: the line may not hang on «читаю…» nor the
+    voice be read as a meal on top of it."""
+    from app.services import weight_screen
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(weight_screen, "typed", broken)
+    whisper.answers("72,5 кг")
+    wire = send(_voice())
+    assert wire.edits()[-1]["text"] == capture.M7F_REFUSED
+    assert reader.text == []
+    assert _voice_meal(db).deleted_at is not None
+
+
+def test_a_routed_voice_whose_line_mapping_fails_still_answers(
+    db, seen, reader, whisper, clock, monkeypatch
+):
+    before = _meal_now(db, seen, minutes_ago=20, names=("суп",))
+
+    real = capture.map_message
+
+    def broken(db, chat_id, message_id, meal_id, view="line"):
+        if view == "other":  # the line's own mapping, not the voice's "source"
+            raise RuntimeError("boom")
+        return real(db, chat_id, message_id, meal_id, view)
+
+    monkeypatch.setattr(capture, "map_message", broken)
+    whisper.answers("ещё хлеб")
+    wire = send(_voice())
+    db.expire_all()
+    assert sorted(_item_names(db, before)) == ["суп", "хлеб"]
+    assert "хлеб" in wire.edits()[-1]["text"]
+    assert "ещё хлеб" not in reader.text  # «хлеб» alone is the new name's numbers
+    assert _voice_meal(db).deleted_at is not None
+
+
+def test_a_spoken_routine_with_an_ampersand_is_escaped_on_the_html_line(
+    db, seen, reader, whisper, clock, monkeypatch
+):
+    from app.services import telegram as tg
+
+    monkeypatch.setattr(
+        tg.stats_screen, "tick_by_name", lambda db, tid, t: "Витамины & омега"
+    )
+    whisper.answers("витамины и омега")
+    wire = send(_voice())
+    assert wire.edits()[-1]["text"] == "✓ Витамины &amp; омега"
+    assert reader.text == []
+
+
+def test_a_spoken_change_behind_an_unheard_voice_is_read_not_lost(
+    db, seen, reader, whisper, clock
+):
+    """Two voices, the second heard first: the typed guard would ask to send it again,
+    which a voice cannot be. It is read as food, as before."""
+    came = capture.Incoming(
+        telegram_id=OWNER,
+        username="o",
+        chat_id=CHAT,
+        message_id=91001,
+        kind="voice",
+        text=None,
+        file_id="v",
+        file_unique_id="vu",
+        file_size=1000,
+        duration_s=3,
+        media_group_id=None,
+        reply_to=None,
+        sent_at=NOW - timedelta(minutes=1),
+        forward_date=None,
+    )
+    capture.born(db, came)
+    whisper.answers("ещё хлеб")
+    wire = send(_voice())
+    assert capture.STILL_READING not in str(wire.edits())
+    assert "ещё хлеб" in reader.text
+    db.expire_all()
+    heard = db.scalars(
+        select(MealSource).where(MealSource.kind == "voice").order_by(MealSource.id)
+    ).all()[-1]
+    assert db.get(Meal, heard.origin_meal_id).deleted_at is None

@@ -360,3 +360,23 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02
+- [ ] **TD-268**: A routed voice's answer (a weight, «ещё…», a tick) is lost when its edit fails through every retry: the line maps as "other" or not at all, and the voice's meal is retired, so the owed sweep never comes back to it. Fix: keep the routed answer as an owed text the sweep can send.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-269**: A failure inside `route_text` after it has committed a voice's change, or a hard kill between that commit and the voice's retire, lets a re-read take the same words as food («ещё хлеб» twice). Failures in the answer and the retire are covered. Fix: a "routed" marker on the heard reading, or the retire in the route's own transaction.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-270**: A ⭐ set from words and taken back with «↩️ Вернуть всё» is not a decline for the tidy-up (merges are), so next week's tidy may offer that ⭐ again.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-271**: A voice heard late (after a restart, or behind the read gate) is timed at the hearing: a spoken weight is stamped now, and «ещё…» measures its window from now, not from when it was said.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-272**: `capture.py` keeps growing (heard-voice routing added ~150 lines). Move the heard routing (`route_heard`, `_routed_line`, `_retire_heard`, `_heard_came`) into a module of its own.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14

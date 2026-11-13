@@ -23,7 +23,6 @@ from telegram import InlineKeyboardMarkup
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_personal_food import _key, crud_personal_food
 from app.crud.crud_record_event import crud_record_event
-from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
 from app.models.personal_food import PersonalFood
@@ -619,7 +618,8 @@ def _v_star(t: _Tap, data: str, fid: str, want: str, back: Optional[str]) -> Scr
     if (want == "1") == (existing is not None):
         return Screen("", None, toast=meal_items.SAME_TOAST)
     if want == "0":
-        crud_favorite_meal.set_removed(t.db, existing, True)
+        dish_ops.unstar(t.db, t.user, dish)
+        t.db.commit()
         return _card(t, dish, back, toast=STAR_OFF_TOAST)
     dish_ops.create_star(t.db, t.user.id, dish, commit=True)
     return _card(t, dish, back)
@@ -1096,17 +1096,6 @@ def _merge(
     return event
 
 
-def _active_stars(t: _Tap, dish: PersonalFood) -> list:
-    return list(
-        t.db.scalars(
-            select(FavoriteMeal).where(
-                FavoriteMeal.personal_food_id == dish.id,
-                FavoriteMeal.removed_at.is_(None),
-            )
-        )
-    )
-
-
 def _merged_screen(
     t: _Tap, source: PersonalFood, target: PersonalFood, event_id: int, back: str
 ) -> Screen:
@@ -1188,7 +1177,14 @@ def _merge_again(
 
 def _hide(t: _Tap, dish: PersonalFood, back: str, undoes: Optional[int] = None):
     """O8. No question first: the undo is the answer to a wrong tap."""
-    event = dish_ops.hide(t.db, t.user, dish, now=t.now, undoes=undoes)
+    try:
+        event = dish_ops.hide(t.db, t.user, dish, now=t.now, undoes=undoes)
+    except dish_ops.Refused:
+        t.db.rollback()
+        return _refused(t, dish, back)
+    if event is None:  # another tap hid it a moment ago
+        t.db.rollback()
+        return Screen("", None, toast=meal_items.SAME_TOAST)
     t.db.commit()
     page = back[1:] if back.startswith("l") else "0"
     return _screen(

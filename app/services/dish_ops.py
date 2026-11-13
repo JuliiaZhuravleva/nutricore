@@ -11,6 +11,7 @@ changes of one batch, and ``undo_group`` takes them back newest first.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -27,6 +28,8 @@ from app.models.personal_food import PersonalFood
 from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import meal_items
+
+logger = logging.getLogger(__name__)
 
 # The kinds ``undo`` takes back. The rest stay with the screens that wrote them.
 GROUP_KINDS = ("food_merge", "food_star", "food_unstar", "rename", "food_hide")
@@ -573,6 +576,7 @@ def undo_group(db, user: User, group_id: str) -> GroupUndo:
         try:
             undo(db, user, event, group_id=undo_group_id)
         except Refused as refused:
+            logger.info("Undo of event %s (%s) refused", event.id, event.kind)
             result.refused_names.append(refused.name)
         else:
             result.undone += 1
