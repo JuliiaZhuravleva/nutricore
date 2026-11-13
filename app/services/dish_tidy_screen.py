@@ -80,6 +80,10 @@ UNDONE_HEAD = "↩️ Возвращено."
 UNDONE = "↩️ Возвращено: {done} из {total}."
 NOT_BACK = " Не вернулось: {names} — {them} меняли после."
 STALE_LINE = " — не вышло: блюда изменились после подборки"
+NOT_SENT = (
+    "Сообщение с подборкой не дошло, и её объединения отменены. Кроме отмеченных ✓: "
+    "эти блюда меняли после, они остались объединены."
+)
 _MONTHS = (
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -223,6 +227,8 @@ def ended_view(db, batch: DishTidyBatch, user: User, head: str) -> Screen:
     items = crud_dish_tidy.items(db, batch.id)
     lines = [f"{TITLE} · {_day(batch.claimed_at, user)}", head, ""]
     for item in items:
+        if item.state == "rolled_back" and item.event_id is None:
+            continue  # a proposal the person never saw
         line = f"{_MARKS.get(item.state, '·')} {_line(item.idx + 1, item)}"
         if item.state == "stale":
             line += STALE_LINE
@@ -301,9 +307,9 @@ def roll_back(db, user: User, batch: DishTidyBatch, state: str) -> None:
     count as never shown (not as declines). One commit.
 
     A merge that would not come apart (its dishes changed since) stays ``applied``,
-    and the batch stays open as ``maybe``: 🍲 Блюда → «🍲 Порядок» shows it with
-    «↩️ Вернуть всё», so no merge is left where nobody can see it. A blocked bot
-    shows nothing anyway: that one only logs."""
+    and the batch stays open as ``maybe``, blocked or not (a person may unblock):
+    🍲 Блюда → «🍲 Порядок» shows what stayed once, with «↩️ Вернуть всё»
+    (``left_over``), so no merge is left where nobody can see it."""
     dish_ops.lock_user(db, user)
     result = dish_ops.undo_group(db, user, batch.group_id)
     for item in crud_dish_tidy.items(db, batch.id):
@@ -316,8 +322,7 @@ def roll_back(db, user: User, batch: DishTidyBatch, state: str) -> None:
             batch.id,
             len(result.refused_names),
         )
-        if state != "blocked":
-            state = "maybe"
+        state = "maybe"
     batch.state = state
     db.commit()
 
@@ -344,9 +349,26 @@ def _mask(t: _Tap, data: str, batch: DishTidyBatch, raw: str) -> int:
     return mask
 
 
+def left_over(db, batch: DishTidyBatch) -> bool:
+    """An open batch whose message never arrived and whose merges would not all come
+    apart: what stayed merged waits to be shown, and never expires unseen."""
+    return batch.state in OPEN and any(
+        item.state == "rolled_back" for item in crud_dish_tidy.items(db, batch.id)
+    )
+
+
+def _show_left_over(t: _Tap, batch: DishTidyBatch) -> Screen:
+    """What stayed merged, shown once with ↩️; the batch is settled by being seen."""
+    batch.state = "applied"
+    t.db.commit()
+    return ended_view(t.db, batch, t.user, NOT_SENT)
+
+
 def _closed(t: _Tap, batch: DishTidyBatch) -> Optional[Screen]:
     """The batch's ended view when its buttons no longer apply, else None. An open
     one past its week ends here, declining nothing."""
+    if left_over(t.db, batch):
+        return _show_left_over(t, batch)
     if batch.state in OPEN and t.now > _aware(batch.expires_at or t.now):
         batch.state = "expired"
         t.db.commit()
@@ -375,6 +397,8 @@ def _head(db, batch: DishTidyBatch) -> str:
 def _v_open(t: _Tap, data: str) -> Screen:
     """🍲 Блюда → «Порядок»: the open batch, else a pass right now."""
     for batch in crud_dish_tidy.open_batches(t.db, t.user.id):
+        if left_over(t.db, batch):
+            return _show_left_over(t, batch)
         if _closed(t, batch) is None:
             return open_view(t.db, batch, t.user, default_mask(_items(t, batch)))
     batch = crud_dish_tidy.claim(

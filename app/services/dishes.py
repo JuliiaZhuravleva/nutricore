@@ -621,23 +621,7 @@ def _v_star(t: _Tap, data: str, fid: str, want: str, back: Optional[str]) -> Scr
     if want == "0":
         crud_favorite_meal.set_removed(t.db, existing, True)
         return _card(t, dish, back, toast=STAR_OFF_TOAST)
-    portion = meal_items.dish_portion(t.db, dish)
-    numbers = portion.numbers or {key: None for key in meal_items.FIELDS}
-    crud_favorite_meal.create_from_numbers(
-        t.db,
-        user_id=t.user.id,
-        name=dish.canonical_name,
-        numbers=numbers,
-        nutrients={
-            "foods": [dish.canonical_name],
-            "calories": numbers["calories"],
-            "protein": numbers["proteins"],
-            "fats": numbers["fats"],
-            "carbs": numbers["carbohydrates"],
-        },
-        source_meal_id=dish.meal_id,
-        usual_grams=None if portion.assumed else portion.grams,
-    )
+    dish_ops.create_star(t.db, t.user.id, dish, commit=True)
     return _card(t, dish, back)
 
 

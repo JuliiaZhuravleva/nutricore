@@ -13,6 +13,7 @@ noon be made up later the same afternoon.
 
    delivered          → ``sent``; an older open batch is closed («есть новая»)
    blocked            → the merges come apart again, ``blocked``
+   refused (BadRequest) → would be refused again: the merges come apart, ``failed``
    may have arrived   → ``maybe``: the merges stay, nothing is resent (🍲 Блюда shows it)
    certainly not sent → ``retry``: the stored batch is resent next sweep, never
                         recomputed; after a day the merges come apart, ``failed``
@@ -28,7 +29,7 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, TelegramError
 
 from app.crud.crud_dish_tidy import crud_dish_tidy
 from app.models.dish_tidy import DishTidyBatch
@@ -112,6 +113,8 @@ async def _retire_older(db, bot, user: User, batch: DishTidyBatch) -> None:
     """At most one open batch: an older one closes, its message says so and keeps
     only what can still be taken back."""
     for old in crud_dish_tidy.open_batches(db, user.id, but=batch.id):
+        if dish_tidy_screen.left_over(db, old):
+            continue  # what stayed merged is still to be shown on demand
         old.state = "retired"
         db.commit()
         if old.chat_id is None or old.message_id is None:
@@ -134,7 +137,8 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
 
     Under the person's lock, the batch read again: one they opened from the list and
     settled since the sweep listed it is neither sent again nor taken back. The lock
-    holds over the send, so a tap waits for it rather than racing it."""
+    holds over the send, so a tap waits for it rather than racing it,
+    and on to the state written after a failed send: nothing rolls back between."""
     telegram_id = user.telegram_id
     dish_ops.lock_user(db, user)
     db.refresh(batch)
@@ -155,11 +159,17 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
         )
     except Forbidden:
         logger.info("dish tidy: %s blocked the bot, merges taken back", telegram_id)
-        db.rollback()
         dish_tidy_screen.roll_back(db, user, batch, "blocked")
         return "blocked"
+    except BadRequest as error:
+        logger.error(
+            "dish tidy: batch %s refused by Telegram, merges taken back: %s",
+            batch.id,
+            error,
+        )
+        dish_tidy_screen.roll_back(db, user, batch, "failed")
+        return "failed"
     except Exception as error:
-        db.rollback()
         if may_have_arrived(error):
             logger.warning("dish tidy: no answer for %s, may have arrived", telegram_id)
             batch.state = "maybe"
@@ -195,9 +205,13 @@ async def _tidy(db, bot, user: User, week: date, now: datetime) -> str:
     try:
         found = dish_tidy_screen.prepare(db, user, batch, now)
     except Exception:
-        # Rolled back whole: no merge was kept. The week is not tried again.
+        # Rolled back whole, unless the commit went through before it failed: then
+        # the merges are taken back. The week is not tried again.
         logger.exception("dish tidy: the pass failed for %s", telegram_id)
         db.rollback()
+        if dish_ops.group_changes(db, batch.group_id):
+            dish_tidy_screen.roll_back(db, user, batch, "failed")
+            return "failed"
         batch.state = "failed"
         db.commit()
         return "failed"
@@ -210,20 +224,30 @@ async def run(db, bot, now: datetime | None = None) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     counts = dict.fromkeys(COUNTS, 0)
     clear_stuck(db, now)
-    for batch in to_resend(db, now):
-        batch_id = batch.id
-        user = db.get(User, batch.user_id)
+    # Plain ids first: a rollback below expires the rows, and reading one then could
+    # fail outside any try and end the sweep for everyone after.
+    resend = [(batch.id, batch.user_id) for batch in to_resend(db, now)]
+    for batch_id, user_id in resend:
         try:
-            outcome = await deliver(db, bot, user, batch, now)
+            user = db.get(User, user_id)
+            batch = db.get(DishTidyBatch, batch_id)
+            if user is None or batch is None:
+                outcome = "skipped"
+            else:
+                outcome = await deliver(db, bot, user, batch, now)
         except Exception:
             logger.exception("dish tidy: could not resend batch %s", batch_id)
             db.rollback()
-            _give_up(db, user, batch_id, now)
+            _give_up(db, user_id, batch_id, now)
             outcome = "failed"
         counts[outcome] += 1
-    for user, week in users_due(db, now):
-        telegram_id = user.telegram_id
+    due = [(user.id, user.telegram_id, week) for user, week in users_due(db, now)]
+    for user_id, telegram_id, week in due:
         try:
+            user = db.get(User, user_id)
+            if user is None:
+                counts["skipped"] += 1
+                continue
             outcome = await _tidy(db, bot, user, week, now)
         except Exception:
             # One person's failed claim or commit must not cost everyone after them.
@@ -236,11 +260,14 @@ async def run(db, bot, now: datetime | None = None) -> dict:
     return counts
 
 
-def _give_up(db, user: User, batch_id: int, now: datetime) -> None:
+def _give_up(db, user_id: int, batch_id: int, now: datetime) -> None:
     """A stored batch that fails before the send itself (not the send) would fail the
     same way every sweep: after a day its merges come apart, as for a send that never
     went. A failure here only logs: the next sweep tries again."""
     try:
+        user = db.get(User, user_id)
+        if user is None:
+            return
         dish_ops.lock_user(db, user)
         batch = db.get(DishTidyBatch, batch_id, populate_existing=True)
         if batch is None or batch.state not in RESENDABLE:

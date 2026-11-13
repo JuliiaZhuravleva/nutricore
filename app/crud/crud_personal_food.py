@@ -584,7 +584,7 @@ class CRUDPersonalFood:
                 text("SELECT COUNT(*) " + where), {"user_id": user_id}
             ).scalar_one()
             if count > max_rows:
-                logger.warning(
+                logger.error(
                     "close_pairs: %s embedding rows for user_id=%s, over %s: skipped",
                     count,
                     user_id,

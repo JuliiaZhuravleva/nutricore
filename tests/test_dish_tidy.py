@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy import text as sql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from telegram.error import Forbidden, NetworkError
+from telegram.error import BadRequest, Forbidden, NetworkError
 
 from app.core.config import settings
 from app.crud.crud_dish_tidy import crud_dish_tidy
@@ -35,8 +35,9 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
 from app.models import FavoriteMeal, Meal, PersonalFood, RecordEvent, User
 from app.models.dish_tidy import DishTidyBatch, DishTidyItem
-from app.services import close_row, dish_tidy, dish_tidy_push, dishes
+from app.services import close_row, dish_tidy, dish_tidy_push
 from app.services import dish_tidy_screen as screen_mod
+from app.services import dishes
 from app.services import telegram as tg
 from app.services.meal_items import SAME_TOAST
 
@@ -414,8 +415,124 @@ def test_a_rollback_that_leaves_a_merge_keeps_the_batch_visible(db):
     assert _batch(db).state == "maybe"
     db.expire_all()
     assert db.get(DishTidyItem, same.id).state == "applied"
-    screen = _tap(db, "dt:o", now=AT_12 + timedelta(hours=26))
-    assert "✅ Применить отмеченное" in " ".join(_labels(screen.markup))
+    _assert_left_over_shown_once(db, AT_12 + timedelta(hours=26))
+
+
+def _assert_left_over_shown_once(db, now):
+    """«🍲 Порядок» shows what stayed merged, not a fresh proposal: the never-shown
+    proposals are not listed or ticked, ✅ ОК first, then ↩️; seen, it is settled."""
+    screen = _tap(db, "dt:o", now=now)
+    assert screen.text.splitlines()[1] == screen_mod.NOT_SENT
+    labels = _labels(screen.markup)
+    assert labels[:2] == [close_row.LABEL, screen_mod.UNDO_ALL]
+    assert not any(label.startswith("✅ Применить") for label in labels)
+    lines = screen.text.splitlines()[3:]
+    assert len(lines) == 1 and lines[0].startswith("✓ ")  # the merge that stayed
+    assert _batch(db).state == "applied"
+    undo = next(d for d in _callbacks(screen.markup) if d.startswith("dt:u:"))
+    assert _tap(db, undo, now=now).text.splitlines()[1].startswith("↩️ Возвращено")
+    # Seen once: the next tap runs a fresh pass instead of the same batch again.
+    assert _tap(db, "dt:o", now=now).text.splitlines()[1] != screen_mod.NOT_SENT
+
+
+def _merge_aside_in_send(db, error):
+    """The send fails with ``error`` after the person moved a merged dish elsewhere,
+    so that merge will not come apart."""
+    other = _dish(db, "кетчуп")
+
+    async def send(**kwargs):
+        same = db.scalars(select(DishTidyItem).where(DishTidyItem.kind == "same"))
+        db.get(PersonalFood, same.first().source_id).merged_into_id = other.id
+        db.flush()
+        raise error
+
+    return SimpleNamespace(send_message=send, edit_message_text=AsyncMock())
+
+
+@BACKENDS
+def test_a_blocked_bot_with_a_merge_left_keeps_it_visible(db):
+    """Blocked and the rollback refused: the person may unblock, and then sees it."""
+    _kitchen(db)
+    bot = _merge_aside_in_send(db, Forbidden("blocked by the user"))
+    assert _run(db, bot)["blocked"] == 1
+    assert _batch(db).state == "maybe"
+    _assert_left_over_shown_once(db, AT_12 + timedelta(hours=1))
+
+
+def test_a_left_over_is_not_retired_by_the_next_batch(db):
+    _kitchen(db)
+    _run(db, _merge_aside_in_send(db, Forbidden("blocked by the user")))
+    left = _batch(db)
+    _dish(db, "кефир")
+    _dish(db, "Кефир")
+    _run(db, _bot(message_id=950), AT_12 + timedelta(days=7))
+    db.refresh(left)
+    assert left.state == "maybe"  # still to be shown on demand
+
+
+@BACKENDS
+def test_telegram_refusing_the_message_takes_the_merges_back_at_once(db):
+    """A BadRequest would come back every sweep for a day: no retry."""
+    k = _kitchen(db)
+    bot = _bot(error=BadRequest("can't parse entities"))
+    assert _run(db, bot)["failed"] == 1
+    assert _batch(db).state == "failed"
+    assert _live(db, k.sauce) and _live(db, k.sauce_too)
+    again = _bot()
+    _run(db, again, AT_12 + timedelta(minutes=15))
+    again.send_message.assert_not_awaited()
+
+
+def test_a_pass_failing_after_its_commit_takes_its_merges_back(db, monkeypatch):
+    """The commit went through and only then the pass failed: the merges are durable,
+    so ``failed`` alone would leave them where nobody sees them."""
+    k = _kitchen(db)
+    real = screen_mod.prepare
+
+    def committed_then_broken(*args, **kwargs):
+        real(*args, **kwargs)
+        raise RuntimeError("connection lost after COMMIT")
+
+    monkeypatch.setattr(screen_mod, "prepare", committed_then_broken)
+    assert _run(db, _bot())["failed"] == 1
+    assert _batch(db).state == "failed"
+    assert _live(db, k.sauce) and _live(db, k.sauce_too)
+
+
+def test_a_row_failing_to_load_does_not_end_the_sweep(db, monkeypatch):
+    """A resend whose rows fail to load: the next person is still tidied up."""
+    _kitchen(db)
+    error = NetworkError("httpx.ConnectError: no route")
+    error.__cause__ = httpx.ConnectError("no route")
+    _run(db, _bot(error=error))
+    assert _batch(db).state == "retry"
+    _turn_on(db)
+    _kitchen(db, user_id=2)
+    real_get = db.get
+    broken = {"left": 1}
+
+    def get(model, ident, **kw):
+        if model is User and ident == 1 and broken["left"]:
+            broken["left"] -= 1
+            raise RuntimeError("row expired on a dead connection")
+        return real_get(model, ident, **kw)
+
+    monkeypatch.setattr(db, "get", get)
+    counts = _run(db, _bot(), AT_12 + timedelta(minutes=15))
+    assert counts["failed"] == 1 and counts["sent"] == 1
+    assert _batch(db, 2).state == "sent"
+
+
+def test_a_failed_send_keeps_the_lock_until_its_state_is_written(db, monkeypatch):
+    """No rollback between the send and the state it leads to: a rollback lets the
+    person's lock go, and an apply could land before the stale state overwrites it."""
+    _kitchen(db)
+    error = NetworkError("httpx.ConnectError: no route")
+    error.__cause__ = httpx.ConnectError("no route")
+    rollbacks = []
+    monkeypatch.setattr(db, "rollback", lambda: rollbacks.append(1))
+    _run(db, _bot(error=error))
+    assert _batch(db).state == "retry" and rollbacks == []
 
 
 def test_a_batch_settled_from_the_list_is_not_resent_nor_taken_back(db):
@@ -436,7 +553,7 @@ def test_a_batch_settled_from_the_list_is_not_resent_nor_taken_back(db):
     )
     assert sent == "skipped"
     bot.send_message.assert_not_awaited()
-    dish_tidy_push._give_up(db, _user(db), listed.id, AT_12 + timedelta(hours=25))
+    dish_tidy_push._give_up(db, 1, listed.id, AT_12 + timedelta(hours=25))
     assert _batch(db).state == "applied"
     assert not (_live(db, k.sauce) and _live(db, k.sauce_too))  # the merge stays
     assert _starred(db, k.oats)
@@ -635,6 +752,36 @@ def test_undo_all_takes_everything_back_and_a_second_tap_writes_nothing(db):
     assert _tap(db, stale_tick).text.splitlines()[1] == screen_mod.UNDONE_HEAD
     # returned rows count as declined
     assert dish_tidy.find(db, _user(db), AT_12 + timedelta(days=7)).empty
+
+
+def test_a_star_taken_back_by_undo_all_is_offered_again_after_90_days(db):
+    """Returned with ↩️ it is a decline for 90 days, not a ⭐ the person removed."""
+    k, markup, _batch_row = _sent(db)
+    applied = _tap(db, _apply_data(markup))
+    undo = next(d for d in _callbacks(applied.markup) if d.startswith("dt:u:"))
+    _tap(db, undo)
+    assert not _starred(db, k.oats)
+    for ago in (1, 2, 3):  # still eaten on three days of the last 28
+        _eat(db, k.oats, day=SUNDAY + timedelta(days=91 - ago))
+    later = dish_tidy.find(db, _user(db), AT_12 + timedelta(days=91))
+    assert [r.source_id for r in later.rows if r.kind == dish_tidy.STAR] == [k.oats.id]
+    early = dish_tidy.find(db, _user(db), AT_12 + timedelta(days=89))
+    assert not any(r.kind == dish_tidy.STAR for r in early.rows)
+
+
+def test_a_star_removed_by_hand_is_never_offered_again(db):
+    """The control: a ⭐ taken off in 🍲 Блюда (no event) stays a «no»."""
+    k, markup, _batch_row = _sent(db)
+    _tap(db, _apply_data(markup))
+    fav = db.scalars(
+        select(FavoriteMeal).where(FavoriteMeal.personal_food_id == k.oats.id)
+    ).one()
+    fav.removed_at = AT_12
+    db.commit()
+    for ago in (1, 2, 3):
+        _eat(db, k.oats, day=SUNDAY + timedelta(days=91 - ago))
+    later = dish_tidy.find(db, _user(db), AT_12 + timedelta(days=91))
+    assert not any(r.kind == dish_tidy.STAR for r in later.rows)
 
 
 def test_undo_names_what_did_not_come_back(db):
@@ -854,3 +1001,29 @@ def test_the_words_never_said(db):
     assert [t for t in texts if _BANNED.search(t)] == []
     assert [t for t in texts if _GENDERED.search(t)] == []
     assert _BANNED.search("Тебе нужно") and _GENDERED.search("Ты забыла")
+
+
+def test_every_state_the_code_writes_is_declared():
+    """A batch or row state written anywhere is one the model declares."""
+    from app.models.dish_tidy import BATCH_STATES, ITEM_STATES
+
+    written = set()
+    for name in ("dish_tidy_screen", "dish_tidy_push", "dish_tidy"):
+        tree = ast.parse((ROOT / "app" / "services" / f"{name}.py").read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr == "state":
+                        written.add(node.value.value)
+    assert "expired" in written and "rolled_back" in written  # the scan sees them
+    assert written <= set(BATCH_STATES) | set(ITEM_STATES)
+
+
+def test_the_models_match_the_migration_not_null_and_server_defaults():
+    for table in (DishTidyBatch.__table__, DishTidyItem.__table__):
+        for name in ("created_at", "updated_at"):
+            column = table.c[name]
+            assert not column.nullable and column.server_default is not None, name
+    assert DishTidyBatch.__table__.c.tries.server_default is not None
+    for name in ("ticked", "days"):
+        assert DishTidyItem.__table__.c[name].server_default is not None, name

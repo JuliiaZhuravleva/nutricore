@@ -220,13 +220,34 @@ def merge_again(
     live = crud_personal_food.live_of(db, target)
     if live.id == source.id:
         raise Refused(source.canonical_name)
-    new = merge(
-        db, user, source, live, now=now, group_id=group_id, undoes=event.id
-    )
+    new = merge(db, user, source, live, now=now, group_id=group_id, undoes=event.id)
     return new, live
 
 
 # --- ⭐ -------------------------------------------------------------------------
+
+
+def create_star(db, user_id: int, dish: PersonalFood, *, commit: bool):
+    """The ⭐ row for a dish, its numbers as its portion has them. No event: the tap
+    in 🍲 Блюда writes none, ``star`` adds its own."""
+    portion = meal_items.dish_portion(db, dish)
+    numbers = portion.numbers or {key: None for key in meal_items.FIELDS}
+    return crud_favorite_meal.create_from_numbers(
+        db,
+        user_id=user_id,
+        name=dish.canonical_name,
+        numbers=numbers,
+        nutrients={
+            "foods": [dish.canonical_name],
+            "calories": numbers["calories"],
+            "protein": numbers["proteins"],
+            "fats": numbers["fats"],
+            "carbs": numbers["carbohydrates"],
+        },
+        source_meal_id=dish.meal_id,
+        usual_grams=None if portion.assumed else portion.grams,
+        commit=commit,
+    )
 
 
 def star(
@@ -244,24 +265,7 @@ def star(
     link_stars(db, user.id)
     if crud_favorite_meal.active_of_dish(db, dish.id) is not None:
         return None
-    portion = meal_items.dish_portion(db, dish)
-    numbers = portion.numbers or {key: None for key in meal_items.FIELDS}
-    fav = crud_favorite_meal.create_from_numbers(
-        db,
-        user_id=user.id,
-        name=dish.canonical_name,
-        numbers=numbers,
-        nutrients={
-            "foods": [dish.canonical_name],
-            "calories": numbers["calories"],
-            "protein": numbers["proteins"],
-            "fats": numbers["fats"],
-            "carbs": numbers["carbohydrates"],
-        },
-        source_meal_id=dish.meal_id,
-        usual_grams=None if portion.assumed else portion.grams,
-        commit=False,
-    )
+    fav = create_star(db, user.id, dish, commit=False)
     return crud_record_event.add(
         db,
         user_id=user.id,
@@ -320,6 +324,16 @@ def undo(
     if (event.after or {}).get("merged_into") is not None:
         return unmerge(db, user, dish, event, group_id=group_id)
     return merge_again(db, user, dish, event, group_id=group_id)[0]
+
+
+def group_changes(db, group_id: str) -> bool:
+    """Whether any change was written under the group."""
+    return (
+        db.scalars(
+            select(RecordEvent.id).where(RecordEvent.group_id == group_id)
+        ).first()
+        is not None
+    )
 
 
 def undo_group(db, user: User, group_id: str) -> GroupUndo:

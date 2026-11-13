@@ -11,6 +11,8 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    func,
+    true,
 )
 
 from app.db.base import Base
@@ -19,7 +21,7 @@ from app.db.base_class import BaseClass
 UTC = datetime.timezone.utc
 
 # claimed → ready → sent | maybe | retry | blocked | failed; ready with no rows → empty;
-# a sent one → applied | undone | retired (a newer batch replaced it).
+# a sent one → applied | undone | retired (a newer batch replaced it) | expired.
 BATCH_STATES = (
     "claimed",
     "ready",
@@ -32,6 +34,7 @@ BATCH_STATES = (
     "applied",
     "undone",
     "retired",
+    "expired",
 )
 ITEM_STATES = ("proposed", "applied", "declined", "stale", "undone", "rolled_back")
 
@@ -60,11 +63,20 @@ class DishTidyBatch(Base, BaseClass):
     state = Column(String(12), nullable=False)  # one of BATCH_STATES
     chat_id = Column(BigInteger, nullable=True)
     message_id = Column(BigInteger, nullable=True)
-    tries = Column(Integer, nullable=False, default=0)
+    tries = Column(Integer, nullable=False, default=0, server_default="0")
     claimed_at = Column(DateTime(timezone=True), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)  # the proposals' end
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    # NOT NULL + server_default, as the migration (TD-006 lesson)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), default=_now
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        default=_now,
+        onupdate=_now,
+    )
 
 
 class DishTidyItem(Base, BaseClass):
@@ -93,12 +105,22 @@ class DishTidyItem(Base, BaseClass):
     key = Column(String(32), nullable=False)  # m:<low>:<high> or s:<id>
     label = Column(JSON, nullable=False)  # the names as sent
     fingerprint = Column(String(16), nullable=False)
-    ticked = Column(Boolean, nullable=False, default=True)  # as sent
-    days = Column(Integer, nullable=False, default=0)
+    # as sent
+    ticked = Column(Boolean, nullable=False, default=True, server_default=true())
+    days = Column(Integer, nullable=False, default=0, server_default="0")
     event_id = Column(
         Integer, ForeignKey("record_events.id", ondelete="SET NULL"), nullable=True
     )
     state = Column(String(12), nullable=False)  # one of ITEM_STATES
     decided_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_now)
-    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+    # NOT NULL + server_default, as the migration (TD-006 lesson)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), default=_now
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        default=_now,
+        onupdate=_now,
+    )

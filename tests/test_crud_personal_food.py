@@ -640,6 +640,8 @@ def test_close_pairs_skips_the_self_join_over_the_row_cap(caplog):
         assert crud_personal_food.close_pairs(db, 7, 0.15, 2000) == {}
     assert len(db.calls) == 1, "the self-join ran over the cap"
     assert "2001 embedding rows for user_id=7, over 2000: skipped" in caplog.text
+    # At ERROR: the tidy-up goes stems-only for this person, every week, silently else.
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
     # The control: at the cap itself the join runs.
     at_cap = _PairsSession(count=2000)
     crud_personal_food.close_pairs(at_cap, 7, 0.15, 2000)

@@ -489,15 +489,29 @@ def _stars(db, user: User) -> tuple:
         dish = crud_favorite_meal.dish_if_any(db, fav)
         if dish is not None:
             active.add(dish.id)
-    removed = set(
-        db.scalars(
-            select(FavoriteMeal.personal_food_id).where(
+    # A ⭐ the tidy-up's own ↩️ took back is a decline (90 days, by its row), not a
+    # ⭐ the person removed: that one is never offered again.
+    taken_back = {
+        (event.before or {}).get("favourite")
+        for event in db.scalars(
+            select(RecordEvent).where(
+                RecordEvent.user_id == user.id,
+                RecordEvent.kind == "food_star",
+                RecordEvent.undoes_event_id.is_not(None),
+            )
+        )
+    }
+    removed = {
+        food_id
+        for fav_id, food_id in db.execute(
+            select(FavoriteMeal.id, FavoriteMeal.personal_food_id).where(
                 FavoriteMeal.user_id == user.id,
                 FavoriteMeal.removed_at.is_not(None),
                 FavoriteMeal.personal_food_id.is_not(None),
             )
         )
-    )
+        if fav_id not in taken_back
+    }
     return active, removed
 
 
