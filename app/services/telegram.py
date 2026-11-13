@@ -667,7 +667,7 @@ async def _send_unsent(bot, job: capture.Read, line: capture.Line) -> None:
     except TelegramError as e:
         logger.warning("Meal line not sent: %s", type(e).__name__)
         return
-    _map_line(line, sent, "line")
+    _map_line(line, sent, line.view)
 
 
 async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
@@ -843,6 +843,12 @@ async def _voice_words(bot, job: capture.Read) -> str:
             duration_s,
             took_s,
         )
+        # Once, on first hearing: a voice is typed words said aloud. A re-read of it
+        # later reads food, as it always did.
+        with SessionLocal() as db:
+            routed = capture.route_heard(db, job, transcript)
+        if routed is not None:
+            raise routed
     with SessionLocal() as db:
         return capture.spoken_words(db, job, transcript)
 
@@ -892,6 +898,14 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
             done = capture.read_said_nothing(db, job)
         await _tell_read(bot, job, done.line, retouch=done.retouch)
         return False, None
+    except capture.Routed as routed:
+        # Heard, and no meal of its own: done the way typed words are, never read.
+        inbound_msg.mark_analyzed(job.inbound_id, {"routed": True})
+        line = routed.line
+        await _tell_read(bot, job, line, retouch=line.retouch if line else None)
+        if line is not None and line.fill:
+            await _fill_typed_dish(line.fill, job.telegram_id)
+        return True, None
     except Exception as e:
         error = type(e).__name__
         logger.error("Meal %s not read: %s", job.meal_id, error)
@@ -1537,7 +1551,9 @@ async def _capture(
     elif route.action == capture.WEIGHT:
         await process_weight(update, context)
     elif route.action == capture.TICK:
-        await message.reply_text(f"✓ {route.tick}", reply_markup=_day_card_button())
+        await message.reply_text(
+            f"✓ {route.tick}", reply_markup=stats_screen.day_card_markup()
+        )
     await _menu_once(context.bot, came.chat_id, user.id)
     return went
 
@@ -1561,15 +1577,6 @@ async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if line is not None:
         _map_line(line, await _send_line(message, line), line.view)
     raise ApplicationHandlerStop
-
-
-def _day_card_button() -> InlineKeyboardMarkup:
-    """Under a ticked routine: the day, where it now shows."""
-    day = InlineKeyboardButton(
-        "📊 Карточка дня",
-        callback_data=stats_screen.CALLBACK_PREFIX + stats_screen.TODAY,
-    )
-    return InlineKeyboardMarkup([[day]])
 
 
 async def meal_stale_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2163,15 +2170,9 @@ async def process_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """A typed weight is saved (with undo); after «⚖️ Мой вес» anything else
     gets the hint. The state stays, so a second number corrects the first;
     the menu buttons keep working in it."""
-    kg = weight_screen.parse_kg(update.message.text)
-    if kg is None:
-        await update.message.reply_text(
-            "Не похоже на вес. " + weight_screen.ASK, parse_mode=ParseMode.HTML
-        )
-        return ENTERING_WEIGHT
     user = update.effective_user
     with SessionLocal() as db:
-        screen = weight_screen.record(db, user.id, kg, user.username)
+        screen = weight_screen.typed(db, user.id, update.message.text, user.username)
     await _reply_screen(update, screen)
     return ENTERING_WEIGHT
 

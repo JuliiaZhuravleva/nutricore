@@ -226,8 +226,11 @@ def test_silence_in_a_voice_over_a_join_leaves_no_line_on_reading(
 
     monkeypatch.setattr(tg, "_voice_words", silent)
     box = _during_read(db, reader, _voice(), _says("ещё сыр"))
-    assert box.names == {"сыр"}
-    assert box.line_says[-1] == "Записано: сыр."
+    # A change typed while a voice is not heard yet waits (the voice may be a weight),
+    # and the voice's line still ends: it is not left on «читаю».
+    assert capture.STILL_READING in box.sent_during
+    assert box.names == set()
+    assert box.line_says[-1].startswith(meal_card.M4E_NO_SPEECH)
 
 
 def test_a_further_change_after_the_join_is_not_left_on_reading(

@@ -632,6 +632,12 @@ def _tick_view(db, telegram_id: int, parts: list, now: datetime | None) -> Scree
     return today_card(toast)
 
 
+def day_card_markup() -> InlineKeyboardMarkup:
+    """Under a ticked routine: the day, where it now shows."""
+    day = InlineKeyboardButton("📊 Карточка дня", callback_data=CALLBACK_PREFIX + TODAY)
+    return InlineKeyboardMarkup([[day]])
+
+
 def tick_by_name(
     db, telegram_id: int, text: str | None, now: datetime | None = None
 ) -> str | None:
