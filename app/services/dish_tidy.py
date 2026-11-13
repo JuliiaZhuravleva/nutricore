@@ -27,12 +27,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.crud.crud_dish_tidy import crud_dish_tidy
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_personal_food import AnnQueryError, crud_personal_food
+from app.models.dish_tidy import DishTidyBatch
 from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
@@ -516,17 +518,25 @@ def _stars(db, user: User) -> tuple:
 
 
 def hand_unmerges(db, user: User, now: datetime) -> dict:
-    """Pairs a person took apart in 🍲 Блюда in the last ``DECLINE_DAYS``: an undo of
-    a merge with no group. Not merged or proposed again, whatever changes."""
+    """Pairs a person took apart in the last ``DECLINE_DAYS``: an undo of a merge made
+    by hand in 🍲 Блюда or from words in a message. Not merged or proposed again,
+    whatever changes. An undo of a tidy batch's merge is the batch's own decline."""
     since = now - timedelta(days=DECLINE_DAYS)
+    undone = aliased(RecordEvent)
+    tidy_groups = select(DishTidyBatch.group_id).where(DishTidyBatch.user_id == user.id)
     found = {}
     for event in db.scalars(
-        select(RecordEvent).where(
+        select(RecordEvent)
+        .join(undone, undone.id == RecordEvent.undoes_event_id)
+        .where(
             RecordEvent.user_id == user.id,
             RecordEvent.kind == "food_merge",
-            RecordEvent.undoes_event_id.is_not(None),
-            RecordEvent.group_id.is_(None),
             RecordEvent.created_at >= since,
+            or_(
+                RecordEvent.group_id.is_(None),
+                undone.group_id.is_(None),
+                undone.group_id.not_in(tidy_groups),
+            ),
         )
     ):
         target = (event.before or {}).get("merged_into")
@@ -552,7 +562,7 @@ def close_pairs(db, user: User, dish_ids: set) -> dict:
 
 def declines(db, user: User, now: datetime) -> dict:
     """Every pair and ⭐ the person turned down lately: rows unticked or returned in
-    a batch, and merges taken apart by hand in 🍲 Блюда."""
+    a batch, and merges taken apart by hand or from words."""
     since = now - timedelta(days=DECLINE_DAYS)
     found = {
         key: Decline(fingerprint, at)

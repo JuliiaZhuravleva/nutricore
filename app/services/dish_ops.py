@@ -1,4 +1,4 @@
-"""Dish changes without a tap: merge, unmerge, ⭐, and one undo for a group of them.
+"""Dish changes without a tap: merge, ⭐, rename, hide, and one undo for a group of them.
 
 ``dishes`` calls these for a tap; the tidy-up (``dish_tidy``) calls them for a batch.
 Nothing here commits: every function flushes, and the caller commits once, so a batch
@@ -29,15 +29,26 @@ from app.models.user import User
 from app.services import meal_items
 
 # The kinds ``undo`` takes back. The rest stay with the screens that wrote them.
-GROUP_KINDS = ("food_merge", "food_star")
+GROUP_KINDS = ("food_merge", "food_star", "food_unstar", "rename", "food_hide")
 
 
 class Refused(Exception):
-    """The record moved on since the change it would take back or repeat."""
+    """The record moved on since the change it would take back or repeat, or the change
+    cannot be made; ``reason`` says which when the caller words it."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, reason: Optional[str] = None):
         super().__init__(name)
         self.name = name
+        self.reason = reason
+
+
+class NameTaken(Refused):
+    """A rename onto a name another row holds: ``holder`` is the live dish it leads to
+    (the dish itself when the name already finds it)."""
+
+    def __init__(self, name: str, holder: PersonalFood):
+        super().__init__(name, reason="taken")
+        self.holder = holder
 
 
 @dataclass
@@ -277,7 +288,7 @@ def star(
     )
 
 
-def _unstar(
+def _take_star_back(
     db, user: User, dish: PersonalFood, event: RecordEvent, group_id: Optional[str]
 ) -> RecordEvent:
     """A ⭐ taken off since stays off: the undo only says so."""
@@ -292,6 +303,202 @@ def _unstar(
         food_id=dish.id,
         before=event.after,
         after={"favourite": None},
+        undoes_event_id=event.id,
+        group_id=group_id,
+    )
+
+
+def unstar(
+    db,
+    user: User,
+    dish: PersonalFood,
+    *,
+    now: Optional[datetime] = None,
+    group_id: Optional[str] = None,
+) -> Optional[RecordEvent]:
+    """The dish's ⭐ taken off. None when it has none."""
+    db.refresh(dish)
+    if dish.user_id != user.id or dish.merged_into_id is not None:
+        raise Refused(dish.canonical_name)
+    link_stars(db, user.id)
+    fav = crud_favorite_meal.active_of_dish(db, dish.id)
+    if fav is None:
+        return None
+    fav.removed_at = now or datetime.now(UTC)
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="food_unstar",
+        food_id=dish.id,
+        before={"favourite": fav.id},
+        after={"favourite": None},
+        group_id=group_id,
+    )
+
+
+def _star_back(
+    db, user: User, dish: PersonalFood, event: RecordEvent, group_id: Optional[str]
+) -> RecordEvent:
+    """The ⭐ comes back unless the dish got another one since, or is gone."""
+    if not _is_live(dish):
+        raise Refused(dish.canonical_name)
+    fav = db.get(FavoriteMeal, (event.before or {}).get("favourite") or 0)
+    if fav is not None and crud_favorite_meal.active_of_dish(db, dish.id) is None:
+        fav.removed_at = None
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="food_unstar",
+        food_id=dish.id,
+        before=event.after,
+        after=event.before,
+        undoes_event_id=event.id,
+        group_id=group_id,
+    )
+
+
+# --- rename ---------------------------------------------------------------------
+
+
+def names_state(dish: PersonalFood) -> dict:
+    return {"name": dish.canonical_name, "aliases": list(dish.aliases or [])}
+
+
+def rename(
+    db,
+    user: User,
+    dish: PersonalFood,
+    new_name: str,
+    *,
+    group_id: Optional[str] = None,
+) -> Optional[RecordEvent]:
+    """The old name stays a name that finds the dish. None when the name is the dish's
+    own already; ``NameTaken`` when another row holds it."""
+    db.refresh(dish)
+    if not _is_live(dish) or dish.user_id != user.id:
+        raise Refused(dish.canonical_name)
+    name = meal_items._clean_name(new_name)
+    if not name:
+        raise Refused(dish.canonical_name, reason="empty")
+    if name == dish.canonical_name:
+        return None
+    holder = crud_personal_food.holder_of_name(db, user.id, name, without=dish.id)
+    if holder is not None:
+        raise NameTaken(dish.canonical_name, crud_personal_food.live_of(db, holder))
+    before = names_state(dish)
+    crud_personal_food.rename(db, dish, name)
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="rename",
+        food_id=dish.id,
+        before=before,
+        after=names_state(dish),
+        group_id=group_id,
+    )
+
+
+def undo_rename(
+    db,
+    user: User,
+    dish: PersonalFood,
+    event: RecordEvent,
+    *,
+    group_id: Optional[str] = None,
+) -> RecordEvent:
+    """Refused when the names changed since, or another row took the old name."""
+    before, after = event.before or {}, event.after or {}
+    holder = crud_personal_food.holder_of_name(
+        db, user.id, before.get("name") or "", without=dish.id
+    )
+    if names_state(dish) != after or holder is not None:
+        raise Refused(dish.canonical_name)
+    crud_personal_food.forget_suggestion(dish, dish.canonical_name, before["name"])
+    dish.canonical_name = before["name"]
+    dish.aliases = list(before.get("aliases") or [])
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="rename",
+        food_id=dish.id,
+        before=after,
+        after=before,
+        undoes_event_id=event.id,
+        group_id=group_id,
+    )
+
+
+# --- out of the lists -------------------------------------------------------------
+
+
+def hide(
+    db,
+    user: User,
+    dish: PersonalFood,
+    *,
+    now: Optional[datetime] = None,
+    group_id: Optional[str] = None,
+    undoes: Optional[int] = None,
+) -> Optional[RecordEvent]:
+    """Out of 🍲 Блюда and the pickers, its ⭐ off; the past stays. None when hidden
+    already."""
+    now = now or datetime.now(UTC)
+    db.refresh(dish)
+    if dish.merged_into_id is not None or dish.user_id != user.id:
+        raise Refused(dish.canonical_name)
+    if dish.hidden_at is not None:
+        return None
+    link_stars(db, user.id)
+    stars = _active_stars(db, dish)
+    for fav in stars:
+        fav.removed_at = now
+    dish.hidden_at = now
+    ids = [fav.id for fav in stars]
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="food_hide",
+        food_id=dish.id,
+        before={"hidden_at": None, "favourites": ids},
+        after={"hidden_at": _stamp(now), "favourites": ids},
+        undoes_event_id=undoes,
+        group_id=group_id,
+    )
+
+
+def unhide(
+    db,
+    user: User,
+    dish: PersonalFood,
+    event: RecordEvent,
+    *,
+    group_id: Optional[str] = None,
+    mark: bool = False,
+) -> Optional[RecordEvent]:
+    """The dish and its ⭐ back. A dish brought back by eating it has nothing to undo:
+    None, or with ``mark`` an event that says the hide is taken back. Refused when it
+    was hidden again since."""
+    after = event.after or {}
+    ids = after.get("favourites") or []
+    if dish.hidden_at is None:
+        if not mark:
+            return None
+    elif abs(_stamp(dish.hidden_at) - after["hidden_at"]) > 0.001:
+        raise Refused(dish.canonical_name)
+    else:
+        dish.hidden_at = None
+        if crud_favorite_meal.active_of_dish(db, dish.id) is None:
+            for fav_id in ids:  # one made since is the dish's one star
+                fav = db.get(FavoriteMeal, fav_id)
+                if fav is not None:
+                    fav.removed_at = None
+    return crud_record_event.add(
+        db,
+        user_id=user.id,
+        kind="food_hide",
+        food_id=dish.id,
+        before=after,
+        after={"hidden_at": None, "favourites": ids},
         undoes_event_id=event.id,
         group_id=group_id,
     )
@@ -320,7 +527,13 @@ def undo(
     if dish is None:
         raise Refused("?")
     if event.kind == "food_star":
-        return _unstar(db, user, dish, event, group_id)
+        return _take_star_back(db, user, dish, event, group_id)
+    if event.kind == "food_unstar":
+        return _star_back(db, user, dish, event, group_id)
+    if event.kind == "rename":
+        return undo_rename(db, user, dish, event, group_id=group_id)
+    if event.kind == "food_hide":
+        return unhide(db, user, dish, event, group_id=group_id, mark=True)
     if (event.after or {}).get("merged_into") is not None:
         return unmerge(db, user, dish, event, group_id=group_id)
     return merge_again(db, user, dish, event, group_id=group_id)[0]

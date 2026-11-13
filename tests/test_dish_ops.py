@@ -280,3 +280,179 @@ def test_lock_user_makes_a_second_writer_wait(factory):
         second.execute(sql("SET lock_timeout = '200ms'"))
         dish_ops.lock_user(second, second.get(User, 1))
         second.commit()
+
+
+# --- rename, hide, unstar (slice 4: changes said in words) --------------------------
+
+
+def _undo_of(db, event) -> RecordEvent:
+    return db.scalars(
+        select(RecordEvent).where(RecordEvent.undoes_event_id == event.id)
+    ).one()
+
+
+@BACKENDS
+def test_rename_keeps_the_old_name_and_its_undo_puts_it_back(db):
+    dish = _dish(db, "сырники")
+    user = _user(db)
+    event = dish_ops.rename(db, user, dish, "  сырники  с изюмом ", group_id="g")
+    db.commit()
+    assert (event.kind, event.group_id) == ("rename", "g")
+    dish = db.get(PersonalFood, dish.id)
+    assert dish.canonical_name == "сырники с изюмом"
+    assert dish.aliases == ["сырники"]
+    assert dish_ops.rename(db, user, dish, "сырники с изюмом") is None
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert (result.undone, result.refused_names) == (1, [])
+    dish = db.get(PersonalFood, dish.id)
+    assert (dish.canonical_name, list(dish.aliases or [])) == ("сырники", [])
+
+
+@BACKENDS
+def test_a_rename_onto_a_taken_name_says_whose_it_is(db):
+    dish, other = _dish(db, "гречка"), _dish(db, "гречка отварная")
+    user = _user(db)
+    with pytest.raises(dish_ops.NameTaken) as taken:
+        dish_ops.rename(db, user, dish, "Гречка отварная")
+    assert taken.value.holder.id == other.id
+    assert taken.value.reason == "taken"
+    assert _events(db) == 0
+
+
+@BACKENDS
+def test_a_rename_changed_since_is_not_undone_and_is_named(db):
+    dish = _dish(db, "суп")
+    user = _user(db)
+    dish_ops.rename(db, user, dish, "суп куриный", group_id="g")
+    db.commit()
+    dish_ops.rename(db, user, db.get(PersonalFood, dish.id), "бульон")
+    db.commit()
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert (result.undone, result.refused_names) == (0, ["бульон"])
+    assert db.get(PersonalFood, dish.id).canonical_name == "бульон"
+
+
+@BACKENDS
+def test_hide_takes_the_star_off_and_its_undo_brings_both_back(db):
+    dish = _dish(db, "печенье")
+    fav = _star(db, dish)
+    user = _user(db)
+    event = dish_ops.hide(db, user, dish, now=NOW, group_id="g")
+    db.commit()
+    assert event.kind == "food_hide" and event.after["favourites"] == [fav.id]
+    assert db.get(PersonalFood, dish.id).hidden_at is not None
+    assert db.get(FavoriteMeal, fav.id).removed_at is not None
+    assert dish_ops.hide(db, user, db.get(PersonalFood, dish.id), now=NOW) is None
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert result.undone == 1
+    assert db.get(PersonalFood, dish.id).hidden_at is None
+    assert db.get(FavoriteMeal, fav.id).removed_at is None
+
+
+@BACKENDS
+def test_a_dish_eaten_back_after_hide_is_marked_undone_once(db):
+    dish = _dish(db, "кефир")
+    user = _user(db)
+    event = dish_ops.hide(db, user, dish, now=NOW, group_id="g")
+    db.commit()
+    db.get(PersonalFood, dish.id).hidden_at = None  # eaten again: back by itself
+    db.commit()
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert result.undone == 1
+    assert _undo_of(db, event).after["hidden_at"] is None
+    assert dish_ops.undo_group(db, user, "g").already
+
+
+@BACKENDS
+def test_a_dish_hidden_again_since_is_refused(db):
+    dish = _dish(db, "кефир")
+    user = _user(db)
+    dish_ops.hide(db, user, dish, now=NOW, group_id="g")
+    db.commit()
+    db.get(PersonalFood, dish.id).hidden_at = datetime(2026, 11, 16, tzinfo=UTC)
+    db.commit()
+    result = dish_ops.undo_group(db, user, "g")
+    assert result.refused_names == ["кефир"]
+    assert db.get(PersonalFood, dish.id).hidden_at is not None
+
+
+@BACKENDS
+def test_unstar_writes_an_event_and_its_undo_puts_the_star_back(db):
+    dish = _dish(db, "творог")
+    fav = _star(db, dish)
+    user = _user(db)
+    event = dish_ops.unstar(db, user, dish, now=NOW, group_id="g")
+    db.commit()
+    assert (event.kind, event.before) == ("food_unstar", {"favourite": fav.id})
+    assert db.get(FavoriteMeal, fav.id).removed_at is not None
+    assert dish_ops.unstar(db, user, db.get(PersonalFood, dish.id)) is None
+    dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert db.get(FavoriteMeal, fav.id).removed_at is None
+
+
+@BACKENDS
+def test_an_unstar_undo_leaves_a_star_made_since_alone(db):
+    dish = _dish(db, "творог")
+    old = _star(db, dish)
+    user = _user(db)
+    dish_ops.unstar(db, user, dish, now=NOW, group_id="g")
+    db.commit()
+    new = _star(db, db.get(PersonalFood, dish.id))
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert result.undone == 1
+    assert db.get(FavoriteMeal, old.id).removed_at is not None
+    assert db.get(FavoriteMeal, new.id).removed_at is None
+
+
+@BACKENDS
+def test_a_mixed_group_is_undone_newest_first(db):
+    source, target = _dish(db, "белый рис"), _dish(db, "рис белый")
+    starred, other = _dish(db, "овсянка"), _dish(db, "чипсы")
+    renamed = _dish(db, "суп")
+    _star(db, other)
+    item = _eat(db, source)
+    user = _user(db)
+    made = [
+        dish_ops.merge(db, user, source, target, now=NOW, group_id="g"),
+        dish_ops.star(db, user, starred, group_id="g"),
+        dish_ops.rename(db, user, renamed, "суп грибной", group_id="g"),
+        dish_ops.unstar(db, user, other, now=NOW, group_id="g"),
+        dish_ops.hide(db, user, other, now=NOW, group_id="g"),
+    ]
+    db.commit()
+    result = dish_ops.undo_group(db, user, "g")
+    db.commit()
+    assert (result.undone, result.refused_names) == (5, [])
+    undos = db.scalars(
+        select(RecordEvent.undoes_event_id)
+        .where(RecordEvent.undoes_event_id.is_not(None))
+        .order_by(RecordEvent.id)
+    ).all()
+    assert undos == [event.id for event in reversed(made)]
+    assert db.get(MealItem, item.id).personal_food_id == source.id
+    assert db.get(PersonalFood, renamed.id).canonical_name == "суп"
+    assert db.get(PersonalFood, other.id).hidden_at is None
+    live = db.scalars(
+        select(FavoriteMeal.personal_food_id).where(FavoriteMeal.removed_at.is_(None))
+    ).all()
+    assert sorted(live) == [other.id]
+
+
+@BACKENDS
+def test_another_persons_dish_is_refused_for_every_new_change(db):
+    theirs = _dish(db, "суп", user_id=2)
+    user = _user(db)
+    for change in (
+        lambda: dish_ops.rename(db, user, theirs, "борщ"),
+        lambda: dish_ops.hide(db, user, theirs, now=NOW),
+        lambda: dish_ops.unstar(db, user, theirs, now=NOW),
+    ):
+        with pytest.raises(dish_ops.Refused):
+            change()
+    assert _events(db) == 0

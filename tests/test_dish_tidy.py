@@ -1027,3 +1027,28 @@ def test_the_models_match_the_migration_not_null_and_server_defaults():
     assert DishTidyBatch.__table__.c.tries.server_default is not None
     for name in ("ticked", "days"):
         assert DishTidyItem.__table__.c[name].server_default is not None, name
+
+
+# --- merges taken back from a message's «↩️ Вернуть всё» (slice 4) ------------------
+
+
+@BACKENDS
+def test_a_merge_from_words_taken_back_is_a_decline(db):
+    """A merge said in a message and undone with its «Вернуть всё» is the person's
+    no, as a hand unmerge is. A tidy batch's own undo is not (its rows decide)."""
+    from app.services import dish_ops
+
+    sauce, sauce_too = _dish(db, "соус томатный"), _dish(db, "томатный соус")
+    soup, soup_too = _dish(db, "суп куриный"), _dish(db, "куриный суп")
+    user = _user(db)
+    dish_ops.merge(db, user, sauce_too, sauce, now=AT_12, group_id="words")
+    dish_ops.merge(db, user, soup_too, soup, now=AT_12, group_id="batch")
+    db.add(
+        DishTidyBatch(user_id=user.id, group_id="batch", state="sent", claimed_at=AT_12)
+    )
+    db.commit()
+    dish_ops.undo_group(db, user, "words")
+    dish_ops.undo_group(db, user, "batch")
+    db.commit()
+    found = dish_tidy.hand_unmerges(db, _user(db), AT_12 + timedelta(minutes=5))
+    assert set(found) == {dish_tidy.pair_key(sauce_too.id, sauce.id)}

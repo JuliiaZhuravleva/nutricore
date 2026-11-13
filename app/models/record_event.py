@@ -27,6 +27,7 @@ EVENT_KINDS = (
     "write",
     "groups",
     "food_star",
+    "food_unstar",
 )
 
 
