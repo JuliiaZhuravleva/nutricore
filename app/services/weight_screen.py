@@ -167,6 +167,16 @@ def record(db, telegram_id: int, kg: float, username: str | None = None) -> Scre
     return saved_screen(metric, last[0] if last else None)
 
 
+def typed(
+    db, telegram_id: int, text: str | None, username: str | None = None
+) -> Screen:
+    """A weight written or said: saved with its undo, or the hint if it is no weight."""
+    kg = parse_kg(text)
+    if kg is None:
+        return Screen("Не похоже на вес. " + ASK, None)
+    return record(db, telegram_id, kg, username)
+
+
 def handle_callback(db, telegram_id: int, data: str) -> Screen:
     if data == OPEN:
         return open_view(db, telegram_id, back=True)

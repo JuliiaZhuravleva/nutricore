@@ -9,6 +9,7 @@ No text, transcript or message body goes to a log or to ``meal_readings.error``.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from dataclasses import dataclass, replace
@@ -53,7 +54,6 @@ from app.services.close_row import ok_row
 from app.services.day_card import DAY_ONLY, local_time
 from app.services.meal_card import M1_PENDING  # noqa: F401 (the name tests read it by)
 from app.services.meal_card import M4_PENDING  # noqa: F401 (the name tests read it by)
-from app.services.meal_card import M4T_READING
 from app.services.meal_card import (  # noqa: F401 (the copy is read from here too)
     AGAIN,
     DEAD_FILE,
@@ -63,6 +63,7 @@ from app.services.meal_card import (  # noqa: F401 (the copy is read from here t
     M4C_VOICE_HINT,
     M4D_FAILED,
     M4E_NO_SPEECH,
+    M4T_READING,
     M7_FAILED,
     M7A_FAILED,
     M7D_NO_FOOD,
@@ -112,6 +113,9 @@ M5F_NO_MEAL = (
     "Время можно указать ответом на нужную запись."
 )
 M6A_NOT_ASKED = "Можно не отвечать, ничего не изменится."
+# A change sent while the message before it is still being worked out: the change
+# may belong to what that message turns out to be.
+STILL_READING = "Ещё разбираю прошлое сообщение — пришли это через минуту."
 M4C_DRAFT_HINT = (
     "Голосовые пока в пробном режиме. Что услышано, видно по кнопке «🎙 Текст». "
     "Если сервис проекта не отвечает, голосовое уходит во внешний сервис."
@@ -240,6 +244,16 @@ class DeadFile(Exception):
 
 class SaidNothing(Exception):
     """R16 in a voice bound to a reminder: no dish in its words, so no read of them."""
+
+
+class Routed(Exception):
+    """A voice whose words are no meal of their own (a weight, «ещё хлеб», «убери
+    сыр»): it went the way typed words go, and ``line`` is what its line says now.
+    None: the line is no longer the read's to edit."""
+
+    def __init__(self, line: Optional["Line"]):
+        super().__init__("routed")
+        self.line = line
 
 
 def _now() -> datetime:
@@ -947,17 +961,44 @@ def _sent(meal: Meal) -> datetime:
     return _aware(meal.sent_at or meal.created_at)
 
 
-def _last_meal(db, user: User, within: timedelta) -> Optional[Meal]:
-    meal = db.scalar(
+def _last_meal(
+    db, user: User, within: timedelta, before: Optional[int] = None
+) -> Optional[Meal]:
+    """``before``: a voice heard late means the meal before its own, not one written
+    while it was being heard."""
+    stmt = (
         select(Meal)
         # A draft is the last meal too: «ещё сыр» means it, not the one before it.
         .where(Meal.user_id == user.id, Meal.deleted_at.is_(None))
         .order_by(Meal.id.desc())
         .limit(1)
     )
+    if before is not None:
+        stmt = stmt.where(Meal.id < before)
+    meal = db.scalar(stmt)
     if meal is None or _now() - _sent(meal) >= within:
         return None
     return meal
+
+
+def _unheard(db, meal: Meal) -> bool:
+    """A voice not heard yet: what it says may be a change of its own, so a change
+    typed meanwhile has no meal it surely belongs to."""
+    if meal.reading_status != "pending" or meal_card.heard_of(db, meal.id) is not None:
+        return False
+    voice_source = db.scalar(
+        select(MealSource.id)
+        .where(MealSource.origin_meal_id == meal.id, MealSource.kind == VOICE)
+        .limit(1)
+    )
+    return voice_source is not None
+
+
+def _still_reading(db, came: Incoming, user: User, meal: Optional[Meal]) -> bool:
+    if meal is None or not _unheard(db, meal):
+        return False
+    _keep(db, came, user)
+    return True
 
 
 def _replied_meal(db, chat_id: int, message_id: int, user: User) -> Optional[Meal]:
@@ -1023,9 +1064,12 @@ def _reply_on_deleted(
     return Route(NEW_MEAL, note=M5A_DELETED)
 
 
-def _on_reply(db, came: Incoming, user: User, meal: Meal) -> Optional[Route]:
+def _on_reply(
+    db, came: Incoming, user: User, meal: Meal, heard: bool = False
+) -> Optional[Route]:
     """Row 4. A bare time before bare grams: «12:10» is no number. None: this reply is
-    none of the meal's business, and the rows below decide."""
+    none of the meal's business, and the rows below decide. ``heard``: the words of a
+    voice, whose food is read and joined at the end of its read, as it always was."""
     text = came.text
     colon = _COLON_CLOCK.fullmatch(text)
     said = None if colon else _bare_time(text, user)
@@ -1068,6 +1112,8 @@ def _on_reply(db, came: Incoming, user: User, meal: Meal) -> Optional[Route]:
             lambda: _apply_correction(db, came, user, meal, correction),
         )
         _renews(db, came, user, line)
+    elif heard:
+        return None
     else:
         line = _touching(
             db, user, meal, lambda: _add(db, came, user, meal, text.strip())
@@ -1167,9 +1213,12 @@ def _nothing(db, came: Incoming, user: User, send) -> Route:
     return Route(SILENT, retouch=retouch)
 
 
-def route_text(db, came: Incoming, as_food: bool = False) -> Route:
+def route_text(
+    db, came: Incoming, as_food: bool = False, *, heard: Optional[int] = None
+) -> Route:
     """Rows 3 to 10 for a text. The first two are ahead of this handler. ``as_food``: the
-    person said it is food, so its form does not say otherwise."""
+    person said it is food, so its form does not say otherwise. ``heard``: the meal of
+    a voice whose words these are; only a meal before it is the «last» one."""
     text = came.text
     if text.strip() in STALE_LABELS:
         return Route(LINE, Line(M9B_STALE, menu=True))
@@ -1182,7 +1231,7 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
     if send is not None and not as_food and reminders.is_nothing(text):
         return _nothing(db, came, user, send)  # never the ⭐ the reminder holds
     if target is not None and (send is None or _for_the_star(came, user)):
-        route = _on_reply(db, came, user, target)
+        route = _on_reply(db, came, user, target, heard=heard is not None)
         if route is not None:
             return route
     if weight_screen.KG_PATTERN.match(text):
@@ -1193,7 +1242,9 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
 
     if _COLON_CLOCK.fullmatch(text):
         parsed = _clock_in(text)
-        meal = _last_meal(db, user, TIME_WINDOW)
+        meal = _last_meal(db, user, TIME_WINDOW, heard)
+        if _still_reading(db, came, user, meal):
+            return Route(LINE, Line(STILL_READING))
         if parsed is None or meal is None:
             return Route(LINE, Line(M5F_NO_MEAL))
         moment = _moment(None, user, parsed[0], parsed[1])
@@ -1214,7 +1265,9 @@ def route_text(db, came: Incoming, as_food: bool = False) -> Route:
         # that time; «а ещё хлеб» still joins the first answer below.
         return Route(NEW_MEAL, words=_recalled(correction[1]))
     if correction:
-        meal = _last_meal(db, user, CORRECTION_WINDOW)
+        meal = _last_meal(db, user, CORRECTION_WINDOW, heard)
+        if _still_reading(db, came, user, meal):
+            return Route(LINE, Line(STILL_READING))
         line = None
         if meal is not None:
             line = _touching(
@@ -2864,6 +2917,119 @@ def read_said_nothing(db, job: Read) -> Done:
         # The person said «ничего» to the reminder: no «no food seen» nor ✏️ offer.
         line = Line(reminders.ACCEPTED, meal_id=meal.id)
     return Done(line if _claim_view(db, job) else None, retouch=retouch)
+
+
+def _heard_came(job: Read, source: MealSource, words: str) -> Incoming:
+    """The voice as if its words were typed in its place: same message, same reply, same
+    moment. A text of its own beside the voice, which stays the voice's source."""
+    return Incoming(
+        telegram_id=job.telegram_id,
+        username=None,
+        chat_id=source.chat_id,
+        message_id=source.message_id,
+        kind=TEXT,
+        text=words,
+        file_id=None,
+        file_unique_id=None,
+        file_size=None,
+        duration_s=None,
+        media_group_id=None,
+        reply_to=source.reply_to_message_id,
+        sent_at=_aware(source.sent_at),
+        forward_date=_aware(source.forward_date) if source.forward_date else None,
+    )
+
+
+def _routed_line(db, job: Read, meal: Meal, route: Route, words: str) -> Line:
+    if route.action == WEIGHT:
+        screen = weight_screen.typed(db, job.telegram_id, words)
+        return Line(screen.text, screen.markup)
+    if route.action == TICK:
+        # The line is HTML, as the typed tick is not: a «&» in a name must not break it.
+        return Line(f"✓ {html.escape(route.tick)}", stats_screen.day_card_markup())
+    if route.action == SILENT and route.retouch is not None:
+        # R16: «ничего» to a reminder, as a typed one and a voice bound to it say.
+        return Line(reminders.ACCEPTED, retouch=route.retouch)
+    if route.action == SILENT:
+        return _no_food(db, job, meal)  # «спасибо»: what a read would have found
+    return route.line
+
+
+def _waits(route: Route) -> bool:
+    return route.line is not None and route.line.text == STILL_READING
+
+
+def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
+    """A voice heard for the first time goes where its words would go if typed: a
+    weight, a tick, «ещё хлеб» to the meal before it, «убери сыр» in reply to a meal.
+    None: it is food, and its read goes on as ever. Otherwise the voice's own meal
+    leaves the day, as a voice with no food does, and the line says what was done."""
+    meal = db.get(Meal, job.meal_id)
+    source = db.get(MealSource, job.source_id)
+    if source is None or source.kind != VOICE or meal is None:
+        return None
+    if meal.deleted_at is not None or meal.reading_status != "pending":
+        return None
+    if crud_meal_item.live(db, meal.id):
+        return None  # the person wrote to it meanwhile: it is a meal
+    signals = (
+        meal.resolution_signals if isinstance(meal.resolution_signals, dict) else {}
+    )
+    prior = signals.get(RECALL_KEY) if meal.time_source == reminders.SOURCE else None
+    if _said_nothing(db, job, meal, prior, transcript):
+        return None  # R16 has its own way, in ``spoken_words``
+    words = " ".join(part for part in (job.text, transcript) if part).strip()
+    if not words:
+        return None
+    route = route_text(db, _heard_came(job, source, words), heard=meal.id)
+    if route.action == NEW_MEAL or _waits(route):
+        # A voice before it is not heard yet: a typed change waits and stays in the
+        # chat; a spoken one would be lost, so it is read as food, as it always was.
+        return None
+    logger.info("Heard voice %s routed: %s", meal.id, route.action)
+    # The words went somewhere already: from here the line must say something and the
+    # voice must never be read as food too, so nothing below may leave it «читаю…».
+    try:
+        line = _routed_line(db, job, meal, route, words)
+    except Exception as e:
+        logger.warning("Heard voice %s not answered: %s", meal.id, type(e).__name__)
+        db.rollback()
+        line = Line(M7F_REFUSED)
+    try:
+        claimed = _retire_heard(db, job, meal, source, line)
+    except Exception as e:
+        logger.warning("Heard voice %s not retired: %s", meal.id, type(e).__name__)
+        db.rollback()
+        return Routed(line)
+    if not claimed:
+        logger.info("Heard voice %s: its line is no longer the read's", meal.id)
+        return Routed(None)
+    return Routed(line)
+
+
+def _retire_heard(db, job: Read, meal: Meal, source: MealSource, line: Line) -> bool:
+    """The voice's own meal leaves the day, and its line maps as what it now says.
+    False: the line is no longer the read's to edit."""
+    db.refresh(meal)
+    if meal.deleted_at is None:
+        meal.reading_status = "no_food"
+        meal.deleted_at = _now()
+        db.commit()
+    voice_row = db.scalar(
+        select(MealMessage).where(
+            MealMessage.chat_id == source.chat_id,
+            MealMessage.message_id == source.message_id,
+        )
+    )
+    if voice_row is not None and voice_row.meal_id == meal.id:
+        left_meal(db, source.chat_id, source.message_id)  # a reply to it: a new meal
+    if not _claim_view(db, job):
+        return False
+    if job.line_id is not None and line.meal_id is not None:
+        map_message(db, job.chat_id, job.line_id, line.meal_id, line.view)
+    else:
+        left_meal(db, job.chat_id, job.line_id)
+    return True
 
 
 def spoken_words(db, job: Read, transcript: str) -> str:

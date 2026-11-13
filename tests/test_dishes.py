@@ -24,6 +24,7 @@ from app.services import (
     capture,
     close_row,
     dish_emoji,
+    dish_ops,
     dishes,
     meal_card,
     meal_items,
@@ -248,14 +249,14 @@ def test_o2_lists_by_latest_live_item_with_counts_and_stars(db, owner, reader):
         ["⭐ 🍳 Омлет с сыром · 12 раз"],
         ["🍲 Суп с курицей · 2 раза"],
         ["🥣 Овсянка"],  # no live item: the name only
-        ["🔍 Найти"],  # one page: no pager
+        ["🔍 Найти", "🍲 Порядок"],  # one page: no pager; 🍲 from two dishes
     ]
     assert _data(shown) == [
         [f"dh:o:{rice.id}:l0"],
         [f"dh:o:{omelette.id}:l0"],
         [f"dh:o:{soup.id}:l0"],
         [f"dh:o:{oats.id}:l0"],
-        ["dh:f"],
+        ["dh:f", "dt:o"],
     ]
     assert reader.text == []
 
@@ -318,8 +319,8 @@ def test_o2_pages_say_where_they_are_and_a_page_past_the_end_shows_the_last(db, 
 
     first = send(text("🍲 Блюда")).sent()[-1]
     assert first["text"] == "<b>🍲 Блюда</b>\nСначала недавние. Страница 1 из 3."
-    assert _labels(first)[-1] == ["🔍 Найти", "▶️"]
-    assert _data(first)[-1] == ["dh:f", "dh:l:1"]
+    assert _labels(first)[-1] == ["🔍 Найти", "🍲 Порядок", "▶️"]
+    assert _data(first)[-1] == ["dh:f", "dt:o", "dh:l:1"]
     assert _labels(first)[0] == ["🍽 Блюдо 0 · 1 раз"]
 
     middle = _shown("dh:l:1")
@@ -838,6 +839,9 @@ def test_the_star_on_and_off_and_the_same_target_twice(db, owner, reader):
     assert "⭐ В избранное" in str(_labels(wire.edits()[-1]))
     db.expire_all()
     assert crud_favorite_meal.active_of_dish(db, dish.id) is None
+    # The tap writes through dish_ops, as words do: one event, so it can be undone.
+    kinds = [e.kind for e in db.scalars(select(RecordEvent).order_by(RecordEvent.id))]
+    assert kinds[-1] == "food_unstar"
     assert reader.text == []
 
 
@@ -1584,6 +1588,40 @@ def test_a_hidden_dish_shows_its_card_with_the_way_back_in_reach(db, owner, hard
     shown = _shown(f"dh:o:{dish.id}:l0")
     assert shown["text"].startswith("<b>🍲 Омлет</b>")
     assert _on(shown, "↩️ Вернуть") == undo
+
+
+@pytest.mark.parametrize("meanwhile", ["hidden", "merged"])
+def test_a_hide_that_loses_a_race_shows_what_is_there(
+    db, owner, monkeypatch, meanwhile
+):
+    """Between the tap's own look and the write, another tap hid the dish or merged it
+    away: the same toast, or its card with the refusal, never an error."""
+    from sqlalchemy import update
+
+    dish = _dish(db, owner, "омлет")
+    other = _dish(db, owner, "омлет с сыром")
+    real = dish_ops.hide
+
+    def racing(db_, user, food, **kwargs):
+        values = (
+            {"hidden_at": datetime.now(UTC)}
+            if meanwhile == "hidden"
+            else {"merged_into_id": other.id}
+        )
+        db_.execute(
+            update(PersonalFood).where(PersonalFood.id == food.id).values(**values)
+        )
+        return real(db_, user, food, **kwargs)
+
+    monkeypatch.setattr(dish_ops, "hide", racing)
+    wire = tap(f"dh:x:{dish.id}")
+    if meanwhile == "hidden":
+        assert _toast(wire) == meal_items.SAME_TOAST
+    else:
+        assert meal_items.UNDO_REFUSED in wire.edits()[-1]["text"]
+    assert not list(
+        db.scalars(select(RecordEvent).where(RecordEvent.kind == "food_hide"))
+    )
 
 
 def test_hiding_twice_is_the_same_target(db, owner):

@@ -75,7 +75,11 @@ def _schema_before(conn) -> None:
 
 
 # Columns a later migration adds to a table this one creates: not this one's to write.
-_LATER = {"meal_items": {"source_id", "base_grams_assumed"}}
+_LATER = {
+    "meal_items": {"source_id", "base_grams_assumed"},
+    "record_events": {"group_id"},  # d1e5a7b0c2f4, the 🍲 tidy-up's undo group
+}
+_LATER_INDEXES = {"record_events": {"ix_record_events_group_id"}}
 
 
 def _gaps(conn) -> dict:
@@ -173,7 +177,8 @@ def test_indexes_match_the_models(conn):
     assert "ix_meals_user_id_meal_time" in model
     for name in ("meal_items", "record_events"):
         found = {i["name"] for i in inspector.get_indexes(name)}
-        assert found == {i.name for i in Base.metadata.tables[name].indexes}, name
+        model = {i.name for i in Base.metadata.tables[name].indexes}
+        assert found == model - _LATER_INDEXES.get(name, set()), name
     item_indexed = {i["column_names"][0] for i in inspector.get_indexes("meal_items")}
     assert {"meal_id", "personal_food_id"} <= item_indexed
 

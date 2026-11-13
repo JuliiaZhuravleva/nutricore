@@ -24,6 +24,7 @@ PERSON_KINDS = (PHOTO, TEXT, VOICE, BUTTON, COMMAND)
 # came. A button is its callback's verb, the text before the first colon.
 BUTTON_VERBS = (
     "dh",
+    "dt",
     "dy",
     "fav",
     "fb",

@@ -23,7 +23,6 @@ from telegram import InlineKeyboardMarkup
 from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_personal_food import _key, crud_personal_food
 from app.crud.crud_record_event import crud_record_event
-from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
 from app.models.personal_food import PersonalFood
@@ -31,6 +30,8 @@ from app.models.record_event import RecordEvent
 from app.schemas.meal import MealCreate
 from app.services import (
     dish_emoji,
+    dish_ops,
+    dish_tidy_screen,
     favorites,
     food_groups,
     meal_card,
@@ -355,6 +356,9 @@ def _list(t: _Tap, page: int = 0, notice: Optional[str] = None) -> Screen:
     pager = [_button("🔍 Найти", "dh:f")]
     if page > 0:
         pager.insert(0, _button("◀️", f"dh:l:{page - 1}"))
+    elif len(dishes) >= 2:
+        # Five rows at most, three to a row: the first page has the room.
+        pager.append(dish_tidy_screen.entry_button())
     if page < pages - 1:
         pager.append(_button("▶️", f"dh:l:{page + 1}"))
     rows.append(pager)
@@ -614,25 +618,10 @@ def _v_star(t: _Tap, data: str, fid: str, want: str, back: Optional[str]) -> Scr
     if (want == "1") == (existing is not None):
         return Screen("", None, toast=meal_items.SAME_TOAST)
     if want == "0":
-        crud_favorite_meal.set_removed(t.db, existing, True)
+        dish_ops.unstar(t.db, t.user, dish)
+        t.db.commit()
         return _card(t, dish, back, toast=STAR_OFF_TOAST)
-    portion = meal_items.dish_portion(t.db, dish)
-    numbers = portion.numbers or {key: None for key in meal_items.FIELDS}
-    crud_favorite_meal.create_from_numbers(
-        t.db,
-        user_id=t.user.id,
-        name=dish.canonical_name,
-        numbers=numbers,
-        nutrients={
-            "foods": [dish.canonical_name],
-            "calories": numbers["calories"],
-            "protein": numbers["proteins"],
-            "fats": numbers["fats"],
-            "carbs": numbers["carbohydrates"],
-        },
-        source_meal_id=dish.meal_id,
-        usual_grams=None if portion.assumed else portion.grams,
-    )
+    dish_ops.create_star(t.db, t.user.id, dish, commit=True)
     return _card(t, dish, back)
 
 
@@ -762,8 +751,7 @@ def _v_rename(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
     )
 
 
-def _names_state(dish: PersonalFood) -> dict:
-    return {"name": dish.canonical_name, "aliases": list(dish.aliases or [])}
+_names_state = dish_ops.names_state
 
 
 def _typed_name(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
@@ -773,24 +761,14 @@ def _typed_name(t: _Tap, ask: dict, text: str) -> Optional[Screen]:
     name = meal_items._clean_name(text)
     if not name:
         return None
-    if name == dish.canonical_name:
-        return _card(t, dish, back)
-    holder = crud_personal_food.holder_of_name(t.db, t.user.id, name, without=dish.id)
-    if holder is not None:
-        live = crud_personal_food.live_of(t.db, holder)
-        if live.id == dish.id:
+    try:
+        event = dish_ops.rename(t.db, t.user, dish, name)
+    except dish_ops.NameTaken as taken:
+        if taken.holder.id == dish.id:
             return _card(t, dish, back, notice=NAME_IS_THIS_DISH)
-        return _taken(dish, live, back)
-    before = _names_state(dish)
-    crud_personal_food.rename(t.db, dish, name)
-    event = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="rename",
-        food_id=dish.id,
-        before=before,
-        after=_names_state(dish),
-    )
+        return _taken(dish, taken.holder, back)
+    if event is None:
+        return _card(t, dish, back)
     t.db.commit()
     notice = f"<i>✓ Теперь: {_esc(name)}.</i>"
     return _asks_portion(t, dish, _card(t, dish, back, notice=notice, undo=event.id))
@@ -1100,58 +1078,22 @@ def _typed_merge_find(t: _Tap, ask: dict, text: str) -> Screen:
 
 
 def _merge(
-    t: _Tap, source: PersonalFood, target: PersonalFood, undoes: Optional[int] = None
+    t: _Tap,
+    source: PersonalFood,
+    target: PersonalFood,
+    back: str,
+    undoes: Optional[int] = None,
 ) -> RecordEvent:
-    """The source's live items and ⭐ go to the target. Their names, numbers and
-    ``original_food_id`` stay: the past is what it was."""
-    items = list(
-        t.db.scalars(select(MealItem).where(MealItem.personal_food_id == source.id))
-    )
-    for item in items:
-        item.personal_food_id = target.id
-    moved_stars, removed_stars = [], []
-    keeps_own = crud_favorite_meal.active_of_dish(t.db, target.id) is not None
-    for fav in _active_stars(t, source):
-        if keeps_own:
-            fav.removed_at = t.now
-            removed_stars.append(fav.id)
-        else:
-            fav.personal_food_id = target.id
-            moved_stars.append(fav.id)
-    target_hidden = target.hidden_at
-    target.hidden_at = None
-    source.merged_into_id = target.id
-    event = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="food_merge",
-        food_id=source.id,
-        before={
-            "merged_into": None,
-            "target_hidden": meal_card._stamp(target_hidden) if target_hidden else None,
-            "target_used": target.times_used,
-        },
-        after={
-            "merged_into": target.id,
-            "items": [item.id for item in items],
-            "stars_moved": moved_stars,
-            "stars_removed": removed_stars,
-        },
-        undoes_event_id=undoes,
-    )
+    """``dish_ops.merge`` under the person's lock, committed. Refused: the card says
+    the record moved on."""
+    dish_ops.lock_user(t.db, t.user)
+    try:
+        event = dish_ops.merge(t.db, t.user, source, target, now=t.now, undoes=undoes)
+    except dish_ops.Refused:
+        t.db.rollback()
+        raise _Answer(_refused(t, source, back))
     t.db.commit()
     return event
-
-
-def _active_stars(t: _Tap, dish: PersonalFood) -> list:
-    return list(
-        t.db.scalars(
-            select(FavoriteMeal).where(
-                FavoriteMeal.personal_food_id == dish.id,
-                FavoriteMeal.removed_at.is_(None),
-            )
-        )
-    )
 
 
 def _merged_screen(
@@ -1200,50 +1142,18 @@ def _v_join(t: _Tap, data: str, fid: str, tid: str, back: Optional[str]) -> Scre
     if target.id == source.id:
         return _card(t, source, back)
     _stars(t)
-    event = _merge(t, source, target)
+    event = _merge(t, source, target, back)
     return _merged_screen(t, source, target, event.id, back)
 
 
 def _unmerge(t: _Tap, source: PersonalFood, event: RecordEvent, back: str) -> Screen:
     """Only what this merge moved: what was eaten under the target since stays there."""
-    after = event.after or {}
-    target = t.db.get(PersonalFood, after.get("merged_into") or 0)
-    if source.merged_into_id != after.get("merged_into") or target is None:
+    dish_ops.lock_user(t.db, t.user)
+    try:
+        new = dish_ops.unmerge(t.db, t.user, source, event)
+    except dish_ops.Refused:
+        t.db.rollback()
         return _refused(t, source, back)
-    live = crud_personal_food.live_of(t.db, target)
-    moved = after.get("items") or []
-    if moved:
-        items = t.db.scalars(select(MealItem).where(MealItem.id.in_(moved)))
-        for item in items:
-            if item.personal_food_id == live.id:
-                item.personal_food_id = source.id
-    for fav_id in after.get("stars_moved") or []:
-        fav = t.db.get(FavoriteMeal, fav_id)
-        if fav is not None and fav.personal_food_id == live.id:
-            fav.personal_food_id = source.id
-    for fav_id in after.get("stars_removed") or []:
-        fav = t.db.get(FavoriteMeal, fav_id)
-        if fav is not None:
-            fav.removed_at = None
-    before = event.before or {}
-    hidden = before.get("target_hidden")
-    # A dish eaten or starred since the merge was asked for again, so it stays.
-    in_use = (
-        before.get("target_used") != target.times_used
-        or crud_favorite_meal.active_of_dish(t.db, target.id) is not None
-    )
-    if hidden and target.hidden_at is None and not in_use:
-        target.hidden_at = datetime.fromtimestamp(hidden, UTC)
-    source.merged_into_id = None
-    new = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="food_merge",
-        food_id=source.id,
-        before={"merged_into": target.id},
-        after={"merged_into": None},
-        undoes_event_id=event.id,
-    )
     t.db.commit()
     return _card(t, source, back, notice=UNDONE, undo=new.id)
 
@@ -1252,13 +1162,13 @@ def _merge_again(
     t: _Tap, source: PersonalFood, event: RecordEvent, back: str
 ) -> Screen:
     """The undo of an undo."""
-    target = t.db.get(PersonalFood, (event.before or {}).get("merged_into") or 0)
-    if source.merged_into_id is not None or source.hidden_at or target is None:
+    dish_ops.lock_user(t.db, t.user)
+    try:
+        new, live = dish_ops.merge_again(t.db, t.user, source, event, now=t.now)
+    except dish_ops.Refused:
+        t.db.rollback()
         return _refused(t, source, back)
-    live = crud_personal_food.live_of(t.db, target)
-    if live.id == source.id:
-        return _refused(t, source, back)
-    new = _merge(t, source, live, undoes=event.id)
+    t.db.commit()
     return _merged_screen(t, source, live, new.id, back)
 
 
@@ -1267,20 +1177,14 @@ def _merge_again(
 
 def _hide(t: _Tap, dish: PersonalFood, back: str, undoes: Optional[int] = None):
     """O8. No question first: the undo is the answer to a wrong tap."""
-    stars = _active_stars(t, dish)
-    for fav in stars:
-        fav.removed_at = t.now
-    dish.hidden_at = t.now
-    ids = [fav.id for fav in stars]
-    event = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="food_hide",
-        food_id=dish.id,
-        before={"hidden_at": None, "favourites": ids},
-        after={"hidden_at": meal_card._stamp(t.now), "favourites": ids},
-        undoes_event_id=undoes,
-    )
+    try:
+        event = dish_ops.hide(t.db, t.user, dish, now=t.now, undoes=undoes)
+    except dish_ops.Refused:
+        t.db.rollback()
+        return _refused(t, dish, back)
+    if event is None:  # another tap hid it a moment ago
+        t.db.rollback()
+        return Screen("", None, toast=meal_items.SAME_TOAST)
     t.db.commit()
     page = back[1:] if back.startswith("l") else "0"
     return _screen(
@@ -1306,27 +1210,12 @@ def _v_hide(t: _Tap, data: str, fid: str, back: Optional[str]) -> Screen:
 
 
 def _unhide(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Screen:
-    if dish.hidden_at is None:
-        return _card(t, dish, back)  # brought back by eating it: nothing to undo
-    after = event.after or {}
-    if abs(meal_card._stamp(dish.hidden_at) - after["hidden_at"]) > 0.001:
+    try:
+        new = dish_ops.unhide(t.db, t.user, dish, event)
+    except dish_ops.Refused:
         return _refused(t, dish, back)
-    dish.hidden_at = None
-    ids = after.get("favourites") or []
-    if crud_favorite_meal.active_of_dish(t.db, dish.id) is None:
-        for fav_id in ids:  # one made since is the dish's one star
-            fav = t.db.get(FavoriteMeal, fav_id)
-            if fav is not None:
-                fav.removed_at = None
-    new = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="food_hide",
-        food_id=dish.id,
-        before=after,
-        after={"hidden_at": None, "favourites": ids},
-        undoes_event_id=event.id,
-    )
+    if new is None:
+        return _card(t, dish, back)  # brought back by eating it: nothing to undo
     t.db.commit()
     return _card(t, dish, back, notice=UNDONE, undo=new.id)
 
@@ -1340,24 +1229,10 @@ def _refused(t: _Tap, dish: PersonalFood, back: str) -> Screen:
 
 
 def _undo_rename(t: _Tap, dish: PersonalFood, event: RecordEvent, back: str) -> Screen:
-    before, after = event.before or {}, event.after or {}
-    holder = crud_personal_food.holder_of_name(
-        t.db, t.user.id, before.get("name") or "", without=dish.id
-    )
-    if _names_state(dish) != after or holder is not None:
+    try:
+        new = dish_ops.undo_rename(t.db, t.user, dish, event)
+    except dish_ops.Refused:
         return _refused(t, dish, back)
-    crud_personal_food.forget_suggestion(dish, dish.canonical_name, before["name"])
-    dish.canonical_name = before["name"]
-    dish.aliases = list(before.get("aliases") or [])
-    new = crud_record_event.add(
-        t.db,
-        user_id=t.user.id,
-        kind="rename",
-        food_id=dish.id,
-        before=after,
-        after=before,
-        undoes_event_id=event.id,
-    )
     t.db.commit()
     return _asks_portion(t, dish, _card(t, dish, back, notice=UNDONE, undo=new.id))
 

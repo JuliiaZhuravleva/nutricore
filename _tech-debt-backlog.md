@@ -7,6 +7,15 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Medium
 
+- [ ] **TD-266**: One person's failure can end a weekly sweep for everyone after them.
+  `week_push.run` calls `_send` with no try, and `_send` reads `user.telegram_id` before its own
+  try; `users_due` in week_push, bot_news, morning_push and reminder_push read `user.telegram_id`
+  before the per-person try, after an earlier iteration's `db.rollback()` expired the rows. A
+  failed reload escapes the loop. Fix as done in `dish_tidy_push.run` (2026-11-13): snapshot
+  plain ids before the loop, fetch rows inside the try. Lesser: week_push/bot_news `_mark` after
+  `db.rollback()` rewrites `user.settings` without re-locking (small window).
+  - **Priority:** Medium · **Source:** /review-deep variant analysis of feat/dish-tidy · **Created:** 2026-11-13
+
 - [ ] **TD-024**: Продумать оптимизацию памяти контейнеров (её слово 19.10: память mini на пределе, общая ВМ colima 3,0 из 3,5 ГБ)
   - **Замер 19.10:** 5 контейнеров, вместе ~410 МБ, у всех без лимита (видят все 2,8 ГиБ ВМ). Больше всех `celery_worker` — 142 МБ, затем `app` — 86, `telegram_bot` — 78, `celery_beat` — 73.
   - **Что выяснить:** пик за неделю; поставить лимиты `mem_limit` по пику, чтобы один контейнер не съел всю ВМ; нужен ли постоянный `celery_beat`/`celery_worker` на такой нагрузке.
@@ -78,6 +87,14 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Created:** 2026-11-07
 
 ## Low
+
+- [ ] **TD-267**: 🍲 tidy-up module boundaries.
+  `dish_tidy.py` / `dish_tidy_screen.py` are ~600 lines each; the screen module owns
+  `prepare`/`roll_back`/`tidy_on`/`left_over`, which `dish_tidy_push` imports (service logic in a
+  screen module); `_aware` and the lock snippet are copied across modules; `close_pairs` runs
+  its quadratic self-join synchronously on the on-demand tap (bounded by 2000 rows, ADR-0003).
+  Split a `dish_tidy_batch` service when slice 3 (widget) adds a second caller.
+  - **Priority:** Low · **Source:** /review-deep arch-monitor on feat/dish-tidy · **Created:** 2026-11-13
 
 - [ ] **TD-261**: Where "yesterday" ends should be a per-person setting (night shifts). Today a day ends at local midnight, and the planned morning question «how much of yesterday is recorded» (stage 06) asks about that calendar day. Someone who works 20:00–08:00 and eats at 2 a.m. has that meal on another "day" than they feel it is. Default stays midnight.
   - **Priority:** Low
@@ -343,3 +360,23 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** fix/access-end-and-welcome
   - **Created:** 2026-11-02
+- [ ] **TD-268**: A routed voice's answer (a weight, «ещё…», a tick) is lost when its edit fails through every retry: the line maps as "other" or not at all, and the voice's meal is retired, so the owed sweep never comes back to it. Fix: keep the routed answer as an owed text the sweep can send.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-269**: A failure inside `route_text` after it has committed a voice's change, or a hard kill between that commit and the voice's retire, lets a re-read take the same words as food («ещё хлеб» twice). Failures in the answer and the retire are covered. Fix: a "routed" marker on the heard reading, or the retire in the route's own transaction.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-270**: A ⭐ set from words and taken back with «↩️ Вернуть всё» is not a decline for the tidy-up (merges are), so next week's tidy may offer that ⭐ again.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-271**: A voice heard late (after a restart, or behind the read gate) is timed at the hearing: a spoken weight is stamped now, and «ещё…» measures its window from now, not from when it was said.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14
+- [ ] **TD-272**: `capture.py` keeps growing (heard-voice routing added ~150 lines). Move the heard routing (`route_heard`, `_routed_line`, `_retire_heard`, `_heard_came`) into a module of its own.
+  - **Priority:** Low
+  - **Source:** feat/multi-action (review)
+  - **Created:** 2026-11-14

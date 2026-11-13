@@ -114,8 +114,10 @@ class CRUDFavoriteMeal:
         nutrients: dict,
         source_meal_id: int,
         usual_grams: float | None = None,
+        commit: bool = True,
     ) -> FavoriteMeal:
-        """One dish of a meal, at the portion that item holds."""
+        """One dish of a meal, at the portion that item holds. ``commit=False`` only
+        flushes: the caller's batch commits it with the rest."""
         dish = crud_personal_food.for_favourite(db, user_id, name)
         db_obj = FavoriteMeal(
             user_id=user_id,
@@ -130,6 +132,9 @@ class CRUDFavoriteMeal:
             source_meal_id=source_meal_id,
         )
         db.add(db_obj)
+        if not commit:
+            db.flush()
+            return db_obj
         db.commit()
         db.refresh(db_obj)
         return db_obj
