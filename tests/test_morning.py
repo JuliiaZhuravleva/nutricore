@@ -779,7 +779,10 @@ def test_one_alembic_head_and_it_is_ours():
         revisions[match.group(1)] = path
         downs |= set(re.findall(r"[\"']([^\"']+)[\"']", down.group(1)))
     heads = [rev for rev in revisions if rev not in downs]
-    assert heads == ["a1b2c3d4e5f6"]
+    # One head, and the morning table is on the chain under it (a later migration
+    # may sit on top: the 🍲 tidy-up's does).
+    assert len(heads) == 1
+    assert "a1b2c3d4e5f6" in revisions and "a1b2c3d4e5f6" in downs | set(heads)
 
 
 _BANNED = re.compile(

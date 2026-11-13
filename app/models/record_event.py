@@ -26,6 +26,7 @@ EVENT_KINDS = (
     "reread",
     "write",
     "groups",
+    "food_star",
 )
 
 
@@ -69,6 +70,8 @@ class RecordEvent(Base, BaseClass):
     undoes_event_id = Column(
         Integer, ForeignKey("record_events.id", ondelete="SET NULL"), nullable=True
     )
+    # One batch's changes (a tidy-up, one message): «↩️ Вернуть всё» takes them back.
+    group_id = Column(String(36), nullable=True, index=True)
     # NOT NULL + server_default (TD-006 lesson)
     created_at = Column(
         DateTime(timezone=True),

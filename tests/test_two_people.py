@@ -54,6 +54,7 @@ from app.main import app
 from app.models import (
     ActionEvent,
     BodyMetric,
+    DishTidyBatch,
     FavoriteMeal,
     Feedback,
     Meal,
@@ -67,6 +68,7 @@ from app.models import (
     User,
 )
 from app.services import (
+    dish_tidy_screen,
     dishes,
     favorites,
     feedback_inbox,
@@ -357,6 +359,14 @@ def _world(db) -> SimpleNamespace:
     b_source = _source(db, b, B, 7600, text="добавка")
     db.add(MealMessage(chat_id=B, message_id=LINE + 2, meal_id=b_meal.id, view="line"))
     db.commit()
+
+    # A's 🍲 tidy-up: one pair merged by itself, the batch open on the screen.
+    _dish(db, a, f"{MARK} соус томатный")
+    _dish(db, a, f"{MARK} томатный соус")
+    db.commit()
+    dish_tidy_screen.handle_callback(db, A, "dt:o", message_id=7700 + 50)
+    tidy = db.scalar(select(DishTidyBatch.id).where(DishTidyBatch.user_id == a.id))
+    assert tidy is not None
     return SimpleNamespace(
         a=a,
         b=b,
@@ -390,6 +400,7 @@ def _world(db) -> SimpleNamespace:
         b_meal=b_meal.id,
         b_item=b_item.id,
         b_source=b_source.id,
+        tidy=tidy,
     )
 
 
@@ -401,7 +412,9 @@ def db(Session):
 
 
 @pytest.fixture
-def world(db, model):
+def world(db, model, monkeypatch):
+    # The embeddings' self-join is Postgres SQL: the stems alone judge here.
+    monkeypatch.setattr(crud_personal_food, "close_pairs", lambda *a, **k: {})
     return _world(db)
 
 
@@ -595,6 +608,11 @@ PROBES = {
     "fav:r": lambda w: f"fav:r:{w.star}:0",
     "fav:b": lambda w: f"fav:b:{w.gone_star}:0",
     "wt:u": lambda w: f"wt:u:{w.weight}",
+    "dt:k": lambda w: f"dt:k:{w.tidy}:0:0",
+    "dt:a": lambda w: f"dt:a:{w.tidy}:1",
+    "dt:u": lambda w: f"dt:u:{w.tidy}",
+    "dt:x": lambda w: f"dt:x:{w.tidy}:1",
+    "dt:s": lambda w: f"dt:s:{w.tidy}:1",
 }
 # The tap's own message matters to these: the chooser looks at what it answers.
 ON_MESSAGE = {"ml:kw": CHOOSER, "ml:kn": CHOOSER}
@@ -622,13 +640,22 @@ NO_ID = {
     "dh:l": lambda w: "dh:l:0",
     "dh:f": lambda w: "dh:f",
     "fav:p": lambda w: "fav:p:0",
+    "dt:o": lambda w: "dt:o",
+    "dt:on": lambda w: "dt:on",
 }
 
 
 def _verbs() -> set:
     """The verbs the tables hold, as ``ml:o``, read from the patterns themselves."""
     names = set()
-    for module in (meal_card, dishes, favorites, people_screen, feedback_screen):
+    for module in (
+        meal_card,
+        dishes,
+        favorites,
+        people_screen,
+        feedback_screen,
+        dish_tidy_screen,
+    ):
         for pattern, _verb in module._VERBS:
             names.add(re.match(r"[a-z]+:[a-z]*", pattern.pattern).group(0))
     return names | {"wt:u"}
@@ -694,8 +721,9 @@ def test_a_tap_mixing_ones_own_id_with_anothers_moves_nothing(db, world, verb):
 def test_a_screen_with_no_id_is_ones_own(db, world, verb):
     _assert_nothing_of_a(_tap(B, NO_ID[verb](world)))
     # The known positive: the same screen holds A's, for A.
-    # 💬 holds none of A's records by design, and the journal holds no name of food.
-    if verb not in ("dh:f", "ml:da", "fb:open", "fb:see", "fb:x"):
+    # 💬 holds none of A's records by design, and the journal holds no name of food;
+    # dt:on is the nothing-to-offer screen, with no dish on it.
+    if verb not in ("dh:f", "ml:da", "fb:open", "fb:see", "fb:x", "dt:on"):
         words = " ".join(b for _n, b in _shown_to(_tap(A, NO_ID[verb](world))))
         assert MARK in words.casefold(), words
 

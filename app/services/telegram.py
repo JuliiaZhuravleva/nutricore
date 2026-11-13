@@ -56,6 +56,7 @@ from app.services import (
     close_row,
     custom_emoji,
     diary_widget,
+    dish_tidy_screen,
     dishes,
     explain_screen,
     favorites,
@@ -1971,6 +1972,18 @@ async def morning_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(update, handle, TERM_ENDED, "Morning")
 
 
+async def dish_tidy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap on the 🍲 tidy-up (``dt:…``): the same message becomes the next screen."""
+    message_id = getattr(update.callback_query.message, "message_id", None)
+
+    def handle(db, telegram_id: int, data: str):
+        return dish_tidy_screen.handle_callback(
+            db, telegram_id, data, message_id=message_id
+        )
+
+    await _screen_callback(update, handle, TERM_ENDED, "Dish tidy")
+
+
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A statistics tab (``st:…``). The message shows no one meal from here on."""
     message = update.callback_query.message
@@ -3253,6 +3266,12 @@ def create_bot_application() -> Application:
     # a tap here closes that itself and does not count as leaving one (see below).
     application.add_handler(
         CallbackQueryHandler(dishes_callback, pattern=f"^{dishes.CALLBACK_PREFIX}")
+    )
+    # 🍲 the tidy-up of the dish base (stateless, like favorites).
+    application.add_handler(
+        CallbackQueryHandler(
+            dish_tidy_callback, pattern=f"^{dish_tidy_screen.CALLBACK_PREFIX}"
+        )
     )
 
     # Statistics tabs and the weight undo (stateless, like favorites).

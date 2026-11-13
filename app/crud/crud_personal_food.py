@@ -547,6 +547,86 @@ class CRUDPersonalFood:
                 break
         return found
 
+    def close_pairs(
+        self, db: Session, user_id: int, max_distance: float, max_rows: int
+    ) -> dict:
+        """(low id, high id) of two live dishes → the smallest cosine distance between
+        their stored embeddings, when it is at most ``max_distance``. A merged row
+        stands for the dish it went into, as in ``nearest``. Nothing above
+        ``max_rows`` embedding rows (the self-join grows with their square): an empty
+        dict, logged. Postgres only; raises ``AnnQueryError`` as ``find_similar``."""
+        where = """
+            FROM personal_food_embeddings pfe
+            JOIN personal_foods pf ON pf.id = pfe.personal_food_id
+            WHERE pf.user_id = :user_id
+              AND (pf.hidden_at IS NULL OR pf.merged_into_id IS NOT NULL)
+        """
+        pairs = text(
+            """
+            WITH mine AS (
+                SELECT pfe.personal_food_id AS food_id, pfe.embedding
+            """
+            + where
+            + """
+            )
+            SELECT a.food_id AS one_id, b.food_id AS other_id,
+                   MIN(a.embedding <=> b.embedding) AS cosine_distance
+            FROM mine a
+            JOIN mine b ON a.food_id < b.food_id
+            WHERE (a.embedding <=> b.embedding) <= :threshold
+            GROUP BY a.food_id, b.food_id
+            ORDER BY cosine_distance
+            LIMIT 500
+            """
+        )
+        try:
+            count = db.execute(
+                text("SELECT COUNT(*) " + where), {"user_id": user_id}
+            ).scalar_one()
+            if count > max_rows:
+                logger.warning(
+                    "close_pairs: %s embedding rows for user_id=%s, over %s: skipped",
+                    count,
+                    user_id,
+                    max_rows,
+                )
+                return {}
+            rows = db.execute(
+                pairs, {"threshold": max_distance, "user_id": user_id}
+            ).all()
+        except Exception as exc:
+            logger.error(
+                "close_pairs: query FAILED for user_id=%s (%s)",
+                user_id,
+                exc.__class__.__name__,
+                exc_info=True,
+            )
+            try:
+                db.rollback()
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("close_pairs: rollback also failed", exc_info=True)
+            raise AnnQueryError(
+                f"close pairs failed for user_id={user_id}: {exc.__class__.__name__}"
+            ) from exc
+        found: dict = {}
+        for row in rows:
+            ends = []
+            for food_id in (row.one_id, row.other_id):
+                pf = db.get(PersonalFood, food_id)
+                dish = self.live_of(db, pf) if pf is not None else None
+                if dish is None or dish.hidden_at is not None:
+                    break
+                if dish.merged_into_id is not None or dish.user_id != user_id:
+                    break
+                ends.append(dish.id)
+            if len(ends) != 2 or ends[0] == ends[1]:
+                continue
+            pair = (min(ends), max(ends))
+            distance = float(row.cosine_distance)
+            if pair not in found or distance < found[pair]:
+                found[pair] = distance
+        return found
+
     def _ann_rows(self, db: Session, embedding: List[float], user_id: int) -> list:
         """The 20 nearest embedding rows of the user's dishes (see ``find_similar``)."""
         emb_str = "[" + ",".join(str(v) for v in embedding) + "]"

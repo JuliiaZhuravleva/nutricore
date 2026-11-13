@@ -596,3 +596,58 @@ def test_add_embedding_duplicate_is_deduped():
     finally:
         db.close()
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# close_pairs() — the 🍲 tidy-up's self-join, asserted at compile level too
+# ---------------------------------------------------------------------------
+
+
+class _PairsSession:
+    """Answers the row count, then records the pairs statement; no pairs found."""
+
+    def __init__(self, count: int = 3):
+        self.count = count
+        self.calls = []
+        self.rolled_back = False
+
+    def execute(self, stmt, params=None):
+        self.calls.append((stmt, params))
+        return SimpleNamespace(scalar_one=lambda: self.count, all=lambda: [])
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+def test_close_pairs_binds_only_the_threshold_and_the_person():
+    db = _PairsSession()
+    assert crud_personal_food.close_pairs(db, 7, 0.15, 2000) == {}
+    assert len(db.calls) == 2, "the count, then the pairs"
+    stmt, params = db.calls[1]
+    assert set(stmt._bindparams) == {"threshold", "user_id"}
+    assert params == {"threshold": 0.15, "user_id": 7}
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "%(threshold)s" in sql and "%(user_id)s" in sql
+    assert "::" not in sql and ":threshold" not in sql, sql
+    # The count is the same person's rows: its one bind is the person.
+    count_stmt, count_params = db.calls[0]
+    assert set(count_stmt._bindparams) == {"user_id"} and count_params == {"user_id": 7}
+
+
+def test_close_pairs_skips_the_self_join_over_the_row_cap(caplog):
+    db = _PairsSession(count=2001)
+    with caplog.at_level(logging.WARNING):
+        assert crud_personal_food.close_pairs(db, 7, 0.15, 2000) == {}
+    assert len(db.calls) == 1, "the self-join ran over the cap"
+    assert "2001 embedding rows for user_id=7, over 2000: skipped" in caplog.text
+    # The control: at the cap itself the join runs.
+    at_cap = _PairsSession(count=2000)
+    crud_personal_food.close_pairs(at_cap, 7, 0.15, 2000)
+    assert len(at_cap.calls) == 2
+
+
+def test_close_pairs_failure_rolls_back_and_raises():
+    db = _BoomSession()
+    with pytest.raises(AnnQueryError, match="close pairs failed for user_id=7"):
+        crud_personal_food.close_pairs(db, 7, 0.15, 2000)
+    assert db.rolled_back

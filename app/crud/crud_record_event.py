@@ -23,6 +23,7 @@ class CRUDRecordEvent:
         after: dict | None = None,
         source_id: int | None = None,
         undoes_event_id: int | None = None,
+        group_id: str | None = None,
     ) -> RecordEvent:
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind: {kind}")
@@ -35,6 +36,7 @@ class CRUDRecordEvent:
             after=after,
             source_id=source_id,
             undoes_event_id=undoes_event_id,
+            group_id=group_id,
         )
         db.add(event)
         db.flush()

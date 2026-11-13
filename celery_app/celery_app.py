@@ -14,6 +14,7 @@ app = Celery(
         "celery_app.tasks.week_push",
         "celery_app.tasks.reminders",
         "celery_app.tasks.morning",
+        "celery_app.tasks.dish_tidy",
         "celery_app.tasks.bot_news",
     ],
 )
@@ -65,6 +66,12 @@ app.conf.beat_schedule = {
     # ☀️ 10:00 on each person's clock, also in zones with :30 and :45; the task checks who.
     "morning-question": {
         "task": "celery_app.tasks.morning.send_morning_questions",
+        "schedule": crontab(minute="*/15"),
+        "options": {"expires": 840},
+    },
+    # 🍲 Sunday 12:00–20:59 on each person's clock; the task checks who.
+    "dish-tidy": {
+        "task": "celery_app.tasks.dish_tidy.tidy_dishes",
         "schedule": crontab(minute="*/15"),
         "options": {"expires": 840},
     },

@@ -248,14 +248,14 @@ def test_o2_lists_by_latest_live_item_with_counts_and_stars(db, owner, reader):
         ["⭐ 🍳 Омлет с сыром · 12 раз"],
         ["🍲 Суп с курицей · 2 раза"],
         ["🥣 Овсянка"],  # no live item: the name only
-        ["🔍 Найти"],  # one page: no pager
+        ["🔍 Найти", "🍲 Порядок"],  # one page: no pager; 🍲 from two dishes
     ]
     assert _data(shown) == [
         [f"dh:o:{rice.id}:l0"],
         [f"dh:o:{omelette.id}:l0"],
         [f"dh:o:{soup.id}:l0"],
         [f"dh:o:{oats.id}:l0"],
-        ["dh:f"],
+        ["dh:f", "dt:o"],
     ]
     assert reader.text == []
 
@@ -318,8 +318,8 @@ def test_o2_pages_say_where_they_are_and_a_page_past_the_end_shows_the_last(db, 
 
     first = send(text("🍲 Блюда")).sent()[-1]
     assert first["text"] == "<b>🍲 Блюда</b>\nСначала недавние. Страница 1 из 3."
-    assert _labels(first)[-1] == ["🔍 Найти", "▶️"]
-    assert _data(first)[-1] == ["dh:f", "dh:l:1"]
+    assert _labels(first)[-1] == ["🔍 Найти", "🍲 Порядок", "▶️"]
+    assert _data(first)[-1] == ["dh:f", "dt:o", "dh:l:1"]
     assert _labels(first)[0] == ["🍽 Блюдо 0 · 1 раз"]
 
     middle = _shown("dh:l:1")

@@ -5,6 +5,7 @@ from .ai_call_log import AiCallLog
 from .analysis_report import AnalysisReport
 from .app_setting import AppSetting
 from .body_metric import BodyMetric
+from .dish_tidy import DishTidyBatch, DishTidyItem
 from .favorite_meal import FavoriteMeal
 from .feedback import Feedback
 from .inbound_message import InboundMessage
@@ -37,6 +38,8 @@ __all__ = [
     "RoutineTick",
     "ReminderSend",
     "MorningAnswer",
+    "DishTidyBatch",
+    "DishTidyItem",
     "Activity",
     "AnalysisReport",
     "Subscription",
