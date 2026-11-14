@@ -357,7 +357,7 @@ def seen(db, came: Incoming) -> bool:
     return plan is not None and plan.kind == came.kind
 
 
-def _user(db, came: Incoming) -> User:
+def user_of(db, came: Incoming) -> User:
     user = db.scalar(select(User).where(User.telegram_id == came.telegram_id))
     if user is None:
         user = User(telegram_id=came.telegram_id, username=came.username)
@@ -713,8 +713,8 @@ def _born_row(
     db, source: MealSource, user: User, said: Optional[SaidTime] = None
 ) -> Meal:
     """The message as its own meal, with its own time, whatever becomes of it next."""
-    forward = _aware(source.forward_date) if source.forward_date else None
-    sent = _aware(source.sent_at)
+    forward = aware(source.forward_date) if source.forward_date else None
+    sent = aware(source.sent_at)
     meal = crud_meal.build(
         MealCreate(
             sent_at=sent,
@@ -983,13 +983,13 @@ def _touching(db, user: User, meal: Meal, apply) -> Optional[Line]:
     return line
 
 
-def _aware(moment: datetime) -> datetime:
+def aware(moment: datetime) -> datetime:
     """SQLite reads a stored moment back without its zone; stored is always UTC."""
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 def _sent(meal: Meal) -> datetime:
-    return _aware(meal.sent_at or meal.created_at)
+    return aware(meal.sent_at or meal.created_at)
 
 
 def _last_meal(
@@ -1038,7 +1038,7 @@ def _still_reading(db, came: Incoming, user: User, meal: Optional[Meal]) -> bool
     return True
 
 
-def _replied_meal(db, chat_id: int, message_id: int, user: User) -> Optional[Meal]:
+def replied_meal(db, chat_id: int, message_id: int, user: User) -> Optional[Meal]:
     """The meal a message answers for, wherever it went since. Deleted ones too: the
     caller says so. Only this person's: another's row means nothing here."""
     row = db.scalar(
@@ -1168,12 +1168,12 @@ def _is_stop_word(text: str) -> bool:
 def route_media(db, came: Incoming) -> Route:
     """A photo or a voice note is always born and read; if it answered a live meal it
     joins it at the end of the read, and a deleted one is said aloud in its line."""
-    user = _user(db, came)
+    user = user_of(db, came)
     if came.reply_to is not None:
         if _replied_send(db, came, user) is not None:
             # §3.2(a): a meal of its own on the reminder's day, never the ⭐ it holds.
             return Route(NEW_MEAL)
-        target = _replied_meal(db, came.chat_id, came.reply_to, user)
+        target = replied_meal(db, came.chat_id, came.reply_to, user)
         if (
             target is not None
             and target.deleted_at is not None
@@ -1187,7 +1187,7 @@ def _timed_add(came: Incoming, user: User, correction) -> bool:
     """«а ещё днём был йогурт»: a corrective add that says a time of its own."""
     if not correction or correction[0] != ADD or not correction[1]:
         return False
-    return time_words(correction[1], _aware(came.sent_at), user_zone(user)) is not None
+    return time_words(correction[1], aware(came.sent_at), user_zone(user)) is not None
 
 
 def _own_meal_add(came: Incoming, user: User, correction) -> bool:
@@ -1266,11 +1266,11 @@ def route_text(
     text = came.text
     if text.strip() in STALE_LABELS:
         return Route(LINE, Line(M9B_STALE, menu=True))
-    user = _user(db, came)
+    user = user_of(db, came)
 
     target = send = None
     if came.reply_to is not None:
-        target = _replied_meal(db, came.chat_id, came.reply_to, user)
+        target = replied_meal(db, came.chat_id, came.reply_to, user)
         send = _replied_send(db, came, user)
     if send is not None and not as_food and reminders.is_nothing(text):
         return _nothing(db, came, user, send)  # never the ⭐ the reminder holds
@@ -1387,7 +1387,7 @@ def _routine_words_in_plan(db, came: Incoming, user: User, text: str) -> bool:
 def _wants_dish_plan(came: Incoming) -> bool:
     if came.forward_date is not None:
         return False
-    return plan_words.wants_plan(came.text, _aware(came.sent_at), UTC) == (
+    return plan_words.wants_plan(came.text, aware(came.sent_at), UTC) == (
         plan_words.DISH
     )
 
@@ -1403,7 +1403,7 @@ def _several(came: Incoming, user: User, text: Optional[str]) -> bool:
     its own, so its words never part it."""
     if not text or came.forward_date is not None:
         return False
-    return says_several(text, _aware(came.sent_at), user_zone(user))
+    return says_several(text, aware(came.sent_at), user_zone(user))
 
 
 # --- M6a, M5d: the chips --------------------------------------------------------------
@@ -1444,7 +1444,7 @@ def _chooser_meal(t, source: MealSource, data: str) -> Meal:
     """The meal of the chooser this tap is on: the callback carries only the source."""
     meal = None
     if t.message_id is not None:
-        meal = _replied_meal(t.db, source.chat_id, t.message_id, t.user)
+        meal = replied_meal(t.db, source.chat_id, t.message_id, t.user)
     if meal is None:
         raise meal_card._Answer(meal_card._unknown(t, data))
     if meal.deleted_at is not None:
@@ -1963,12 +1963,12 @@ def _said(
     if forward:
         return None
     zone = user_zone(user)
-    said = time_words(text, _aware(sent), zone, bare_ok=kind != "text")
+    said = time_words(text, aware(sent), zone, bare_ok=kind != "text")
     if said is None or not said.of_day or send is None:
         return said
     if reply_to is None or reply_to != send.message_id:
         return said
-    if local_time(_aware(sent), zone).date() <= send.local_day:
+    if local_time(aware(sent), zone).date() <= send.local_day:
         return said
     if _YESTERDAY.search(text) or _TODAY.search(text):
         return said  # «вчера …», «сегодня …»: the words name their own day
@@ -2041,11 +2041,11 @@ def born(
     message is already here, the unique key said so. ``words``: the food of a message
     whose first words were for a meal that is gone. The source keeps what came.
     ``day``: the day it was asked for (O1b); time words in it are still no dish."""
-    user = _user(db, came)
+    user = user_of(db, came)
     told = words if words is not None else came.text
     # D4: a message of several timed meals that stays one (the planner failed) takes
     # no one part's name.
-    named = message_name(told, _aware(came.sent_at), user_zone(user))
+    named = message_name(told, aware(came.sent_at), user_zone(user))
     send = None if day else reminders.bound_send(db, user, came)
     said = _said(
         told, came.kind, came.sent_at, came.forward_date, user, send, came.reply_to
@@ -2150,7 +2150,7 @@ def plan_came(plan: MessagePlan, telegram_id: int) -> Incoming:
         duration_s=None,
         media_group_id=None,
         reply_to=plan.reply_to_message_id,
-        sent_at=_aware(plan.sent_at) if plan.sent_at else _now(),
+        sent_at=aware(plan.sent_at) if plan.sent_at else _now(),
         forward_date=plan.forward_date,
     )
 
@@ -2166,7 +2166,7 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
     zone = user_zone(user)
     said = part_times(
         spans,
-        _aware(came.sent_at),
+        aware(came.sent_at),
         zone,
         send.local_day if send else None,
         # A day's list («вчера ела: суп, сырники») gives its day to every part; a
@@ -2277,7 +2277,7 @@ def album_wait(db, meal_id: int) -> float:
     )
     if last is None:
         return 0
-    passed = (datetime.now(UTC) - _aware(last)).total_seconds()
+    passed = (datetime.now(UTC) - aware(last)).total_seconds()
     return max(ALBUM_WAIT_SECONDS - passed, 0)
 
 
@@ -2596,7 +2596,7 @@ def _originals(db, meal_id: int) -> list:
             MealSource.meal_id == meal_id, MealSource.supersedes_id.is_(None)
         )
     )
-    return sorted(rows, key=lambda row: (_aware(row.sent_at), row.id))
+    return sorted(rows, key=lambda row: (aware(row.sent_at), row.id))
 
 
 def _was_read(db, source: MealSource) -> bool:
@@ -2615,7 +2615,7 @@ def _was_read(db, source: MealSource) -> bool:
 
 def _source_line(t, number: int, source: MealSource) -> str:
     current = latest_version(t.db, source)
-    at = meal_card.plain_time(local_time(_aware(source.sent_at), t.zone))
+    at = meal_card.plain_time(local_time(aware(source.sent_at), t.zone))
     if source.kind in PHOTO_SOURCES:
         said = " · оценка по фото" if not t.simple and _was_read(t.db, source) else ""
         return f"{number}. 📷 Фото, {at}{said}"
@@ -2751,8 +2751,8 @@ def edited(db, came: Incoming) -> Optional[Line]:
     )
     if original is None:
         return None
-    user = _user(db, came)
-    meal = _replied_meal(db, came.chat_id, came.message_id, user)
+    user = user_of(db, came)
+    meal = replied_meal(db, came.chat_id, came.message_id, user)
     if meal is None and original.meal_id is not None:
         return None
     latest = latest_version(db, original)
@@ -3009,7 +3009,7 @@ def _reply_target(db, job: Read, meal: Meal, user: User) -> Optional[Meal]:
         db, user, source.chat_id, source.reply_to_message_id, source.sent_at
     ):
         return None  # §3.2(a): an answer to a reminder, never the ⭐ it holds
-    target = _replied_meal(db, source.chat_id, source.reply_to_message_id, user)
+    target = replied_meal(db, source.chat_id, source.reply_to_message_id, user)
     if target is None or target.deleted_at is not None or target.id == meal.id:
         return None
     return target
@@ -3157,7 +3157,7 @@ def read_said_nothing(db, job: Read) -> Done:
             duration_s=source.duration_s,
             media_group_id=None,
             reply_to=source.reply_to_message_id,
-            sent_at=_aware(source.sent_at),
+            sent_at=aware(source.sent_at),
             forward_date=None,
         )
         retouch = reminders.accept_nothing(db, user, send, came)
@@ -3166,7 +3166,7 @@ def read_said_nothing(db, job: Read) -> Done:
     return Done(line if _claim_view(db, job) else None, retouch=retouch)
 
 
-def _heard_came(job: Read, source: MealSource, words: str) -> Incoming:
+def heard_came(job: Read, source: MealSource, words: str) -> Incoming:
     """The voice as if its words were typed in its place: same message, same reply, same
     moment. A text of its own beside the voice, which stays the voice's source."""
     return Incoming(
@@ -3182,8 +3182,8 @@ def _heard_came(job: Read, source: MealSource, words: str) -> Incoming:
         duration_s=None,
         media_group_id=None,
         reply_to=source.reply_to_message_id,
-        sent_at=_aware(source.sent_at),
-        forward_date=_aware(source.forward_date) if source.forward_date else None,
+        sent_at=aware(source.sent_at),
+        forward_date=aware(source.forward_date) if source.forward_date else None,
     )
 
 
@@ -3230,7 +3230,7 @@ def route_heard(
     words = " ".join(part for part in (job.text, transcript) if part).strip()
     if not words:
         return None
-    route = route_text(db, _heard_came(job, source, words), heard=meal.id, plan=plan)
+    route = route_text(db, heard_came(job, source, words), heard=meal.id, plan=plan)
     if route.action == PLAN:
         # Nothing is retired yet: the planner decides, and its fallback is a read.
         raise WantsPlan(route.plan, route.words or words)
@@ -3328,7 +3328,7 @@ def spoken_words(db, job: Read, transcript: str) -> str:
     if meal.meal_type is None:
         # D4: «на обед…» said in a voice, by the same rule as typed words.
         meal.meal_type = message_name(
-            transcript, _aware(source.sent_at), user_zone(user)
+            transcript, aware(source.sent_at), user_zone(user)
         )
     ahead = said and said.precision != DAY_ONLY and said.moment > _now()
     if said and meal.time_source in ("sent", reminders.SOURCE) and not ahead:
@@ -3791,7 +3791,7 @@ def stuck_meals(db, live) -> list:
     return [
         meal_id
         for meal_id, born_at in db.execute(stmt.order_by(Meal.id))
-        if meal_id not in live and _aware(born_at) <= limit
+        if meal_id not in live and aware(born_at) <= limit
     ]
 
 
@@ -3819,7 +3819,7 @@ def due_retries(db, limit: int) -> list:
         )
         if last is None or last.status != RETRY:
             continue
-        if now - _aware(last.created_at) < RETRY_AFTER[meal.read_attempts or 0]:
+        if now - aware(last.created_at) < RETRY_AFTER[meal.read_attempts or 0]:
             continue
         if _may_read_by_itself(db, meal):
             due.append(meal.id)

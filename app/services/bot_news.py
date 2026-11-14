@@ -10,6 +10,13 @@ goes, once per person, between FROM_HOUR and TO_HOUR on their own clock, and onl
 it is fresh: someone back after a month hears nothing about an old release. Someone who
 came after it was published is not told about it either: to them it is just the bot.
 
+How a news item reads (the owner, 2026-11-15): plain everyday words, as if telling a
+friend; short and informal. A bold head of a few words, then two or three short
+sentences with one real example («если у тебя две гречки…»). No product terms (план,
+вопрос-пик, рутина как сущность), no list of every case, no word with a gender
+(«передумал», «написала»): say it through «можно», «если …». The «2026-11-16-questions»
+item is the model; the owner OKs every text before its release.
+
 As the week's summary: marked before it is sent under a row lock, so overlapping runs
 send it once; a failure that certainly did not arrive clears the mark for the next run.
 """
@@ -124,6 +131,18 @@ NEWS: tuple[News, ...] = (
             "🍽 <b>Названия приёмов.</b> В ответе и на карточке приём называется: "
             "завтрак, обед, полдник, ужин или перекус — как сказано в сообщении, "
             "иначе по времени."
+        ),
+    ),
+    News(
+        id="2026-11-16-questions",
+        published=date(2026, 11, 16),
+        text=(
+            "❓ <b>Бот теперь переспрашивает.</b>\n"
+            "Если у тебя две гречки, а в сообщении просто «гречка», бот спросит "
+            "какую, кнопками. Если непонятно, убирать что-то или нет, спросит «да "
+            "или нет».\n"
+            "Передумать можно кнопкой «↩️ Отменить». А если не отвечать, через два "
+            "дня вопрос закроется сам."
         ),
     ),
 )
