@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     text,
 )
@@ -32,13 +33,15 @@ class MealSource(Base, BaseClass):
 
     __tablename__ = "meal_sources"
     __table_args__ = (
-        # A replayed update finds its row here: one message makes one meal. An edited
-        # message keeps a new row beside it, pointing back with ``supersedes_id``.
+        # A replayed update finds its row here. A message is part 0; a message read
+        # as several meals keeps one row per meal, parts 1..N. An edited message keeps
+        # a new row beside it, pointing back with ``supersedes_id``.
         Index(
             "uq_meal_sources_message",
             "chat_id",
             "message_id",
             "kind",
+            "part",
             unique=True,
             sqlite_where=text("supersedes_id IS NULL"),
             postgresql_where=text("supersedes_id IS NULL"),
@@ -62,6 +65,8 @@ class MealSource(Base, BaseClass):
     duration_s = Column(Integer, nullable=True)
     audio_path = Column(String, nullable=True)
     supersedes_id = Column(Integer, nullable=True)
+    # 0: the message itself; 1..N: one of the meals a message was read as (its words)
+    part = Column(SmallInteger, nullable=False, default=0, server_default="0")
     created_at = Column(
         DateTime(timezone=True), default=lambda: datetime.datetime.now(UTC)
     )

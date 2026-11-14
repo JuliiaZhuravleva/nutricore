@@ -37,6 +37,7 @@ from app.models import (
 from app.schemas.meal import MealCreate
 from app.services import meal_items
 from app.services.access_control import NO_ACCESS
+from app.services.openai_service import OpenAIService
 from app.services.product_lookup_service import ResolutionResult
 
 OWNER = 42
@@ -64,6 +65,7 @@ class Wire(BaseRequest):
         self.calls: list = []
         self.next_id = 5000
         self.fail_download = False
+        self.sent_ids: list = []  # what each sendMessage was answered with, in order
 
     @property
     def read_timeout(self):
@@ -99,6 +101,8 @@ class Wire(BaseRequest):
             }
         if name in ("sendMessage", "editMessageText"):
             self.next_id += 1 if name == "sendMessage" else 0
+            if name == "sendMessage":
+                self.sent_ids.append(self.next_id)
             return {
                 "message_id": params.get("message_id", self.next_id),
                 "date": NOW_TS,
@@ -113,6 +117,12 @@ class Wire(BaseRequest):
 
     def edits(self) -> list:
         return [p for n, p in self.calls if n == "editMessageText"]
+
+    def line(self, n: int = 0) -> list:
+        """The n-th sent line as it went: as sent, then each edit of it."""
+        sent_id = self.sent_ids[n]
+        edits = [p["text"] for p in self.edits() if p.get("message_id") == sent_id]
+        return [self.sent()[n]["text"], *edits]
 
     def seen(self) -> list:
         return [
@@ -161,8 +171,20 @@ def owner(db):
 def reader(monkeypatch):
     """The fakes of the model: what was asked, and what they answer."""
     state = SimpleNamespace(
-        text=[], image=[], answer=dict(NUTRITION), error=None, gate=None
+        text=[],
+        image=[],
+        answer=dict(NUTRITION),
+        error=None,
+        gate=None,
+        plan=None,  # the planner's answer; None: it fails, as a model error
+        planned=[],
     )
+
+    async def plan_message(self, messages):
+        state.planned.append(messages)
+        if state.plan is None:
+            raise RuntimeError("fake planner: no answer")
+        return state.plan
 
     async def analyze(*, kind, payload, input_ref, telegram_id):
         state.text.append(payload)
@@ -192,6 +214,7 @@ def reader(monkeypatch):
 
     monkeypatch.setattr(tg, "_analyze_and_parse", analyze)
     monkeypatch.setattr(tg, "resolve_meal_nutrition", resolve)
+    monkeypatch.setattr(OpenAIService, "plan_message", plan_message)
     return state
 
 

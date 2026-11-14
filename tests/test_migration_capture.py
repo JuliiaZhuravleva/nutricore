@@ -27,6 +27,8 @@ _PATH = (
 NEW_TABLES = {"meal_sources", "meal_readings", "meal_messages"}
 NEW_MEAL_COLUMNS = {"reading_status", "read_attempts", "is_draft", "merged_into_id"}
 NEW_ITEM_COLUMNS = {"source_id"}
+# Columns a later migration adds to a table this one creates: not this one's to write.
+_LATER = {"meal_sources": {"part"}}  # c3d7f9a1b5e2, the meals of one message
 
 
 def _migration():
@@ -128,7 +130,7 @@ def test_the_upgrade_gives_what_the_models_declare_and_an_old_meal_counts_as_rea
         for name in NEW_TABLES:
             assert _columns(conn, name) == {
                 c.name for c in Base.metadata.tables[name].columns
-            }
+            } - _LATER.get(name, set())
         assert NEW_MEAL_COLUMNS <= _columns(conn, "meals")
         assert NEW_ITEM_COLUMNS <= _columns(conn, "meal_items")
         row = conn.execute(
