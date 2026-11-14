@@ -25,6 +25,7 @@ from app.models.user import User
 from app.services import dish_ops
 from app.services import plan_grammar as grammar
 from app.services.dish_tidy import Dish, _target_order
+from app.services.name_match import akin as _akin
 from app.services.plan_words import DISH, asks_dish_change, has_dish_verb
 
 logger = logging.getLogger(__name__)
@@ -129,14 +130,6 @@ def norm(text: str) -> str:
 
 def _words(text: str) -> list:
     return _WORD.findall(norm(text))
-
-
-def _akin(a: str, b: str, least: int = 4) -> bool:
-    """One word of two forms: «гречку» and «гречка». Short words must be the same."""
-    if a == b:
-        return True
-    k = max(min(least, len(a), len(b)), min(len(a), len(b)) - 2)
-    return len(a) >= 3 and len(b) >= 3 and a[:k] == b[:k]
 
 
 # --- the person's dishes --------------------------------------------------------------
