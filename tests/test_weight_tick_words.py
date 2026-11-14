@@ -151,6 +151,13 @@ def test_a_yesterday_weight_phrase_is_saved_a_day_back_and_says_so(db, words):
     assert screen.text == "✅ <b>Записано:</b> 72,4 кг · вчера"
 
 
+def test_a_yesterday_weight_says_no_change_against_todays(db):
+    weight_screen.typed(db, TG, "вес 73")
+    screen = weight_screen.typed(db, TG, "вчера вес 72,4")
+    assert "С прошлого раза" not in screen.text
+    assert "С прошлого раза" in weight_screen.typed(db, TG, "вес 72").text
+
+
 def test_a_spoken_weight_phrase_goes_the_same_way(db):
     route = _route(db, "вчера вес 72,4")
     line = _voice(db, route, "вчера вес 72,4")
@@ -326,6 +333,13 @@ def test_the_exact_name_on_its_own_still_ticks_as_before(db):
 def test_the_stem_matches_a_longer_routine_name(db):
     _routine(db, "Утренняя зарядка", "z1")
     assert _route(db, "зарядку сделала").tick == "Утренняя зарядка"
+
+
+def test_a_one_letter_word_names_no_routine_by_stem(db):
+    _routine(db, "A & B", "ab")
+    assert _route(db, "отметь a").action == capture.LINE
+    assert _route(db, "отметь a & b").tick == "A & B"
+    assert _ticks(db) == [("ab", _today())]
 
 
 def test_exact_name_wins_over_a_stem_match(db):

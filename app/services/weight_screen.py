@@ -196,7 +196,8 @@ def record(
     offers the undo."""
     user = _user(db, telegram_id, username, create=True)
     moment = datetime.now(UTC) - timedelta(days=1 if yesterday else 0)
-    last = crud_body_metric.latest_weights(db, user.id, 1)
+    # Yesterday's weight has no honest «since last time»: the latest may be today's.
+    last = [] if yesterday else crud_body_metric.latest_weights(db, user.id, 1)
     metric = crud_body_metric.create(
         db,
         BodyMetricCreate(timestamp=moment, weight=kg, metrics={"source": SOURCE}),

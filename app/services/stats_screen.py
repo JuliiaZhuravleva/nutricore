@@ -703,8 +703,8 @@ def _routine_matches(due: list[dict], said: str) -> list[dict]:
     whose words each of the said words is akin to."""
     wanted = name_match.words(said)
     exact = [r for r in due if name_match.words(str(r.get("name"))) == wanted]
-    if exact:
-        return exact
+    if exact or not any(len(w) >= 3 for w in wanted):
+        return exact  # a stem needs a real word: «отметь a» names no «A & B»
     return [
         r
         for r in due
