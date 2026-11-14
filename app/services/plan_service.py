@@ -9,12 +9,14 @@ answer names it. Dishes go to the model as numbers of this prompt only, never id
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Optional
 
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.crud.crud_body_metric import crud_body_metric
@@ -25,6 +27,7 @@ from app.crud.crud_routine_tick import crud_routine_tick
 from app.models.meal import Meal
 from app.models.message_plan import MessagePlan
 from app.models.personal_food import PersonalFood
+from app.models.record_event import RecordEvent
 from app.models.user import User
 from app.services import dish_ops
 from app.services import plan_grammar as grammar
@@ -54,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 25
 BOOK_MAX = 150
+PICK_MAX = 4  # dishes a pick offers
+ASKS_MAX = 3  # questions one plan sends
 ROUTINES_MAX = 30
 
 # --- what the person reads ------------------------------------------------------------
@@ -70,6 +75,8 @@ WHY_NONE = " — такого блюда нет."
 WHY_TAKEN = " — имя «{new}» уже у блюда «{holder}»."
 WHY_ONE = " — это уже одно блюдо."
 WHY_WORDS = " — в сообщении нет таких слов."
+WHY_NEW_NAME = " — напиши новое имя: «переименуй X в Y»."
+WHY_GONE = " — блюдо уже изменилось."
 WHY_ONE_WEIGHT = " — вес за раз записываю один."
 DONE_WEIGHT = "⚖️ {kg}"
 DONE_TICK = "✓ {name}"
@@ -279,6 +286,22 @@ class Act:
 
 
 @dataclass(frozen=True)
+class Question:
+    """A question back: the person's tap decides. ``pick``: a name that fits several
+    dishes (``cands``, up to ``PICK_MAX``); ``ask``: the model is not sure the person
+    wants this. ``ids`` are the dishes the act already has (an ask's, or a merge's
+    other side); ``label`` is the person's own word for the dish."""
+
+    kind: str  # "pick" | "ask"
+    verb: str
+    ids: tuple
+    label: str
+    cands: tuple = ()
+    target: Optional[int] = None
+    new_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class Refusal:
     label: str
     why: str  # one of the WHY_ texts, filled
@@ -303,6 +326,7 @@ class Tick:
 class Checked:
     meals: list = field(default_factory=list)  # Part, in message order
     acts: list = field(default_factory=list)
+    asks: list = field(default_factory=list)  # Question, in the model's order
     weight: Optional[Weigh] = None
     ticks: list = field(default_factory=list)  # Tick
     refused: list = field(default_factory=list)
@@ -317,6 +341,7 @@ class Checked:
         return (
             len(self.meals) <= 1
             and not self.acts
+            and not self.asks
             and not self.refused
             and self.weight is None
             and not self.ticks
@@ -355,21 +380,28 @@ def _fits(name: str, known: Known, least: int = 4) -> bool:
 
 def resolve(ref: grammar.Ref, book: Book) -> tuple:
     """(dish id, None) or (None, why)."""
+    dish_id, why, _fits_all = _resolve(ref, book)
+    return dish_id, why
+
+
+def _resolve(ref: grammar.Ref, book: Book) -> tuple:
+    """(dish id, None, ()) or (None, why, ()); a name fitting several dishes is
+    (None, WHY_SEVERAL, their ids): the person picks."""
     exact = book.names.get(norm(ref.name), set())
     by_number = book.numbered(ref.number)
     if by_number is not None and (by_number.id in exact or not exact):
         if _fits(ref.name, by_number, least=3):
-            return by_number.id, None
+            return by_number.id, None, ()
     if len(exact) == 1:
         # «сыр» is the dish named so, not #7 «сырники» the model numbered.
-        return next(iter(exact)), None
+        return next(iter(exact)), None, ()
     fits = sorted(exact) or [d.id for d in book.known.values() if _fits(ref.name, d)]
     if len(fits) == 1:
-        return fits[0], None
+        return fits[0], None, ()
     if fits:
         names = ", ".join(f"«{book.known[i].name}»" for i in fits[:4])
-        return None, WHY_SEVERAL.format(names=names)
-    return None, WHY_NONE
+        return None, WHY_SEVERAL.format(names=names), tuple(fits[:PICK_MAX])
+    return None, WHY_NONE, ()
 
 
 def _left_open(inside: str) -> bool:
@@ -417,32 +449,63 @@ def _target(ids: list, book: Book) -> int:
     return min(dishes, key=_target_order).id
 
 
+def _several(ref: grammar.Ref, fits: tuple, book: Book) -> Refusal:
+    names = ", ".join(f"«{book.known[i].name}»" for i in fits)
+    return Refusal(ref.name, WHY_SEVERAL.format(names=names))
+
+
 def _dish_act(command: grammar.Command, book: Book, folded: str) -> tuple:
-    """(Act, None) or (None, Refusal)."""
+    """(Act | Question, None) or (None, Refusal). A name that fits several dishes is a
+    pick question; two such names in one command are refused (the person writes it
+    exactly)."""
     label = command.refs[0].name if command.refs else command.line
-    ids = []
+    if command.verb == grammar.RENAME and not (command.text or "").strip():
+        return None, Refusal(label, WHY_NEW_NAME, final=True)
+    ids, several = [], None
     for ref in command.refs:
-        dish_id, why = resolve(ref, book)
-        if why:
+        dish_id, why, fits = _resolve(ref, book)
+        if fits:
+            if several is not None:
+                return None, _several(ref, fits, book)
+            several = (ref, fits)
+        elif why:
             return None, Refusal(ref.name, why)
-        if dish_id not in ids:
+        elif dish_id not in ids:
             ids.append(dish_id)
+    target = None
+    if command.verb == grammar.MERGE and command.into is not None:
+        target, why, fits = _resolve(command.into, book)
+        if fits or why:
+            return None, Refusal(command.into.name, why)
+        if target not in ids:
+            ids.append(target)
+    if command.verb == grammar.RENAME and norm(command.text) not in folded:
+        return None, Refusal(command.text, WHY_WORDS)
+    new = command.text.strip(_EDGE) if command.verb == grammar.RENAME else None
+    if several is not None:
+        ref, fits = several
+        fits = tuple(i for i in fits if i not in ids)
+        if command.verb == grammar.MERGE and not fits:
+            return None, Refusal(label, WHY_ONE)
+        if command.verb == grammar.MERGE and len(fits) == 1:
+            ids.append(fits[0])
+            several = None
+        else:
+            question = Question(
+                "pick", command.verb, tuple(ids), ref.name, fits, target, new
+            )
+            return question, None
     if command.verb == grammar.MERGE:
-        target = None
-        if command.into is not None:
-            target, why = resolve(command.into, book)
-            if why:
-                return None, Refusal(command.into.name, why)
-            if target not in ids:
-                ids.append(target)
         if len(ids) < 2:
             return None, Refusal(label, WHY_ONE)
         return Act(grammar.MERGE, tuple(ids), target or _target(ids, book)), None
     if command.verb == grammar.RENAME:
-        if norm(command.text) not in folded:
-            return None, Refusal(command.text, WHY_WORDS)
-        return Act(grammar.RENAME, (ids[0],), new_name=command.text.strip(_EDGE)), None
+        return Act(grammar.RENAME, (ids[0],), new_name=new), None
     return Act(command.verb, (ids[0],)), None
+
+
+def _asked(act: Act, label: str) -> Question:
+    return Question("ask", act.verb, act.ids, label, (), act.target, act.new_name)
 
 
 # Words that say nothing of food: time, order, the person, eating itself.
@@ -490,7 +553,7 @@ def _missed(
     for part in parts:
         blank[part.start : part.end] = "\n" * (part.end - part.start)
     covered = list(said)
-    for command in commands:
+    for command in (c.inner or c for c in commands):
         for ref in [*command.refs, command.into]:
             if ref is not None:
                 covered += _words(ref.name)
@@ -527,11 +590,17 @@ def check(parsed: grammar.Parsed, text: str, book: Book) -> Checked:
         checked.meals.append(Part(*place, text[place[0] : place[1]]))
     checked.meals.sort(key=lambda part: part.start)
     for command in parsed.dish:
-        act, refusal = _dish_act(command, book, folded)
+        asked = command.verb == grammar.ASK
+        inner = command.inner if asked else command
+        act, refusal = _dish_act(inner, book, folded)
         if refusal is not None:
             checked.refused.append(refusal)
-        elif act not in checked.acts:
-            checked.acts.append(act)
+            continue
+        if isinstance(act, Act) and asked:
+            act = _asked(act, inner.refs[0].name)
+        bucket = checked.acts if isinstance(act, Act) else checked.asks
+        if act not in bucket:
+            bucket.append(act)
     _routine_words(parsed, text, book, checked)
     said = frozenset(
         # a refused weight or tick has its ✖ line: not «Не записано» again
@@ -652,6 +721,8 @@ def _ambiguous(checked: Checked) -> bool:
     """A name that fits several dishes is the person's to settle: asked again, the
     model picks one or takes them all (seen live: «убери суп из блюд» hid both)."""
     marker = WHY_SEVERAL.split("{", 1)[0]
+    if any(q.kind == "pick" for q in checked.asks):
+        return True  # a pick question stands: no second call
     return any(r.why.startswith(marker) for r in checked.refused)
 
 
@@ -848,6 +919,28 @@ def answer(checked: Checked, done: Done) -> Optional[str]:
     return "\n".join(lines) or None
 
 
+def _asks_stored(asks: list) -> list:
+    """The questions as the plan row keeps them (at most ``ASKS_MAX``)."""
+    if len(asks) > ASKS_MAX:
+        logger.info("Plan asks %s: %s dropped", len(asks), len(asks) - ASKS_MAX)
+    return [
+        {
+            "q": number,
+            "kind": q.kind,
+            "verb": q.verb,
+            "ids": list(q.ids),
+            "cands": list(q.cands),
+            "target": q.target,
+            "new": q.new_name,
+            "label": q.label,
+            "message_id": None,
+            "state": "open",
+            "events": [],
+        }
+        for number, q in enumerate(asks[:ASKS_MAX])
+    ]
+
+
 def finish(
     db,
     plan: MessagePlan,
@@ -866,6 +959,8 @@ def finish(
         "refused": len(checked.refused),
         "missed": len(checked.missed),
     }
+    if checked.asks:
+        commands = {**commands, "asks": _asks_stored(checked.asks)}
     if done is not None and done.weight is not None:
         commands = {**commands, "weight": done.weight}
     if done is not None and done.ticks:
@@ -878,6 +973,7 @@ class Executed:
     born: list  # capture.Born of each meal, in message order
     answer: Optional[str]  # the dish changes and what was left out
     changed: bool  # ↩️ has something to take back
+    asks: list = field(default_factory=list)  # the stored questions, to send
 
 
 def execute(
@@ -918,7 +1014,11 @@ def execute(
     if send is not None and meals:
         reminders.answered(db, user, send, came)
     born = capture.parts_shown(db, came, user, meals)
-    return Executed(born, answer(checked, done), done.changed)
+    asks = crud_message_plan.asks_of(plan)
+    text = answer(checked, done)
+    if asks and not text and not born:
+        text = plan_screen.ASKS_FOLLOW  # the «читаю…» line has to become something
+    return Executed(born, text, done.changed, asks)
 
 
 def _retire(db, user: User, meal_id: int, now: datetime) -> None:
@@ -1071,6 +1171,7 @@ def undo(db, telegram_id: int, plan_id: int) -> tuple:
     dish_ops.lock_user(db, user)
     db.refresh(plan)
     commands = dict(plan.commands or {})
+    asks = crud_message_plan.asks_of(plan)
     if commands.get("undone"):
         db.rollback()
         return None, SAME_TOAST
@@ -1079,6 +1180,10 @@ def undo(db, telegram_id: int, plan_id: int) -> tuple:
     if result.already and not taken and not left:
         db.rollback()
         return None, SAME_TOAST
+    if asks:  # the group held the answered questions' changes: they are back too
+        commands["asks"] = [
+            {**a, "state": "undone"} if a.get("state") == "done" else a for a in asks
+        ]
     crud_message_plan.undone(db, plan, commands)
     refused = [*left, *result.refused_names]
     return plan_screen.undo_head(taken, result.labels, refused), None
@@ -1112,3 +1217,150 @@ def take_back_routine_words(db, user: User, commands: dict) -> tuple:
         crud_routine_tick.untick_flush(db, user.id, tick["routine"], day)
         taken.append(DONE_TICK.format(name=tick["name"]))  # gone by hand counts too
     return taken, left
+
+
+# --- the questions of a plan --------------------------------------------------------
+
+
+def question_line(db, plan_id: int, ask: dict):
+    """What a question says, with its buttons: a capture.Line (HTML-escaped)."""
+    from app.services import capture
+
+    names = [_name(db, i) for i in ask.get("ids") or []]
+    cands = [_name(db, i) for i in ask.get("cands") or []]
+    text = plan_screen.question_text(ask, names, ask.get("new") or "")
+    return capture.Line(
+        html.escape(text), plan_screen.question_markup(plan_id, ask, cands)
+    )
+
+
+def question_sent(db, plan_id: int, q: int, message_id: Optional[int]) -> None:
+    if message_id is not None:
+        crud_message_plan.ask_sent(db, plan_id, q, message_id)
+
+
+def _own(db, telegram_id: int, plan_id: int) -> tuple:
+    """(plan, user) of the person's own plan; (None, None) for a foreign or missing
+    one: nothing is written."""
+    plan = db.get(MessagePlan, plan_id)
+    user = db.get(User, plan.user_id) if plan is not None else None
+    if user is None or user.telegram_id != telegram_id or not plan.group_id:
+        logger.warning("Plan tap: unknown or foreign plan")
+        return None, None
+    return plan, user
+
+
+def _find(asks: list, q: int) -> Optional[dict]:
+    return next((a for a in asks if a.get("q") == q), None)
+
+
+def _tap_acts(ask: dict, option: str, book: Book) -> Optional[list]:
+    """The acts a tap asks for, or None when the option does not belong to the
+    question."""
+    ids, cands = tuple(ask.get("ids") or ()), tuple(ask.get("cands") or ())
+    verb, target, new = ask["verb"], ask.get("target"), ask.get("new")
+    if ask["kind"] == "ask":
+        if option != plan_screen.YES:
+            return None
+        return [Act(verb, ids, target, new)]
+    if option == plan_screen.ALL:
+        if verb not in plan_screen.ALL_VERBS:
+            return None
+        picked = cands
+    elif option.isdigit() and int(option) < len(cands):
+        picked = (cands[int(option)],)
+    else:
+        return None
+    if verb == grammar.MERGE:
+        both = [*ids, *(i for i in picked if i not in ids)]
+        return [Act(verb, tuple(both), target or _target(both, book))]
+    if verb == grammar.RENAME:
+        return [Act(verb, picked[:1], new_name=new)]
+    return [Act(verb, (i,)) for i in picked]
+
+
+def answer_question(
+    db,
+    telegram_id: int,
+    plan_id: int,
+    q: int,
+    option: str,
+    now: Optional[datetime] = None,
+) -> tuple:
+    """(the done line, toast): a tap on a question's button. The act is written under
+    the plan's group, in one commit, under the person's lock; a second tap, or a
+    foreign one, writes nothing."""
+    from app.services import capture
+
+    plan, user = _own(db, telegram_id, plan_id)
+    if plan is None:
+        return None, GONE_TOAST
+    dish_ops.lock_user(db, user)
+    db.refresh(plan)
+    asks = crud_message_plan.asks_of(plan)
+    ask = _find(asks, q)
+    if ask is None:
+        db.rollback()
+        return None, GONE_TOAST
+    if ask.get("state") != "open":
+        db.rollback()
+        return None, SAME_TOAST
+    if option == plan_screen.NO:
+        ask["state"] = "declined"
+        crud_message_plan.set_asks(plan, asks)
+        db.commit()
+        return capture.Line(plan_screen.DECLINED_LINE), None
+    dish_ops.link_stars(db, user.id)
+    book = book_of(db, user, "")
+    acts = _tap_acts(ask, option, book)
+    if acts is None:
+        db.rollback()
+        return None, GONE_TOAST
+    wanted = {i for act in acts for i in (*act.ids, act.target) if i is not None}
+    if not wanted <= set(book.known):  # hidden or merged since the question went out
+        ask["state"] = "done"
+        crud_message_plan.set_asks(plan, asks)
+        db.commit()
+        gone = NOT_DONE.format(label=ask["label"]) + WHY_GONE
+        return capture.Line(html.escape(gone)), None
+    before = db.scalar(select(func.max(RecordEvent.id))) or 0
+    done = do_dishes(db, user, acts, plan.group_id, now or datetime.now(UTC))
+    db.flush()
+    events = list(
+        db.scalars(
+            select(RecordEvent.id)
+            .where(
+                RecordEvent.id > before,
+                RecordEvent.user_id == user.id,
+                RecordEvent.group_id == plan.group_id,
+                RecordEvent.undoes_event_id.is_(None),
+            )
+            .order_by(RecordEvent.id)
+        )
+    )
+    ask["state"], ask["events"] = "done", events
+    crud_message_plan.set_asks(plan, asks)
+    db.commit()
+    markup = plan_screen.done_markup(plan.id, q, bool(events))
+    return capture.Line(html.escape("\n".join(done.said)), markup), None
+
+
+def undo_question(db, telegram_id: int, plan_id: int, q: int) -> tuple:
+    """(what the answer adds, toast): takes back only this question's answer."""
+    plan, user = _own(db, telegram_id, plan_id)
+    if plan is None:
+        return None, GONE_TOAST
+    dish_ops.lock_user(db, user)
+    db.refresh(plan)
+    asks = crud_message_plan.asks_of(plan)
+    ask = _find(asks, q)
+    if ask is None or ask.get("state") != "done" or not ask.get("events"):
+        db.rollback()
+        return None, SAME_TOAST
+    result = dish_ops.undo_events(db, user, ask["events"])
+    ask["state"] = "undone"
+    crud_message_plan.set_asks(plan, asks)
+    db.commit()
+    if result.already:
+        return None, SAME_TOAST
+    return plan_screen.undo_head([], result.labels, result.refused_names), None

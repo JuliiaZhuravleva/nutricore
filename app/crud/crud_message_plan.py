@@ -159,6 +159,29 @@ class CRUDMessagePlan:
         plan.group_id = group_id
         plan.commands = commands
 
+    # --- the plan's questions: ``commands["asks"]``, a JSON list (no migration) ------
+
+    def asks_of(self, plan: MessagePlan) -> list:
+        """The questions, as copies: the stored list is never changed in place."""
+        return [dict(a) for a in (plan.commands or {}).get("asks") or []]
+
+    def set_asks(self, plan: MessagePlan, asks: list) -> None:
+        """Assigns a new dict: SQLAlchemy does not see a change made inside the old
+        one. The caller commits."""
+        plan.commands = {**(plan.commands or {}), "asks": [dict(a) for a in asks]}
+
+    def ask_sent(self, db: Session, plan_id: int, q: int, message_id: int) -> None:
+        """Keeps the message a question went out in."""
+        plan = db.get(MessagePlan, plan_id, with_for_update=True)
+        if plan is None:
+            return
+        asks = self.asks_of(plan)
+        for ask in asks:
+            if ask.get("q") == q:
+                ask["message_id"] = message_id
+        self.set_asks(plan, asks)
+        db.commit()
+
     def undone(self, db: Session, plan: MessagePlan, commands: dict) -> None:
         """Marks the plan's dish changes as taken back, committed."""
         plan.commands = {**commands, "undone": True}
