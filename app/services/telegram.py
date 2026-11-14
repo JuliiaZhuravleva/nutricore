@@ -1584,19 +1584,20 @@ _live_plans: set = set()
 
 
 async def _put(bot, chat_id: int, reply_to: int, line_id, line: capture.Line):
-    """The line into ``line_id`` when there is one, else a silent reply of its own.
-    The message id it stands in, or None if Telegram took neither."""
+    """The line into ``line_id`` when there is one, else (or when that edit fails) a
+    silent reply of its own. The message id it stands in, or None if Telegram took
+    neither."""
     if line_id is not None:
         try:
             await _edit_line(bot, chat_id, line_id, line)
         except BadRequest as e:
-            if not _is_not_modified(e):
-                logger.warning("Plan line not edited: %s", type(e).__name__)
-                return None
+            if _is_not_modified(e):
+                return line_id
+            logger.warning("Plan line not edited: %s", type(e).__name__)
         except TelegramError as e:
             logger.warning("Plan line not edited: %s", type(e).__name__)
-            return None
-        return line_id
+        else:
+            return line_id
     try:
         sent = await _tries(
             lambda: bot.send_message(
@@ -1637,8 +1638,11 @@ async def _plan_text(update, context, came: capture.Incoming, route) -> "_Went":
         return _Went.WRITTEN  # a replay: the first one answers
     sent = await _send_line(message, capture.Line(plan_service.READING_LINE))
     if sent is not None:
-        with SessionLocal() as db:
-            plan_service.set_line(db, plan_id, sent.message_id)
+        try:
+            with SessionLocal() as db:
+                plan_service.set_line(db, plan_id, sent.message_id)
+        except Exception as e:
+            logger.error("Plan %s line not kept: %s", plan_id, type(e).__name__)
     _start_plan(context.application, plan_id)
     return _Went.WRITTEN
 
@@ -1661,8 +1665,22 @@ async def _run_plan(application: Application, plan_id: int) -> None:
         if ask is not None:
             await _plan_done(application, ask, checked)
     except Exception as e:
-        # The row stays reading: the sweep gives its line the failure and 🔁.
+        # Still reading: the sweep gives its line the failure and 🔁. Ended: answered
+        # here, since the sweep never looks at it again.
         logger.error("Plan %s crashed: %s", plan_id, type(e).__name__)
+        await _plan_crashed(application.bot, plan_id)
+
+
+async def _plan_crashed(bot, plan_id: int, line_id: Optional[int] = None) -> None:
+    try:
+        with SessionLocal() as db:
+            where = plan_service.unanswered(db, plan_id)
+        if where is not None:
+            chat_id, message_id, kept = where
+            line = capture.Line(capture.PLAN_ANSWER_LOST)
+            await _put(bot, chat_id, message_id, line_id or kept, line)
+    except Exception as e:
+        logger.error("Plan %s left unanswered: %s", plan_id, type(e).__name__)
 
 
 async def _plan_read(plan_id: int, line_id: Optional[int] = None) -> tuple:
@@ -1686,14 +1704,14 @@ async def _plan_read(plan_id: int, line_id: Optional[int] = None) -> tuple:
     except Exception as e:
         logger.warning("Plan %s not read: %s", plan_id, type(e).__name__)
         return ask, None
+    if plan_service.unreadable(ask.want, checked):
+        logger.warning("Plan %s: dish lines did not parse", plan_id)
+        return ask, None
     return ask, checked
 
 
 def _gives_back(ask, checked) -> bool:
-    """Today's way: one meal and nothing more, or meals the model could not part."""
-    if checked is None:
-        return ask.want != plan_service.DISH
-    return checked.single and (ask.want != plan_service.DISH or bool(checked.meals))
+    return plan_service.gives_back(ask.want, ask.text, checked)
 
 
 async def _plan_done(application: Application, ask, checked) -> None:
@@ -1806,9 +1824,33 @@ async def _plan_heard(application: Application, job: capture.Read, wants):
             plan_id = plan_service.open_plan(db, came, wants.want, wants.words)
     except Exception as e:
         logger.error("Voice plan not opened: %s", type(e).__name__)
-        plan_id = None
+        return replace(job, unplanned=True)  # read as food, as before plans
     if plan_id is None:
-        return replace(job, unplanned=True)
+        return None  # a replay: the first one answers
+    _live_plans.add(plan_id)
+    try:
+        return await _plan_heard_on(application, job, plan_id)
+    except Exception as e:
+        logger.error("Voice plan %s crashed: %s", plan_id, type(e).__name__)
+        await _plan_crashed(bot, plan_id, job.line_id)
+        return None
+    finally:
+        _live_plans.discard(plan_id)
+
+
+def _retired(job: capture.Read, line: capture.Line) -> bool:
+    """The voice's own meal gives way to the plan; False (its line not claimed) when
+    that failed, and the plan's lines go out as replies of their own."""
+    try:
+        with SessionLocal() as db:
+            return capture.retire_planned(db, job, line)
+    except Exception as e:
+        logger.error("Voice meal not retired: %s", type(e).__name__)
+        return False
+
+
+async def _plan_heard_on(application: Application, job: capture.Read, plan_id: int):
+    bot = application.bot
     ask, checked = await _plan_read(plan_id, job.line_id)
     if ask is None:
         return None
@@ -1822,9 +1864,12 @@ async def _plan_heard(application: Application, job: capture.Read, wants):
                 line = plan_service.fail(db, plan_id)
             else:
                 line = plan_service.nothing(db, plan_id)
-            claimed = line is not None and capture.retire_planned(db, job, line)
-        if claimed:
+        if line is None:
+            return None
+        if _retired(job, line):
             await _show(bot, job, line)
+        else:
+            await _put(bot, ask.came.chat_id, ask.came.message_id, None, line)
         return None
     with SessionLocal() as db:
         executed = plan_service.execute(db, plan_id, checked, ask.came)
@@ -1837,9 +1882,11 @@ async def _plan_heard(application: Application, job: capture.Read, wants):
             html.escape(executed.answer or ""),
             plan_service.answer_markup(plan_id, executed.changed),
         )
-    with SessionLocal() as db:
-        claimed = capture.retire_planned(db, job, first)
-    inbound_msg.mark_analyzed(job.inbound_id, {"planned": plan_id})
+    claimed = _retired(job, first)
+    try:
+        inbound_msg.mark_analyzed(job.inbound_id, {"planned": plan_id})
+    except Exception as e:
+        logger.warning("Voice plan %s not marked: %s", plan_id, type(e).__name__)
     await _plan_show(application, ask, executed, job.line_id if claimed else None)
     return None
 
@@ -1851,16 +1898,21 @@ async def _sweep_plans(application: Application) -> None:
         before = datetime.now(UTC) - capture.STUCK_AFTER
         with SessionLocal() as db:
             stuck = [
-                (p.id, p.chat_id, p.message_id, p.line_message_id)
+                (p.id, p.chat_id, p.message_id, p.line_message_id, p.kind)
                 for p in crud_message_plan.stuck(db, before)
                 if p.id not in _live_plans
             ]
     except Exception as e:
         logger.error("Stuck plans not read: %s", type(e).__name__)
         return
-    for plan_id, chat_id, message_id, line_id in stuck:
+    for plan_id, chat_id, message_id, line_id, kind in stuck:
         try:
             with SessionLocal() as db:
+                if kind == "voice":
+                    # A restart lost it, and the voice's own meal is read again as
+                    # food (_replay_pending): a 🔁 here would write it twice.
+                    plan_service.fall_back(db, plan_id)
+                    continue
                 line = plan_service.fail(db, plan_id)
             if line is not None:
                 await _put(application.bot, chat_id, message_id, line_id, line)

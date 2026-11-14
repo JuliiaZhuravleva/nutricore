@@ -143,6 +143,12 @@ def test_a_dish_by_number_and_name_is_found():
     assert not checked.refused
 
 
+def test_an_exact_name_beats_a_number_that_fits_by_prefix():
+    book = _book(("сырники",), ("сыр",))
+    checked = check(grammar.parse('hide #1 "сыр"'), "убери сыр из блюд", book)
+    assert [(a.verb, a.ids) for a in checked.acts] == [("hide", (102,))]
+
+
 def test_a_number_beyond_the_list_or_another_name_is_refused():
     book = _book(("гречка",))
     for line in ('star #9 "пицца"', 'star "пицца"'):
@@ -212,6 +218,25 @@ def test_the_same_log_at_two_is_yesterday():
     assert {t.moment.astimezone(ZONE).day for t in times} == {25}
 
 
+@pytest.mark.parametrize(
+    "hour, minute, spans",
+    [
+        (12, 30, ["на завтрак каша", "на обед суп"]),
+        (19, 30, ["на обед суп", "на ужин паста"]),
+        (19, 0, ["утром каша", "вечером паста"]),
+    ],
+)
+def test_a_meal_name_just_ahead_keeps_today(hour, minute, spans):
+    first, second = part_times(spans, _at(hour, minute), ZONE)
+    assert {t.moment.astimezone(ZONE).day for t in (first, second)} == {26}
+    assert first.precision == "approx" and second.precision == "day_only"
+
+
+def test_an_exact_clock_ahead_still_means_yesterday():
+    times = part_times(["в 9:00 каша", "в 13:00 суп"], _at(12, 30), ZONE)
+    assert {t.moment.astimezone(ZONE).day for t in times} == {25}
+
+
 def test_yesterday_said_outright_is_yesterday():
     spans = ["вчера утром каша", "вечером суп"]
     times = part_times(spans, _at(22), ZONE)
@@ -264,3 +289,67 @@ def test_wants_plan_meals_is_r0s_own_rule():
     for text in (DAY, "утром суп, хлеб", "утром суп, в обед", "в 9:00 каша"):
         several = says_several(text, _at(21), ZONE)
         assert (wants_plan(text, _at(21), ZONE) == MEALS) == several, text
+
+
+# --- the one retry (cases seen on the real model, 2026-11-14) ------------------------
+
+
+def _asked(monkeypatch, *answers) -> list:
+    """Fake planner: the given answers in turn; returns the list of prompts sent."""
+    sent, left = [], list(answers)
+
+    async def fake(svc, messages, telegram_id, input_ref):
+        sent.append([m["content"] for m in messages])
+        return {"answer": left.pop(0)}
+
+    monkeypatch.setattr(plan_service, "_ask", fake)
+    return sent
+
+
+def _read(text, want, book):
+    import asyncio
+
+    return asyncio.run(
+        plan_service.read(
+            None, text, want, book, _at(21), telegram_id=None, input_ref="t"
+        )
+    )
+
+
+def test_an_ambiguous_name_is_not_asked_again(monkeypatch):
+    book = _book(("суп куриный",), ("суп грибной",))
+    sent = _asked(monkeypatch, 'hide "суп"', 'hide #1 "суп куриный"\nhide #2 "суп"')
+    checked = _read("убери суп из блюд", DISH, book)
+    assert len(sent) == 1  # the live model hid both soups when asked again
+    assert checked.acts == [] and "подходит несколько" in checked.refused[0].why
+
+
+def test_a_dish_verb_answered_none_is_asked_once_more(monkeypatch):
+    book = _book(("борщ",))
+    sent = _asked(monkeypatch, "none", 'unstar #1 "борщ"')
+    checked = _read("убери борщ из избранного", DISH, book)
+    assert len(sent) == 2 and plan_service.NO_DISH_LINE in sent[1][-1]
+    assert [a.verb for a in checked.acts] == ["unstar"]
+
+
+def test_one_and_the_same_food_is_not_pushed_to_a_dish_line(monkeypatch):
+    sent = _asked(monkeypatch, 'meal "утром и вечером одно и то же — овсянка"')
+    checked = _read("утром и вечером одно и то же — овсянка", DISH, _book(("овсянка",)))
+    assert len(sent) == 1 and checked.single
+
+
+# --- what goes back to today's one-meal way ------------------------------------------
+
+
+def test_food_said_one_and_the_same_goes_back_when_the_planner_says_none():
+    checked = check(grammar.parse("none"), "весь день ел одно и то же", _book())
+    assert plan_service.gives_back(DISH, "весь день ел одно и то же", checked)
+    # a real dish verb answered none is not food: it gets «Не нашлось блюда»
+    assert not plan_service.gives_back(DISH, "убери пиццу из блюд", checked)
+
+
+def test_a_dish_message_with_garbled_dish_lines_is_a_failure_not_a_meal():
+    parsed = grammar.parse('meal "суп"\nstar')
+    checked = check(parsed, "суп, и добавь гречку в избранное", _book(("гречка",)))
+    assert checked.bad == 1 and plan_service.unreadable(DISH, checked)
+    assert not plan_service.unreadable(MEALS, checked)

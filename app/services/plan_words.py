@@ -36,6 +36,15 @@ def has_dish_verb(text: Optional[str]) -> bool:
     return bool(text) and DISH_VERBS.search(plain(text)) is not None
 
 
+_FOOD_SAME = re.compile(r"(?<!\w)одно\s+и\s+то\s+же(?!\w)")
+
+
+def asks_dish_change(text: Optional[str]) -> bool:
+    """A dish verb that cannot be about food: «одно и то же» alone may be («ел одно и
+    то же весь день»)."""
+    return bool(text) and has_dish_verb(_FOOD_SAME.sub(" ", plain(text)))
+
+
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     """``DISH`` when the words change dishes, ``MEALS`` when they are several meals by
     R0's own rule, else None. A question is asked, not done."""

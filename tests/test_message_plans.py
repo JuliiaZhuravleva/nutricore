@@ -415,6 +415,93 @@ def test_a_plan_lost_in_a_restart_gets_its_failure_line(db, owner, reader, clock
     assert shown["message_id"] == 777 and shown["text"].startswith(capture.PLAN_FAILED)
 
 
+def _stuck(db, owner, kind: str) -> int:
+    long_ago = NOW - capture.STUCK_AFTER - timedelta(minutes=1)
+    return crud_message_plan.open(
+        db,
+        user_id=owner.id,
+        chat_id=CHAT,
+        message_id=1,
+        kind=kind,
+        text=DAY,
+        sent_at=long_ago,
+        want="meals",
+        line_message_id=777,
+        created_at=long_ago,
+    ).id
+
+
+def _swept() -> Wire:
+    box = {}
+
+    async def steps(application, wire):
+        box["wire"] = wire
+        await tg._sweep_plans(application)
+
+    asyncio.run(_with_app(steps))
+    return box["wire"]
+
+
+def test_a_voice_plan_lost_in_a_restart_is_given_back_quietly(db, owner, reader, clock):
+    # The voice's own meal is read again as food after a restart: a 🔁 here would
+    # write the same food twice.
+    _stuck(db, owner, "voice")
+    wire = _swept()
+    assert _plan(db).status == crud_message_plan.SINGLE
+    assert wire.seen() == []
+
+
+def test_an_ended_plan_is_not_ended_again(db, owner, reader, clock):
+    reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
+    run(said(text(DAY)))
+    plan = _plan(db)
+    assert plan.status == crud_message_plan.DONE
+    assert plan_service.fail(db, plan.id) is None
+    db.expire_all()
+    assert _plan(db).status == crud_message_plan.DONE
+
+
+def test_a_crash_after_the_commit_still_answers_the_line(
+    db, owner, reader, clock, monkeypatch
+):
+    def broken(*args, **kwargs):
+        raise RuntimeError("after the commit")
+
+    monkeypatch.setattr(capture, "parts_shown", broken)
+    reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
+    wire = run(said(text(DAY)))
+    assert len(_meals(db)) == 2  # written, then the showing broke
+    assert wire.line(0)[-1] == capture.PLAN_ANSWER_LOST
+
+
+def test_food_said_one_and_the_same_is_a_meal_when_the_planner_says_none(
+    db, owner, reader, clock
+):
+    reader.plan = "none"
+    wire = run(said(text("весь день ел одно и то же — гречку с курицей")))
+    assert len(_meals(db)) == 1
+    assert plan_service.NOTHING_LINE not in wire.seen()
+    assert _plan(db).status == crud_message_plan.SINGLE
+
+
+def test_a_line_that_cannot_be_edited_goes_out_as_a_reply():
+    from telegram.error import BadRequest
+
+    calls = []
+
+    class Bot:
+        async def edit_message_text(self, *args, **kwargs):
+            calls.append("edit")
+            raise BadRequest("Message to edit not found")
+
+        async def send_message(self, *args, **kwargs):
+            calls.append("send")
+            return SimpleNamespace(message_id=55)
+
+    put = tg._put(Bot(), CHAT, 1, 777, capture.Line("текст"))
+    assert asyncio.run(put) == 55 and calls == ["edit", "send"]
+
+
 @pytest.mark.parametrize("data", ["pl:u:1", "pl:r:1", "pl:x:1", "pl:u:abc"])
 def test_callback_data_is_short_and_a_strange_one_moves_nothing(db, owner, data):
     assert len(f"pl:u:{2**31}".encode()) <= 64

@@ -263,6 +263,18 @@ def _bare_days(text: str) -> str:
     return " ".join(left.split()).strip(" ,.;:—-")
 
 
+# A meal's name or a part of the day is a guess at the clock: lunch said at 12:30, or
+# dinner at 19:30, is today's, with its clock not yet passed. Only a guess this far
+# ahead says the log is yesterday's («…, вечером сырники» at 14:00).
+_APPROX_SLACK = timedelta(hours=3)
+
+
+def _ahead(clock, precision: str, local: datetime) -> bool:
+    at = datetime.combine(local.date(), clock)
+    now = local.replace(tzinfo=None)
+    return at > (now + _APPROX_SLACK if precision == APPROX else now)
+
+
 def part_times(spans: list, sent: datetime, zone, reminder_day=None) -> list:
     """A ``SaidTime`` for each part of one message (several meals), in order.
 
@@ -284,8 +296,11 @@ def part_times(spans: list, sent: datetime, zone, reminder_day=None) -> list:
     if named is not None:
         day = named
     else:
-        clocks = [c[0] for c in found if c[0] is not None and c[4] is None]
-        ahead = any(clock > local.time() for clock in clocks)
+        ahead = any(
+            _ahead(clock, precision, local)
+            for clock, precision, _, _, moment in found
+            if clock is not None and moment is None
+        )
         day = local.date() - timedelta(days=1) if ahead else local.date()
     out = []
     for clock, precision, phrase, rest, moment in found:

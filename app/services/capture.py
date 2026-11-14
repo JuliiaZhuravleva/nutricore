@@ -123,6 +123,10 @@ STILL_READING = "Ещё разбираю прошлое сообщение — �
 # A message read as several actions is not read again when edited (decision 11).
 M11_PLANNED = "Сообщение уже разобрано: поправь нужную запись кнопкой ✏️ под ней."
 PLAN_FAILED = "Не получилось разобрать сообщение."
+PLAN_ANSWER_LOST = (
+    "Ответ на это сообщение не дошёл. Загляни в дневник: если записи нет — пришли "
+    "ещё раз."
+)
 PLAN_RETRY = "🔁 Ещё раз"
 M4C_DRAFT_HINT = (
     "Голосовые пока в пробном режиме. Что услышано, видно по кнопке «🎙 Текст». "
@@ -2676,6 +2680,7 @@ def edited(db, came: Incoming) -> Optional[Line]:
             MealSource.chat_id == came.chat_id,
             MealSource.message_id == came.message_id,
             MealSource.supersedes_id.is_(None),
+            MealSource.part == 0,  # a planned message's parts are not edited
         )
         .order_by(MealSource.id)
         .limit(1)
