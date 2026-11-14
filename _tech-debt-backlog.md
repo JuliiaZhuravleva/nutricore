@@ -380,3 +380,15 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/multi-action (review)
   - **Created:** 2026-11-14
+- [ ] **TD-273**: `plan_service` reaches into private capture helpers (`capture._user`, `_replied_meal`, `_heard_came`) and owns the plan row's state moves (`_ended`, `set_line`, `shown`, `again`, `nothing`, `finish`) that belong in `crud_message_plan`; it also builds Telegram markup (`answer_markup`) and lines. Make the capture helpers public, move the state moves to the CRUD, the markup to a `plan_screen`.
+  - **Priority:** Low
+  - **Source:** feat/multi-action-plan (review round 2, arch-monitor 80–90)
+  - **Created:** 2026-11-14
+- [ ] **TD-274**: A failed plan whose line could not be shown (Telegram down for both the edit and the send) stays FAILED with «читаю…» and no 🔁: the sweep never revisits FAILED rows. Needs two outages in a row; a retry of the owed line would close it.
+  - **Priority:** Low
+  - **Source:** feat/multi-action-plan (review round 2, silent-failure N4)
+  - **Created:** 2026-11-14
+- [ ] **TD-275**: If `plan_service.shown` fails after the lines went out (a database blink), the owed-plan sweep later puts «Ответ не дошёл» over meal 1's line, which by then holds its result. Tell the two apart by the line's meal mapping before overwriting.
+  - **Priority:** Low
+  - **Source:** feat/multi-action-plan (round-2 fix, own note)
+  - **Created:** 2026-11-14
