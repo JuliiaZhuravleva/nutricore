@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from app.services.meal_words import clauses, says_several
+from app.services.meal_words import says_several
 
 DISH, MEALS = "dish", "meals"
 
@@ -53,12 +53,25 @@ _DAY_WORDS = re.compile(
 
 
 def says_day(text: Optional[str]) -> bool:
-    """«за день: овсянка, суп», «вчера ела: суп, сырники»: a day's words and two or
-    more clauses (a newline parts them too). One clause is one meal."""
-    if not text or text.rstrip().endswith("?") or not _DAY_WORDS.search(plain(text)):
+    """«за день: овсянка, суп», «вчера ела: суп, сырники»: a day's words and a list's
+    shape. Missing a split keeps one meal, which is safe; parting one meal is not, so
+    only list separators count (never «и», never a sentence end): a colon right after
+    the day words with two items after it, or three items parted by «,» «;» (and a line
+    break, when there are three lines)."""
+    if not text or text.rstrip().endswith("?"):
         return False
-    pieces = [c for line in text.splitlines() for c in clauses(line) if c.strip()]
-    return len(pieces) >= 2
+    plained = plain(text)
+    found = _DAY_WORDS.search(plained)
+    if found is None:
+        return False
+    after = plained[found.end() :]
+    if after.lstrip(" \t").startswith(":"):
+        edges, body, least = r"[,;\n]", after.lstrip(" \t")[1:], 2
+    else:
+        lines = [line for line in plained.splitlines() if line.strip()]
+        edges = r"[,;\n]" if len(lines) >= 3 else r"[,;]"
+        body, least = plained, 3
+    return len([item for item in re.split(edges, body) if item.strip()]) >= least
 
 
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:

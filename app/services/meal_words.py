@@ -333,7 +333,10 @@ def part_times(
     part's words without its time words. ``said_in``: the whole message, whose day word
     counts when the parts dropped it («вчера ела: суп, сырники»)."""
     local = sent.astimezone(zone)
-    whole = " ".join([*spans, said_in or ""])
+    whole = " ".join(spans)
+    # The message's own day word, unless it names both days: then the parts keep theirs.
+    if said_in and not (_YESTERDAY.search(said_in) and _TODAY.search(said_in)):
+        whole = f"{whole} {said_in}"
     found = [_part_clock(span, local, zone) for span in spans]
     named = None
     if reminder_day is not None:

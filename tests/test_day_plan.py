@@ -84,7 +84,20 @@ def test_a_part_with_its_own_time_keeps_it(db, owner, reader, clock):
 
 
 @pytest.mark.parametrize(
-    "message", ["за день съела много", "что я ела за день?", "сегодня ела суп"]
+    "message",
+    [
+        "за день съела много",
+        "что я ела за день?",
+        "сегодня ела суп",
+        "сегодня ела суп и хлеб",
+        "вчера ели с мамой пиццу, вкусно",
+        "за день выпила 2 литра воды, устала",
+        "за день ела яблоко и грушу",
+        "сегодня ела борщ\nс хлебом",
+        "вчера ела суп, сырники",
+        "за сегодня: кофе",
+        "сегодня ели суп и сырники",
+    ],
 )
 def test_the_trigger_does_not_fire_on_one_clause_or_a_question(message):
     assert plan_words.wants_plan(message, SENT, ZONE) is None
@@ -96,8 +109,10 @@ def test_the_trigger_does_not_fire_on_one_clause_or_a_question(message):
         "за день: овсянка, суп",
         "За весь день\nовсянка\nсуп",
         "вчера ела: суп, сырники",
-        "сегодня ели суп и сырники",
         "за сегодня: каша; суп",
+        "за весь день: кофе, чай, булка",
+        "вчера ела суп, сырники, чай",
+        "сегодня ела суп\nсырники\nчай",
     ],
 )
 def test_the_trigger_fires_on_clauses_and_lines(message):
@@ -120,3 +135,24 @@ def test_a_word_of_the_trigger_is_not_named_as_missed():
     message = "за весь день: суп, сырники"
     checked = check(grammar.parse('meal "суп"\nmeal "сырники"'), message, Book())
     assert checked.missed == []
+
+
+def test_a_message_naming_both_days_gives_no_day_to_the_parts():
+    from app.services.meal_words import part_times
+
+    got = part_times(
+        ["суп", "сырники"], SENT, ZONE, said_in="вчера суп, сегодня сырники"
+    )
+    assert {t.moment.astimezone(ZONE).date() for t in got} == {
+        SENT.astimezone(ZONE).date()
+    }
+
+
+def test_a_reminders_day_beats_the_messages_yesterday():
+    from app.services.meal_words import part_times
+
+    day = (SENT - timedelta(days=3)).astimezone(ZONE).date()
+    got = part_times(
+        ["суп", "сырники"], SENT, ZONE, day, said_in="вчера ела: суп, сырники"
+    )
+    assert {t.moment.astimezone(ZONE).date() for t in got} == {day}
