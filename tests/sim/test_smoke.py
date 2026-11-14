@@ -66,7 +66,7 @@ def test_a_dish_starred_and_logged_from_the_star_list(tmp_path):
 
     out = _sim(w, "say", "гречка с курицей и салат")
     assert "> #" in out and "you: гречка с курицей и салат" in out
-    assert "Записано: гречка с курицей и салат." in out
+    assert "Записан обед: гречка с курицей и салат." in out
     assert "[✏️ Исправить]" in out
 
     out = _sim(w, "tap", "🍲 Блюда")  # a reply-keyboard key
@@ -115,9 +115,9 @@ def test_a_zone_voice_photo_and_clock(tmp_path):
     _sim(w, "new", "Julia", "--owner", "--zone", "Europe/Berlin")
     assert "Europe/Berlin" in _sim(w, "clock", "21:00")
     out = _sim(w, "voice", "борщ")
-    assert "🎤 voice: борщ" in out and "Записано: борщ." in out
+    assert "🎤 voice: борщ" in out and "Записан ужин: борщ." in out
     out = _sim(w, "photo", "омлет и кофе")
-    assert "Записано: омлет и кофе." in out
+    assert "Записан ужин: омлет и кофе." in out
     out = _sim(w, "day")
     assert "21:00  борщ" in out and "омлет, кофе" in out, out
     out = _sim(w, "clock", "2026-11-01T10:00", code=1)
@@ -152,17 +152,17 @@ def test_answers_to_the_evening_reminder_f4_f3_and_d1(tmp_path):
     assert "Записано на пт 6 ноября, без времени: суп." in _sim(w, "say", "суп")
     _sim(w, "advance", "3m")
     out = _sim(w, "say", "а ещё днём был йогурт")
-    assert "Записано на пт 6 ноября, ≈ 14:00: йогурт." in out, out
+    assert "Записан обед на пт 6 ноября, ≈ 14:00: йогурт." in out, out
     # F3: «больше ничего» answers and closes it, with nothing read
     _sim(w, "advance", "2m")
     out = _sim(w, "say", "больше ничего")
     assert (
         f"~ #{reminder} bot (silent, edited):\n  🔔 Еда за сегодня\n  ✓ Принято." in out
     )
-    assert "Записано" not in out
+    assert "Записан" not in out  # neither «Записано» nor «Записан <name>»
     # D1's photo: the window closed with «ничего», so it is now, exact
     out = _sim(w, "photo", "омлет")
-    assert "Записано: омлет." in out, out
+    assert "Записан ужин: омлет." in out, out
 
     out = _sim(w, "day")
     assert "4 records" in out, out
@@ -186,12 +186,12 @@ def test_reply_tap_on_a_message_and_numbers_per_chat(tmp_path):
     assert "> #1 you: /start" in out  # every chat counts from #1, as in Telegram
     _sim(w, "tap", "Всё")
     out = _sim(w, "say", "гречка")
-    logged = _number(out, "Записано: гречка.")
+    logged = _number(out, "Записан обед: гречка.")
 
     out = _sim(w, "reply", str(logged), "ещё хлеб")
     assert f"you ↩ #{logged}: ещё хлеб" in out
     assert "Добавлено к приёму" in out
-    assert f"~ #{logged} bot" in out and "Записано: гречка и хлеб." in out
+    assert f"~ #{logged} bot" in out and "Записан обед: гречка и хлеб." in out
 
     out = _sim(w, "tap", "Время", "--msg", str(logged))
     assert f"> tap [🕐 Время] on #{logged}" in out
@@ -226,7 +226,7 @@ def test_a_deleted_message_is_marked_and_loses_its_buttons(tmp_path):
     """What R1/R4 read: a new reminder deletes the last one."""
     w = tmp_path / "world"
     _sim(w, "new", "Julia", "--owner")
-    logged = _number(_sim(w, "say", "суп"), "Записано: суп.")
+    logged = _number(_sim(w, "say", "суп"), "Записан обед: суп.")
 
     done = _run([sys.executable, "-c", _DELETE, str(w), str(logged)])
     out = done.stdout + done.stderr
@@ -477,7 +477,7 @@ def test_sim_sh_usage_names_every_command():
         a for a in _parser()._actions if isinstance(a, argparse._SubParsersAction)
     ]
     commands = sub.choices
-    assert len(commands) == 12
+    assert len(commands) == 13
     for name in commands:
         assert f"#   {name} " in script, name
     done = subprocess.run(
@@ -593,3 +593,40 @@ def test_tap_key_sends_the_keyboard_key_past_a_stale_inline_button(
         cli.cmd_tap(state, argparse.Namespace(label="Удалить", msg=None, key=True))
     with pytest.raises(SystemExit, match="--msg is inline"):
         cli.cmd_tap(state, argparse.Namespace(label="Избранное", msg=1, key=True))
+
+
+def test_a_queued_planner_answer_records_two_meals(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    out = _sim(w, "plan", 'meal "каша"\\nmeal "суп"')
+    assert "1 answer(s) queued" in out
+    out = _sim(w, "say", "на завтрак каша, в обед суп")
+    assert "planner \u2190 " in out and "на завтрак каша" in out
+    assert 'planner \u2192 meal "каша"\nmeal "суп"' in out
+    assert "(none queued)" not in out and "system" not in out.lower()
+    assert "Now:" not in out  # the preview shows the person's words, not the header
+    # the one-time hint closes the answer: under the last part, once
+    assert out.count("На этом всё") == 1
+    assert out.index("без времени: суп.") < out.index("На этом всё")
+    day = _sim(w, "day")
+    assert "2 records" in day and "каша" in day and "суп" in day
+    # the answer was consumed: the next message meets an empty queue
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == []
+
+
+def test_answers_are_taken_first_in_first_out(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    _sim(w, "plan", "garbage line")
+    _sim(w, "plan", 'meal "чай"')
+    first = _sim(w, "say", "на завтрак чай, в обед суп")
+    assert "planner \u2192 garbage line" in first
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == ['meal "чай"']
+
+
+def test_an_empty_planner_queue_behaves_as_before(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    out = _sim(w, "say", "на завтрак каша, в обед суп")
+    assert "planner \u2192 (none queued)" in out
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == []

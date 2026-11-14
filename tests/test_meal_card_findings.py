@@ -226,7 +226,7 @@ def test_a_second_tap_on_undo_after_a_delete_opens_the_restored_card(db, owner):
     meal, _item = _one(db, owner, "рис", 300.0, None)
     undo = _button(_tap(db, f"ml:d:{meal.id}:r"), UNDO)
     _tap(db, undo)
-    assert _tap(db, undo).text.startswith("<b>🍽 Приём")
+    assert _tap(db, undo).text.startswith("<b>🍽 Обед")
 
 
 def test_a_deleted_meal_with_no_delete_event_is_todays_card(db, owner):

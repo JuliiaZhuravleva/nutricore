@@ -161,7 +161,7 @@ def test_a_moved_meal_keeps_its_sent_line_true(db, owner):
     _sat(db, _button(_sat(db, f"ml:t:{meal.id}:t"), "−1 ч"))
     card = _sat(db, f"ml:o:{meal.id}:r")
     assert "<i>Отправлено: пн 26 октября, 13:20.</i>" in card.text
-    assert "<b>🍽 Приём, пн 26 октября, 12:20</b>" in card.text
+    assert "<b>🍽 Обед, пн 26 октября, 12:20</b>" in card.text
 
 
 def test_an_hour_back_across_midnight_names_the_new_day(db, owner):

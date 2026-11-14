@@ -93,9 +93,9 @@ from app.services.meal_words import STOP_WORDS  # noqa: F401 (the name tests rea
 from app.services.meal_words import _TODAY, _YESTERDAY, ADD, REMOVE, REPEAT, SaidTime
 from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
-from app.services.meal_words import part_times
+from app.services.meal_words import message_name, part_times, said_name
 from app.services.meal_words import says_no as _says_no
-from app.services.meal_words import says_several, time_words
+from app.services.meal_words import says_several, time_words, without_name
 from app.services.settings_screen import draft_on, user_zone
 
 logger = logging.getLogger(__name__)
@@ -1282,11 +1282,25 @@ def route_text(
         route = _on_reply(db, came, user, target, heard=heard is not None)
         if route is not None:
             return route
+    if plan and not as_food and _routine_words_in_plan(db, came, user, text):
+        # D2: «вес 72,4, зарядку сделала, на завтрак каша»: a weight or a tick next to
+        # other content is the planner's, ahead of the whole-message weight and tick.
+        return Route(PLAN, plan=plan_words.MEALS)
     if weight_screen.KG_PATTERN.match(text):
+        return Route(WEIGHT)
+    said_kg = weight_screen.parse_words(text)
+    if said_kg is not None:  # «вес 72,4», «вчера вешу 72 кг»
+        if said_kg[0] is None:
+            return Route(LINE, Line(weight_screen.refusal(text)))
         return Route(WEIGHT)
     name = stats_screen.tick_by_name(db, came.telegram_id, text)
     if name is not None:
         return Route(TICK, tick=name)
+    ticked = stats_screen.tick_by_words(db, came.telegram_id, text)
+    if ticked is not None:  # «отметь зарядку», «зарядку сделала», with «вчера»
+        if ticked.refusal is not None:
+            return Route(LINE, Line(ticked.refusal))
+        return Route(TICK, tick=ticked.name)
 
     if _COLON_CLOCK.fullmatch(text):
         parsed = _clock_in(text)
@@ -1344,9 +1358,30 @@ def route_text(
     if text.rstrip().endswith("?"):
         source = _keep(db, came, user)
         return Route(LINE, Line(M3B_QUESTION, _it_is_food(source.id)))
-    if plan and _several(came, user, text):
+    if plan and (_several(came, user, text) or _day_list(came, text)):
         return Route(PLAN, plan=plan_words.MEALS)
     return Route(NEW_MEAL)
+
+
+def _routine_words_in_plan(db, came: Incoming, user: User, text: str) -> bool:
+    """A weight clause, or a tick clause naming a routine of that day (or the explicit
+    «отметь»), with another clause beside it. «омлет сделала, вкусно» is food."""
+    if came.forward_date is not None or len(plan_words._clauses(text)) < 2:
+        return False
+    if "?" in text:  # «вес 72,4, это нормально?» asks, it does not tell
+        return False
+    if plan_words.weight_clause(text):
+        return True
+    ticks = plan_words.tick_clauses(text)
+    if any(explicit for _said, explicit in ticks):
+        return True
+    if not ticks:
+        return False
+    day = stats_screen.local_time(datetime.now(UTC), user_zone(user)).date()
+    if plan_words.ticks_yesterday(text):
+        day -= timedelta(days=1)
+    due, _done = stats_screen._day_ticks(db, user, day)
+    return any(stats_screen._routine_matches(due, said) for said, _e in ticks)
 
 
 def _wants_dish_plan(came: Incoming) -> bool:
@@ -1355,6 +1390,12 @@ def _wants_dish_plan(came: Incoming) -> bool:
     return plan_words.wants_plan(came.text, _aware(came.sent_at), UTC) == (
         plan_words.DISH
     )
+
+
+def _day_list(came: Incoming, text: Optional[str]) -> bool:
+    """D1: «за день: …» lists a day's meals, with or without times. A forward's
+    time is its own, as for ``_several``."""
+    return came.forward_date is None and plan_words.says_day(text)
 
 
 def _several(came: Incoming, user: User, text: Optional[str]) -> bool:
@@ -1944,10 +1985,16 @@ def _born_exact(
     said=None,
     on_day=None,
     recall=None,
+    named: Optional[str] = None,
 ) -> Born:
     columns = _time_columns(came.sent_at, came.forward_date, said, on_day, recall)
     meal = meal_items.save_exact(
-        db, user.id, dishes, meal_time=columns["meal_time"], draft=draft_on(user)
+        db,
+        user.id,
+        dishes,
+        meal_time=columns["meal_time"],
+        meal_type=named,
+        draft=draft_on(user),
     )
     meal.sent_at = came.sent_at
     meal.time_source = columns["time_source"]
@@ -1996,12 +2043,17 @@ def born(
     ``day``: the day it was asked for (O1b); time words in it are still no dish."""
     user = _user(db, came)
     told = words if words is not None else came.text
+    # D4: a message of several timed meals that stays one (the planner failed) takes
+    # no one part's name.
+    named = message_name(told, _aware(came.sent_at), user_zone(user))
     send = None if day else reminders.bound_send(db, user, came)
     said = _said(
         told, came.kind, came.sent_at, came.forward_date, user, send, came.reply_to
     )
     recall = reminders.recall_time(send, came, user_zone(user)) if send else None
     told = said.rest if said and (said.rest or not day) else told
+    if named and told:
+        told = without_name(told) or told
     on_day = meal_card.noon_of(day, user_zone(user)) if day else None
     try:
         joined = _join_album(db, came, user, said)
@@ -2010,7 +2062,9 @@ def born(
         if came.kind == "text":
             dishes = meal_items.exact_match(db, user.id, told)
             if dishes:
-                exact = _born_exact(db, came, user, dishes, note, said, on_day, recall)
+                exact = _born_exact(
+                    db, came, user, dishes, note, said, on_day, recall, named
+                )
                 if send is not None:
                     reminders.answered(db, user, send, came)
                 return exact
@@ -2021,6 +2075,7 @@ def born(
                 sent_at=came.sent_at,
                 photos=[] if reading_text or came.kind == "voice" else [came.file_id],
                 numbers_basis="none",
+                meal_type=named,
                 **_time_columns(came.sent_at, came.forward_date, said, on_day, recall),
             ),
             user.id,
@@ -2110,16 +2165,25 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
     send = reminders.answering(db, user, came)
     zone = user_zone(user)
     said = part_times(
-        spans, _aware(came.sent_at), zone, send.local_day if send else None
+        spans,
+        _aware(came.sent_at),
+        zone,
+        send.local_day if send else None,
+        # A day's list («вчера ела: суп, сырники») gives its day to every part; a
+        # «вчера» of a weight or a tick beside a meal («вес вчера 72,4, на завтрак
+        # овсянка») is not the meal's.
+        said_in=came.text if plan_words.says_day(came.text) else None,
     )
     meals = []
     for number, (span, time) in enumerate(zip(spans, said), start=1):
+        words = time.rest or span
         meal = crud_meal.build(
             MealCreate(
-                description=time.rest or span,
+                description=without_name(words) or words,
                 sent_at=came.sent_at,
                 photos=[],
                 numbers_basis="none",
+                meal_type=said_name(span),
                 **_time_columns(came.sent_at, None, time),
             ),
             user.id,
@@ -2148,11 +2212,11 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
 
 def parts_shown(db, came: Incoming, user: User, meals: list) -> list:
     """After the commit: each part's first line and its read, as ``born`` gives one
-    meal's. The one-time hint goes under the first part only."""
+    meal's. The one-time hint («На этом всё») goes under the last part only."""
     out = []
     for number, (meal, source) in enumerate(meals):
         db.refresh(meal)
-        hint = _take_hint(db, user) if number == 0 else False
+        hint = _take_hint(db, user) if number == len(meals) - 1 else False
         words = _record_text(db, meal, user, hint=hint, reading=True)
         markup = _first_markup(db, meal, meal_card.join_row(db, meal))
         first = Line(words, markup, meal_id=meal.id)
@@ -3261,6 +3325,11 @@ def spoken_words(db, job: Read, transcript: str) -> str:
     said = _said(
         transcript, TEXT, source.sent_at, source.forward_date, user, send, reply_to
     )
+    if meal.meal_type is None:
+        # D4: «на обед…» said in a voice, by the same rule as typed words.
+        meal.meal_type = message_name(
+            transcript, _aware(source.sent_at), user_zone(user)
+        )
     ahead = said and said.precision != DAY_ONLY and said.moment > _now()
     if said and meal.time_source in ("sent", reminders.SOURCE) and not ahead:
         for column, value in _time_columns(source.sent_at, None, said).items():

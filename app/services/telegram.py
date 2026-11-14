@@ -1968,7 +1968,7 @@ async def _sweep_plans(application: Application) -> None:
 
 
 async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """``pl:u:<id>`` ↩️ Вернуть всё; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan."""
+    """``pl:u:<id>`` ↩️ Отменить; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan."""
     query, user = update.callback_query, update.effective_user
     match = re.fullmatch(r"pl:([ur]):(\d{1,10})", query.data or "")
     if match is None or user is None:

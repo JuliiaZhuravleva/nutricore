@@ -181,7 +181,7 @@ def test_n1_is_the_spec_card(db, owner):
     screen = _tap(db, f"ml:o:{meal.id}:r")
     assert screen.text == "\n".join(
         [
-            f"<b>🍽 Приём, {WHEN}</b>",
+            f"<b>🍽 Обед, {WHEN}</b>",
             "рис",
             "курица · 2 порции",
             "овощи · ½ порции",
@@ -281,20 +281,21 @@ def test_a_factor_of_one_writes_no_quantity_and_words_are_the_persons(db, owner)
 
 
 @pytest.mark.parametrize(
-    "precision, shown",
+    "precision, name, shown",
     [
-        ("exact", WHEN),
-        ("approx", "пн 26 октября, ≈ 13:20"),
-        ("day_only", "пн 26 октября, без времени"),
+        ("exact", "Обед", WHEN),
+        ("approx", "Обед", "пн 26 октября, ≈ 13:20"),
+        # D4: no clock, no name by the hour.
+        ("day_only", "Приём", "пн 26 октября, без времени"),
     ],
 )
 def test_the_title_always_carries_the_day_and_how_sure_the_time_is(
-    db, owner, precision, shown
+    db, owner, precision, name, shown
 ):
     meal, _item = _one(db, owner)
     meal.time_precision = precision
     db.commit()
-    assert _text_lines(_tap(db, f"ml:o:{meal.id}:r"))[0] == f"<b>🍽 Приём, {shown}</b>"
+    assert _text_lines(_tap(db, f"ml:o:{meal.id}:r"))[0] == f"<b>🍽 {name}, {shown}</b>"
 
 
 def test_sent_line_only_past_a_quarter_of_an_hour(db, owner):
@@ -361,7 +362,7 @@ def test_n1b_legacy_meal_is_not_recomputed_on_open(db, owner):
     screen = _tap(db, f"ml:o:{meal.id}:t")
     assert screen.text == "\n".join(
         [
-            f"<b>🍽 Приём, {WHEN}</b>",
+            f"<b>🍽 Обед, {WHEN}</b>",
             "суп с курицей и хлебом",
             "Цифры на всю запись, не по блюдам.",
         ]
@@ -395,7 +396,7 @@ def test_n1c_plate_says_so_and_chips_lead_to_n2a(db, owner):
     screen = _tap(db, f"ml:o:{meal.id}:r")
     assert screen.text == "\n".join(
         [
-            f"<b>🍽 Приём, {WHEN}</b>",
+            f"<b>🍽 Обед, {WHEN}</b>",
             "рис",
             "курица",
             "овощи",
@@ -432,7 +433,7 @@ def test_n1d_unread_says_it_is_in_the_diary_with_what(db, owner):
     screen = _tap(db, f"ml:o:{meal.id}:r")
     assert screen.text == "\n".join(
         [
-            f"<b>🍽 Приём, {WHEN}</b>",
+            f"<b>🍽 Обед, {WHEN}</b>",
             "Фото сохранено, распознать еду пока не вышло.",
             "В дневнике запись с этим фото.",
         ]
@@ -451,7 +452,7 @@ def test_n1h_keeps_the_rows_that_stay_and_hides_row_three(db, owner):
     meal.sent_at = EATEN + timedelta(hours=9)
     db.commit()
     screen = _tap(db, f"ml:o:{meal.id}:r")
-    assert screen.text == f"<b>🍽 Приём, {WHEN}</b>\nчипсы, три пачки"
+    assert screen.text == f"<b>🍽 Обед, {WHEN}</b>\nчипсы, три пачки"
     assert _rows(screen) == [
         ["чипсы"],
         ["➕ Блюдо", "🕐 Время", "🗑 Удалить"],
@@ -533,12 +534,12 @@ def test_the_back_row_follows_the_origin_through_every_nested_tap(
 def test_the_line_is_what_the_reply_says_with_its_two_buttons(db, owner):
     meal = _meal(db, owner, ["рис", "курица", "овощи"])
     screen = _tap(db, f"ml:r:{meal.id}")
-    assert screen.text == "Записано: рис, курица и овощи."
+    assert screen.text == "Записан обед: рис, курица и овощи."
     assert _rows(screen) == [["✏️ Исправить", "🕐 Время"]]
     assert _data(screen) == [[f"ml:o:{meal.id}:r", f"ml:t:{meal.id}:r"]]
     alone, item = _one(db, owner, "сыр")
     screen = _tap(db, f"ml:r:{alone.id}")
-    assert screen.text == "Записано: сыр."
+    assert screen.text == "Записан обед: сыр."
     assert _data(screen)[0][0] == f"ml:i:{item.id}:r"
 
 
@@ -969,7 +970,7 @@ def test_typed_name_adds_a_known_dish_at_its_portion(db, owner):
     assert _ask(db, owner)["kind"] == "dish_add"
     message, bot, consumed = _send("ХЛЕБ")
     assert consumed
-    assert message.replies[0].startswith("<i>✓ Добавлено: хлеб</i>\n\n<b>🍽 Приём")
+    assert message.replies[0].startswith("<i>✓ Добавлено: хлеб</i>\n\n<b>🍽 Обед")
     live = crud_meal_item.live(db, meal.id)
     assert [i.name for i in live] == ["курица", "хлеб"]
     assert live[1].numbers_source == "dish"
@@ -1163,7 +1164,7 @@ def test_pick_adds_at_the_dishs_portion_with_undo_in_the_third_slot(db, owner):
     screen = _tap(db, f"ml:pa:{meal.id}:{bread_item.personal_food_id}:r")
     lines = _text_lines(screen)
     assert lines[0] == "<i>✓ Добавлено: хлеб</i>" and lines[1] == ""
-    assert lines[2].startswith("<b>🍽 Приём")
+    assert lines[2].startswith("<b>🍽 Обед")
     assert _rows(screen)[2] == ["🔢 Цифры", "Ещё ›", "↩️ Вернуть"]
     db.refresh(meal)
     assert meal.calories == 430.0
@@ -1281,7 +1282,7 @@ def test_undo_restores_exactly_a_second_tap_opens_the_card(db, owner):
     again = _tap(db, undo)
     assert _counts(db) == events
     assert "С тех пор" not in again.text
-    assert again.text.startswith("<b>🍽 Приём")
+    assert again.text.startswith("<b>🍽 Обед")
 
 
 def test_the_undo_can_itself_be_undone(db, owner):
@@ -1307,7 +1308,7 @@ def test_undo_guard_refuses_after_a_planted_later_change(db, owner):
     assert _text_lines(screen)[0] == (
         "<i>С тех пор запись менялась, поэтому возврат не применён.</i>"
     )
-    assert screen.text.split("\n\n", 1)[1].startswith("<b>🍽 Приём")
+    assert screen.text.split("\n\n", 1)[1].startswith("<b>🍽 Обед")
     assert _counts(db) == events
     db.refresh(meal)
     assert meal.calories == calories
@@ -1506,7 +1507,7 @@ def test_a_removed_dish_opens_the_card_with_its_notice(db, owner):
     ):
         screen = _tap(db, data)
         assert _text_lines(screen)[0] == DISH_GONE, data
-        assert screen.text.split("\n\n", 1)[1].startswith("<b>🍽 Приём"), data
+        assert screen.text.split("\n\n", 1)[1].startswith("<b>🍽 Обед"), data
     assert meal.id
 
 

@@ -5,7 +5,7 @@
       and [✖ Не присылать по воскресеньям]
     a row's tap → the same message, that row's ✓ flipped; nothing is written
     ✅ → the ticks become the dishes: done, declined or «не вышло», on the same message,
-      [✅ ОК] / [↩️ Вернуть всё] when something was done
+      [✅ ОК] / [↩️ Отменить] when something was done
     ↩️ → every change of the batch taken back, as far as the dishes allow
 
 The ticks travel in the buttons' data (a hex mask of the rows), so a tick costs no
@@ -67,7 +67,7 @@ OFF_LABEL = "✖ Не присылать по воскресеньям"
 ON_LABEL = "🍲 Присылать по воскресеньям"
 OFF_TOAST = "По воскресеньям больше не присылаю"
 ON_TOAST = "По воскресеньям присылаю"
-UNDO_ALL = "↩️ Вернуть всё"
+UNDO_ALL = "↩️ Отменить"
 BACK = "⬅️ 🍲 Блюда"
 NOTHING = "Сейчас предлагать нечего."
 APPLIED = "✓ Применено."
@@ -76,9 +76,10 @@ EXPIRED = "Предложения устарели: им больше недел
 EXPIRED_SAME = " Объединённое само не менялось."
 RETIRED = "Эта подборка закрыта: есть новая."
 CLOSED = "Эта подборка закрыта."
-UNDONE_HEAD = "↩️ Возвращено."
-UNDONE = "↩️ Возвращено: {done} из {total}."
-NOT_BACK = " Не вернулось: {names} — {them} меняли после."
+UNDONE_HEAD = "↩️ Отменено."
+UNDONE = "↩️ Отменено: {done} из {total}."
+UNDONE_NAMED = "↩️ Отменено: {what}."
+NOT_BACK = " Не отменилось: {names} — {them} меняли после."
 STALE_LINE = " — не вышло: блюда изменились после подборки"
 NOT_SENT = (
     "Сообщение с подборкой не дошло, и её объединения отменены. Кроме отмеченных ✓: "
@@ -308,7 +309,7 @@ def roll_back(db, user: User, batch: DishTidyBatch, state: str) -> None:
 
     A merge that would not come apart (its dishes changed since) stays ``applied``,
     and the batch stays open as ``maybe``, blocked or not (a person may unblock):
-    🍲 Блюда → «🍲 Порядок» shows what stayed once, with «↩️ Вернуть всё»
+    🍲 Блюда → «🍲 Порядок» shows what stayed once, with «↩️ Отменить»
     (``left_over``), so no merge is left where nobody can see it."""
     dish_ops.lock_user(db, user)
     result = dish_ops.undo_group(db, user, batch.group_id)

@@ -35,9 +35,9 @@ from tests.test_capture_router import (  # noqa: F401 (fixtures)
 def test_a_typed_meal_says_it_is_counting_until_the_answer(db, owner, reader):
     wire = send(text("суп с хлебом"))
     first = wire.sent()[0]["text"].splitlines()
-    assert first[:2] == ["Записано: суп с хлебом.", M4T_READING]
+    assert first[:2] == ["Записан обед: суп с хлебом.", M4T_READING]
     answer = wire.edits()[-1]["text"]
-    assert answer.startswith("Записано: ")
+    assert answer.startswith("Записан обед: ")
     assert M4T_READING not in answer
     assert _meals(db)[0].reading_status == "read"
 
@@ -85,7 +85,7 @@ def test_back_to_a_read_line_has_no_marker(db, owner, reader):
     meal = _meals(db)[0]
     assert meal.reading_status == "read"
     back = tap(f"ml:r:{meal.id}").edits()[-1]["text"]
-    assert back.startswith("Записано:")
+    assert back.startswith("Записан обед:")
     assert M4T_READING not in back
 
 

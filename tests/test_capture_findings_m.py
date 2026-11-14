@@ -212,7 +212,7 @@ def test_a_read_with_no_food_over_a_join_keeps_the_join(db, owner, reader, clock
     box = _during_read(db, reader, photo(), _says("ещё сыр"))
     assert box.names == {"сыр"}
     assert box.meal.deleted_at is None and box.meal.reading_status == "read"
-    assert box.line_says[-1] == "Записано: сыр."
+    assert box.line_says[-1] == "Записан обед: сыр."
 
 
 def test_silence_in_a_voice_over_a_join_leaves_no_line_on_reading(
@@ -247,7 +247,7 @@ def test_a_further_change_after_the_join_is_not_left_on_reading(
     box = _during_read(db, reader, photo(), act)
     assert box.names == {"сыр"}
     assert ("done", False) in box.applied
-    assert box.line_says[-1].startswith("Записано: сыр")
+    assert box.line_says[-1].startswith("Записан обед: сыр")
 
 
 @pytest.mark.parametrize("first", [photo, lambda: text("тарелка супа")])
@@ -718,7 +718,7 @@ def test_back_to_an_albums_line_keeps_its_count(db, owner, reader):
     album(shot("a"), shot("b"))
     meal = db.scalars(select(Meal)).one()
     back = tap(f"ml:r:{meal.id}").edits()[-1]["text"]
-    assert back.startswith("Записано по 2 фото")
+    assert back.startswith("Записан обед по 2 фото")
 
 
 # --- only an estimate carries ≈ --------------------------------------------------------
@@ -918,7 +918,7 @@ def test_a_slow_telegram_does_not_lose_the_line(db, owner, reader, refuse):
     refuse.method, refuse.left = "editMessageText", 1
     wire = send(photo())
     assert refuse.tried == 1
-    assert wire.edits()[-1]["text"].startswith("Записано")
+    assert wire.edits()[-1]["text"].startswith("Записан обед")
 
 
 @pytest.mark.parametrize(
@@ -937,7 +937,7 @@ def test_a_line_owed_is_shown_by_the_next_sweep(db, owner, reader, refuse, error
     assert not db.get(User, owner.id).settings.get("capture_hint_seen")
     refuse.left = 0
     later = _sweep()
-    assert later.edits()[-1]["text"].startswith("Записано")
+    assert later.edits()[-1]["text"].startswith("Записан обед")
     assert _line_row(db, meal.id).view == "line"
     assert _sweep().edits() == []  # owed once
 
@@ -996,13 +996,13 @@ def test_a_first_line_refused_for_a_moment_still_goes_out(db, owner, reader, ref
     refuse.method, refuse.left = "sendMessage", 1
     wire = send(photo())
     assert wire.sent()[0]["text"] == capture.M1_PENDING
-    assert wire.edits()[-1]["text"].startswith("Записано")
+    assert wire.edits()[-1]["text"].startswith("Записан обед")
 
 
 def test_no_first_line_at_all_and_the_read_still_answers(db, owner, reader, refuse):
     refuse.method, refuse.left = "sendMessage", tg.SHOW_TRIES
     wire = send(photo())
-    assert len(wire.sent()) == 1 and wire.sent()[0]["text"].startswith("Записано")
+    assert len(wire.sent()) == 1 and wire.sent()[0]["text"].startswith("Записан обед")
     meal = db.scalars(select(Meal)).one()
     assert _line_row(db, meal.id).view == "line"
 
@@ -1053,8 +1053,8 @@ def test_a_split_with_no_line_still_answers_each_photo(db, owner, reader, refuse
     refuse.method, refuse.left = "sendMessage", tg.SHOW_TRIES
     wire = tap(f"ml:za:{meal.id}")
     assert refuse.left == 0
-    said = [s["text"] for s in wire.sent() if s["text"].startswith("Записано")]
-    edited_in = [e for e in wire.edits() if e["text"].startswith("Записано")]
+    said = [s["text"] for s in wire.sent() if s["text"].startswith("Записан обед")]
+    edited_in = [e for e in wire.edits() if e["text"].startswith("Записан обед")]
     assert len(said) == 1  # the photo whose line never went out: a message of its own
     assert len(edited_in) >= 1  # the other, on its line
 

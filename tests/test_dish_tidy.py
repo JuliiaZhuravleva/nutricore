@@ -430,7 +430,7 @@ def _assert_left_over_shown_once(db, now):
     assert len(lines) == 1 and lines[0].startswith("✓ ")  # the merge that stayed
     assert _batch(db).state == "applied"
     undo = next(d for d in _callbacks(screen.markup) if d.startswith("dt:u:"))
-    assert _tap(db, undo, now=now).text.splitlines()[1].startswith("↩️ Возвращено")
+    assert _tap(db, undo, now=now).text.splitlines()[1].startswith("↩️ Отменено")
     # Seen once: the next tap runs a fresh pass instead of the same batch again.
     assert _tap(db, "dt:o", now=now).text.splitlines()[1] != screen_mod.NOT_SENT
 
@@ -740,7 +740,7 @@ def test_undo_all_takes_everything_back_and_a_second_tap_writes_nothing(db):
     applied = _tap(db, _apply_data(markup))
     undo = next(d for d in _callbacks(applied.markup) if d.startswith("dt:u:"))
     screen = _tap(db, undo)
-    assert screen.text.splitlines()[1] == "↩️ Возвращено: 3 из 3."
+    assert screen.text.splitlines()[1] == "↩️ Отменено: 3 из 3."
     assert _live(db, k.sauce) and _live(db, k.sauce_too) and _live(db, k.boiled)
     assert not _starred(db, k.oats)
     assert _batch(db).state == "undone"
@@ -794,7 +794,7 @@ def test_undo_names_what_did_not_come_back(db):
     undo = next(d for d in _callbacks(applied.markup) if d.startswith("dt:u:"))
     screen = _tap(db, undo)
     head = screen.text.splitlines()[1]
-    assert head.startswith("↩️ Возвращено: 2 из 3. Не вернулось: «")
+    assert head.startswith("↩️ Отменено: 2 из 3. Не отменилось: «")
     assert head.endswith("— его меняли после.")
 
 
@@ -1029,12 +1029,12 @@ def test_the_models_match_the_migration_not_null_and_server_defaults():
         assert DishTidyItem.__table__.c[name].server_default is not None, name
 
 
-# --- merges taken back from a message's «↩️ Вернуть всё» (slice 4) ------------------
+# --- merges taken back from a message's «↩️ Отменить» (slice 4) ------------------
 
 
 @BACKENDS
 def test_a_merge_from_words_taken_back_is_a_decline(db):
-    """A merge said in a message and undone with its «Вернуть всё» is the person's
+    """A merge said in a message and undone with its «Отменить» is the person's
     no, as a hand unmerge is. A tidy batch's own undo is not (its rows decide)."""
     from app.services import dish_ops
 

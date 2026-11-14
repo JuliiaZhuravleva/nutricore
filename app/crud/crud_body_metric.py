@@ -64,6 +64,23 @@ class CRUDBodyMetric:
         db.refresh(db_obj)
         return db_obj
 
+    def add_flush(
+        self, db: Session, user_id: int, timestamp: datetime, weight: float, metrics
+    ) -> BodyMetric:
+        """A weighing written inside the caller's transaction: flushed, never
+        committed (the plan commits once)."""
+        db_obj = BodyMetric(
+            user_id=user_id, timestamp=timestamp, weight=weight, metrics=metrics
+        )
+        db.add(db_obj)
+        db.flush()
+        return db_obj
+
+    def delete_flush(self, db: Session, metric: BodyMetric) -> None:
+        """The row gone inside the caller's transaction: flushed, never committed."""
+        db.delete(metric)
+        db.flush()
+
     def update(
         self, db: Session, db_obj: BodyMetric, obj_in: BodyMetricUpdate
     ) -> BodyMetric:

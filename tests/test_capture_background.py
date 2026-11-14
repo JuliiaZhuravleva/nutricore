@@ -181,7 +181,7 @@ def test_a_slow_read_does_not_hold_the_next_update(db, owner, reader):
     assert seen["status"] == "pending"
     assert seen["ended"] is False
     assert seen["lines"][0] == capture.M1_PENDING
-    assert seen["lines"][1].startswith("Записано: суп")
+    assert seen["lines"][1].startswith("Записан обед: суп")
 
 
 def _one_status(db) -> str:
@@ -323,7 +323,7 @@ def test_a_pending_with_a_live_task_is_left_alone(db, owner, reader, at):
     asyncio.run(_with_app(steps))
     assert box["status"] == "pending"
     assert box["image"] == 1
-    assert box["after"].startswith("Записано")
+    assert box["after"].startswith("Записан обед")
 
 
 def test_a_pending_voice_is_given_up_with_its_own_sentence_and_no_read(
@@ -453,7 +453,7 @@ def test_a_restart_replays_a_pending_photo_from_its_file_id(db, owner, reader):
     assert _item_names(db, meal) == NUTRITION["foods"]
     (edit,) = wire.edits()
     assert edit["message_id"] == 7000
-    assert edit["text"].startswith("Записано")
+    assert edit["text"].startswith("Записан обед")
     assert wire.sent() == []
     assert meal.read_attempts == 1
 
@@ -639,7 +639,7 @@ def test_a_temporary_failure_is_read_again_and_the_line_edits_with_no_push(
     assert len(reader.image) == 1
     (edit,) = wire.edits()
     assert edit["message_id"] == line_id
-    assert edit["text"].startswith("Записано")
+    assert edit["text"].startswith("Записан обед")
     assert wire.sent() == []
     assert _item_names(db, meal) == NUTRITION["foods"]
 

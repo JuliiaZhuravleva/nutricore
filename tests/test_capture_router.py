@@ -445,12 +445,12 @@ def test_the_read_edits_the_same_line_and_the_hint_comes_once(db, owner, reader)
     meals = _meals(db)
     edits = wire.edits()
     assert edits[0]["text"] == (
-        "Записано: рис, курица и овощи.\n"
+        "Записан обед: рис, курица и овощи.\n"
         "На этом всё. Поправить можно кнопками или ответом на это сообщение."
     )
     assert edits[0]["message_id"] == 5001  # the line the first photo got
     assert _kb(edits[0]) == [[f"ml:o:{meals[0].id}:r", f"ml:t:{meals[0].id}:r"]]
-    assert edits[1]["text"] == "Записано: рис, курица и овощи."
+    assert edits[1]["text"] == "Записан обед: рис, курица и овощи."
     assert [m.reading_status for m in meals] == ["read", "read"]
     assert _item_names(db, meals[0]) == ["рис", "курица", "овощи"]
 
@@ -468,7 +468,7 @@ def test_numbers_on_the_line_when_the_setting_is_on(db, owner, reader):
     db.commit()
     wire = send(photo())
     assert wire.edits()[-1]["text"].startswith(
-        "Записано: рис, курица и овощи · ≈ 620 ккал."
+        "Записан обед: рис, курица и овощи · ≈ 620 ккал."
     )
 
 
@@ -551,7 +551,7 @@ def test_the_words_appear_at_once_and_the_names_only_edit_when_they_differ(
     reader.answer = {**NUTRITION, "foods": ["кофе", "печенье"]}
     wire = send(text("кофе и печенье"))
     meal = _meals(db)[0]
-    assert wire.sent()[0]["text"].startswith("Записано: кофе и печенье.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: кофе и печенье.")
     assert _kb(wire.sent()[0]) == [[f"ml:o:{meal.id}:r", f"ml:t:{meal.id}:r"]]
     # The same names: the answer only takes «Считаю…» away.
     assert [e["text"] for e in wire.edits()] == [
@@ -564,8 +564,8 @@ def test_the_words_appear_at_once_and_the_names_only_edit_when_they_differ(
 def test_when_the_model_splits_differently_the_line_is_edited(db, owner, reader):
     reader.answer = {**NUTRITION, "foods": ["кофе", "печенье"]}
     wire = send(text("кофе с печеньками"))
-    assert wire.sent()[0]["text"].startswith("Записано: кофе с печеньками.")
-    assert wire.edits()[-1]["text"].startswith("Записано: кофе и печенье.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: кофе с печеньками.")
+    assert wire.edits()[-1]["text"].startswith("Записан обед: кофе и печенье.")
 
 
 def test_an_exact_dish_needs_no_model_and_is_final_at_once(db, owner, reader):
@@ -575,7 +575,7 @@ def test_an_exact_dish_needs_no_model_and_is_final_at_once(db, owner, reader):
     assert reader.text == []  # known-negative of the paid call
     meal = _meals(db)[0]
     assert meal.reading_status == "read"
-    assert wire.sent()[0]["text"].startswith("Записано: Овсянка.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: Овсянка.")
     assert wire.edits() == []
     reading = db.scalars(select(MealReading)).one()
     assert (reading.kind, reading.applied) == ("exact_name", True)
@@ -937,7 +937,7 @@ def test_row_4_a_reply_to_a_deleted_meal_makes_a_new_one(db, owner, reader, cloc
     wire = send(text("суп", reply_to_message=reply_to))
     assert len(_meals(db)) == 2
     assert wire.seen()[0].startswith(
-        "Записано: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
+        "Записан обед: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
     )
 
 
@@ -1109,24 +1109,28 @@ def test_the_handler_returns_before_the_read_ends(db, owner, reader):
 
     async def steps(application, wire):
         reader.gate = asyncio.Event()
-        for message in (photo(), text("суп")):
-            await asyncio.wait_for(
-                application.process_update(
-                    Update.de_json(
-                        {"update_id": message["message_id"], "message": message},
-                        application.bot,
-                    )
-                ),
-                timeout=2,
-            )
-        assert [p["text"] for p in wire.sent()][:2] == [
+        try:
+            for message in (photo(), text("суп")):
+                await asyncio.wait_for(
+                    application.process_update(
+                        Update.de_json(
+                            {"update_id": message["message_id"], "message": message},
+                            application.bot,
+                        )
+                    ),
+                    timeout=2,
+                )
+            sent = [p["text"] for p in wire.sent()][:2]
+            edits = wire.edits()
+        finally:
+            reader.gate.set()  # a failed assert must not leave the read held
+        assert sent == [
             "Фото в дневнике, читаю…",
-            "Записано: суп.\n"
+            "Записан обед: суп.\n"
             "Считаю…\n"
             "На этом всё. Поправить можно кнопками или ответом на это сообщение.",
         ]
-        assert wire.edits() == []  # known-positive: the reads are still held
-        reader.gate.set()
+        assert edits == []  # known-positive: the reads were still held
         await asyncio.gather(*list(tg._meal_reads))
         assert wire.edits()
 
@@ -1159,7 +1163,7 @@ def test_the_meter_records_inside_the_task(db, owner, reader, monkeypatch):
     monkeypatch.setattr(tg, "resolve_meal_nutrition", resolve)
     wire = send(photo())
     lines = wire.edits()[-1]["text"].split("\n")
-    assert lines[0] == "Записано: рис, курица и овощи."
+    assert lines[0] == "Записан обед: рис, курица и овощи."
     assert "$" in lines[-1]  # known-positive: a recorded call shows
 
 
@@ -1469,7 +1473,7 @@ def test_album_photos_share_one_meal_one_line_and_one_read(
         assert wire.edits()[0]["text"] == "2 фото в дневнике, читаю…"
         reader.gate.set()
         await asyncio.gather(*list(tg._meal_reads))
-        assert wire.edits()[-1]["text"].startswith("Записано по 2 фото: рис")
+        assert wire.edits()[-1]["text"].startswith("Записан обед по 2 фото: рис")
 
     asyncio.run(_with_app(steps))
     meal = _meals(db)[0]
@@ -1500,9 +1504,9 @@ def test_a_line_that_reads_the_same_still_gets_the_fix_for_its_one_dish(
     db.expire_all()
     meal = _meals(db)[0]
     item = crud_meal_item.live(db, meal.id)[0]
-    assert wire.sent()[0]["text"] == "Записано: суп.\nСчитаю…"
+    assert wire.sent()[0]["text"] == "Записан обед: суп.\nСчитаю…"
     assert _kb(wire.sent()[0])[0][0] == f"ml:o:{meal.id}:r"  # no items yet
-    assert [e["text"] for e in wire.edits()] == ["Записано: суп."]
+    assert [e["text"] for e in wire.edits()] == ["Записан обед: суп."]
     assert _kb(wire.edits()[0])[0] == [f"ml:i:{item.id}:r", f"ml:t:{meal.id}:r"]
 
 
@@ -1512,6 +1516,6 @@ def test_a_line_that_reads_the_same_with_many_dishes_is_left_alone(db, owner, re
     _hint_seen(db, owner)
     reader.answer = {**NUTRITION, "foods": ["суп", "хлеб"]}
     wire = send(text("суп и хлеб"))
-    assert wire.sent()[0]["text"] == "Записано: суп и хлеб.\nСчитаю…"
-    assert [e["text"] for e in wire.edits()] == ["Записано: суп и хлеб."]
+    assert wire.sent()[0]["text"] == "Записан обед: суп и хлеб.\nСчитаю…"
+    assert [e["text"] for e in wire.edits()] == ["Записан обед: суп и хлеб."]
     assert _kb(wire.edits()[0]) == _kb(wire.sent()[0])

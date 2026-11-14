@@ -659,7 +659,8 @@ def test_control_a_clock_set_by_hand_stays_plain(db, owner):
     meal, _ = _eat(db, owner, dish)
     meal.time_source, meal.time_precision = "edited", "exact"
     db.commit()
-    assert meal_card.line_head(meal, None, "Записано") == "Записано"
+    # No «на <day>, <clock>»: only the name the clock gives (D4).
+    assert meal_card.line_head(meal, None, "Записано") == "Записан завтрак"
 
 
 # --- the topic's way to the groups ---------------------------------------------------

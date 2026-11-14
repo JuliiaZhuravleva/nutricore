@@ -400,7 +400,7 @@ def test_and_also_yoghurt_in_the_day_is_a_second_meal_at_about_two(
     assert _local(yoghurt) == datetime.combine(DAY, time(14), tzinfo=ZONE)
     assert reader.text == ["суп", "йогурт"]  # the verb is no dish
     line = wires[1].sent()[0]["text"]
-    assert line.startswith("Записано на пт 6 ноября, ≈ 14:00: йогурт."), line
+    assert line.startswith("Записан обед на пт 6 ноября, ≈ 14:00: йогурт."), line
     assert _utc(_send_row(db, evening.id).answered_at) == at(21, 8)
 
 
@@ -811,7 +811,7 @@ def test_a_join_of_a_day_only_meal_into_a_timed_one_keeps_the_clock(
     # «паста»'s line stays «паста»'s, with both lists and its own buttons
     own = edits[lines[pasta.id]]
     assert own["text"] == _said(db, pasta) != alone
-    assert own["text"].startswith("Записано на пт 6 ноября, ≈ 20:00: ")
+    assert own["text"].startswith("Записан ужин на пт 6 ноября, ≈ 20:00: ")
     assert f"ml:t:{pasta.id}:r" in str(_datas(own))
     # «суп»'s line is no longer a record of its own: it says where it went
     gone = edits[lines[soup.id]]

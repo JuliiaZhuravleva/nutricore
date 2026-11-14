@@ -58,6 +58,7 @@ class NameTaken(Refused):
 class GroupUndo:
     undone: int = 0
     refused_names: list = field(default_factory=list)
+    labels: list = field(default_factory=list)  # what was taken back, oldest first
     already: bool = False  # nothing left to take back: a second tap
 
 
@@ -542,6 +543,26 @@ def undo(
     return merge_again(db, user, dish, event, group_id=group_id)[0]
 
 
+def change_label(db, event: RecordEvent) -> str:
+    """A change in a few words, for «↩️ Отменено: …»: «⭐ гречка»."""
+    dish = db.get(PersonalFood, event.food_id or 0)
+    name = dish.canonical_name if dish is not None else "?"
+    if event.kind == "food_star":
+        return f"⭐ {name}"
+    if event.kind == "food_unstar":
+        return f"убрано из избранного «{name}»"
+    if event.kind == "rename":
+        old = (event.before or {}).get("name") or "?"
+        new = (event.after or {}).get("name") or name
+        return f"«{old}» → «{new}»"
+    if event.kind == "food_hide":
+        return f"убрано из блюд «{name}»"
+    target = db.get(PersonalFood, (event.after or {}).get("merged_into") or 0)
+    if target is None:
+        return f"«{name}» отдельно"
+    return f"одно блюдо «{name}» → «{target.canonical_name}»"
+
+
 def group_changes(db, group_id: str) -> bool:
     """Whether any change was written under the group."""
     return (
@@ -573,6 +594,7 @@ def undo_group(db, user: User, group_id: str) -> GroupUndo:
         result.already = True
         return result
     for event in pending:
+        label = change_label(db, event)  # the names as they are before the undo
         try:
             undo(db, user, event, group_id=undo_group_id)
         except Refused as refused:
@@ -580,4 +602,6 @@ def undo_group(db, user: User, group_id: str) -> GroupUndo:
             result.refused_names.append(refused.name)
         else:
             result.undone += 1
+            if label not in result.labels:
+                result.labels.insert(0, label)
     return result

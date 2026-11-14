@@ -45,6 +45,109 @@ def asks_dish_change(text: Optional[str]) -> bool:
     return bool(text) and has_dish_verb(_FOOD_SAME.sub(" ", plain(text)))
 
 
+# D1: a message that lists a whole day. On the plain text.
+_DAY_WORDS = re.compile(
+    r"(?<!\w)(?:за\s+(?:весь\s+)?день|за\s+сегодня|(?:сегодня|вчера)\s+(?:ел|ела|ели))"
+    r"(?!\w)"
+)
+
+
+def says_day(text: Optional[str]) -> bool:
+    """«за день: овсянка, суп», «вчера ела: суп, сырники»: a day's words and a list's
+    shape. Missing a split keeps one meal, which is safe; parting one meal is not, so
+    only list separators count (never «и», never a sentence end): a colon right after
+    the day words with two items after it, or three items parted by «,» «;» (and a line
+    break, when there are three lines)."""
+    if not text or text.rstrip().endswith("?"):
+        return False
+    plained = plain(text)
+    found = _DAY_WORDS.search(plained)
+    if found is None:
+        return False
+    after = plained[found.end() :]
+    if after.lstrip(" \t").startswith(":"):
+        edges, body, least = r"[,;\n]", after.lstrip(" \t")[1:], 2
+    else:
+        lines = [line for line in plained.splitlines() if line.strip()]
+        edges = r"[,;\n]" if len(lines) >= 3 else r"[,;]"
+        body, least = plained, 3
+    return len([item for item in re.split(edges, body) if item.strip()]) >= least
+
+
+# D2: a weight or a tick said inside a longer message. On the plain text.
+_WEIGHT_WORD = re.compile(r"(?<!\w)(?:вес|вешу)(?!\w)")
+_TICK_WORD = re.compile(r"(?<!\w)(?:отметь(?:те)?|сделал[аио]?|сделан[аоы]?)(?!\w)")
+_YESTERDAY_WORD = re.compile(r"(?<!\w)вчера(?!\w)")
+# A comma or a dot between digits is a decimal mark, not a clause's end.
+_CLAUSE_EDGE = re.compile(r"[;\n!?]+|(?<!\d)[.,]+|[.,]+(?!\d)")
+
+
+def says_weight_or_tick(text: Optional[str]) -> bool:
+    """A weight word or a tick word: the planner is then given the day's routines."""
+    if not text:
+        return False
+    plained = plain(text)
+    return bool(_WEIGHT_WORD.search(plained) or _TICK_WORD.search(plained))
+
+
+def says_yesterday(text: Optional[str]) -> bool:
+    return bool(text) and _YESTERDAY_WORD.search(plain(text)) is not None
+
+
+def _clauses(text: str) -> list:
+    return [c for c in _CLAUSE_EDGE.split(text) if c.strip()]
+
+
+# A clause that is, whole, a weight or a tick (the plain-words path's own shapes).
+_WEIGHT_CLAUSE = re.compile(r"(?:вес|вешу) \d{2,3}(?:[.,]\d{1,2})?(?: ?(?:кг|kg))?")
+_TICK_FORMS = (
+    (re.compile(r"отметь(?:те)? (.+)"), True),
+    (re.compile(r"(.+) сделан[аоы]?"), False),
+    (re.compile(r"сделал[аи]? (.+)"), False),
+    (re.compile(r"(.+) сделал[аи]?"), False),
+)
+
+
+def _bare(clause: str) -> str:
+    tokens = plain(clause).split()
+    return " ".join(t for t in tokens if t != "вчера")
+
+
+def weight_clause(text: Optional[str]) -> bool:
+    """Some clause of the message is «вес 72,4» / «вешу 72 кг» and nothing else."""
+    return any(_WEIGHT_CLAUSE.fullmatch(_bare(c)) for c in _clauses(text or ""))
+
+
+def tick_clauses(text: Optional[str]) -> list:
+    """(the routine's words, explicit «отметь»?) of each clause shaped like a tick. A
+    food («омлет сделала») has the same shape: the routines tell, not these words."""
+    out = []
+    for clause in _clauses(text or ""):
+        bare = _bare(clause)
+        for form, explicit in _TICK_FORMS:
+            match = form.fullmatch(bare)
+            if match:
+                out.append((match.group(1), explicit))
+                break
+    return out
+
+
+_TODAY_WORD = re.compile(r"(?<!\w)сегодня(?!\w)")
+
+
+def ticks_yesterday(text: Optional[str]) -> bool:
+    """The ticks' day is yesterday: «вчера» said anywhere («вчера вес 72,4, зарядку
+    сделала»), unless «сегодня» is said too; then only a «вчера» in a tick's own clause
+    counts («вчера на ужин пицца, сегодня зарядку сделала» ticks today)."""
+    if not says_yesterday(text):
+        return False
+    if not _TODAY_WORD.search(plain(text)):
+        return True
+    return any(
+        _YESTERDAY_WORD.search(plain(c)) and tick_clauses(c) for c in _clauses(text)
+    )
+
+
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     """``DISH`` when the words change dishes, ``MEALS`` when they are several meals by
     R0's own rule, else None. A question is asked, not done."""
@@ -54,4 +157,8 @@ def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
         return DISH
     if says_several(text, sent, zone):
         return MEALS
+    if says_day(text):
+        return MEALS
+    if len(_clauses(text)) >= 2 and (weight_clause(text) or tick_clauses(text)):
+        return MEALS  # next to other content: a whole-message weight or tick never is
     return None

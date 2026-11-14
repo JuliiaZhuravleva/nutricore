@@ -201,7 +201,7 @@ def test_turning_it_off_leaves_a_draft_a_draft_and_the_next_meal_is_written(
     assert db.get(Meal, draft.id).is_draft
     wire = send(text("суп"))
     assert not _last(db).is_draft
-    assert wire.edits()[-1]["text"] == "Записано: рис, курица и овощи."
+    assert wire.edits()[-1]["text"] == "Записан обед: рис, курица и овощи."
 
 
 # --- control: with it off, nothing here shows ----------------------------------------
@@ -334,7 +334,7 @@ def test_control_the_card_of_a_recorded_meal_has_no_record_button(db, owner, rea
     send(text("рис"))
     meal = _last(db)
     card = tap(f"ml:o:{meal.id}:r").edits()[0]
-    assert card["text"].startswith("<b>🍽 Приём, ")
+    assert card["text"].startswith("<b>🍽 Обед, ")  # 13:20
     assert "✅ Записать" not in [b for row in _labels(card) for b in row]
 
 
@@ -375,7 +375,7 @@ def test_record_turns_it_into_m1a_and_it_counts_from_then_on(
     db.expire_all()
     assert not db.get(Meal, meal.id).is_draft
     line = wire.edits()[0]
-    assert line["text"] == "Записано: рис, курица и овощи."
+    assert line["text"] == "Записан обед: рис, курица и овощи."
     assert "✅ Записать" not in [b for row in _labels(line) for b in row]
     assert [row.id for row in crud_meal.get_user_meals(db, owner.id)] == [meal.id]
     assert "Рис" in _day_card(db)
@@ -389,7 +389,7 @@ def test_a_second_tap_on_record_changes_nothing(db, owner, reader, drafting):
     wire = tap(f"ml:ok:{meal.id}")
     db.expire_all()
     assert not db.get(Meal, meal.id).is_draft and db.get(Meal, meal.id).rev == rev
-    assert wire.edits()[0]["text"] == "Записано: рис, курица и овощи."
+    assert wire.edits()[0]["text"] == "Записан обед: рис, курица и овощи."
 
 
 def test_record_while_the_read_is_out_lets_the_read_land(db, owner, reader, drafting):
@@ -417,7 +417,7 @@ def test_record_while_the_read_is_out_lets_the_read_land(db, owner, reader, draf
     assert meal.reading_status == "read"
     # What the read found is on the record, and the line says what it now is.
     assert crud_meal.get_user_meals(db, owner.id)[0].id == meal.id
-    assert wire.seen()[-1] == "Записано: рис, курица и овощи."
+    assert wire.seen()[-1] == "Записан обед: рис, курица и овощи."
 
 
 def test_record_tells_an_incremental_pull_the_meal_is_there(
@@ -820,7 +820,7 @@ def test_m12_an_exact_dish_gets_it_too(db, owner, reader, unseen):
     db.add(PersonalFood(user_id=owner.id, canonical_name="Овсянка"))
     db.commit()
     wire = send(text("овсянка"))
-    assert wire.sent()[0]["text"].startswith("Записано: Овсянка.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: Овсянка.")
     assert len(_rollouts(wire)) == 1
 
 
