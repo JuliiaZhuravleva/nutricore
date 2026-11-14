@@ -33,7 +33,7 @@ ZONE = timezone(timedelta(hours=4))
 
 # Strings of the recorded corpus that hold a new trigger phrase, and so may answer
 # differently now. The corpus (recorded before the change) holds none.
-HOLD_NEW_TRIGGER: set = set()
+HOLD_NEW_TRIGGER = {"вес 72,4, зарядку сделала, на завтрак каша"}
 
 
 def test_the_old_answers_are_unchanged_except_the_new_trigger():
@@ -46,7 +46,7 @@ def test_the_old_answers_are_unchanged_except_the_new_trigger():
         if plan_words.wants_plan(message, SENT, ZONE) != wants:
             changed.add(message)
     assert changed == HOLD_NEW_TRIGGER
-    assert {m for m in corpus if plan_words.says_day(m)} == HOLD_NEW_TRIGGER
+    assert {m for m in corpus if plan_words.says_day(m)} == set()  # D1 trigger: none
 
 
 def test_a_day_list_is_three_meals_without_times(db, owner, reader, clock):

@@ -1282,6 +1282,10 @@ def route_text(
         route = _on_reply(db, came, user, target, heard=heard is not None)
         if route is not None:
             return route
+    if plan and not as_food and _routine_words_in_plan(db, came, user, text):
+        # D2: «вес 72,4, зарядку сделала, на завтрак каша»: a weight or a tick next to
+        # other content is the planner's, ahead of the whole-message weight and tick.
+        return Route(PLAN, plan=plan_words.MEALS)
     if weight_screen.KG_PATTERN.match(text):
         return Route(WEIGHT)
     said_kg = weight_screen.parse_words(text)
@@ -1357,6 +1361,25 @@ def route_text(
     if plan and (_several(came, user, text) or _day_list(came, text)):
         return Route(PLAN, plan=plan_words.MEALS)
     return Route(NEW_MEAL)
+
+
+def _routine_words_in_plan(db, came: Incoming, user: User, text: str) -> bool:
+    """A weight clause, or a tick clause naming a routine of that day (or the explicit
+    «отметь»), with another clause beside it. «омлет сделала, вкусно» is food."""
+    if came.forward_date is not None or len(plan_words._clauses(text)) < 2:
+        return False
+    if plan_words.weight_clause(text):
+        return True
+    ticks = plan_words.tick_clauses(text)
+    if any(explicit for _said, explicit in ticks):
+        return True
+    if not ticks:
+        return False
+    day = stats_screen.local_time(datetime.now(UTC), user_zone(user)).date()
+    if plan_words.says_yesterday(text):
+        day -= timedelta(days=1)
+    due, _done = stats_screen._day_ticks(db, user, day)
+    return any(stats_screen._routine_matches(due, said) for said, _e in ticks)
 
 
 def _wants_dish_plan(came: Incoming) -> bool:
