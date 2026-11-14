@@ -91,7 +91,8 @@ included. Parts never overlap.
 - A message that lists a day ("за день: …") is one meal line for each group of foods \
 eaten together, grouped by sense: "овсянка с бананом" is one meal, "суп" another.
 - Write a meal line for each meal the message tells of. If the message tells of one \
-meal only and changes no dish, answer none.
+meal only and has nothing else to write (no dish change, no weight, no routine), \
+answer none. Beside a weight or a routine line, a meal still gets its meal line.
 - Name a dish only from the numbered list, as #n "name" with its number and name. A \
 dish not in the list cannot be changed.
 - When the message asks to change dishes (объедини, одно блюдо, в избранное, из \
@@ -112,6 +113,7 @@ RETRY = (
     "only numbered dishes and the message's own words."
 )
 NO_DISH_LINE = "the message asks to change a dish, and no line does it: write that line"
+NO_MEAL_LINE = "no line covers this part: if it tells of a meal, write its meal line"
 
 # --- names ----------------------------------------------------------------------------
 
@@ -622,6 +624,9 @@ def _retry_reasons(
     lines += [f"- «{r.label}»{r.why}" for r in checked.refused if not r.final]
     if want == DISH and not parsed.dish and asks_dish_change(text):
         lines.append(f"- {NO_DISH_LINE}")
+    if parsed.weights or parsed.ticks:
+        # Seen on the real model (2026-11-15): two ticks and «none» for the breakfast.
+        lines += [f"- «{part}»: {NO_MEAL_LINE}" for part in checked.missed]
     return "\n".join(lines)
 
 

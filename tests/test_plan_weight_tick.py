@@ -193,6 +193,52 @@ def test_the_weight_is_the_number_after_its_word():
     assert _checked("weight 72.4", "вешу 72,4 кг, каша").weight is not None
 
 
+def _read_with(monkeypatch, message: str, *answers) -> tuple:
+    import asyncio
+
+    sent, left = [], list(answers)
+
+    async def fake(svc, messages, telegram_id, input_ref):
+        sent.append([m["content"] for m in messages])
+        return {"answer": left.pop(0)}
+
+    monkeypatch.setattr(plan_service, "_ask", fake)
+    checked = asyncio.run(
+        plan_service.read(
+            None,
+            message,
+            "meals",
+            _book(names=R2),
+            SENT,
+            telegram_id=None,
+            input_ref="t",
+        )
+    )
+    return checked, sent
+
+
+R2 = ("Зарядка", "Витамины")
+TWO_TICKS = "витамины выпила, зарядку сделала, на завтрак омлет"
+
+
+def test_a_meal_left_out_beside_the_ticks_is_asked_once_more(monkeypatch):
+    # The real model's first answer, 2026-11-15: both ticks and «none».
+    first = 'tick @2 "Витамины"\ntick @1 "Зарядка"\nnone'
+    again = first.replace("none", 'meal "на завтрак омлет"')
+    checked, sent = _read_with(monkeypatch, TWO_TICKS, first, again)
+    assert len(sent) == 2 and plan_service.NO_MEAL_LINE in sent[1][-1]
+    assert "«на завтрак омлет»" in sent[1][-1]
+    assert [m.text for m in checked.meals] == ["на завтрак омлет"]
+    assert len(checked.ticks) == 2 and checked.missed == []
+
+
+def test_without_a_weight_or_tick_line_a_missed_part_is_not_asked_again(monkeypatch):
+    checked, sent = _read_with(
+        monkeypatch, "зарядку не сделала, на обед салат", 'meal "на обед салат"'
+    )
+    assert len(sent) == 1 and checked.ticks == []
+
+
 def test_a_weight_the_message_does_not_say_is_refused():
     checked = _checked("weight 80", MESSAGE)
     assert checked.weight is None
@@ -545,6 +591,7 @@ def test_a_weight_or_tick_beside_food_goes_to_the_planner(db, owner, message):
         "вес 72,4 и каша",
         "вес 72,4, это нормально?",  # a question asks, it writes nothing
         "зарядку сделала, а суп можно?",
+        "на завтрак каша, вес не мерила",  # no number: the planner would answer none
     ],
 )
 def test_other_words_do_not_become_a_plan(db, owner, message):
