@@ -674,21 +674,21 @@ async def _send_unsent(bot, job: capture.Read, line: capture.Line) -> None:
     _map_line(line, sent, line.view)
 
 
-async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
+async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> bool:
     """The result into the same line. A refusal costs nothing, the record is written.
     Telegram being away is another matter: the line would stay on «читаю», so it is owed
-    and the sweep puts it right."""
+    and the sweep puts it right. True when the line is out (or went as a new one)."""
     if line is None:
-        return
+        return False
     if job.line_id is None:
         if job.unsent:
             await _send_unsent(bot, job, line)
-        return
+        return job.unsent
     try:
         await _edit_line(bot, job.chat_id, job.line_id, line)
     except BadRequest as e:
         if _is_not_modified(e):
-            return
+            return True
         logger.warning("Meal line not edited: %s", type(e).__name__)
         owed = False
     except (RetryAfter, NetworkError) as e:
@@ -698,9 +698,10 @@ async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
         logger.warning("Meal line not edited: %s", type(e).__name__)
         owed = False
     else:
-        return
+        return True
     with SessionLocal() as db:
         capture.line_not_shown(db, job, line, owed=owed)
+    return False
 
 
 def _may_hear(telegram_id: int) -> bool:
@@ -1933,8 +1934,8 @@ async def _plan_heard_on(application: Application, job: capture.Read, plan_id: i
         if line is None:
             return None
         if _retired(job, line):
-            await _show(bot, job, line)  # owed and retried by its own sweep
-            if checked is None:
+            shown = await _show(bot, job, line)  # owed and retried by its own sweep
+            if checked is None and shown:  # else TD-274's retry puts it out
                 _mark_fail_shown(plan_id)
         elif checked is None:
             await _put_failed(
@@ -2078,8 +2079,13 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     plan_id, message = int(match.group(2)), query.message
     if match.group(1) == "u":
-        with SessionLocal() as db:
-            head, toast = plan_service.undo(db, user.id, plan_id)
+        try:
+            with SessionLocal() as db:
+                head, toast = plan_service.undo(db, user.id, plan_id)
+        except Exception as e:  # the spinner must stop
+            logger.error("Plan %s undo failed: %s", plan_id, _failed(e))
+            await query.answer(plan_screen.TAP_FAILED)
+            return
         await query.answer(toast)
         if head is None:
             return
@@ -2094,8 +2100,13 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Plan undo not shown: %s", type(e).__name__)
         return
     line_id = getattr(message, "message_id", None)
-    with SessionLocal() as db:
-        taken = plan_service.again(db, user.id, plan_id, line_id)
+    try:
+        with SessionLocal() as db:
+            taken = plan_service.again(db, user.id, plan_id, line_id)
+    except Exception as e:  # the spinner must stop
+        logger.error("Plan %s retry failed: %s", plan_id, _failed(e))
+        await query.answer(plan_screen.TAP_FAILED)
+        return
     if not taken:
         await query.answer(plan_screen.SAME_TOAST)
         return
@@ -2113,14 +2124,23 @@ async def _plan_question_tap(query, user, match) -> None:
     if kind == "c" and option is None or kind == "q" and option is not None:
         await query.answer()
         return
-    with SessionLocal() as db:
-        if kind == "c":
-            line, toast = plan_service.answer_question(db, user.id, plan_id, q, option)
-        else:
-            head, toast = plan_service.undo_question(db, user.id, plan_id, q)
+    try:
+        with SessionLocal() as db:
+            if kind == "c":
+                line, toast = plan_service.answer_question(
+                    db, user.id, plan_id, q, option
+                )
+            else:
+                head, toast = plan_service.undo_question(db, user.id, plan_id, q)
+    except Exception as e:  # the spinner must stop; nothing was committed
+        logger.error("Plan %s question tap failed: %s", plan_id, _failed(e))
+        await query.answer(plan_screen.TAP_FAILED)
+        return
     await query.answer(toast)
     if toast == plan_screen.GONE_TOAST and kind == "c":
         await _drop_closed_buttons(query, user, plan_id, q)
+    if toast == plan_screen.SAME_TOAST:
+        await _show_settled(query, user, plan_id, q, kind)
     if toast is not None:
         return
     try:
@@ -2137,6 +2157,28 @@ async def _plan_question_tap(query, user, match) -> None:
             )
     except TelegramError as e:
         logger.warning("Plan question not shown: %s", type(e).__name__)
+
+
+async def _show_settled(query, user, plan_id: int, q: int, kind: str) -> None:
+    """A repeat tap on an answered question: the answer's own line is shown again
+    (the edit after the answer may have failed), or the stale buttons go."""
+    try:
+        with SessionLocal() as db:
+            view = plan_service.settled(db, user.id, plan_id, q)
+        if view is None:
+            return
+        text, markup = view
+        if kind == "c" and text:
+            await query.edit_message_text(
+                text, parse_mode=ParseMode.HTML, reply_markup=markup
+            )
+        elif markup is None:
+            await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest as e:
+        if not _is_not_modified(e):
+            logger.warning("Answered question not shown: %s", type(e).__name__)
+    except Exception as e:
+        logger.warning("Answered question not shown: %s", type(e).__name__)
 
 
 async def _drop_closed_buttons(query, user, plan_id: int, q: int) -> None:

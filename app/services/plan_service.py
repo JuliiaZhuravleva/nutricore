@@ -361,7 +361,7 @@ def gives_back(want: str, text: str, checked: Optional[Checked]) -> bool:
 def unreadable(want: str, checked: Checked) -> bool:
     """A dish message whose dish lines did not parse even on the retry, with no dish
     change made of it: a failure (🔁), not one meal of the command's words."""
-    return want == DISH and checked.bad > 0 and not checked.acts
+    return want == DISH and checked.bad > 0 and not checked.acts and not checked.asks
 
 
 def _fits(name: str, known: Known, least: int = 4) -> bool:
@@ -400,7 +400,7 @@ def _resolve(ref: grammar.Ref, book: Book) -> tuple:
         return fits[0], None, ()
     if fits:
         names = ", ".join(f"«{book.known[i].name}»" for i in fits[:4])
-        return None, WHY_SEVERAL.format(names=names), tuple(fits[:PICK_MAX])
+        return None, WHY_SEVERAL.format(names=names), tuple(fits)
     return None, WHY_NONE, ()
 
 
@@ -450,7 +450,7 @@ def _target(ids: list, book: Book) -> int:
 
 
 def _several(ref: grammar.Ref, fits: tuple, book: Book) -> Refusal:
-    names = ", ".join(f"«{book.known[i].name}»" for i in fits)
+    names = ", ".join(f"«{book.known[i].name}»" for i in fits[:PICK_MAX])
     return Refusal(ref.name, WHY_SEVERAL.format(names=names))
 
 
@@ -485,6 +485,8 @@ def _dish_act(command: grammar.Command, book: Book, folded: str) -> tuple:
     if several is not None:
         ref, fits = several
         fits = tuple(i for i in fits if i not in ids)
+        if len(fits) > PICK_MAX:  # «Все» would take dishes no button shows
+            return None, _several(ref, fits, book)
         if command.verb == grammar.MERGE and not fits:
             return None, Refusal(label, WHY_ONE)
         if command.verb == grammar.MERGE and len(fits) == 1:
@@ -1230,14 +1232,19 @@ def close_old(db, now: datetime, after: datetime) -> tuple:
         plan_id, user_id, chat_id = found.id, found.user_id, found.chat_id
         if not any(a.get("state") == "open" for a in crud_message_plan.asks_of(found)):
             continue
-        user = db.get(User, user_id)
-        if user is None:
+        try:
+            user = db.get(User, user_id)
+            if user is None:
+                continue
+            dish_ops.lock_user(db, user)
+            plan = db.get(MessagePlan, plan_id)
+            db.refresh(plan)
+            was = crud_message_plan.close_asks(plan)
+            db.commit()
+        except Exception as e:  # one bad row must not keep the others open
+            db.rollback()
+            logger.error("Plan %s questions not closed: %s", plan_id, type(e).__name__)
             continue
-        dish_ops.lock_user(db, user)
-        plan = db.get(MessagePlan, plan_id)
-        db.refresh(plan)
-        was = crud_message_plan.close_asks(plan)
-        db.commit()
         closed += [(chat_id, a.get("message_id")) for a in was]
     return closed, cutoff
 
@@ -1335,8 +1342,15 @@ def question_line(db, plan_id: int, ask: dict):
 
 
 def question_sent(db, plan_id: int, q: int, message_id: Optional[int]) -> None:
-    if message_id is not None:
-        crud_message_plan.ask_sent(db, plan_id, q, message_id)
+    """Under the person's lock, as every writer of ``commands``: a tap racing the
+    sending does not put the message id back to None."""
+    if message_id is None:
+        return
+    plan = db.get(MessagePlan, plan_id)
+    user = db.get(User, plan.user_id) if plan is not None else None
+    if user is not None:
+        dish_ops.lock_user(db, user)
+    crud_message_plan.ask_sent(db, plan_id, q, message_id)
 
 
 def _own(db, telegram_id: int, plan_id: int) -> tuple:
@@ -1373,6 +1387,8 @@ def _tap_acts(ask: dict, option: str, book: Book) -> Optional[list]:
         return None
     if verb == grammar.MERGE:
         both = [*ids, *(i for i in picked if i not in ids)]
+        if not set(both) <= set(book.known):  # gone since: answer_question says so
+            return [Act(verb, tuple(both), target)]
         return [Act(verb, tuple(both), target or _target(both, book))]
     if verb == grammar.RENAME:
         return [Act(verb, picked[:1], new_name=new)]
@@ -1419,9 +1435,10 @@ def answer_question(
     wanted = {i for act in acts for i in (*act.ids, act.target) if i is not None}
     if not wanted <= set(book.known):  # hidden or merged since the question went out
         ask["state"] = "done"
+        gone = NOT_DONE.format(label=ask["label"]) + WHY_GONE
+        ask["said"] = [gone]
         crud_message_plan.set_asks(plan, asks)
         db.commit()
-        gone = NOT_DONE.format(label=ask["label"]) + WHY_GONE
         return capture.Line(html.escape(gone)), None
     before = db.scalar(select(func.max(RecordEvent.id))) or 0
     done = do_dishes(db, user, acts, plan.group_id, now or datetime.now(UTC))
@@ -1438,7 +1455,7 @@ def answer_question(
             .order_by(RecordEvent.id)
         )
     )
-    ask["state"], ask["events"] = "done", events
+    ask["state"], ask["events"], ask["said"] = "done", events, list(done.said)
     crud_message_plan.set_asks(plan, asks)
     db.commit()
     markup = plan_screen.done_markup(plan.id, q, bool(events))
@@ -1467,3 +1484,20 @@ def undo_question(db, telegram_id: int, plan_id: int, q: int) -> tuple:
     if result.already:
         return None, SAME_TOAST
     return plan_screen.undo_head([], result.labels, result.refused_names), None
+
+
+def settled(db, telegram_id: int, plan_id: int, q: int) -> Optional[tuple]:
+    """For a repeat tap on an answered question's buttons (the edit after the answer
+    may have failed): (its line again or None, its buttons). None when the question
+    is not the person's own, is still open, or is closed (GONE has its own path)."""
+    plan, _user = _own(db, telegram_id, plan_id)
+    ask = _find(crud_message_plan.asks_of(plan), q) if plan is not None else None
+    state = ask.get("state") if ask is not None else None
+    if state == "declined":
+        return html.escape(plan_screen.DECLINED_LINE), None
+    if state == "done" and ask.get("said"):
+        markup = plan_screen.done_markup(plan_id, q, bool(ask.get("events")))
+        return html.escape("\n".join(ask["said"])), markup
+    if state in ("done", "undone"):
+        return None, None
+    return None

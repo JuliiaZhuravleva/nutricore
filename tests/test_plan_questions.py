@@ -93,7 +93,9 @@ def test_a_name_fitting_several_dishes_is_a_pick_not_a_refusal():
 
 
 def test_a_pick_offers_at_most_four_dishes():
-    dishes = [[f"суп номер {n}"] for n in range(6)]
+    """Four buttons at most; a name fitting more is refused (test_plan_review_fixes):
+    «Все» would take dishes no button shows."""
+    dishes = [[f"суп номер {n}"] for n in range(4)]
     (pick,) = _check('hide "суп"', "убери суп из блюд", *dishes).asks
     assert len(pick.cands) == plan_service.PICK_MAX == 4
 
@@ -359,7 +361,8 @@ def test_not_needed_closes_the_question_without_buttons_or_writes(
     assert done["text"] == plan_screen.DECLINED_LINE and _buttons(done) == []
     assert _stars(db, owner) == [] and _asks(db)[0]["state"] == "declined"
     again = run(tapped(f"pl:c:{plan.id}:0:0", message_id=mid))
-    assert _stars(db, owner) == [] and _edits(again) == []
+    assert _stars(db, owner) == []  # the repeat only shows the declined line again
+    assert [e["text"] for e in _edits(again)] == [plan_screen.DECLINED_LINE]
 
 
 def test_a_double_tap_does_nothing_the_second_time(db, owner, reader, clock):
@@ -375,7 +378,8 @@ def test_a_double_tap_does_nothing_the_second_time(db, owner, reader, clock):
     )
     assert _stars(db, owner) == ["гречка с маслом"]
     assert len(db.scalars(select(RecordEvent)).all()) == events
-    assert _edits(again) == []
+    # each repeat shows the answer's own line again (its first edit may have failed)
+    assert [e["text"] for e in _edits(again)] == ["✓ ⭐ гречка с маслом"] * 2
     assert _toasts(again) == [plan_screen.SAME_TOAST] * 2
 
 

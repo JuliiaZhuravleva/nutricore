@@ -237,6 +237,7 @@ class CRUDMessagePlan:
         plan = db.get(MessagePlan, plan_id, with_for_update=True)
         if plan is None:
             return
+        db.refresh(plan)  # a tap may have written since this session read it
         asks = self.asks_of(plan)
         for ask in asks:
             if ask.get("q") == q:
