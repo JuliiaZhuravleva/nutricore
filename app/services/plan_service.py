@@ -70,6 +70,8 @@ Rules:
 same letters. Never shorten, translate or fix them.
 - A meal part is the whole piece of the message about one meal, its time words \
 included. Parts never overlap.
+- A message that lists a day ("за день: …") is one meal line for each group of foods \
+eaten together, grouped by sense: "овсянка с бананом" is one meal, "суп" another.
 - Write a meal line for each meal the message tells of. If the message tells of one \
 meal only and changes no dish, answer none.
 - Name a dish only from the numbered list, as #n "name" with its number and name. A \
@@ -394,7 +396,7 @@ _FILLER = frozenset(
     мне меня нам нас мой моя мои мое свой своя свои его ее их она он они
     утром утро утра днем день дня вечером вечер вечера ночью ночь ночи полдень полночь
     рано поздно сейчас недавно назад час часа часов минут минуты около примерно где-то
-    вчера сегодня позавчера утрам вечерам потом сразу перед
+    вчера сегодня позавчера весь утрам вечерам потом сразу перед
     написать записать запиши добавь добавить
     кстати немного чуть чуточку дома работе кофе-брейк""".split()
 )

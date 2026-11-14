@@ -1344,7 +1344,7 @@ def route_text(
     if text.rstrip().endswith("?"):
         source = _keep(db, came, user)
         return Route(LINE, Line(M3B_QUESTION, _it_is_food(source.id)))
-    if plan and _several(came, user, text):
+    if plan and (_several(came, user, text) or _day_list(came, text)):
         return Route(PLAN, plan=plan_words.MEALS)
     return Route(NEW_MEAL)
 
@@ -1355,6 +1355,12 @@ def _wants_dish_plan(came: Incoming) -> bool:
     return plan_words.wants_plan(came.text, _aware(came.sent_at), UTC) == (
         plan_words.DISH
     )
+
+
+def _day_list(came: Incoming, text: Optional[str]) -> bool:
+    """D1: «за день: …» lists a day's meals, with or without times. A forward's
+    time is its own, as for ``_several``."""
+    return came.forward_date is None and plan_words.says_day(text)
 
 
 def _several(came: Incoming, user: User, text: Optional[str]) -> bool:
@@ -2124,7 +2130,11 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
     send = reminders.answering(db, user, came)
     zone = user_zone(user)
     said = part_times(
-        spans, _aware(came.sent_at), zone, send.local_day if send else None
+        spans,
+        _aware(came.sent_at),
+        zone,
+        send.local_day if send else None,
+        said_in=came.text,
     )
     meals = []
     for number, (span, time) in enumerate(zip(spans, said), start=1):

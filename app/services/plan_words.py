@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from app.services.meal_words import says_several
+from app.services.meal_words import clauses, says_several
 
 DISH, MEALS = "dish", "meals"
 
@@ -45,6 +45,22 @@ def asks_dish_change(text: Optional[str]) -> bool:
     return bool(text) and has_dish_verb(_FOOD_SAME.sub(" ", plain(text)))
 
 
+# D1: a message that lists a whole day. On the plain text.
+_DAY_WORDS = re.compile(
+    r"(?<!\w)(?:за\s+(?:весь\s+)?день|за\s+сегодня|(?:сегодня|вчера)\s+(?:ел|ела|ели))"
+    r"(?!\w)"
+)
+
+
+def says_day(text: Optional[str]) -> bool:
+    """«за день: овсянка, суп», «вчера ела: суп, сырники»: a day's words and two or
+    more clauses (a newline parts them too). One clause is one meal."""
+    if not text or text.rstrip().endswith("?") or not _DAY_WORDS.search(plain(text)):
+        return False
+    pieces = [c for line in text.splitlines() for c in clauses(line) if c.strip()]
+    return len(pieces) >= 2
+
+
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     """``DISH`` when the words change dishes, ``MEALS`` when they are several meals by
     R0's own rule, else None. A question is asked, not done."""
@@ -53,5 +69,7 @@ def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     if has_dish_verb(text):
         return DISH
     if says_several(text, sent, zone):
+        return MEALS
+    if says_day(text):
         return MEALS
     return None
