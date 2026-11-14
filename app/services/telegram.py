@@ -1774,8 +1774,24 @@ async def _plan_show(application: Application, ask, executed, first_line) -> Non
             plan_service.shown(db, ask.plan_id, line_ids, result_id)
     except Exception as e:
         logger.error("Plan %s lines not kept: %s", ask.plan_id, _failed(e))
+    await _plan_questions(bot, ask, executed)
     for job in jobs:
         _start_read(application, job)
+
+
+async def _plan_questions(bot, ask, executed) -> None:
+    """Each question of the plan as a silent reply of its own, after the answer. A
+    question that cannot go out stays open, with no message."""
+    came = ask.came
+    for stored in executed.asks:
+        try:
+            with SessionLocal() as db:
+                line = plan_service.question_line(db, ask.plan_id, stored)
+            sent = await _put(bot, came.chat_id, came.message_id, None, line)
+            with SessionLocal() as db:
+                plan_service.question_sent(db, ask.plan_id, stored["q"], sent)
+        except Exception as e:
+            logger.error("Plan %s question not sent: %s", ask.plan_id, _failed(e))
 
 
 async def _plan_single(application: Application, ask) -> None:
@@ -1969,8 +1985,15 @@ async def _sweep_plans(application: Application) -> None:
 
 
 async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """``pl:u:<id>`` ↩️ Отменить; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan."""
+    """``pl:u:<id>`` ↩️ Отменить; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan;
+    ``pl:c:<id>:<q>:<o>`` a tap on a question; ``pl:q:<id>:<q>`` ↩️ of one answer."""
     query, user = update.callback_query, update.effective_user
+    asked = re.fullmatch(
+        r"pl:([cq]):(\d{1,10}):(\d{1,2})(?::([0-9any]))?", query.data or ""
+    )
+    if asked is not None and user is not None:
+        await _plan_question_tap(query, user, asked)
+        return
     match = re.fullmatch(r"pl:([ur]):(\d{1,10})", query.data or "")
     if match is None or user is None:
         await query.answer()
@@ -2004,6 +2027,36 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TelegramError as e:
         logger.warning("Plan line not edited: %s", type(e).__name__)
     _start_plan(context.application, plan_id)
+
+
+async def _plan_question_tap(query, user, match) -> None:
+    kind, plan_id, q, option = match.groups()
+    plan_id, q = int(plan_id), int(q)
+    if kind == "c" and option is None or kind == "q" and option is not None:
+        await query.answer()
+        return
+    with SessionLocal() as db:
+        if kind == "c":
+            line, toast = plan_service.answer_question(db, user.id, plan_id, q, option)
+        else:
+            head, toast = plan_service.undo_question(db, user.id, plan_id, q)
+    await query.answer(toast)
+    if toast is not None:
+        return
+    try:
+        if kind == "c":
+            await query.edit_message_text(
+                line.text, parse_mode=ParseMode.HTML, reply_markup=line.markup
+            )
+        else:
+            body = html.escape(getattr(query.message, "text", None) or "")
+            await query.edit_message_text(
+                f"{body}\n\n{html.escape(head)}".strip(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+    except TelegramError as e:
+        logger.warning("Plan question not shown: %s", type(e).__name__)
 
 
 async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):

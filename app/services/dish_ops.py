@@ -587,6 +587,29 @@ def undo_group(db, user: User, group_id: str) -> GroupUndo:
             .order_by(RecordEvent.id.desc())
         )
     )
+    return _undo_pending(db, user, events)
+
+
+def undo_events(db, user: User, event_ids: list) -> GroupUndo:
+    """Only these changes, as ``undo_group`` takes a group back: newest first, each
+    through its own undo, what moved on since named as not taken back."""
+    if not event_ids:
+        return GroupUndo(already=True)
+    events = list(
+        db.scalars(
+            select(RecordEvent)
+            .where(
+                RecordEvent.user_id == user.id,
+                RecordEvent.id.in_(list(event_ids)),
+                RecordEvent.undoes_event_id.is_(None),
+            )
+            .order_by(RecordEvent.id.desc())
+        )
+    )
+    return _undo_pending(db, user, events)
+
+
+def _undo_pending(db, user: User, events: list) -> GroupUndo:
     result = GroupUndo()
     undo_group_id = new_group()
     pending = [event for event in events if not is_undone(db, event)]

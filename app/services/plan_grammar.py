@@ -14,13 +14,14 @@ from typing import Optional
 MEALS_MAX = 8
 DISH_MAX = 10
 
-MEAL, MERGE, STAR, UNSTAR, HIDE, RENAME, WEIGHT, TICK, NONE = (
+MEAL, MERGE, STAR, UNSTAR, HIDE, RENAME, ASK, WEIGHT, TICK, NONE = (
     "meal",
     "merge",
     "star",
     "unstar",
     "hide",
     "rename",
+    "ask",
     "weight",
     "tick",
     "none",
@@ -74,6 +75,14 @@ VERBS = (
         'rename #5 "салат" to "салат греческий"',
     ),
     Verb(
+        ASK,
+        "ask <merge | star | unstar | hide | rename command>",
+        "the same dish command, when you are not sure the person wants it done (it "
+        "may be a guess, or a question): the person is asked yes or no first. A "
+        "clear request is the plain command.",
+        'ask merge #4 "котлета куриная" #9 "куриная котлета"',
+    ),
+    Verb(
         WEIGHT,
         'weight <kg> [day="вчера"]',
         "the person says their body weight in kilograms. `day` only when they say "
@@ -115,6 +124,7 @@ class Command:
     text: Optional[str] = None  # meal: the part; rename: the new name
     kg: Optional[float] = None  # weight
     yesterday: bool = False  # weight: day="вчера"
+    inner: Optional["Command"] = None  # ask: the dish command it asks about
 
 
 @dataclass(frozen=True)
@@ -137,7 +147,7 @@ class Parsed:
 
     @property
     def dish(self) -> list:
-        return [c for c in self.commands if c.verb in DISH_VERBS]
+        return [c for c in self.commands if c.verb in DISH_VERBS or c.verb == ASK]
 
     @property
     def weights(self) -> list:
@@ -212,8 +222,18 @@ def _command(verb: str, line: str, tokens: list) -> Optional[Command]:
     if verb in (STAR, UNSTAR, HIDE):
         ref, at = _ref(rest, 0)
         return Command(verb, line, refs=(ref,)) if ref and at == len(rest) else None
+    if verb == ASK:
+        if len(tokens) < 2 or tokens[1][0] != "w":
+            return None
+        word = tokens[1][1].casefold()
+        if word not in DISH_VERBS:
+            return None
+        inner = _command(word, line, tokens[1:])
+        return Command(ASK, line, inner=inner) if inner is not None else None
     if verb == RENAME:
         ref, at = _ref(rest, 0)
+        if ref is not None and at == len(rest):
+            return Command(RENAME, line, refs=(ref,))  # no new name: refused later
         if ref is None or at + 2 != len(rest):
             return None
         if rest[at] != ("w", "to") or rest[at + 1][0] != "q":
