@@ -82,6 +82,7 @@ class Screen:
     gone: tuple = ()  # message ids of lines the change took back
     files: tuple = ()  # (kind, file_id) to send again, silently, before the answer
     retouch_too: object | None = None  # a second line the change reached
+    widget_batch: int | None = None  # a 🍲 batch to send as a widget message instead
 
 
 def _card():

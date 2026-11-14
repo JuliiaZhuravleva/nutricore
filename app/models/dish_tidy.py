@@ -64,6 +64,8 @@ class DishTidyBatch(Base, BaseClass):
     chat_id = Column(BigInteger, nullable=True)
     message_id = Column(BigInteger, nullable=True)
     tries = Column(Integer, nullable=False, default=0, server_default="0")
+    # How the message went out: "widget" (HTML in the message), else text (null = text).
+    form = Column(String(8), nullable=True)
     claimed_at = Column(DateTime(timezone=True), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=True)  # the proposals' end
     # NOT NULL + server_default, as the migration (TD-006 lesson)
