@@ -1,7 +1,7 @@
 # Dish tidy-up and several actions in one message — design (2026-11-13)
 
-> **Status:** slices 1–2 built on `feat/dish-tidy` (text checkbox screen, weekly send);
-> slice 3 (widget) and slices 4–5 (several actions) not started. Owner's answers in §5.
+> **Status:** slices 1–2 (text checkbox screen, weekly send) and slices 4–5 (several actions,
+> `feat/multi-action-plan`) released 2026-11-14; slice 3 (widget) not started. Owner's answers in §5.
 > Two features that share one core: **dish operations callable without a tap**
 > (merge, star, rename, hide) with **one undo for a group of them**.
 >
