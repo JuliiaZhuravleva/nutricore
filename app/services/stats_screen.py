@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import html
 import logging
-from dataclasses import replace
+import re
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import object_session
@@ -43,6 +45,7 @@ from app.services import (
     day_card,
     food_lists,
     meal_items,
+    name_match,
     next_step,
     routines,
     step_count,
@@ -654,6 +657,94 @@ def tick_by_name(
             crud_routine_tick.tick(db, user.id, routine["id"], today)
             return routine.get("name")
     return None
+
+
+# Ticks in words: «отметь зарядку», «зарядка сделана», «сделала зарядку», each with
+# «вчера». Exact name first, then by word stem; the verb decides what a miss means.
+_TICK_FORMS = (
+    (re.compile(r"^отметь (.+)$"), True),
+    (re.compile(r"^(.+) сделан[аоы]?$"), False),
+    (re.compile(r"^сделал[аи]? (.+)$"), False),
+    (re.compile(r"^(.+) сделал[аи]?$"), False),
+)
+_TICK_EDGE = " \t\n.,;!"
+TICK_YESTERDAY = " — вчера"
+NO_SUCH_ROUTINE = "✖ Не вышло: «{name}» — этой рутины {day} нет на карточке."
+SEVERAL_ROUTINES = (
+    "✖ Не вышло: «{name}» — так называются несколько рутин: {names}. Напиши точнее."
+)
+
+
+@dataclass(frozen=True)
+class TickWords:
+    """``name``: what was ticked (with «— вчера» for yesterday); ``refusal``: the plain
+    line when the words were a tick that cannot be done. Exactly one is set."""
+
+    name: Optional[str] = None
+    refusal: Optional[str] = None
+
+
+def _tick_phrase(text: str | None) -> tuple[str, bool, bool] | None:
+    """(the routine's words, yesterday?, the explicit «отметь»?) or None."""
+    folded = " ".join((text or "").casefold().replace("ё", "е").split())
+    tokens = folded.strip(_TICK_EDGE).split(" ")
+    if tokens.count("вчера") > 1:
+        return None
+    rest = " ".join(t for t in tokens if t != "вчера")
+    for form, explicit in _TICK_FORMS:
+        match = form.match(rest)
+        if match and name_match.words(match.group(1)):
+            return match.group(1), "вчера" in tokens, explicit
+    return None
+
+
+def _routine_matches(due: list[dict], said: str) -> list[dict]:
+    """The routines of ``due`` the words name: an exact name alone, else every routine
+    whose words each of the said words is akin to."""
+    wanted = name_match.words(said)
+    exact = [r for r in due if name_match.words(str(r.get("name"))) == wanted]
+    if exact:
+        return exact
+    return [
+        r
+        for r in due
+        if all(
+            any(name_match.akin(w, n) for n in name_match.words(str(r.get("name"))))
+            for w in wanted
+        )
+    ]
+
+
+def tick_by_words(
+    db, telegram_id: int, text: str | None, now: datetime | None = None
+) -> TickWords | None:
+    """A typed or said tick in words. None: not a tick (a food, as ever)."""
+    phrase = _tick_phrase(text)
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if phrase is None or user is None:
+        return None
+    said, yesterday, explicit = phrase
+    day = local_time(now or datetime.now(UTC), user_zone(user)).date()
+    if yesterday:
+        day -= timedelta(days=1)
+    due, _done = _day_ticks(db, user, day)
+    found = _routine_matches(due, said)
+    if len(found) > 1:
+        names = ", ".join(html.escape(str(r.get("name"))) for r in found)
+        return TickWords(
+            refusal=SEVERAL_ROUTINES.format(name=html.escape(said), names=names)
+        )
+    if not found:
+        if not explicit:
+            return None  # «сделала омлет» is food, not a refusal
+        when = "вчера" if yesterday else "сегодня"
+        return TickWords(
+            refusal=NO_SUCH_ROUTINE.format(name=html.escape(said), day=when)
+        )
+    crud_routine_tick.tick(db, user.id, found[0]["id"], day)
+    return TickWords(
+        name=str(found[0].get("name")) + (TICK_YESTERDAY if yesterday else "")
+    )
 
 
 # --- operations -------------------------------------------------------------

@@ -1284,9 +1284,19 @@ def route_text(
             return route
     if weight_screen.KG_PATTERN.match(text):
         return Route(WEIGHT)
+    said_kg = weight_screen.parse_words(text)
+    if said_kg is not None:  # «вес 72,4», «вчера вешу 72 кг»
+        if said_kg[0] is None:
+            return Route(LINE, Line(weight_screen.refusal(text)))
+        return Route(WEIGHT)
     name = stats_screen.tick_by_name(db, came.telegram_id, text)
     if name is not None:
         return Route(TICK, tick=name)
+    ticked = stats_screen.tick_by_words(db, came.telegram_id, text)
+    if ticked is not None:  # «отметь зарядку», «зарядку сделала», with «вчера»
+        if ticked.refusal is not None:
+            return Route(LINE, Line(ticked.refusal))
+        return Route(TICK, tick=ticked.name)
 
     if _COLON_CLOCK.fullmatch(text):
         parsed = _clock_in(text)

@@ -11,6 +11,7 @@ notice, never an error. Every id is checked against the tapping user.
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,33 @@ def parse_kg(text: str | None) -> float | None:
         return None
     kg = float(match.group(1).replace(",", "."))
     return kg if MIN_KG <= kg <= MAX_KG else None
+
+
+# Words, not a bare number: «вес 72,4», «вешу 72,4 кг», each with «вчера» anywhere.
+PHRASE_MAX_KG = 300.0
+_PHRASE = re.compile(r"^(?:вес|вешу) (\d{1,4}(?:[.,]\d{1,2})?)(?: ?(?:кг|kg))?$")
+_EDGE = " \t\n.,;!"
+REFUSED = "✖ Не вышло: «{words}» — вес записываю от 20 до 300 кг."
+
+
+def parse_words(text: str | None) -> tuple[float | None, bool] | None:
+    """(kg, yesterday?) of a weight in words; kg None when it is out of 20–300.
+    None: the text is no such phrase (a bare number is ``parse_kg``'s)."""
+    folded = " ".join((text or "").casefold().replace("ё", "е").split()).strip(_EDGE)
+    tokens = folded.split(" ")
+    if tokens.count("вчера") > 1:
+        return None
+    yesterday = "вчера" in tokens
+    match = _PHRASE.match(" ".join(t for t in tokens if t != "вчера"))
+    if not match:
+        return None
+    kg = float(match.group(1).replace(",", "."))
+    return (kg if MIN_KG <= kg <= PHRASE_MAX_KG else None), yesterday
+
+
+def refusal(text: str | None) -> str:
+    """The plain line for a weight phrase out of range, with the person's words."""
+    return REFUSED.format(words=html.escape(" ".join((text or "").split())))
 
 
 def _kg(value: float) -> str:
@@ -116,8 +144,12 @@ def view_screen(
     return Screen("\n".join(lines), markup)
 
 
-def saved_screen(metric: BodyMetric, previous: BodyMetric | None) -> Screen:
+def saved_screen(
+    metric: BodyMetric, previous: BodyMetric | None, yesterday: bool = False
+) -> Screen:
     text = f"✅ <b>Записано:</b> {_kg(metric.weight)}"
+    if yesterday:
+        text += " · вчера"
     if previous is not None:
         text += f"\nС прошлого раза: {_delta(metric.weight - previous.weight)}"
     rows = [ok_row(), [_btn("↩️ Отменить", "u", metric.id)]]
@@ -153,18 +185,24 @@ def open_view(
     return view_screen(weighings, week, user_zone(user), notice, back)
 
 
-def record(db, telegram_id: int, kg: float, username: str | None = None) -> Screen:
-    """Save a typed weight now; the screen offers the undo."""
+def record(
+    db,
+    telegram_id: int,
+    kg: float,
+    username: str | None = None,
+    yesterday: bool = False,
+) -> Screen:
+    """Save a typed weight now (``yesterday``: at this clock a day back); the screen
+    offers the undo."""
     user = _user(db, telegram_id, username, create=True)
+    moment = datetime.now(UTC) - timedelta(days=1 if yesterday else 0)
     last = crud_body_metric.latest_weights(db, user.id, 1)
     metric = crud_body_metric.create(
         db,
-        BodyMetricCreate(
-            timestamp=datetime.now(UTC), weight=kg, metrics={"source": SOURCE}
-        ),
+        BodyMetricCreate(timestamp=moment, weight=kg, metrics={"source": SOURCE}),
         user.id,
     )
-    return saved_screen(metric, last[0] if last else None)
+    return saved_screen(metric, last[0] if last else None, yesterday)
 
 
 def typed(
@@ -173,7 +211,12 @@ def typed(
     """A weight written or said: saved with its undo, or the hint if it is no weight."""
     kg = parse_kg(text)
     if kg is None:
-        return Screen("Не похоже на вес. " + ASK, None)
+        said = parse_words(text)
+        if said is None:
+            return Screen("Не похоже на вес. " + ASK, None)
+        if said[0] is None:
+            return Screen(refusal(text), None)
+        return record(db, telegram_id, said[0], username, said[1])
     return record(db, telegram_id, kg, username)
 
 
