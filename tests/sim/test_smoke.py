@@ -477,7 +477,7 @@ def test_sim_sh_usage_names_every_command():
         a for a in _parser()._actions if isinstance(a, argparse._SubParsersAction)
     ]
     commands = sub.choices
-    assert len(commands) == 12
+    assert len(commands) == 13
     for name in commands:
         assert f"#   {name} " in script, name
     done = subprocess.run(
@@ -593,3 +593,36 @@ def test_tap_key_sends_the_keyboard_key_past_a_stale_inline_button(
         cli.cmd_tap(state, argparse.Namespace(label="Удалить", msg=None, key=True))
     with pytest.raises(SystemExit, match="--msg is inline"):
         cli.cmd_tap(state, argparse.Namespace(label="Избранное", msg=1, key=True))
+
+
+def test_a_queued_planner_answer_records_two_meals(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    out = _sim(w, "plan", 'meal "каша"\\nmeal "суп"')
+    assert "1 answer(s) queued" in out
+    out = _sim(w, "say", "на завтрак каша, в обед суп")
+    assert "planner \u2190 " in out and "на завтрак каша" in out
+    assert 'planner \u2192 meal "каша"\nmeal "суп"' in out
+    assert "(none queued)" not in out and "system" not in out.lower()
+    day = _sim(w, "day")
+    assert "2 records" in day and "каша" in day and "суп" in day
+    # the answer was consumed: the next message meets an empty queue
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == []
+
+
+def test_answers_are_taken_first_in_first_out(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    _sim(w, "plan", "garbage line")
+    _sim(w, "plan", 'meal "чай"')
+    first = _sim(w, "say", "на завтрак чай, в обед суп")
+    assert "planner \u2192 garbage line" in first
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == ['meal "чай"']
+
+
+def test_an_empty_planner_queue_behaves_as_before(tmp_path):
+    w = tmp_path / "w"
+    _sim(w, "new", "Julia", "--owner")
+    out = _sim(w, "say", "на завтрак каша, в обед суп")
+    assert "planner \u2192 (none queued)" in out
+    assert json.loads((w / "sim.json").read_text())["planner_queue"] == []
