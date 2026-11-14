@@ -137,7 +137,7 @@ _SCRIPT = (
     "on=S.u?0:end&&!S.d?g[1]>1:(M>>k&1)&&!(F>>k&1),"
     "b=$('button','r'+(on?' on':'')),c=$('span','c'),m=$('span','m',r[0]);"
     "if(on)c.append(ic('y'));else if(end)c.textContent='—';"
-    "if(r[1])m.append($('i',0,' · '+r[1]));const w=word(k,g[1]);"
+    "const w=word(k,g[1]);if(r[1]&&!(w&&g[1]>1))m.append($('i',0,' · '+r[1]));"
     "if(w)m.append($('div','w',w));b.append(c,m);"
     "b.onclick=()=>{if(end||busy)return;M^=1<<k;draw()};L.append(b)})});"
     "if(!end){const n=bits(M&D.c),a=$('button','a',busy?T.wait:n?T.apply+n+')':T.fin);"
