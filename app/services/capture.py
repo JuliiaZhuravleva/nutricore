@@ -1368,6 +1368,8 @@ def _routine_words_in_plan(db, came: Incoming, user: User, text: str) -> bool:
     «отметь»), with another clause beside it. «омлет сделала, вкусно» is food."""
     if came.forward_date is not None or len(plan_words._clauses(text)) < 2:
         return False
+    if "?" in text:  # «вес 72,4, это нормально?» asks, it does not tell
+        return False
     if plan_words.weight_clause(text):
         return True
     ticks = plan_words.tick_clauses(text)

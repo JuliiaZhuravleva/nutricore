@@ -177,6 +177,22 @@ def test_a_weight_out_of_range_is_refused_with_the_approved_text():
     assert _checked("weight 20", "вес 20").weight is not None
 
 
+def test_a_refused_weight_or_tick_is_not_also_missed():
+    weight = _checked(
+        'weight 7.24\nmeal "на завтрак каша"', "вес 7,24, на завтрак каша"
+    )
+    assert len(weight.refused) == 1 and weight.missed == []
+    tick = _checked('tick @9 "медитация"\nmeal "каша"', "отметь медитацию, каша")
+    assert len(tick.refused) == 1 and tick.missed == []
+
+
+def test_the_weight_is_the_number_after_its_word():
+    # «каша 200 г» says 200, but not as the weight: the model's «weight 200» is refused.
+    checked = _checked("weight 200", "вес 72,4, каша 200 г")
+    assert checked.weight is None and checked.refused[0].why == plan_service.WHY_WORDS
+    assert _checked("weight 72.4", "вешу 72,4 кг, каша").weight is not None
+
+
 def test_a_weight_the_message_does_not_say_is_refused():
     checked = _checked("weight 80", MESSAGE)
     assert checked.weight is None
@@ -527,6 +543,8 @@ def test_a_weight_or_tick_beside_food_goes_to_the_planner(db, owner, message):
         "вес порции 300 г, каша",
         "омлет сделала, вкусно",
         "вес 72,4 и каша",
+        "вес 72,4, это нормально?",  # a question asks, it writes nothing
+        "зарядку сделала, а суп можно?",
     ],
 )
 def test_other_words_do_not_become_a_plan(db, owner, message):

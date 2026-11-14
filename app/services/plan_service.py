@@ -517,8 +517,10 @@ def check(parsed: grammar.Parsed, text: str, book: Book) -> Checked:
             checked.acts.append(act)
     _routine_words(parsed, text, book, checked)
     said = frozenset(
-        (_WEIGHT_SAID if checked.weight is not None else frozenset())
-        | (_TICK_SAID if checked.ticks else frozenset())
+        # a refused weight or tick has its ✖ line: not «Не записано» again
+        (_WEIGHT_SAID if parsed.weights else frozenset())
+        | (_TICK_SAID if parsed.ticks else frozenset())
+        | {w for r in checked.refused if r.final for w in _words(r.label)}
     )
     if not parsed.over_meals and not parsed.over_dish:
         checked.missed = _missed(
@@ -527,7 +529,8 @@ def check(parsed: grammar.Parsed, text: str, book: Book) -> Checked:
     return checked
 
 
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+# The number right after «вес»/«вешу»: «вес 72,4, каша 200 г» weighs 72,4, not 200.
+_WEIGHT_NUMBER = re.compile(r"(?:вес|вешу)\s*:?\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
 
 
 def _kg_text(command: grammar.Command) -> str:
@@ -547,7 +550,7 @@ def _routine_words(
 ) -> None:
     """D2: the weight and the ticks of the lines, checked strictly. A weight is a
     number the message says, 20 to 300 kg; a routine is one of the list given."""
-    said = {float(n.replace(",", ".")) for n in _NUMBER.findall(text)}
+    said = {float(n.replace(",", ".")) for n in _WEIGHT_NUMBER.findall(text)}
     for command in parsed.weights:
         label = f"вес {_kg_text(command)}"
         if checked.weight is not None:
