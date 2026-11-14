@@ -419,7 +419,7 @@ def test_a_plan_lost_in_a_restart_gets_its_failure_line(db, owner, reader, clock
     assert shown["message_id"] == 777 and shown["text"].startswith(capture.PLAN_FAILED)
 
 
-def _stuck(db, owner, kind: str) -> int:
+def _stuck(db, owner, kind: str, line=777) -> int:
     long_ago = NOW - capture.STUCK_AFTER - timedelta(minutes=1)
     return crud_message_plan.open(
         db,
@@ -430,7 +430,7 @@ def _stuck(db, owner, kind: str) -> int:
         text=DAY,
         sent_at=long_ago,
         want="meals",
-        line_message_id=777,
+        line_message_id=line,
         created_at=long_ago,
     ).id
 
@@ -449,10 +449,67 @@ def _swept() -> Wire:
 def test_a_voice_plan_lost_in_a_restart_is_given_back_quietly(db, owner, reader, clock):
     # The voice's own meal is read again as food after a restart: a 🔁 here would
     # write the same food twice.
-    _stuck(db, owner, "voice")
+    _stuck(db, owner, "voice", line=None)
     wire = _swept()
     assert _plan(db).status == crud_message_plan.SINGLE
     assert wire.seen() == []
+
+
+def test_a_voice_plan_lost_on_its_retry_fails_on_its_line(db, owner, reader, clock):
+    # On 🔁 the voice's own meal is already gone: given back quietly, the line would
+    # stay «читаю…» and nothing would ever be written.
+    _stuck(db, owner, "voice", line=777)
+    wire = _swept()
+    assert _plan(db).status == crud_message_plan.FAILED
+    (shown,) = wire.edits()
+    assert shown["message_id"] == 777 and shown["text"].startswith(capture.PLAN_FAILED)
+
+
+def test_a_plan_written_before_a_restart_stops_reading(db, owner, reader, clock):
+    # Done, and the restart came before its lines went out: the meals are read
+    # again on their own; the «читаю…» line is told so, once.
+    plan = db.get(MessagePlan, _stuck(db, owner, "text"))
+    plan.status = crud_message_plan.DONE
+    db.commit()
+    wire = _swept()
+    (shown,) = wire.edits()
+    assert shown["message_id"] == 777 and shown["text"] == capture.PLAN_ANSWER_LOST
+    db.expire_all()
+    assert _plan(db).line_ids == []
+    assert _swept().seen() == []  # once
+
+
+def test_a_plan_written_just_now_is_not_owed(db, owner, reader, clock):
+    reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
+    run(said(text(DAY)))
+    plan = _plan(db)
+    plan.line_ids = None  # as if its lines were still going out
+    db.commit()
+    assert _swept().seen() == []
+
+
+def test_bookkeeping_after_the_lines_never_takes_the_answer_back(
+    db, owner, reader, clock, monkeypatch
+):
+    def broken(*args, **kwargs):
+        raise RuntimeError("the database blinked")
+
+    monkeypatch.setattr(plan_service, "shown", broken)
+    monkeypatch.setattr(capture, "map_message", broken)
+    reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
+    wire = run(said(text(DAY)))
+    assert capture.PLAN_ANSWER_LOST not in wire.seen()
+    assert sorted(reader.text) == ["овсянка", "суп"]  # the reads still start
+
+
+def test_failed_logs_where_never_what():
+    try:
+        raise RuntimeError("row: Мария, 900 ккал")
+    except RuntimeError as e:
+        said_ = tg._failed(e)
+    assert said_.startswith("RuntimeError at test_message_plans.py:")
+    assert "Мария" not in said_ and "ккал" not in said_
+    assert tg._failed(RuntimeError("x")) == "RuntimeError"
 
 
 def test_an_ended_plan_is_not_ended_again(db, owner, reader, clock):
@@ -569,3 +626,33 @@ def test_a_voice_dish_command_is_done_and_answered_on_its_line(
     assert _live_meals(db) == []
     assert _stars(db, seen) == ["гречка"]
     assert "✓ ⭐ гречка" in wire.line(0)[-1]
+
+
+def test_a_voice_meal_leaves_with_its_parts_in_one_commit(
+    db, seen, reader, whisper, clock, monkeypatch
+):
+    # The voice's own meal retires inside execute's commit: a crash before the old
+    # retire step cannot leave it to be read again next to its parts.
+    def broken(*args, **kwargs):
+        raise RuntimeError("after the commit")
+
+    monkeypatch.setattr(capture, "retire_planned", broken)
+    reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
+    whisper.answers(DAY)
+    run(said(_voice()))
+    assert len(_live_meals(db)) == 2
+    assert len(_meals(db)) == 3
+
+
+def test_a_voice_plan_that_breaks_before_writing_is_read_as_food(
+    db, seen, reader, whisper, clock, monkeypatch
+):
+    def broken(*args, **kwargs):
+        raise RuntimeError("before the commit")
+
+    monkeypatch.setattr(plan_service, "ask_of", broken)
+    whisper.answers(DAY)
+    run(said(_voice()))
+    (meal,) = _live_meals(db)
+    assert meal.time_precision == "day_only"  # read as food, as before plans
+    assert _plan(db).status == crud_message_plan.SINGLE

@@ -65,13 +65,18 @@ class CRUDMessagePlan:
             )
         )
 
-    def owed(self, db: Session) -> List[MessagePlan]:
-        """Done plans whose messages never went out: ``line_ids`` is written, even as
-        [], once they are sent."""
+    def owed(self, db: Session, before: datetime) -> List[MessagePlan]:
+        """Done plans, opened before ``before``, whose messages never went out (a
+        restart after the commit): ``line_ids`` is written, even as [], once they
+        are sent."""
         return list(
             db.scalars(
                 select(MessagePlan)
-                .where(MessagePlan.status == DONE, MessagePlan.line_ids.is_(None))
+                .where(
+                    MessagePlan.status == DONE,
+                    MessagePlan.line_ids.is_(None),
+                    MessagePlan.created_at < before,
+                )
                 .order_by(MessagePlan.id)
             )
         )

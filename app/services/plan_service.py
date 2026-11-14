@@ -18,6 +18,7 @@ from typing import Optional
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_message_plan import crud_message_plan
 from app.crud.crud_personal_food import crud_personal_food
+from app.models.meal import Meal
 from app.models.message_plan import MessagePlan
 from app.models.personal_food import PersonalFood
 from app.models.user import User
@@ -650,11 +651,18 @@ class Executed:
 
 
 def execute(
-    db, plan_id: int, checked: Checked, came, now: Optional[datetime] = None
+    db,
+    plan_id: int,
+    checked: Checked,
+    came,
+    now: Optional[datetime] = None,
+    retire: Optional[int] = None,
 ) -> Optional[Executed]:
     """The meals and the dish changes of a plan, and the plan row as done, in one
     commit under the person's lock. None: the plan is no longer reading (the sweep
-    or a second run got it first)."""
+    or a second run got it first). ``retire``: a heard voice's own meal, which
+    leaves in the same commit, so a crash or a restart after it cannot read the
+    voice again as food next to its parts."""
     from app.services import capture, reminders
 
     plan = db.get(MessagePlan, plan_id)
@@ -671,11 +679,20 @@ def execute(
     group_id = dish_ops.new_group()
     done = do_dishes(db, user, checked.acts, group_id, now or datetime.now(UTC))
     finish(db, plan, checked, [meal.id for meal, _ in meals], group_id)
+    if retire is not None:
+        _retire(db, user, retire, now or datetime.now(UTC))
     db.commit()
     if send is not None and meals:
         reminders.answered(db, user, send, came)
     born = capture.parts_shown(db, came, user, meals)
     return Executed(born, answer(checked, done), done.changed)
+
+
+def _retire(db, user: User, meal_id: int, now: datetime) -> None:
+    meal = db.get(Meal, meal_id)
+    if meal is not None and meal.user_id == user.id and meal.deleted_at is None:
+        meal.reading_status = "no_food"
+        meal.deleted_at = now
 
 
 # --- the plan row, for the bot -----------------------------------------------------
