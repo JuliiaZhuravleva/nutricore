@@ -604,6 +604,10 @@ def test_a_queued_planner_answer_records_two_meals(tmp_path):
     assert "planner \u2190 " in out and "на завтрак каша" in out
     assert 'planner \u2192 meal "каша"\nmeal "суп"' in out
     assert "(none queued)" not in out and "system" not in out.lower()
+    assert "Now:" not in out  # the preview shows the person's words, not the header
+    # the one-time hint closes the answer: under the last part, once
+    assert out.count("На этом всё") == 1
+    assert out.index("без времени: суп.") < out.index("На этом всё")
     day = _sim(w, "day")
     assert "2 records" in day and "каша" in day and "суп" in day
     # the answer was consumed: the next message meets an empty queue

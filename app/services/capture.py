@@ -2184,11 +2184,11 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
 
 def parts_shown(db, came: Incoming, user: User, meals: list) -> list:
     """After the commit: each part's first line and its read, as ``born`` gives one
-    meal's. The one-time hint goes under the first part only."""
+    meal's. The one-time hint («На этом всё») goes under the last part only."""
     out = []
     for number, (meal, source) in enumerate(meals):
         db.refresh(meal)
-        hint = _take_hint(db, user) if number == 0 else False
+        hint = _take_hint(db, user) if number == len(meals) - 1 else False
         words = _record_text(db, meal, user, hint=hint, reading=True)
         markup = _first_markup(db, meal, meal_card.join_row(db, meal))
         first = Line(words, markup, meal_id=meal.id)

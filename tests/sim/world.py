@@ -382,7 +382,9 @@ def _install_fakes(state: State) -> None:
         # the planner fails, and a message for it goes where it went before plans.
         # The system prompt is never shown: only the person's words.
         asked = next((m for m in reversed(messages) if m.get("role") == "user"), {})
-        seen = str(asked.get("content", "")).replace("\n", " ")[:60]
+        said = str(asked.get("content", ""))
+        said = said.split("Message:", 1)[-1].strip()  # past the date header
+        seen = said.replace("\n", " ")[:60]
         state.events.append(("planner_in", seen))
         queue = state.data["planner_queue"]
         if not queue:
