@@ -21,6 +21,7 @@ from app.models import (
     MessagePlan,
     PersonalFood,
     RecordEvent,
+    User,
 )
 from app.services import capture, plan_service
 from app.services import telegram as tg
@@ -379,7 +380,10 @@ def test_another_persons_plan_cannot_be_undone(db, owner, reader, clock):
     reader.plan = 'star "гречка"'
     run(said(text("добавь гречку в избранное")))
     plan = _plan(db)
-    plan.user_id = owner.id + 1000  # as if it were someone else's
+    other = User(telegram_id=OWNER + 1, settings={"timezone": "Asia/Tbilisi"})
+    db.add(other)
+    db.flush()
+    plan.user_id = other.id  # someone else's plan
     db.commit()
     run(tapped(f"pl:u:{plan.id}"))
     assert _stars(db, owner) == ["гречка"]
