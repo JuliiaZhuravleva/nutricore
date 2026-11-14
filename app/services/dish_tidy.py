@@ -81,6 +81,10 @@ _WORD = re.compile(r"[^\W_]+|\+")
 # --- names ------------------------------------------------------------------------
 
 
+def aware(moment: datetime) -> datetime:
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)  # SQLite drops it
+
+
 def _fold(text: str) -> str:
     return text.casefold().replace("ё", "е")
 
@@ -311,7 +315,7 @@ def _declined(key: str, fingerprint: str, declines: dict, now: datetime) -> bool
     decline = declines.get(key)
     if decline is None:
         return False
-    at = decline.at if decline.at.tzinfo else decline.at.replace(tzinfo=UTC)
+    at = aware(decline.at)
     if now - at > timedelta(days=DECLINE_DAYS):
         return False
     return decline.fingerprint is None or decline.fingerprint == fingerprint
@@ -476,9 +480,7 @@ def _eaten(db, user: User, zone, first_day: date) -> tuple:
         counts[food_id] = counts.get(food_id, 0) + 1
         if moment is None:
             continue
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=UTC)  # SQLite drops it
-        day = local_time(moment, zone).date()
+        day = local_time(aware(moment), zone).date()
         if day >= first_day:
             days.setdefault(food_id, set()).add(day)
     return counts, days
@@ -545,6 +547,34 @@ def hand_unmerges(db, user: User, now: datetime) -> dict:
     return found
 
 
+def taken_back_stars(db, user: User, now: datetime) -> dict:
+    """⭐ set from words (a plan's line, a group) and taken back with the plan's ↩️ in
+    the last ``DECLINE_DAYS``: not proposed again, like a merge taken apart. An undo of
+    a tidy batch's own ⭐ is the batch's decline already, so it is left out here."""
+    since = now - timedelta(days=DECLINE_DAYS)
+    undone = aliased(RecordEvent)
+    tidy_groups = select(DishTidyBatch.group_id).where(DishTidyBatch.user_id == user.id)
+    found = {}
+    for event in db.scalars(
+        select(RecordEvent)
+        .join(undone, undone.id == RecordEvent.undoes_event_id)
+        .where(
+            RecordEvent.user_id == user.id,
+            RecordEvent.kind == "food_star",
+            RecordEvent.created_at >= since,
+            or_(
+                RecordEvent.group_id.is_(None),
+                undone.group_id.is_(None),
+                undone.group_id.not_in(tidy_groups),
+            ),
+        )
+        .order_by(RecordEvent.created_at)
+    ):
+        if event.food_id:
+            found[star_key(event.food_id)] = Decline(None, event.created_at)
+    return found
+
+
 def close_pairs(db, user: User, dish_ids: set) -> dict:
     """Stored embeddings near each other, among live dishes. Never a model call; a
     failed query leaves the stems alone to judge, and says so at ERROR."""
@@ -562,7 +592,7 @@ def close_pairs(db, user: User, dish_ids: set) -> dict:
 
 def declines(db, user: User, now: datetime) -> dict:
     """Every pair and ⭐ the person turned down lately: rows unticked or returned in
-    a batch, and merges taken apart by hand or from words."""
+    a batch, merges taken apart by hand or from words, and ⭐ from words taken back."""
     since = now - timedelta(days=DECLINE_DAYS)
     found = {
         key: Decline(fingerprint, at)
@@ -571,6 +601,7 @@ def declines(db, user: User, now: datetime) -> dict:
         ).items()
     }
     found.update(hand_unmerges(db, user, now))
+    found.update(taken_back_stars(db, user, now))
     return found
 
 
