@@ -126,8 +126,70 @@ class CRUDMessagePlan:
         return self.ended(db, plan_id, SINGLE) is not None
 
     def fail(self, db: Session, plan_id: int) -> bool:
-        """Nothing written: the row is failed. False: ended meanwhile."""
-        return self.ended(db, plan_id, FAILED) is not None
+        """Nothing written: the row is failed, its failed line not yet shown
+        (``fail_shown`` False; ``fail_shown_of`` sets it). False: ended meanwhile."""
+        plan = self.ended(db, plan_id, FAILED)
+        if plan is None:
+            return False
+        plan.commands = {**(plan.commands or {}), "fail_shown": False}
+        db.commit()
+        return True
+
+    def fail_shown(self, db: Session, plan_id: int) -> None:
+        """The failed line went out: the sweep leaves the plan alone. A new dict."""
+        plan = db.get(MessagePlan, plan_id)
+        if plan is not None:
+            plan.commands = {**(plan.commands or {}), "fail_shown": True}
+            db.commit()
+
+    def failed_unshown(
+        self, db: Session, before: datetime, since: datetime
+    ) -> List[MessagePlan]:
+        """Failed plans created in [since, before) whose failed line never went out.
+        Only a plan that says so (``fail_shown`` False, not absent: a row from before
+        the marker is left alone). Filtered here, not in SQL: no JSON operators."""
+        rows = db.scalars(
+            select(MessagePlan)
+            .where(
+                MessagePlan.status == FAILED,
+                MessagePlan.created_at < before,
+                MessagePlan.created_at >= since,
+            )
+            .order_by(MessagePlan.id)
+        )
+        return [p for p in rows if (p.commands or {}).get("fail_shown") is False]
+
+    def done_between(
+        self, db: Session, after: datetime, upto: datetime
+    ) -> List[MessagePlan]:
+        """Done plans created in (after, upto]: a bounded window, so a sweep that
+        moves ``after`` forward never reads a plan twice."""
+        return list(
+            db.scalars(
+                select(MessagePlan)
+                .where(
+                    MessagePlan.status == DONE,
+                    MessagePlan.created_at > after,
+                    MessagePlan.created_at <= upto,
+                )
+                .order_by(MessagePlan.id)
+            )
+        )
+
+    def close_asks(self, plan: MessagePlan) -> list:
+        """Every open question of the plan becomes ``closed``, in one new dict; the
+        ask dicts that were open are returned (as they were). The caller commits."""
+        asks = self.asks_of(plan)
+        was = [dict(a) for a in asks if a.get("state") == "open"]
+        if was:
+            self.set_asks(
+                plan,
+                [
+                    {**a, "state": "closed"} if a.get("state") == "open" else a
+                    for a in asks
+                ],
+            )
+        return was
 
     def nothing(self, db: Session, plan_id: int) -> bool:
         """Done with no lines to send. False: ended meanwhile."""

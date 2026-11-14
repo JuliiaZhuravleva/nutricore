@@ -10,6 +10,7 @@ NOTHING_LINE = (
 )
 SAME_TOAST = "Уже сделано."
 GONE_TOAST = "Это сообщение уже не изменить."
+CLOSED_LINE = "Вопрос закрыт: прошло 2 дня. Ничего не изменено."
 
 
 def answer_markup(plan_id: int, changed: bool):
