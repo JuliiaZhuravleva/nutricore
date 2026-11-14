@@ -4,10 +4,10 @@ The unique key on (chat_id, message_id) is the claim, so ``open`` returning None
 the message is already planned (a replay or an edit) and nothing more may happen.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -80,6 +80,89 @@ class CRUDMessagePlan:
                 .order_by(MessagePlan.id)
             )
         )
+
+    # --- the row's state moves (pure row work; the caller holds any lock) ---------
+
+    def ended(self, db: Session, plan_id: int, status: str) -> Optional[MessagePlan]:
+        """Ends a reading plan, in one UPDATE: a sweep racing ``execute`` waits for
+        its commit and then finds the row done, never turns done into failed."""
+        moved = db.execute(
+            update(MessagePlan)
+            .where(MessagePlan.id == plan_id, MessagePlan.status == READING)
+            .values(status=status)
+        ).rowcount
+        db.commit()
+        return db.get(MessagePlan, plan_id) if moved else None
+
+    def set_line(self, db: Session, plan_id: int, line_id: Optional[int]) -> None:
+        plan = db.get(MessagePlan, plan_id)
+        if plan is not None:
+            plan.line_message_id = line_id
+            db.commit()
+
+    def shown(
+        self, db: Session, plan_id: int, line_ids: list, result_id: Optional[int]
+    ) -> None:
+        plan = db.get(MessagePlan, plan_id)
+        if plan is not None:
+            plan.line_ids = list(line_ids)
+            plan.result_message_id = result_id
+            db.commit()
+
+    def unanswered(self, db: Session, plan_id: int) -> Optional[tuple]:
+        """(chat_id, message_id, line id) of a plan that is no longer reading and
+        whose lines never went out (a crash after its commit), else None."""
+        plan = db.get(MessagePlan, plan_id)
+        if plan is None or plan.status == READING:
+            return None
+        if plan.status == DONE and plan.line_ids is not None:
+            return None
+        if plan.status == FAILED:
+            return None
+        return plan.chat_id, plan.message_id, plan.line_message_id
+
+    def fall_back(self, db: Session, plan_id: int) -> bool:
+        """The message goes the way it went before plans. False: ended already."""
+        return self.ended(db, plan_id, SINGLE) is not None
+
+    def fail(self, db: Session, plan_id: int) -> bool:
+        """Nothing written: the row is failed. False: ended meanwhile."""
+        return self.ended(db, plan_id, FAILED) is not None
+
+    def nothing(self, db: Session, plan_id: int) -> bool:
+        """Done with no lines to send. False: ended meanwhile."""
+        plan = self.ended(db, plan_id, DONE)
+        if plan is None:
+            return False
+        plan.line_ids = []
+        db.commit()
+        return True
+
+    def reopen(self, db: Session, plan: MessagePlan, line_id: Optional[int]) -> bool:
+        """A failed plan, already locked and refreshed, back to reading on the
+        tapped line. False (rolled back): it is not failed any more."""
+        if plan.status != FAILED:
+            db.rollback()
+            return False
+        plan.status = READING
+        plan.line_message_id = line_id
+        plan.created_at = datetime.now(UTC)  # the sweep's clock starts again
+        db.commit()
+        return True
+
+    def finish(
+        self, plan: MessagePlan, meal_ids: list, group_id: str, commands: dict
+    ) -> None:
+        """The plan row as done: what ran and what it wrote. The caller commits."""
+        plan.status = DONE
+        plan.meal_ids = meal_ids
+        plan.group_id = group_id
+        plan.commands = commands
+
+    def undone(self, db: Session, plan: MessagePlan, commands: dict) -> None:
+        """Marks the plan's dish changes as taken back, committed."""
+        plan.commands = {**commands, "undone": True}
+        db.commit()
 
 
 crud_message_plan = CRUDMessagePlan()

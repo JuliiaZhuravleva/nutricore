@@ -76,6 +76,7 @@ from app.services import (
     morning,
     owner_buttons,
     people_screen,
+    plan_screen,
     plan_service,
     portion_suggestions,
     reminders,
@@ -1651,7 +1652,7 @@ async def _plan_text(update, context, came: capture.Incoming, route) -> "_Went":
         return _Went.REFUSED
     if plan_id is None:
         return _Went.WRITTEN  # a replay: the first one answers
-    sent = await _send_line(message, capture.Line(plan_service.READING_LINE))
+    sent = await _send_line(message, capture.Line(plan_screen.READING_LINE))
     if sent is not None:
         try:
             with SessionLocal() as db:
@@ -1764,7 +1765,7 @@ async def _plan_show(application: Application, ask, executed, first_line) -> Non
     if executed.answer:
         line = capture.Line(
             html.escape(executed.answer),
-            plan_service.answer_markup(ask.plan_id, executed.changed),
+            plan_screen.answer_markup(ask.plan_id, executed.changed),
         )
         target = first_line if not executed.born else None
         result_id = await _put(bot, came.chat_id, came.message_id, target, line)
@@ -1838,7 +1839,7 @@ async def _plan_heard(application: Application, job: capture.Read, wants):
     try:
         with SessionLocal() as db:
             source = db.get(capture.MealSource, job.source_id)
-            came = replace(capture._heard_came(job, source, wants.words), kind="voice")
+            came = replace(capture.heard_came(job, source, wants.words), kind="voice")
             plan_id = plan_service.open_plan(db, came, wants.want, wants.words)
     except Exception as e:
         logger.error("Voice plan not opened: %s", _failed(e))
@@ -1911,7 +1912,7 @@ async def _plan_heard_on(application: Application, job: capture.Read, plan_id: i
     else:
         first = capture.Line(
             html.escape(executed.answer or ""),
-            plan_service.answer_markup(plan_id, executed.changed),
+            plan_screen.answer_markup(plan_id, executed.changed),
         )
     claimed = _retired(job, first)
     try:
@@ -1995,11 +1996,11 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with SessionLocal() as db:
         taken = plan_service.again(db, user.id, plan_id, line_id)
     if not taken:
-        await query.answer(plan_service.SAME_TOAST)
+        await query.answer(plan_screen.SAME_TOAST)
         return
     await query.answer()
     try:
-        await query.edit_message_text(plan_service.READING_LINE, reply_markup=None)
+        await query.edit_message_text(plan_screen.READING_LINE, reply_markup=None)
     except TelegramError as e:
         logger.warning("Plan line not edited: %s", type(e).__name__)
     _start_plan(context.application, plan_id)
@@ -3723,7 +3724,7 @@ def create_bot_application() -> Application:
     )
     # One message read as several actions: ↩️ of its dish changes, 🔁 of a failed one.
     application.add_handler(
-        CallbackQueryHandler(plan_callback, pattern=f"^{plan_service.CALLBACK_PREFIX}")
+        CallbackQueryHandler(plan_callback, pattern=f"^{plan_screen.CALLBACK_PREFIX}")
     )
     # 🍲 the tidy-up of the dish base (stateless, like favorites).
     application.add_handler(
