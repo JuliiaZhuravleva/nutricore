@@ -39,7 +39,8 @@ VERBS = (
         MEAL,
         'meal "<part of the message>"',
         "one meal eaten at its own time. Copy the whole part of the message about "
-        "it, time words included. Foods eaten together are one meal.",
+        "it, time words included. Foods eaten together are one meal; a day's list is one "
+        "meal for each group of foods eaten together.",
         'meal "на завтрак омлет с сыром"',
     ),
     Verb(

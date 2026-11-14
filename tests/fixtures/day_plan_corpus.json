@@ -1,0 +1,5230 @@
+{
+"\n\n<b>⚙️ Настройки</b>": [
+null,
+false
+],
+"\n<blockquote expandable>": [
+null,
+false
+],
+"\nСчитаю…": [
+null,
+false
+],
+"  ": [
+null,
+false
+],
+"   ": [
+null,
+false
+],
+" \"блюдо\"": [
+null,
+false
+],
+" два": [
+null,
+false
+],
+" на ": [
+null,
+false
+],
+" три": [
+null,
+false
+],
+" чай": [
+null,
+false
+],
+" чай\"": [
+null,
+false
+],
+"\"foods\": \"Рис, курица, овощи\"": [
+null,
+false
+],
+"\"foods\": null": [
+null,
+false
+],
+"&lt;b&gt;суп&lt;/b&gt; &amp;": [
+null,
+false
+],
+"(время пересланного сообщения)": [
+null,
+false
+],
+", ": [
+null,
+false
+],
+", вечером сырники": [
+null,
+false
+],
+"- ./": [
+null,
+false
+],
+"- render_jobs:/render": [
+null,
+false
+],
+"-C": [
+null,
+false
+],
+"-q": [
+null,
+false
+],
+".dockerignore": [
+null,
+false
+],
+".env.example": [
+null,
+false
+],
+".ogg": [
+null,
+false
+],
+"/api/v1/meals/": [
+null,
+false
+],
+"/file/": [
+null,
+false
+],
+"/reprocess": [
+null,
+false
+],
+"/v1/audio/transcriptions": [
+null,
+false
+],
+"1 вызов ИИ": [
+null,
+false
+],
+"1 порция": [
+null,
+false
+],
+"1. ✏️ «гречка», 13:20\n": [
+null,
+false
+],
+"1. 🎙 Голосовое, 13:20\n<blockquote expandable>Два &lt;банана&gt;.</blockquote>\n": [
+null,
+false
+],
+"1. 📷 Фото": [
+null,
+false
+],
+"1. 📷 Фото, 13:20 · оценка по фото\n": [
+null,
+false
+],
+"100г": [
+null,
+false
+],
+"10:00 · рис": [
+null,
+false
+],
+"123:fake": [
+null,
+false
+],
+"127.0.0.1": [
+null,
+false
+],
+"12:00": [
+null,
+false
+],
+"12:10": [
+null,
+false
+],
+"12:20 · суп": [
+null,
+false
+],
+"12:30": [
+null,
+false
+],
+"13.20": [
+null,
+false
+],
+"13:00": [
+null,
+false
+],
+"13:00 суп": [
+null,
+false
+],
+"13:20 · черновик: рис": [
+null,
+false
+],
+"13:20 · чипсы": [
+null,
+false
+],
+"13:20 · 📷 фото сохранено": [
+null,
+false
+],
+"140": [
+null,
+false
+],
+"150": [
+null,
+false
+],
+"150,5": [
+null,
+false
+],
+"2 порции": [
+null,
+false
+],
+"2 фото в дневнике, читаю…": [
+null,
+false
+],
+"2. ": [
+null,
+false
+],
+"2. 📷 Фото": [
+null,
+false
+],
+"200": [
+null,
+false
+],
+"200 ккал": [
+null,
+false
+],
+"22.2": [
+null,
+false
+],
+"250": [
+null,
+false
+],
+"3 порции": [
+null,
+false
+],
+"3 фото в дневнике, читаю…": [
+null,
+false
+],
+"3 часа назад суп": [
+null,
+false
+],
+"300г": [
+null,
+false
+],
+"30г": [
+null,
+false
+],
+"5 minutes after the first failure, 1 hour after the second, 6 after the third.": [
+null,
+false
+],
+"620": [
+null,
+false
+],
+"620 ккал": [
+null,
+false
+],
+"72,5": [
+null,
+false
+],
+"72,5 кг": [
+null,
+false
+],
+"72.5 кг": [
+null,
+false
+],
+": ": [
+null,
+false
+],
+": .": [
+null,
+false
+],
+": 200 г.": [
+null,
+false
+],
+": курица → ": [
+null,
+false
+],
+": курица → индейка.": [
+null,
+false
+],
+": оливковое масло.": [
+null,
+false
+],
+": рис и курица.": [
+null,
+false
+],
+": рис и суп.": [
+null,
+false
+],
+": рис.": [
+null,
+false
+],
+": суп.": [
+null,
+false
+],
+": сыр.": [
+null,
+false
+],
+":/app/": [
+null,
+false
+],
+":0": [
+null,
+false
+],
+":00": [
+null,
+false
+],
+":1": [
+null,
+false
+],
+":1:t": [
+null,
+false
+],
+":200:r": [
+null,
+false
+],
+":anchor:t": [
+null,
+false
+],
+":c": [
+null,
+false
+],
+":fruit:t": [
+null,
+false
+],
+":grain:t": [
+null,
+false
+],
+":legumes:t": [
+null,
+false
+],
+":r": [
+null,
+false
+],
+":sugar:t": [
+null,
+false
+],
+":t": [
+null,
+false
+],
+":veg:t": [
+null,
+false
+],
+";base64": [
+null,
+false
+],
+"</blockquote>": [
+null,
+false
+],
+"<I": [
+null,
+false
+],
+"<b>": [
+null,
+false
+],
+"<b>200 г: у какого блюда?</b>\n": [
+null,
+false
+],
+"<b>200 г: у какого блюда?</b>\nМожно не отвечать, ничего не изменится.\nПриём пн 26 октября, 12:50: рис, курица и овощи.": [
+null,
+false
+],
+"<b>Какое блюдо": [
+null,
+false
+],
+"<b>Какое блюдо добавить ещё раз?</b>\nМожно не отвечать, ничего не изменится.\n«добавка», приём пн 26 октября, 12:50": [
+null,
+false
+],
+"<b>Какое блюдо это меняет?</b>": [
+null,
+false
+],
+"<b>Какое блюдо это меняет?</b>\n": [
+null,
+false
+],
+"<b>Какое блюдо это меняет?</b>\nМожно не отвечать, ничего не изменится.\n«это была индейка», приём пн 26 октября, 12:50": [
+null,
+false
+],
+"<b>суп</b> & ": [
+null,
+false
+],
+"<b>➖ Разделить 3 фото на отдельные приёмы?</b>\nКаждое фото будет распознано заново, отдельно от других. Вернуть как было можно кнопкой «↩️ Вернуть».": [
+null,
+false
+],
+"<b>🍽 Ещё: приём ": [
+null,
+false
+],
+"<b>🍽 Новый приём</b>\nПришли фото, голосовое или напиши, что было. Время и остальное можно поправить потом.": [
+null,
+false
+],
+"<b>🍽 Обед, ": [
+null,
+false
+],
+"<b>🍽 Обед, пн 26 октября, 13:20</b>\nФото сохранено, распознать еду пока не вышло.\nВ дневнике запись с этим фото.": [
+null,
+false
+],
+"<b>🏷 Группы в этой записи</b>\nМожно отметить, что было на тарелке. Это видно только на карточках дня и недели.": [
+null,
+false
+],
+"<b>📋 Черновик, ": [
+null,
+false
+],
+"<b>📋 Черновик, пн 26 октября, 13:20</b>": [
+null,
+false
+],
+"<b>📋 Черновик, пн 26 октября, 13:20</b>\n": [
+null,
+false
+],
+"<b>📋 Черновик, пн 26 октября, 13:20</b>\nОвсянка\nВ дневнике появится после кнопки «✅ Записать».": [
+null,
+false
+],
+"<b>📋 Черновик, пн 26 октября, 13:20</b>\nрис\n": [
+null,
+false
+],
+"<b>📋 Черновик, пн 26 октября, 13:20</b>\nрис, курица и овощи\nВ дневнике появится после кнопки «✅ Записать».": [
+null,
+false
+],
+"<b>📋 Что прислано</b>": [
+null,
+false
+],
+"<b>📋 Что прислано</b>\n1. ✏️ «рис», 12:40\n2. ✏️ «сыр», 13:00\n3. ✏️ «чай», 13:20\n": [
+"meals",
+true
+],
+"<b>📋 Что прислано</b>\n1. ✏️ «рис», 13:20\n": [
+null,
+false
+],
+"<b>📋 Что прислано</b>\nСообщение при этой записи не сохранено.": [
+null,
+false
+],
+"<b>🔗 С каким приёмом объединить?</b>\nпн 26 октября, 10:00 · рис\nпн 26 октября, 13:20 · чипсы": [
+"dish",
+true
+],
+"<i>Этого приёма уже нет, вот сегодняшний день.</i>": [
+null,
+false
+],
+"<i>Этот приём объединён с приёмом пн 26 октября, 13:20.</i>": [
+null,
+false
+],
+"<i>✓ Черновик перед записью: вкл. Еда попадёт в дневник после «✅ Записать».</i>": [
+null,
+false
+],
+"<i>✓ Черновик перед записью: выкл. Еда записывается сразу.</i>": [
+null,
+false
+],
+">H": [
+null,
+false
+],
+">I": [
+null,
+false
+],
+"A fix made while joined belongs to the dish's own meal.": [
+null,
+false
+],
+"A later reply's line belongs to the meal too; it is not what the read answers.": [
+null,
+false
+],
+"A legacy meal: ➖ Отделить takes a source, and it has none.": [
+null,
+false
+],
+"A person past both hints, so the lines are the plain ones.": [
+null,
+false
+],
+"A photo read once, with this error from the model.": [
+null,
+false
+],
+"A photo sent as a reply and separated: its read does not go back in.": [
+null,
+false
+],
+"A re-read replaces what the read before gave: the words said to it stay out of\n    its way, so it does not land at all, and the words stand.": [
+null,
+false
+],
+"A read album of three, split. (old meal, the split's wire).": [
+null,
+false
+],
+"A real ``edited_message`` update through the application.": [
+null,
+false
+],
+"A real text message, read by the fake model. ``ago``: minutes before NOW.": [
+null,
+false
+],
+"A wrong merge costs more than a new meal.": [
+null,
+false
+],
+"ADDING_MEAL": [
+null,
+false
+],
+"ADDING_MEAL_TIME": [
+null,
+false
+],
+"ALBUM_WAIT_SECONDS": [
+null,
+false
+],
+"ALLOWED_TELEGRAM_IDS": [
+null,
+false
+],
+"ALL_PROXY": [
+null,
+false
+],
+"API_TOKEN": [
+null,
+false
+],
+"AUDIO_DIR": [
+null,
+false
+],
+"As in a real chat: the bot's next message never reuses an id of an earlier one.": [
+null,
+false
+],
+"Asia/Tbilisi": [
+null,
+false
+],
+"BOT_ACCESS_MODE": [
+null,
+false
+],
+"Bad Request: message is not modified: specified new message content and reply markup are exactly the same": [
+null,
+false
+],
+"Bad Request: wrong file identifier": [
+null,
+false
+],
+"CONFIRMING_MEAL": [
+null,
+false
+],
+"CUSTOM_EMOJI": [
+null,
+false
+],
+"Counts what the pipeline asks. No embedding and no barcode call may pass.": [
+null,
+false
+],
+"D4 (2026-11-14): a meal's name — the said one wins, else the hour, else none.": [
+null,
+false
+],
+"D4: a part's said name is stored and cut from its food words; a part that\n    says none stores none and is named by its hour when shown.": [
+null,
+false
+],
+"DEBUG": [
+null,
+false
+],
+"DISTINCT meals.": [
+null,
+false
+],
+"DeadFile": [
+null,
+false
+],
+"Each download gives its own file's name, so the order can be seen.": [
+null,
+false
+],
+"Each message as one update through the application; returns the wire.": [
+null,
+false
+],
+"Each start counts: a process that dies on this meal stops paying for it.": [
+null,
+false
+],
+"Each tap has its own run of the bot, and the delivery would hold on to the message\n    of the last one, and through it that run's wire.": [
+null,
+false
+],
+"Each update through the application, everything it started drained.": [
+null,
+false
+],
+"Fake planner: the given answers in turn; returns the list of prompts sent.": [
+null,
+false
+],
+"Five pending, balance out: three go at once and are refused; the queued two see\n    the refusal and never ask. One owner alert per refusal at most.": [
+null,
+false
+],
+"Forbidden-ish": [
+null,
+false
+],
+"GET": [
+null,
+false
+],
+"HTML": [
+null,
+false
+],
+"HTTP_PROXY": [
+null,
+false
+],
+"Here are the commands:\n```\n- meal \"утром каша\"\n2. meal «в обед суп»\n```": [
+null,
+false
+],
+"IMAGE/JPEG": [
+null,
+false
+],
+"INSERT": [
+null,
+false
+],
+"In the same step as its look at the rows: the task's own end comes later, and a\n    photo in between would find a read that will never take it in.": [
+null,
+false
+],
+"It asked no model.": [
+null,
+false
+],
+"Items from the person: a retry would replace them.": [
+null,
+false
+],
+"Join, join, separate the first: times, sources and totals of all restored,\n    typed fixes kept.": [
+null,
+false
+],
+"Known positive above: a meal that is not pending costs nothing.": [
+null,
+false
+],
+"Known-positive first: the row exists when the first network call happens.": [
+null,
+false
+],
+"Known-positive of the test above.": [
+null,
+false
+],
+"Known-positive: its keyboard is right from the start, the answer only drops the\n    «Считаю…» line.": [
+null,
+false
+],
+"Known-positive: without the tap the same read edits the same line.": [
+null,
+false
+],
+"LOCAL_TIMEOUT_S": [
+null,
+false
+],
+"Local whisper": [
+null,
+false
+],
+"Local whisper refused: 500": [
+null,
+false
+],
+"M1b comes once in a life, and is tested where the line is.": [
+null,
+false
+],
+"M5: the ➖ Отделить of a corrective message, never a new way of joining.": [
+null,
+false
+],
+"Made on a screen, so nothing retouched the line: the late read still ends it.": [
+null,
+false
+],
+"Meal slot failed: IntegrityError": [
+null,
+false
+],
+"Message can't be edited": [
+null,
+false
+],
+"Message is not modified": [
+null,
+false
+],
+"Message to edit not found": [
+null,
+false
+],
+"NO_PROXY": [
+null,
+false
+],
+"Nothing is left of the text to read, so the words stay what the model gets.": [
+null,
+false
+],
+"Nothing to take away and nothing to count: a new meal would be untrue.": [
+null,
+false
+],
+"OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe": [
+null,
+false
+],
+"Older than 5 minutes and still reading: a slow read is no stuck read.": [
+null,
+false
+],
+"One message, several actions, through the bot: meals each at its own time, and dish\nchanges said in words with one answer and «↩️ Отменить». The planner is a fake\n(``reader.plan``); everything after it is real.\n": [
+null,
+false
+],
+"One message, several actions: the parts with no rows and no model.\n\nThe grammar the planner answers in, the check of what it said against the message and\nthe dish book, the times of the parts, and the door (``wants_plan``).\n": [
+null,
+false
+],
+"One service's lines of a compose file; no YAML parser in this project's deps.": [
+null,
+false
+],
+"One sweep after each move of the clock, each sweep's reads waited for.": [
+null,
+false
+],
+"OpenAI": [
+null,
+false
+],
+"Opens M13 on a message, then taps the button there: what the person does.": [
+null,
+false
+],
+"Original line not edited": [
+null,
+false
+],
+"Original line not edited: BadRequest": [
+null,
+false
+],
+"Out of credit is not retried by itself; /reprocess reads it, and retries resume.": [
+null,
+false
+],
+"POST": [
+null,
+false
+],
+"Persona finding: ➖ re-drew the separated meal's own line as it already was, and\n    the refusal was logged as «Original line not edited: BadRequest».": [
+null,
+false
+],
+"Pipeline exhausted": [
+null,
+false
+],
+"REPLAY_LIMIT": [
+null,
+false
+],
+"REPROCESS_BATCH_LIMIT": [
+null,
+false
+],
+"RateLimitError": [
+null,
+false
+],
+"Refused": [
+null,
+false
+],
+"Rev moved while the model was thinking: stored, not applied.": [
+null,
+false
+],
+"RuntimeError": [
+null,
+false
+],
+"RuntimeError at test_message_plans.py:": [
+null,
+false
+],
+"SELECT": [
+null,
+false
+],
+"SHOW_PAUSE_SECONDS": [
+null,
+false
+],
+"SWEEP_EVERY_SECONDS": [
+null,
+false
+],
+"Second toast refused": [
+null,
+false
+],
+"Section 2.2: at most four action rows and a back, label budgets, 64 bytes.": [
+null,
+false
+],
+"Sends ``first``, then each of ``then``; returns the wire.": [
+null,
+false
+],
+"SessionLocal": [
+null,
+false
+],
+"Stands where the OpenAI client stands: anything that reaches it is a real call.": [
+null,
+false
+],
+"TELEGRAM_ADMIN_IDS": [
+null,
+false
+],
+"TELEGRAM_BOT_TOKEN": [
+null,
+false
+],
+"TELEGRAM_WEBHOOK_SECRET": [
+null,
+false
+],
+"TELEGRAM_WEBHOOK_URL": [
+null,
+false
+],
+"Telegram at the other end: answers every call and keeps it.": [
+null,
+false
+],
+"Telegram refuses this method, this many times, with this error.": [
+null,
+false
+],
+"Telegram's own refusal of an edit that changes nothing, across every wire of\n    the test: «message is not modified». Each refusal is kept.": [
+null,
+false
+],
+"The SDK's own door: what ``OpenAIService.transcribe`` really asked for.": [
+null,
+false
+],
+"The answer then goes as a new message; it is the «ещё» toast, not the meal's\n    record line, so it must not be mapped as the meal's line.": [
+null,
+false
+],
+"The application's own start: what ``post_init`` does, until the reads are done.": [
+null,
+false
+],
+"The balance runs out in a live read, through the real classification.": [
+null,
+false
+],
+"The calls under the pipeline; each a miss but the reading itself.": [
+null,
+false
+],
+"The capture's clock, at the test's fixed moment.": [
+null,
+false
+],
+"The capture's clock; ``at(minutes=6)`` moves it on.": [
+null,
+false
+],
+"The control of the hints: an edit that passed marks them for good.": [
+null,
+false
+],
+"The control: any other refusal of the retouch is a warning, as before.": [
+null,
+false
+],
+"The control: only a time or a join lets a read land over a moved ``rev``.": [
+null,
+false
+],
+"The conversation's filters read the effective message: an edit must not reach\n    them.": [
+null,
+false
+],
+"The cost line is what that read cost, on a line of its own.": [
+null,
+false
+],
+"The dish changes' answer: the last line that holds ↩️ or says ✓ / ✖.": [
+null,
+false
+],
+"The failure lines M7, M9 and the readers' upkeep, through the real handlers.\n\nEvery test sends a real ``Update`` into ``create_bot_application()``. The model and the\ndownload are the fakes: what is asserted is what would reach Telegram. No network, no\npaid call.\n": [
+null,
+false
+],
+"The fakes of the model: what was asked, and what they answer.": [
+null,
+false
+],
+"The first call finds the model gone; the second one is read.": [
+null,
+false
+],
+"The key stands for originals; only an edit's own row passes beside it.": [
+null,
+false
+],
+"The line already says it: Telegram would refuse an edit that changes nothing.": [
+null,
+false
+],
+"The meal is hours old and pending again: before its task runs, it is not stuck.": [
+null,
+false
+],
+"The meal is pending again after each start; the fourth start reads nothing.": [
+null,
+false
+],
+"The n-th sent line as it went: as sent, then each edit of it.": [
+null,
+false
+],
+"The opt-in draft (M10, M10a, M10b) and the rollout line (M12), through real handlers.\n\nEvery test sends a real ``Update`` into ``create_bot_application()``. The model is a\nfake, so what is asserted is what would reach Telegram and what the rows hold. No\nnetwork, no paid call.\n": [
+null,
+false
+],
+"The other side of the 5 minutes.": [
+null,
+false
+],
+"The picker is a push; a retry never pushes. The next live meal asks.": [
+null,
+false
+],
+"The read behind the line, section 5.2: in the background, swept, replayed, retried.\n\nThrough the real application at the wire, on real rows. The model and the download are\nthe fakes. No network, no paid call.\n": [
+null,
+false
+],
+"The read of a meal behind the router: the real pipeline, the audit rows, the picker,\nthe costs and the out-of-credit path, through the real application.\n\nThe model's own calls are the fakes; everything above them is real. No network, no paid\ncall.\n": [
+null,
+false
+],
+"The real ``run_polling``: ``post_init`` ran, the replay read the meal, and the\n    endless loop did not hold the stop.": [
+null,
+false
+],
+"The retry rule, on both sides. A transcript kept needs no listening.": [
+null,
+false
+],
+"The retry's wait is measured from the failure, read back naive on SQLite.": [
+null,
+false
+],
+"The sender is a subscribed guest, not the owner.": [
+null,
+false
+],
+"The service is a singleton: what a pick changes, it changes for the next test.": [
+null,
+false
+],
+"The shared local service, as far as this bot knows it.": [
+null,
+false
+],
+"The slow fake holds its reading; a second update gets through meanwhile.": [
+null,
+false
+],
+"The statistics screen reads the wall clock: the meals move to it.": [
+null,
+false
+],
+"The stored moment, naive UTC on SQLite, on the owner's clock (UTC+4).": [
+null,
+false
+],
+"The target comes from the kept source, so a restart does not lose it.": [
+null,
+false
+],
+"The target is gone, what is left is the food.": [
+null,
+false
+],
+"The two commits of a join are not one: a row can still point at the born meal.": [
+null,
+false
+],
+"The words of sections 5.3 and 5.4, and the replies M5, M6: through the real handlers.": [
+null,
+false
+],
+"The words went somewhere already: the line may not hang on «читаю…» nor the\n    voice be read as a meal on top of it.": [
+null,
+false
+],
+"The wrapper the photo pipeline raises around what the model did.": [
+null,
+false
+],
+"Through ``post_init``: the loop runs the pass again and again, one raising.": [
+null,
+false
+],
+"Through the queue, where updates run in turn: the read is in flight, and the\n    second update still gets its line.": [
+null,
+false
+],
+"TimedOut": [
+null,
+false
+],
+"Two plates: what the model read of each stays with each.": [
+null,
+false
+],
+"Two reads at once: each line says its own call, not both.": [
+null,
+false
+],
+"Two voices, the second heard first: the typed guard would ask to send it again,\n    which a voice cannot be. It is read as food, as before.": [
+null,
+false
+],
+"Typed words leave the text as it was, but the items came only with the read: the\n    M1 rule «with one dish, ✏️ Исправить is ml:i» has to reach the line all the same.": [
+null,
+false
+],
+"Until the background got there; the reads run on this loop.": [
+null,
+false
+],
+"ValidationError": [
+null,
+false
+],
+"ValueError": [
+null,
+false
+],
+"Voice not saved": [
+null,
+false
+],
+"WHISPER_URL": [
+null,
+false
+],
+"WHISPER_URL=": [
+null,
+false
+],
+"What a process that died mid-read leaves behind: a pending meal and its line.": [
+null,
+false
+],
+"What a sweep or a retry finds from the rows: not the album's old line.": [
+null,
+false
+],
+"Whatever the machine's .env says, and no screen left from another test.": [
+null,
+false
+],
+"Whatever the machine's .env says: ``post_init`` runs here and reads no sets.": [
+null,
+false
+],
+"Words added to a photo still being read leave the read its place: the line goes\n    on saying «читаю» and the plate lands beside the words.": [
+null,
+false
+],
+"Wrong file_id": [
+null,
+false
+],
+"Wrong file_id or the file is temporarily unavailable": [
+null,
+false
+],
+"X-API-Token": [
+null,
+false
+],
+"__init__": [
+null,
+false
+],
+"_analyze_and_parse": [
+null,
+false
+],
+"_ask": [
+null,
+false
+],
+"_build_pipeline": [
+null,
+false
+],
+"_create": [
+null,
+false
+],
+"_credit_alerted": [
+null,
+false
+],
+"_download_image": [
+null,
+false
+],
+"_now": [
+null,
+false
+],
+"_read_meal": [
+null,
+false
+],
+"_reading": [
+null,
+false
+],
+"_schedule_personal_food_save": [
+null,
+false
+],
+"_screens": [
+null,
+false
+],
+"_sweep": [
+null,
+false
+],
+"_voice_words": [
+null,
+false
+],
+"``(\"гречка\",)`` or ``(\"сырок глазированный\", \"сырки глазированные\")``.": [
+null,
+false
+],
+"``SELECT DISTINCT meals.*`` passes on SQLite and is refused by Postgres, whose\n    json has no equality: there every album answered «Записать сейчас не вышло».": [
+null,
+false
+],
+"``first`` comes, its read is held, ``act`` happens, and the read comes back.": [
+null,
+false
+],
+"a real API call: ": [
+null,
+false
+],
+"a-file": [
+null,
+false
+],
+"a1": [
+null,
+false
+],
+"a2": [
+null,
+false
+],
+"abc": [
+null,
+false
+],
+"after": [
+null,
+false
+],
+"after the commit": [
+null,
+false
+],
+"after the first": [
+null,
+false
+],
+"after the second": [
+null,
+false
+],
+"album": [
+null,
+false
+],
+"all_proxy": [
+null,
+false
+],
+"allowed_updates": [
+null,
+false
+],
+"analyze_food_entry": [
+null,
+false
+],
+"analyze_food_image": [
+null,
+false
+],
+"analyzed": [
+null,
+false
+],
+"anchor": [
+null,
+false
+],
+"answer": [
+null,
+false
+],
+"answer, fired": [
+null,
+false
+],
+"answerCallbackQuery": [
+null,
+false
+],
+"app": [
+null,
+false
+],
+"app.": [
+null,
+false
+],
+"app.services.capture": [
+null,
+false
+],
+"app.services.meal_card": [
+null,
+false
+],
+"app.services.product_lookup_service.OpenFoodFactsService.search_by_name": [
+null,
+false
+],
+"app/main.py": [
+null,
+false
+],
+"application": [
+null,
+false
+],
+"application/json": [
+null,
+false
+],
+"application/pdf": [
+null,
+false
+],
+"approx": [
+null,
+false
+],
+"as_reply": [
+null,
+false
+],
+"ask": [
+null,
+false
+],
+"ask_of": [
+null,
+false
+],
+"at": [
+null,
+false
+],
+"audio": [
+null,
+false
+],
+"automatic_read": [
+null,
+false
+],
+"backend=local": [
+null,
+false
+],
+"backend=openai": [
+null,
+false
+],
+"barcode": [
+null,
+false
+],
+"barcode_extraction": [
+null,
+false
+],
+"base_": [
+null,
+false
+],
+"basis": [
+null,
+false
+],
+"before the commit": [
+null,
+false
+],
+"before_cursor_execute": [
+null,
+false
+],
+"big": [
+null,
+false
+],
+"billing": [
+null,
+false
+],
+"bind": [
+null,
+false
+],
+"blockquote": [
+null,
+false
+],
+"boom": [
+null,
+false
+],
+"born": [
+null,
+false
+],
+"bot": [
+null,
+false
+],
+"bot_command": [
+null,
+false
+],
+"broken": [
+null,
+false
+],
+"c into b, b into a: each comes back with what was its own.": [
+null,
+false
+],
+"calcium": [
+null,
+false
+],
+"callback_data": [
+null,
+false
+],
+"callback_query": [
+null,
+false
+],
+"calls": [
+null,
+false
+],
+"calories": [
+null,
+false
+],
+"caption": [
+null,
+false
+],
+"capture_hint_seen": [
+null,
+false
+],
+"carbs": [
+null,
+false
+],
+"card": [
+null,
+false
+],
+"chat": [
+null,
+false
+],
+"chat_instance": [
+null,
+false
+],
+"check-ignore": [
+null,
+false
+],
+"check_same_thread": [
+null,
+false
+],
+"check_subscription": [
+null,
+false
+],
+"client": [
+null,
+false
+],
+"confirm_meal": [
+null,
+false
+],
+"content": [
+null,
+false
+],
+"content-length": [
+null,
+false
+],
+"content-type": [
+null,
+false
+],
+"control": [
+null,
+false
+],
+"create": [
+null,
+false
+],
+"create_bot_application": [
+null,
+false
+],
+"data": [
+null,
+false
+],
+"data,ext": [
+null,
+false
+],
+"data/": [
+null,
+false
+],
+"data/voice/1.ogg": [
+null,
+false
+],
+"data:": [
+null,
+false
+],
+"data:A": [
+null,
+false
+],
+"data:a": [
+null,
+false
+],
+"data:b": [
+null,
+false
+],
+"data:c": [
+null,
+false
+],
+"data:d": [
+null,
+false
+],
+"data:early": [
+null,
+false
+],
+"data:image/jpeg;base64,": [
+null,
+false
+],
+"data:late": [
+null,
+false
+],
+"data:x": [
+null,
+false
+],
+"date": [
+null,
+false
+],
+"day_only": [
+null,
+false
+],
+"db blip": [
+null,
+false
+],
+"db down": [
+null,
+false
+],
+"delay": [
+null,
+false
+],
+"deleteMessage": [
+null,
+false
+],
+"deleted": [
+null,
+false
+],
+"description": [
+null,
+false
+],
+"detail": [
+null,
+false
+],
+"dh:l:0": [
+null,
+false
+],
+"disable_notification": [
+null,
+false
+],
+"dish": [
+null,
+false
+],
+"do_request": [
+null,
+false
+],
+"doc": [
+null,
+false
+],
+"docker-compose.prod.yml": [
+null,
+false
+],
+"document": [
+null,
+false
+],
+"done": [
+null,
+false
+],
+"down": [
+null,
+false
+],
+"draft_mode": [
+null,
+false
+],
+"duration": [
+null,
+false
+],
+"duration_s=3": [
+null,
+false
+],
+"early": [
+null,
+false
+],
+"edit": [
+null,
+false
+],
+"edit refused": [
+null,
+false
+],
+"editMessageReplyMarkup": [
+null,
+false
+],
+"editMessageText": [
+null,
+false
+],
+"edit_date": [
+null,
+false
+],
+"edit_message_text": [
+null,
+false
+],
+"edited": [
+null,
+false
+],
+"edited_message": [
+null,
+false
+],
+"edits": [
+null,
+false
+],
+"ended": [
+null,
+false
+],
+"enqueued": [
+null,
+false
+],
+"error": [
+null,
+false
+],
+"error_code": [
+null,
+false
+],
+"event": [
+null,
+false
+],
+"exact": [
+null,
+false
+],
+"exact_name": [
+null,
+false
+],
+"extra": [
+null,
+false
+],
+"extract_barcode_from_image": [
+null,
+false
+],
+"extract_nutrition_label": [
+null,
+false
+],
+"f10": [
+null,
+false
+],
+"f11": [
+null,
+false
+],
+"f12": [
+null,
+false
+],
+"failed": [
+null,
+false
+],
+"fake": [
+null,
+false
+],
+"fake planner: no answer": [
+null,
+false
+],
+"fats": [
+null,
+false
+],
+"fav:p:0": [
+null,
+false
+],
+"file": [
+null,
+false
+],
+"file is too old": [
+null,
+false
+],
+"file_bytes": [
+null,
+false
+],
+"file_id": [
+null,
+false
+],
+"file_path": [
+null,
+false
+],
+"file_size": [
+null,
+false
+],
+"file_unique_id": [
+null,
+false
+],
+"filename=\"voice.": [
+null,
+false
+],
+"first": [
+null,
+false
+],
+"first_name": [
+null,
+false
+],
+"food_groups": [
+null,
+false
+],
+"food_groups_by_user": [
+null,
+false
+],
+"food_items": [
+null,
+false
+],
+"food_star": [
+null,
+false
+],
+"foods": [
+null,
+false
+],
+"forward": [
+null,
+false
+],
+"from": [
+null,
+false
+],
+"fruit": [
+null,
+false
+],
+"gate": [
+null,
+false
+],
+"getFile": [
+null,
+false
+],
+"getMe": [
+null,
+false
+],
+"getUpdates": [
+null,
+false
+],
+"get_file": [
+null,
+false
+],
+"get_openai_service": [
+null,
+false
+],
+"git": [
+null,
+false
+],
+"give_up": [
+null,
+false
+],
+"gone": [
+null,
+false
+],
+"gpt-4o-mini": [
+null,
+false
+],
+"gpt-4o-mini-transcribe": [
+null,
+false
+],
+"gpt-6-luna": [
+null,
+false
+],
+"gpt-new": [
+null,
+false
+],
+"gpt-old": [
+null,
+false
+],
+"grain": [
+null,
+false
+],
+"grains": [
+null,
+false
+],
+"group": [
+null,
+false
+],
+"groups": [
+null,
+false
+],
+"heard": [
+null,
+false
+],
+"height": [
+null,
+false
+],
+"hidden_user": [
+null,
+false
+],
+"hide": [
+null,
+false
+],
+"hide \"суп\"": [
+null,
+false
+],
+"hide #1 \"суп куриный\"\nhide #2 \"суп\"": [
+null,
+false
+],
+"hide #1 \"сыр\"": [
+null,
+false
+],
+"hour": [
+null,
+false
+],
+"hour, minute, name": [
+null,
+false
+],
+"hour, minute, spans": [
+null,
+false
+],
+"hours": [
+null,
+false
+],
+"how": [
+null,
+false
+],
+"http://127.0.0.1:": [
+null,
+false
+],
+"http://127.0.0.1:1": [
+null,
+false
+],
+"http://localhost": [
+null,
+false
+],
+"http_proxy": [
+null,
+false
+],
+"https://api.openai.com/v1/chat/completions": [
+null,
+false
+],
+"https://example.test/hook": [
+null,
+false
+],
+"id": [
+null,
+false
+],
+"image": [
+null,
+false
+],
+"image/bmp": [
+null,
+false
+],
+"image/gif": [
+null,
+false
+],
+"image/heic": [
+null,
+false
+],
+"image/jpeg": [
+null,
+false
+],
+"image/png": [
+null,
+false
+],
+"image/svg+xml": [
+null,
+false
+],
+"image/tiff": [
+null,
+false
+],
+"image/webp": [
+null,
+false
+],
+"image_url": [
+null,
+false
+],
+"inline_keyboard": [
+null,
+false
+],
+"insufficient_quota": [
+null,
+false
+],
+"is_animated": [
+null,
+false
+],
+"is_bot": [
+null,
+false
+],
+"is_video": [
+null,
+false
+],
+"items": [
+null,
+false
+],
+"join": [
+null,
+false
+],
+"json": [
+null,
+false
+],
+"kcal": [
+null,
+false
+],
+"keyboard": [
+null,
+false
+],
+"kind": [
+null,
+false
+],
+"label": [
+null,
+false
+],
+"label_ocr": [
+null,
+false
+],
+"language": [
+null,
+false
+],
+"late": [
+null,
+false
+],
+"latitude": [
+null,
+false
+],
+"legumes": [
+null,
+false
+],
+"length": [
+null,
+false
+],
+"line": [
+null,
+false
+],
+"lines": [
+null,
+false
+],
+"list_candidates": [
+null,
+false
+],
+"local": [
+null,
+false
+],
+"location": [
+null,
+false
+],
+"longitude": [
+null,
+false
+],
+"low": [
+null,
+false
+],
+"make": [
+null,
+false
+],
+"make, copy": [
+null,
+false
+],
+"make, status": [
+null,
+false
+],
+"map_message": [
+null,
+false
+],
+"markup": [
+null,
+false
+],
+"max_retries": [
+null,
+false
+],
+"may_receive": [
+null,
+false
+],
+"meal \"": [
+null,
+false
+],
+"meal \"в 16 на перекус яблоко\"\nmeal \"в 19 суп\"": [
+null,
+false
+],
+"meal \"в обед суп\"\nmeal \"на завтрак овсянка\"\nmeal \"вечером сырники\"": [
+null,
+false
+],
+"meal \"на завтрак овсянка\"\nmeal \"в обед суп\"": [
+null,
+false
+],
+"meal \"на завтрак овсянка\"\nmeal \"овсянка, в обед суп\"\nmeal \"вечером сырники\"": [
+"meals",
+true
+],
+"meal \"суп\"\nstar": [
+null,
+false
+],
+"meal \"утром и вечером одно и то же — овсянка\"": [
+"dish",
+true
+],
+"meal \"утром каша\"": [
+null,
+false
+],
+"meal \"утром съел сырник\"\nmeal \"в обед суп\"": [
+null,
+false
+],
+"meal \"утром сырники\"\nmeal \"в обед суп\"": [
+null,
+false
+],
+"meal \"часть ": [
+null,
+false
+],
+"meal, head": [
+null,
+false
+],
+"meal:abc123:s": [
+null,
+false
+],
+"meal_id": [
+null,
+false
+],
+"meal_sources.media_group_id": [
+null,
+false
+],
+"meal_text": [
+null,
+false
+],
+"meal_type": [
+null,
+false
+],
+"meals": [
+null,
+false
+],
+"merge \"сырок глазированный\" \"сырки глазированные\"\nstar \"гречка\"": [
+null,
+false
+],
+"merge #1 \"сырки\" #2 \"сырок\" into #2 \"сырок\"": [
+null,
+false
+],
+"merge #1 \"сырок глазированный\" \"сырки глазированные\"": [
+null,
+false
+],
+"merge #1 \"сырок глазированный\" #2 \"сырки глазированные\"": [
+null,
+false
+],
+"message": [
+null,
+false
+],
+"message can't be edited": [
+null,
+false
+],
+"message, line": [
+null,
+false
+],
+"message_id": [
+null,
+false
+],
+"messages": [
+null,
+false
+],
+"mime": [
+null,
+false
+],
+"mime, make": [
+null,
+false
+],
+"mime_type": [
+null,
+false
+],
+"minutes": [
+null,
+false
+],
+"ml:d:": [
+null,
+false
+],
+"ml:dl:20261025:t": [
+null,
+false
+],
+"ml:dl:20261026:t": [
+null,
+false
+],
+"ml:fm:": [
+null,
+false
+],
+"ml:g:": [
+null,
+false
+],
+"ml:ga:": [
+null,
+false
+],
+"ml:gr:": [
+null,
+false
+],
+"ml:gt:": [
+null,
+false
+],
+"ml:i:": [
+null,
+false
+],
+"ml:j:": [
+null,
+false
+],
+"ml:jl:": [
+null,
+false
+],
+"ml:ka:": [
+null,
+false
+],
+"ml:kn:": [
+null,
+false
+],
+"ml:kw:": [
+null,
+false
+],
+"ml:mo:": [
+null,
+false
+],
+"ml:nf:": [
+null,
+false
+],
+"ml:o:": [
+null,
+false
+],
+"ml:ok:": [
+null,
+false
+],
+"ml:r:": [
+null,
+false
+],
+"ml:rr": [
+null,
+false
+],
+"ml:rr:": [
+null,
+false
+],
+"ml:sf:": [
+null,
+false
+],
+"ml:src:": [
+null,
+false
+],
+"ml:t:": [
+null,
+false
+],
+"ml:u": [
+null,
+false
+],
+"ml:u:": [
+null,
+false
+],
+"ml:vt:": [
+null,
+false
+],
+"ml:w:": [
+null,
+false
+],
+"ml:z:": [
+null,
+false
+],
+"ml:z:999:r": [
+null,
+false
+],
+"ml:za:": [
+null,
+false
+],
+"ml:zq:": [
+null,
+false
+],
+"model": [
+null,
+false
+],
+"model down": [
+null,
+false
+],
+"model:text": [
+null,
+false
+],
+"model_choices": [
+null,
+false
+],
+"more": [
+null,
+false
+],
+"mp3": [
+null,
+false
+],
+"mp4": [
+null,
+false
+],
+"name": [
+null,
+false
+],
+"no": [
+null,
+false
+],
+"no download": [
+null,
+false
+],
+"no meal": [
+null,
+false
+],
+"no model": [
+null,
+false
+],
+"no network": [
+null,
+false
+],
+"no per-100g basis": [
+null,
+false
+],
+"no usable calories": [
+null,
+false
+],
+"no-such-model": [
+null,
+false
+],
+"no_food": [
+null,
+false
+],
+"no_proxy": [
+null,
+false
+],
+"no_speech": [
+null,
+false
+],
+"none": [
+null,
+false
+],
+"not json": [
+null,
+false
+],
+"not read: ValueError": [
+null,
+false
+],
+"notify_admins": [
+null,
+false
+],
+"now": [
+null,
+false
+],
+"numbers_mode": [
+null,
+false
+],
+"nuts": [
+null,
+false
+],
+"offset": [
+null,
+false
+],
+"ogg": [
+null,
+false
+],
+"ok": [
+null,
+false
+],
+"omega": [
+null,
+false
+],
+"one": [
+null,
+false
+],
+"one meal": [
+null,
+false
+],
+"open": [
+null,
+false
+],
+"openai": [
+null,
+false
+],
+"openai:gpt-6-luna": [
+null,
+false
+],
+"openai_service": [
+null,
+false
+],
+"openrouter.ai → Settings → Credits": [
+null,
+false
+],
+"openrouter.ai/api": [
+null,
+false
+],
+"openrouter:qwen/qwen3.8-flash": [
+null,
+false
+],
+"other": [
+null,
+false
+],
+"out_of_credit": [
+null,
+false
+],
+"p10": [
+null,
+false
+],
+"p9": [
+null,
+false
+],
+"paid call not expected: ": [
+null,
+false
+],
+"parse_mode": [
+null,
+false
+],
+"parts_shown": [
+null,
+false
+],
+"path": [
+null,
+false
+],
+"payload": [
+null,
+false
+],
+"pdf": [
+null,
+false
+],
+"peak": [
+null,
+false
+],
+"pending": [
+null,
+false
+],
+"persist_model": [
+null,
+false
+],
+"persist_task_model": [
+null,
+false
+],
+"person": [
+null,
+false
+],
+"photo": [
+null,
+false
+],
+"photos/1.jpg": [
+null,
+false
+],
+"pl:r:": [
+null,
+false
+],
+"pl:r:1": [
+null,
+false
+],
+"pl:u:": [
+null,
+false
+],
+"pl:u:1": [
+null,
+false
+],
+"pl:u:abc": [
+null,
+false
+],
+"pl:x:1": [
+null,
+false
+],
+"plan": [
+null,
+false
+],
+"plan_message": [
+null,
+false
+],
+"plate": [
+null,
+false
+],
+"platform": [
+null,
+false
+],
+"platform.openai.com": [
+null,
+false
+],
+"portion": [
+null,
+false
+],
+"portion_grams": [
+null,
+false
+],
+"private": [
+null,
+false
+],
+"process_meal_time": [
+null,
+false
+],
+"prompt": [
+null,
+false
+],
+"protein": [
+null,
+false
+],
+"query too old": [
+null,
+false
+],
+"raw": [
+null,
+false
+],
+"read": [
+null,
+false
+],
+"read crashed": [
+null,
+false
+],
+"ref": [
+null,
+false
+],
+"regular": [
+null,
+false
+],
+"rename #1 \"орехи\" to \"миндаль\"": [
+null,
+false
+],
+"rename #1 \"орехи\" to \"орехи жареные\"": [
+null,
+false
+],
+"reply": [
+null,
+false
+],
+"reply_markup": [
+null,
+false
+],
+"reply_parameters": [
+null,
+false
+],
+"reply_text": [
+null,
+false
+],
+"reply_to_message": [
+null,
+false
+],
+"reread": [
+null,
+false
+],
+"reset": [
+null,
+false
+],
+"resolve": [
+null,
+false
+],
+"resolve_meal_nutrition": [
+null,
+false
+],
+"response_format": [
+null,
+false
+],
+"result": [
+null,
+false
+],
+"retire_planned": [
+null,
+false
+],
+"rollout_seen": [
+null,
+false
+],
+"route_heard": [
+null,
+false
+],
+"route_text": [
+null,
+false
+],
+"row: Мария, 900 ккал": [
+null,
+false
+],
+"ru": [
+null,
+false
+],
+"said": [
+null,
+false
+],
+"send": [
+null,
+false
+],
+"sendMessage": [
+null,
+false
+],
+"sendPhoto": [
+null,
+false
+],
+"sender_user_name": [
+null,
+false
+],
+"sent": [
+null,
+false
+],
+"set:draft": [
+null,
+false
+],
+"set:num": [
+null,
+false
+],
+"set:open": [
+null,
+false
+],
+"set_size": [
+null,
+false
+],
+"set_webhook": [
+null,
+false
+],
+"setting": [
+null,
+false
+],
+"show": [
+null,
+false
+],
+"show_costs": [
+null,
+false
+],
+"show_numbers": [
+null,
+false
+],
+"show_statistics": [
+null,
+false
+],
+"shown": [
+null,
+false
+],
+"shows_costs": [
+null,
+false
+],
+"shows_numbers": [
+null,
+false
+],
+"slow": [
+null,
+false
+],
+"small": [
+null,
+false
+],
+"snack": [
+null,
+false
+],
+"source": [
+null,
+false
+],
+"source, shown": [
+null,
+false
+],
+"sources": [
+null,
+false
+],
+"split": [
+null,
+false
+],
+"sqlite://": [
+null,
+false
+],
+"st:t": [
+null,
+false
+],
+"st:tn": [
+null,
+false
+],
+"star": [
+null,
+false
+],
+"star\nrename #2 \"суп\" \"борщ\"\nmerge #1 \"суп\"": [
+null,
+false
+],
+"star \"гречка\"": [
+null,
+false
+],
+"star \"гречка\"\nhide \"пицца\"": [
+null,
+false
+],
+"star \"пицца\"": [
+null,
+false
+],
+"star #": [
+null,
+false
+],
+"star #1 \"гречка\"": [
+null,
+false
+],
+"star #9 \"пицца\"": [
+null,
+false
+],
+"start": [
+null,
+false
+],
+"started": [
+null,
+false
+],
+"status": [
+null,
+false
+],
+"status,body": [
+null,
+false
+],
+"sticker": [
+null,
+false
+],
+"strategy_tried": [
+null,
+false
+],
+"stuck": [
+null,
+false
+],
+"sugar": [
+null,
+false
+],
+"tap": [
+null,
+false
+],
+"telegram_bot": [
+null,
+false
+],
+"text": [
+null,
+false
+],
+"text, left": [
+null,
+false
+],
+"text, name": [
+null,
+false
+],
+"text, want": [
+null,
+false
+],
+"the background never got there": [
+null,
+false
+],
+"the database blinked": [
+null,
+false
+],
+"the database is down": [
+null,
+false
+],
+"the fixture did not make a heard voice": [
+null,
+false
+],
+"the model said no": [
+null,
+false
+],
+"the text model fell over": [
+null,
+false
+],
+"three": [
+null,
+false
+],
+"tick_by_name": [
+null,
+false
+],
+"timeout": [
+null,
+false
+],
+"timezone": [
+null,
+false
+],
+"to_dict": [
+null,
+false
+],
+"took_s=": [
+null,
+false
+],
+"transcript": [
+null,
+false
+],
+"turn": [
+null,
+false
+],
+"two": [
+null,
+false
+],
+"type": [
+null,
+false
+],
+"typed": [
+null,
+false
+],
+"unknown or foreign": [
+null,
+false
+],
+"unstar": [
+null,
+false
+],
+"unstar #1 \"борщ\"": [
+null,
+false
+],
+"update_id": [
+null,
+false
+],
+"url": [
+null,
+false
+],
+"user": [
+null,
+false
+],
+"username": [
+null,
+false
+],
+"veg": [
+null,
+false
+],
+"video": [
+null,
+false
+],
+"video_note": [
+null,
+false
+],
+"view": [
+null,
+false
+],
+"vision": [
+null,
+false
+],
+"voice": [
+null,
+false
+],
+"voice.mp4": [
+null,
+false
+],
+"voice.ogg": [
+null,
+false
+],
+"voice/": [
+null,
+false
+],
+"voice_hint_seen": [
+null,
+false
+],
+"vu": [
+null,
+false
+],
+"weight, kg": [
+null,
+false
+],
+"what is this": [
+null,
+false
+],
+"width": [
+null,
+false
+],
+"wire": [
+null,
+false
+],
+"word": [
+null,
+false
+],
+"words": [
+null,
+false
+],
+"words, kept": [
+null,
+false
+],
+"words, local, precision, head": [
+null,
+false
+],
+"words, local, precision, phrase, head": [
+null,
+false
+],
+"words, now, local, head": [
+null,
+false
+],
+"{}": [
+null,
+false
+],
+"«это была индейка», приём пн 26 октября": [
+null,
+false
+],
+"«🏷 Группы»": [
+null,
+false
+],
+"· 200 ккал": [
+null,
+false
+],
+"· ≈ 200 ккал": [
+null,
+false
+],
+"×2": [
+null,
+false
+],
+"×3": [
+null,
+false
+],
+"Б 0": [
+null,
+false
+],
+"БЖУ": [
+null,
+false
+],
+"Больше 8": [
+null,
+false
+],
+"В голосовом не слышно речи, в дневник не записано.": [
+null,
+false
+],
+"В дневнике": [
+null,
+false
+],
+"В дневнике запись": [
+null,
+false
+],
+"В дневнике запись с этим фото.": [
+null,
+false
+],
+"В этом дне записей нет.": [
+null,
+false
+],
+"Витамины & омега": [
+null,
+false
+],
+"Вопросы здесь пока не разбираются, в дневник не записано.": [
+null,
+false
+],
+"Время": [
+null,
+false
+],
+"Время приёма": [
+null,
+false
+],
+"Время приёма теперь вс 25 октября, без времени: суп.": [
+null,
+false
+],
+"Время приёма теперь пн 26 октября, ": [
+null,
+false
+],
+"Время приёма теперь пн 26 октября, 12:10.": [
+null,
+false
+],
+"Время приёма теперь пн 26 октября, 12:10: суп.": [
+null,
+false
+],
+"Вчера утром": [
+null,
+false
+],
+"Вчера утром суп": [
+null,
+false
+],
+"Голосовое в дневнике, слушаю…": [
+null,
+false
+],
+"Голосовое сохранено, разобрать сейчас не вышло.\nВ дневнике запись с этим голосовым.": [
+null,
+false
+],
+"Голосовое сохранено, слушаю…": [
+null,
+false
+],
+"Голосовые пока в пробном режиме, но запись уже в дневнике. Что услышано, видно по кнопке «🎙 Текст». Если сервис проекта не отвечает, голосовое уходит во внешний сервис.": [
+null,
+false
+],
+"Голосовые пока в пробном режиме. Что услышано, видно по кнопке «🎙 Текст». Если сервис проекта не отвечает, голосовое уходит во внешний сервис.": [
+null,
+false
+],
+"Два <банана>.": [
+null,
+false
+],
+"Два яйца, один… нет, хлеб и кофе": [
+null,
+false
+],
+"Добавлено": [
+null,
+false
+],
+"Добавлено к приёму": [
+null,
+false
+],
+"Добавлено к приёму ": [
+null,
+false
+],
+"Добавлено к приёму вс 25 октября, ": [
+null,
+false
+],
+"Добавлено к приёму пн 26 октября, ": [
+null,
+false
+],
+"Еды здесь не видно, в дневник не записано.": [
+null,
+false
+],
+"Ещё сыр": [
+null,
+false
+],
+"За день: ≈": [
+null,
+false
+],
+"Завтрак": [
+null,
+false
+],
+"Завтрак — овсянка": [
+null,
+false
+],
+"Заменено в приёме пн 26 октября, ": [
+null,
+false
+],
+"Записан ": [
+null,
+false
+],
+"Записан завтрак": [
+null,
+false
+],
+"Записан завтрак на пн 26 октября, ≈ 9:00: суп, хлеб.": [
+null,
+false
+],
+"Записан обед": [
+null,
+false
+],
+"Записан обед на ": [
+null,
+false
+],
+"Записан обед по 11 фото: ": [
+null,
+false
+],
+"Записан обед по 2 фото": [
+null,
+false
+],
+"Записан обед по 2 фото: рис": [
+null,
+false
+],
+"Записан обед по 3 фото: ": [
+null,
+false
+],
+"Записан обед по 3 фото: суп, хлеб и йогурт.": [
+null,
+false
+],
+"Записан обед: ": [
+null,
+false
+],
+"Записан обед: Овсянка.": [
+null,
+false
+],
+"Записан обед: гречка, салат, курица и кетчуп.": [
+null,
+false
+],
+"Записан обед: индейка.": [
+null,
+false
+],
+"Записан обед: кофе и печенье.": [
+null,
+false
+],
+"Записан обед: кофе с печеньками.": [
+null,
+false
+],
+"Записан обед: кошка": [
+null,
+false
+],
+"Записан обед: кошка на окне сидит.": [
+null,
+false
+],
+"Записан обед: кусок.": [
+null,
+false
+],
+"Записан обед: рис": [
+null,
+false
+],
+"Записан обед: рис и курица.": [
+null,
+false
+],
+"Записан обед: рис и суп.": [
+null,
+false
+],
+"Записан обед: рис и сыр.": [
+null,
+false
+],
+"Записан обед: рис, курица и овощи · ≈ 620 ккал.": [
+null,
+false
+],
+"Записан обед: рис, курица и овощи.": [
+null,
+false
+],
+"Записан обед: рис, курица и овощи.\nНа этом всё. Поправить можно кнопками или ответом на это сообщение.": [
+null,
+false
+],
+"Записан обед: рис.": [
+null,
+false
+],
+"Записан обед: суп": [
+null,
+false
+],
+"Записан обед: суп и сыр.": [
+null,
+false
+],
+"Записан обед: суп и хлеб.": [
+null,
+false
+],
+"Записан обед: суп и хлеб.\nСчитаю…": [
+null,
+false
+],
+"Записан обед: суп.": [
+null,
+false
+],
+"Записан обед: суп.\nСчитаю…": [
+null,
+false
+],
+"Записан обед: суп.\nСчитаю…\nНа этом всё. Поправить можно кнопками или ответом на это сообщение.": [
+null,
+false
+],
+"Записан обед: суп. Тот приём был удалён раньше, поэтому это отдельная запись.": [
+null,
+false
+],
+"Записан обед: суп. Фото хранится при этой записи.\nСчитаю…": [
+null,
+false
+],
+"Записан обед: сыр": [
+null,
+false
+],
+"Записан обед: сыр.": [
+null,
+false
+],
+"Записан обед: сыр.\nСчитаю…": [
+null,
+false
+],
+"Записан обед: сыр. Тот приём": [
+null,
+false
+],
+"Записан обед: та самая штука от мамы": [
+null,
+false
+],
+"Записан перекус": [
+null,
+false
+],
+"Записан ужин": [
+null,
+false
+],
+"Записан ужин на вс 25 октября, ≈ 20:00: ": [
+null,
+false
+],
+"Записан ужин на вс 25 октября, ≈ 20:00: суп.": [
+null,
+false
+],
+"Записан ужин на сб 14 ноября, 21:00": [
+null,
+false
+],
+"Записано": [
+null,
+false
+],
+"Записано на пн 26 октября, без времени: ": [
+null,
+false
+],
+"Записано на пн 26 октября, без времени: утром суп, в обед.": [
+"meals",
+true
+],
+"Записано на сб 14 ноября, без времени": [
+null,
+false
+],
+"Записано по 2 фото": [
+null,
+false
+],
+"Записано: суп, рис и курица.": [
+null,
+false
+],
+"Записать сейчас не вышло, сервер не отвечает. Пришли ещё раз.": [
+null,
+false
+],
+"Здесь твои сообщения, как они пришли. Исправления меняют приём, а сообщения остаются.": [
+null,
+false
+],
+"Здесь твои сообщения, как они пришли. Исправления меняют приём, а сообщения остаются.\n«🔁 Прочитать заново» читает их ещё раз, твои исправления остаются.\n«➖ Отделить» делает сообщение отдельным приёмом.": [
+null,
+false
+],
+"Курица в приёме пн 26 октября, ": [
+null,
+false
+],
+"Мария": [
+null,
+false
+],
+"Модель «gpt-old» недоступна": [
+null,
+false
+],
+"На этом всё": [
+null,
+false
+],
+"Назад": [
+null,
+false
+],
+"Не вышло": [
+null,
+false
+],
+"Не записано: «вечером сырники»": [
+null,
+false
+],
+"Не получилось, попробуй ещё раз": [
+null,
+false
+],
+"Не посчитано приёмов: 1": [
+null,
+false
+],
+"Не похоже на вес": [
+null,
+false
+],
+"Не похоже на вес.": [
+null,
+false
+],
+"Нет сообщений для повторной обработки. 👍": [
+null,
+false
+],
+"Нет, спасибо!": [
+null,
+false
+],
+"Новый приём": [
+null,
+false
+],
+"Обед": [
+null,
+false
+],
+"Объединено с приёмом пн 26 октября, 13:00: рис и сыр.": [
+null,
+false
+],
+"Овсянка": [
+null,
+false
+],
+"Ок!": [
+null,
+false
+],
+"Отделено: сыр.": [
+null,
+false
+],
+"Отделено: сыр. Теперь это отдельный приём, пн 26 октября, 13:00.": [
+null,
+false
+],
+"Отмена": [
+null,
+false
+],
+"Отменено.": [
+null,
+false
+],
+"Перекус": [
+null,
+false
+],
+"Пока не вышло, запись сохранена": [
+null,
+false
+],
+"Похоже на время, но не ясно, к какому приёму. В дневнике ничего не поменялось. Время можно указать ответом на нужную запись.": [
+null,
+false
+],
+"Рис": [
+null,
+false
+],
+"Рис в приёме пн 26 октября, ": [
+null,
+false
+],
+"Сейчас": [
+null,
+false
+],
+"Сколько белка в твороге?": [
+null,
+false
+],
+"Сообщение изменено. В дневнике по нему записи нет.": [
+null,
+false
+],
+"Сообщение изменено. В дневнике пока прежняя запись.": [
+null,
+false
+],
+"Сообщение изменено. В дневнике пока прежняя запись. Кнопка «🔁 Прочитать заново» прочитает новый текст.": [
+null,
+false
+],
+"Сообщение получено, читаю…": [
+null,
+false
+],
+"Спасибо": [
+null,
+false
+],
+"Суп с паид": [
+null,
+false
+],
+"Такое пока не читается, в дневник не записано. Подойдёт фото, текст или голосовое.": [
+null,
+false
+],
+"Текст сохранён, разобрать еду сейчас не вышло.\nВ дневнике запись с этим текстом.": [
+null,
+false
+],
+"Теперь еда записывается сразу, без подтверждения. В меню появились «🍲 Блюда». Как это работает: ⚙️ Настройки → ℹ️ Как это работает.": [
+null,
+false
+],
+"У OpenAI закончился баланс": [
+null,
+false
+],
+"У OpenAI закончился баланс или лимит трат": [
+null,
+false
+],
+"У OpenRouter закончился баланс": [
+null,
+false
+],
+"Убрано из приёма вс 25 октября, ": [
+null,
+false
+],
+"Убрано из приёма пн 26 октября, ": [
+null,
+false
+],
+"Уже вместе": [
+null,
+false
+],
+"Уже отдельно": [
+null,
+false
+],
+"Уже так": [
+null,
+false
+],
+"Ужин": [
+null,
+false
+],
+"Утром съёл «Сырник»": [
+null,
+false
+],
+"Утром съёл «Сырник», в обед суп": [
+"meals",
+true
+],
+"Файл больше 20 МБ, Telegram такие боту не передаёт. В дневник не записано.": [
+null,
+false
+],
+"Фото": [
+null,
+false
+],
+"Фото в дневнике, читаю…": [
+null,
+false
+],
+"Фото пн 26 октября, 13:20 больше недоступно в Telegram. Запись в дневнике осталась, можно написать, что было.": [
+null,
+false
+],
+"Фото сохранено, еды на нём не видно.\nВ дневнике запись с этим фото.": [
+null,
+false
+],
+"Фото сохранено, распознать": [
+null,
+false
+],
+"Фото сохранено, распознать еду сейчас не вышло.": [
+null,
+false
+],
+"Фото сохранено, распознать еду сейчас не вышло.\nВ дневнике запись с этим фото.": [
+null,
+false
+],
+"Фото сохранено, читаю…": [
+null,
+false
+],
+"Черновик": [
+null,
+false
+],
+"Читаю": [
+null,
+false
+],
+"Это кнопка старого меню, в дневник не записано. Новое меню внизу.": [
+null,
+false
+],
+"Это суп с курицей, рисом, морковкой, луком и чем-то ещё": [
+null,
+false
+],
+"Это фото больше недоступно в Telegram": [
+null,
+false
+],
+"Этого блюда в приёме уже нет": [
+null,
+false
+],
+"Этого приёма уже нет": [
+null,
+false
+],
+"а ещё сыр": [
+null,
+false
+],
+"а сколько это?": [
+null,
+false
+],
+"бананы": [
+null,
+false
+],
+"без сахара": [
+null,
+false
+],
+"борщ": [
+null,
+false
+],
+"брынза": [
+null,
+false
+],
+"в ": [
+null,
+false
+],
+"в 12": [
+null,
+false
+],
+"в 12:10": [
+null,
+false
+],
+"в 12:30": [
+null,
+false
+],
+"в 12:40": [
+null,
+false
+],
+"в 13": [
+null,
+false
+],
+"в 13 суп": [
+null,
+false
+],
+"в 13:00": [
+null,
+false
+],
+"в 13:00 суп": [
+null,
+false
+],
+"в 13:10": [
+null,
+false
+],
+"в 14:10": [
+null,
+false
+],
+"в 16 на перекус яблоко, в 19 суп": [
+"meals",
+true
+],
+"в 3 раза больше супа": [
+null,
+false
+],
+"в 8:00 каша": [
+null,
+false
+],
+"в 8:00 каша, в 10:00 кофе": [
+"meals",
+true
+],
+"в 9:00 каша": [
+null,
+false
+],
+"в дневнике": [
+null,
+false
+],
+"в дневнике, читаю": [
+null,
+false
+],
+"в обед суп": [
+null,
+false
+],
+"в черновике": [
+null,
+false
+],
+"вес 72,4, зарядку сделала, на завтрак каша": [
+null,
+false
+],
+"весь день ел одно и то же": [
+"dish",
+false
+],
+"весь день ел одно и то же — гречку с курицей": [
+"dish",
+false
+],
+"вечерний чай": [
+null,
+false
+],
+"вечером": [
+null,
+false
+],
+"вечером паста": [
+null,
+false
+],
+"вечером суп": [
+null,
+false
+],
+"вечером сырники": [
+null,
+false
+],
+"витамин": [
+null,
+false
+],
+"витамины и омега": [
+null,
+false
+],
+"вс 25 октября, 14:10": [
+null,
+false
+],
+"вс 25 октября, без времени": [
+null,
+false
+],
+"вс 25 октября, ≈ 14:00": [
+null,
+false
+],
+"вс 25 октября, ≈ 20:00": [
+null,
+false
+],
+"вс 25 октября, ≈ 9:00": [
+null,
+false
+],
+"вторая": [
+null,
+false
+],
+"вторая порция": [
+null,
+false
+],
+"вчера": [
+null,
+false
+],
+"вчера 23:10": [
+null,
+false
+],
+"вчера вечером": [
+null,
+false
+],
+"вчера вечером суп": [
+null,
+false
+],
+"вчера днём": [
+null,
+false
+],
+"вчера суп": [
+null,
+false
+],
+"вчера утром каша": [
+null,
+false
+],
+"вчерашний суп": [
+null,
+false
+],
+"гречка": [
+null,
+false
+],
+"гречка на ужин": [
+null,
+false
+],
+"гречка с котлетой": [
+null,
+false
+],
+"гречка с курицей": [
+null,
+false
+],
+"гречка с молоком": [
+null,
+false
+],
+"гречка-из-сообщения": [
+null,
+false
+],
+"да": [
+null,
+false
+],
+"днём": [
+null,
+false
+],
+"днём суп": [
+null,
+false
+],
+"до завтрака чай": [
+null,
+false
+],
+"добавка": [
+null,
+false
+],
+"добавку": [
+null,
+false
+],
+"добавь гречку в избранное": [
+"dish",
+false
+],
+"добавь гречку в избранное, убери пиццу из блюд": [
+"dish",
+false
+],
+"добавь гречку в избранное?": [
+null,
+false
+],
+"добавь пиццу в избранное": [
+"dish",
+false
+],
+"добавь сыр": [
+null,
+false
+],
+"добавьте": [
+null,
+false
+],
+"еще порция": [
+null,
+false
+],
+"еще сыр": [
+null,
+false
+],
+"ещё брынза": [
+null,
+false
+],
+"ещё одна": [
+null,
+false
+],
+"ещё порцию": [
+null,
+false
+],
+"ещё порция": [
+null,
+false
+],
+"ещё старее": [
+null,
+false
+],
+"ещё суп": [
+null,
+false
+],
+"ещё суп?": [
+null,
+false
+],
+"ещё суперсекретный суп": [
+null,
+false
+],
+"ещё сыр": [
+null,
+false
+],
+"ещё сыр час назад": [
+null,
+false
+],
+"ещё хлеб": [
+null,
+false
+],
+"ещёсыр": [
+null,
+false
+],
+"за завтраком каша с бананом": [
+null,
+false
+],
+"за ужином паста": [
+null,
+false
+],
+"забыл добавить сыр": [
+null,
+false
+],
+"забыл сыр": [
+null,
+false
+],
+"забыла написать сыр": [
+null,
+false
+],
+"забыла про сыр": [
+null,
+false
+],
+"забыла сыр": [
+null,
+false
+],
+"забыла, сыр": [
+null,
+false
+],
+"забылась": [
+null,
+false
+],
+"забыли сыр": [
+null,
+false
+],
+"забыло сыр": [
+null,
+false
+],
+"завтрак": [
+null,
+false
+],
+"закончился баланс": [
+null,
+false
+],
+"запись уже в дневнике": [
+null,
+false
+],
+"и ещё сыр": [
+null,
+false
+],
+"и хлеб": [
+null,
+false
+],
+"индейка": [
+null,
+false
+],
+"индейку": [
+null,
+false
+],
+"йогурт": [
+null,
+false
+],
+"как дела": [
+null,
+false
+],
+"каша": [
+null,
+false
+],
+"каша ": [
+null,
+false
+],
+"каша с бананом": [
+null,
+false
+],
+"кетчуп": [
+null,
+false
+],
+"ккал": [
+null,
+false
+],
+"комплексный обед": [
+null,
+false
+],
+"кофе": [
+null,
+false
+],
+"кофе и печенье": [
+null,
+false
+],
+"кофе с печеньками": [
+null,
+false
+],
+"кошка на окне сидит": [
+null,
+false
+],
+"курица": [
+null,
+false
+],
+"кусок": [
+null,
+false
+],
+"на завтрак каша": [
+null,
+false
+],
+"на завтрак каша, на обед суп": [
+"meals",
+true
+],
+"на завтрак овсянка": [
+null,
+false
+],
+"на завтрак овсянка, в обед суп": [
+"meals",
+true
+],
+"на завтрак овсянка, в обед суп, вечером сырники": [
+"meals",
+true
+],
+"на обед гречка": [
+null,
+false
+],
+"на обед суп": [
+null,
+false
+],
+"на перекус яблоко": [
+null,
+false
+],
+"на полдник йогурт": [
+null,
+false
+],
+"на ужин паста": [
+null,
+false
+],
+"напомин": [
+null,
+false
+],
+"например": [
+null,
+false
+],
+"не курица, а индейка": [
+null,
+false
+],
+"не курицу, а индейку": [
+null,
+false
+],
+"неактуален": [
+null,
+false
+],
+"недоступна": [
+null,
+false
+],
+"неполный суп": [
+null,
+false
+],
+"нет": [
+null,
+false
+],
+"нет сахара": [
+null,
+false
+],
+"нет, индейка": [
+null,
+false
+],
+"нет, не ел": [
+null,
+false
+],
+"нет, спасибо": [
+null,
+false
+],
+"новая подпись": [
+null,
+false
+],
+"новая подпись\nподпись 11": [
+null,
+false
+],
+"ночной перекус": [
+null,
+false
+],
+"ночью": [
+null,
+false
+],
+"ночью суп": [
+null,
+false
+],
+"обед": [
+null,
+false
+],
+"обед в столовой": [
+null,
+false
+],
+"овощи": [
+null,
+false
+],
+"овсянка": [
+null,
+false
+],
+"овсянка на воде": [
+null,
+false
+],
+"одна порция": [
+null,
+false
+],
+"ок": [
+null,
+false
+],
+"окей": [
+null,
+false
+],
+"около": [
+null,
+false
+],
+"около 300": [
+null,
+false
+],
+"оливковое масло": [
+null,
+false
+],
+"орехи": [
+null,
+false
+],
+"орехи жареные": [
+null,
+false
+],
+"остатки ужина": [
+null,
+false
+],
+"ответ": [
+null,
+false
+],
+"переименуй орехи в орехи жареные": [
+"dish",
+false
+],
+"перекус": [
+null,
+false
+],
+"перекус: яблоко": [
+null,
+false
+],
+"печенье": [
+null,
+false
+],
+"плюс сыр": [
+null,
+false
+],
+"плюсик": [
+null,
+false
+],
+"пн 26 октября, 13:00": [
+null,
+false
+],
+"пн 26 октября, 13:10": [
+null,
+false
+],
+"пн 26 октября, ≈ 12:20": [
+null,
+false
+],
+"пн 26 октября, ≈ 12:50": [
+null,
+false
+],
+"пн 26 октября, ≈ 3:00": [
+null,
+false
+],
+"пн 26 октября, ≈ 9:00": [
+null,
+false
+],
+"подпись ": [
+null,
+false
+],
+"подходит несколько": [
+null,
+false
+],
+"пока": [
+null,
+false
+],
+"пока суп": [
+null,
+false
+],
+"полдник": [
+null,
+false
+],
+"полчаса назад": [
+null,
+false
+],
+"порции": [
+null,
+false
+],
+"порция": [
+null,
+false
+],
+"после обеда кофе": [
+null,
+false
+],
+"привет": [
+null,
+false
+],
+"рис": [
+null,
+false
+],
+"рис с курицей": [
+null,
+false
+],
+"с сыром 150 г": [
+null,
+false
+],
+"салат": [
+null,
+false
+],
+"сегодня утром каша": [
+null,
+false
+],
+"сегодня хорошая погода": [
+null,
+false
+],
+"секретнаяфраза": [
+null,
+false
+],
+"секретноеблюдо": [
+null,
+false
+],
+"секретный": [
+null,
+false
+],
+"секретный рис": [
+null,
+false
+],
+"секретный суп": [
+null,
+false
+],
+"сколько": [
+null,
+false
+],
+"сколько белка в твороге?": [
+null,
+false
+],
+"слово ": [
+null,
+false
+],
+"словосекретное": [
+null,
+false
+],
+"соус": [
+null,
+false
+],
+"спасибо": [
+null,
+false
+],
+"старое": [
+null,
+false
+],
+"старый обед": [
+null,
+false
+],
+"старый черновик": [
+null,
+false
+],
+"суп": [
+null,
+false
+],
+"суп в 13:10": [
+null,
+false
+],
+"суп в 14:10": [
+null,
+false
+],
+"суп в 200 г": [
+null,
+false
+],
+"суп вчера днём": [
+null,
+false
+],
+"суп грибной": [
+null,
+false
+],
+"суп и ещё хлеб": [
+null,
+false
+],
+"суп и хлеб": [
+null,
+false
+],
+"суп куриный": [
+null,
+false
+],
+"суп полчаса назад": [
+null,
+false
+],
+"суп с хлебом": [
+null,
+false
+],
+"суп с чечевицей": [
+null,
+false
+],
+"суп с чечевицей\nи хлеб": [
+null,
+false
+],
+"суп, вечером": [
+null,
+false
+],
+"суп, и добавь гречку в избранное": [
+"dish",
+false
+],
+"суп, сыр": [
+null,
+false
+],
+"суп, хлеб": [
+null,
+false
+],
+"суп, хлеб, йогурт": [
+null,
+false
+],
+"суперсекретный": [
+null,
+false
+],
+"сыр": [
+null,
+false
+],
+"сыр ещё": [
+null,
+false
+],
+"сыр, плюс хлеб": [
+null,
+false
+],
+"сырки глазированные": [
+null,
+false
+],
+"сырки глазированные — одно блюдо": [
+"dish",
+false
+],
+"сырки глазированные — одно блюдо, добавь гречку в избранное": [
+"dish",
+false
+],
+"сырники": [
+null,
+false
+],
+"сырок": [
+null,
+false
+],
+"сырок глазированный": [
+null,
+false
+],
+"та самая штука от мамы": [
+null,
+false
+],
+"тарелка супа": [
+null,
+false
+],
+"творог": [
+null,
+false
+],
+"текст": [
+null,
+false
+],
+"третья": [
+null,
+false
+],
+"тут": [
+null,
+false
+],
+"у пользователя ": [
+null,
+false
+],
+"убери борщ из избранного": [
+"dish",
+false
+],
+"убери пиццу из блюд": [
+"dish",
+false
+],
+"убери рис": [
+null,
+false
+],
+"убери суп": [
+null,
+false
+],
+"убери суп из блюд": [
+"dish",
+false
+],
+"убери сыр": [
+null,
+false
+],
+"убери сыр из блюд": [
+"dish",
+false
+],
+"убери хлеб": [
+null,
+false
+],
+"уберите": [
+null,
+false
+],
+"убранный суп": [
+null,
+false
+],
+"убрать сыр": [
+null,
+false
+],
+"удал": [
+null,
+false
+],
+"ужин": [
+null,
+false
+],
+"успешно 1": [
+null,
+false
+],
+"утренний кофе": [
+null,
+false
+],
+"утром": [
+null,
+false
+],
+"утром и вечером одно и то же — овсянка": [
+"dish",
+true
+],
+"утром каша": [
+null,
+false
+],
+"утром каша, в 13:00 суп": [
+"meals",
+true
+],
+"утром каша, вечером суп": [
+"meals",
+true
+],
+"утром овсянка, в обед суп": [
+"meals",
+true
+],
+"утром суп": [
+null,
+false
+],
+"утром суп, в обед": [
+"meals",
+true
+],
+"утром суп, хлеб": [
+null,
+false
+],
+"фото в дневнике": [
+null,
+false
+],
+"хлеб": [
+null,
+false
+],
+"хлеб утром": [
+null,
+false
+],
+"чай": [
+null,
+false
+],
+"час назад": [
+null,
+false
+],
+"час назад суп": [
+null,
+false
+],
+"черновик": [
+null,
+false
+],
+"чипсы": [
+null,
+false
+],
+"читаю": [
+null,
+false
+],
+"что-то непонятное": [
+null,
+false
+],
+"чужое": [
+null,
+false
+],
+"это был отличный день": [
+null,
+false
+],
+"это был рис": [
+null,
+false
+],
+"это была индейка": [
+null,
+false
+],
+"это была курица": [
+null,
+false
+],
+"это были котлеты": [
+null,
+false
+],
+"это было рагу": [
+null,
+false
+],
+"это суп": [
+null,
+false
+],
+"этот суп": [
+null,
+false
+],
+"эточтоль": [
+null,
+false
+],
+"я забыла сыр": [
+null,
+false
+],
+"яблоко": [
+null,
+false
+],
+"↩️": [
+null,
+false
+],
+"↩️ Вернуть": [
+null,
+false
+],
+"↩️ Отменено: одно блюдо «сырки глазированные» → «сырок глазированный», ⭐ гречка.": [
+"dish",
+false
+],
+"↩️ Отменить": [
+null,
+false
+],
+"≈ 12:20": [
+null,
+false
+],
+"≈ 13:00": [
+null,
+false
+],
+"≈ 200 ккал": [
+null,
+false
+],
+"≈ 20:00": [
+null,
+false
+],
+"≈ 620 ккал": [
+null,
+false
+],
+"≈ 9:00": [
+null,
+false
+],
+"⚓ Опора": [
+null,
+false
+],
+"⚖️ Мой вес": [
+null,
+false
+],
+"✅ Записать": [
+null,
+false
+],
+"✅ ОК": [
+null,
+false
+],
+"✏️ on the line, then the words: one application, as in the chat.": [
+null,
+false
+],
+"✏️ Исправить": [
+null,
+false
+],
+"✏️ Написать": [
+null,
+false
+],
+"✏️ Написать иначе": [
+null,
+false
+],
+"✓ Витамины &amp; омега": [
+null,
+false
+],
+"✓ Одно блюдо": [
+"dish",
+false
+],
+"✓ витамин": [
+null,
+false
+],
+"✓ ⭐ гречка": [
+null,
+false
+],
+"✓ 🍎 Фрукты": [
+null,
+false
+],
+"✓ 🎙 Текст": [
+null,
+false
+],
+"✓ 🥦 Овощи": [
+null,
+false
+],
+"✖ Не вышло: «пицца» — такого блюда нет.": [
+null,
+false
+],
+"➖ Отделить": [
+null,
+false
+],
+"➖ Отделить №2": [
+null,
+false
+],
+"➖ Отделить №3": [
+null,
+false
+],
+"➖ Разделить": [
+null,
+false
+],
+"⬅️ К приёму": [
+null,
+false
+],
+"⭐ Весь приём": [
+null,
+false
+],
+"🌰 Омега-3": [
+null,
+false
+],
+"🌾 Злаки": [
+null,
+false
+],
+"🍎 Фрукты": [
+null,
+false
+],
+"🍲 Блюда": [
+null,
+false
+],
+"🍽 Добавить прием пищи": [
+null,
+false
+],
+"🍽 Добавить приём пищи": [
+null,
+false
+],
+"🎙 Текст": [
+null,
+false
+],
+"🏷 Группы": [
+null,
+false
+],
+"💎 Получить подписку": [
+null,
+false
+],
+"💸 Запрос: $0.0004 · 1 вызов ИИ": [
+null,
+false
+],
+"📊 Статистика": [
+null,
+false
+],
+"📋 Прислано": [
+null,
+false
+],
+"📋 Черновик: вкл": [
+null,
+false
+],
+"📋 Черновик: выкл": [
+null,
+false
+],
+"📷 Показать фото": [
+null,
+false
+],
+"🔁 Прочитать заново": [
+null,
+false
+],
+"🔁 Прочитать заново on an old M7: the meal has been read since, and nothing is asked. The\n    known-positive is the test above that pays on M13.": [
+null,
+false
+],
+"🔗 Объединить": [
+"dish",
+false
+],
+"🔗 Объединить с пн 26 окт, 13:00": [
+"dish",
+false
+],
+"🔢 Цифры сразу: выкл": [
+null,
+false
+],
+"🕐 Время": [
+null,
+false
+],
+"🗑 Не записывать": [
+null,
+false
+],
+"🗑 Удалить": [
+null,
+false
+],
+"🥛 Кальций": [
+null,
+false
+],
+"🥜 Орехи": [
+null,
+false
+],
+"🥦 Овощи": [
+null,
+false
+],
+"🫘 Бобовые": [
+null,
+false
+]
+}

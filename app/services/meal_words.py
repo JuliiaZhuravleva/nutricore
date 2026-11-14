@@ -321,16 +321,22 @@ def _ahead(clock, precision: str, local: datetime) -> bool:
     return at > (now + _APPROX_SLACK if precision == APPROX else now)
 
 
-def part_times(spans: list, sent: datetime, zone, reminder_day=None) -> list:
+def part_times(
+    spans: list, sent: datetime, zone, reminder_day=None, said_in=None
+) -> list:
     """A ``SaidTime`` for each part of one message (several meals), in order.
 
     The day: the reminder's day if the message answers one; else «вчера» or «сегодня»
     as said; else the latest day on which every part's clock has passed. The clock: the
     part's own time phrase, else its meal's name, approximate. A part with neither, or
     a clock still ahead on a day named outright, keeps the day alone. ``rest`` is the
-    part's words without its time words."""
+    part's words without its time words. ``said_in``: the whole message, whose day word
+    counts when the parts dropped it («вчера ела: суп, сырники»)."""
     local = sent.astimezone(zone)
     whole = " ".join(spans)
+    # The message's own day word, unless it names both days: then the parts keep theirs.
+    if said_in and not (_YESTERDAY.search(said_in) and _TODAY.search(said_in)):
+        whole = f"{whole} {said_in}"
     found = [_part_clock(span, local, zone) for span in spans]
     named = None
     if reminder_day is not None:
