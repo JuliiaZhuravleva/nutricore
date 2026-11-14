@@ -201,6 +201,7 @@ class State:
             }
         self.data.setdefault("errors", [])
         self.data.setdefault("next_file", 1)
+        self.data.setdefault("planner_queue", [])
         self.events: list = []  # what this command changed, in order
 
     def save(self) -> None:
@@ -377,9 +378,19 @@ def _install_fakes(state: State) -> None:
     OpenAIService.suggest_portion = no_portion
 
     async def no_planner(self, messages):
-        # The planner fails here: a message for it goes where it went before plans.
-        state.events.append(("planner", "failed"))
-        raise RuntimeError("sim: no planner")
+        # The next scripted answer (``sim.sh plan``), one per call; with none queued
+        # the planner fails, and a message for it goes where it went before plans.
+        # The system prompt is never shown: only the person's words.
+        asked = next((m for m in reversed(messages) if m.get("role") == "user"), {})
+        seen = str(asked.get("content", "")).replace("\n", " ")[:60]
+        state.events.append(("planner_in", seen))
+        queue = state.data["planner_queue"]
+        if not queue:
+            state.events.append(("planner_out", None))
+            raise RuntimeError("sim: no planner")
+        answer = queue.pop(0)
+        state.events.append(("planner_out", answer))
+        return answer
 
     OpenAIService.plan_message = no_planner
     tg._schedule_personal_food_save = lambda **_: None

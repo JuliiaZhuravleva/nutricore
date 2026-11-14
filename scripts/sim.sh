@@ -15,6 +15,9 @@
 #                                                 a reply-keyboard key
 #   tap --key "<key label>"                       the reply-keyboard key only
 #   reply N "<text>"                              reply to message #N
+#   plan '<lines>'                                queue the planner's next answer, the
+#                                                 raw text (\n = newline); FIFO, one per
+#                                                 call; none queued = it fails as before
 #   clock [2026-11-06T21:00 | 21:00]              show / set (person's zone, forward)
 #   advance 40m|2h|1d [--tick]                    move the clock (--tick: every beat,
 #                                                 the one it stands on included)

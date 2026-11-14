@@ -33,11 +33,23 @@ W=/tmp/w                                  # the world: any folder, made on first
 | `tap "<label>" [--msg N]` | Taps an inline button on the latest message that has it, or on #N. Matching goes exact, then case-insensitive, then a unique substring, each across the whole chat (newest first) before the next: an exact `[Салат]` on an older message wins over `[Салат · 1 раз]` on a newer one. If no inline button matches, it falls back to a reply-keyboard key. |
 | `tap --key "<label>"` | Sends the reply-keyboard key, even when an older inline button has the same label (without `--key` the inline button wins). |
 | `reply N "<text>"` | Replies to message #N. |
+| `plan '<lines>'` | Queues the planner's next answer, the raw text the model would return (`\n` is a newline). Several `plan` commands queue several answers, first in first out; each `plan_message` call takes one (a retry takes the next). With none queued the planner fails, as it did before this command. The queue lives in `sim.json` (`planner_queue`). |
 | `clock [2026-11-06T21:00 \| 21:00]` | Shows the clock, or sets it in the person's zone. Time only goes forward. |
 | `advance 40m\|2h\|1d\|1h30m [--tick]` | Moves the clock. With `--tick`, it ticks at every 15-minute beat on the way, the beat the clock stands on included (unless an earlier `advance --tick` already ran it). |
 | `tick` | Runs every periodic push due at the clock (the registry in `pushes.py`). Beat's `model-watch` is left out on purpose: it needs the network and the model companies' APIs. |
 | `chat [--last N]` | Prints the person's chat. |
 | `day [YYYY-MM-DD]` | Prints the person's live records for that local day: the time, or «без времени» for a `day_only` record (its stored 12:00 is a placeholder); `reading=` shows only when the status is not `read`. |
+
+A message that goes to the planner (several meals, «за день: …», a dish change) is walked
+by queueing the answer first:
+
+```bash
+./scripts/sim.sh $W plan 'meal "овсянка с бананом"\nmeal "суп"\nmeal "сырники"'
+./scripts/sim.sh $W say "за день: овсянка с бананом, суп, сырники"
+# planner ← Now: 2026-11-06 12:00, Friday Message: за день: овсянка с ба
+# planner → meal "овсянка с бананом" / meal "суп" / meal "сырники"
+./scripts/sim.sh $W day                   # three records, «без времени»
+```
 
 ## Output
 
@@ -47,6 +59,7 @@ Each command prints only what it changed:
 - `+ #8 bot (↩ #7, silent):` is a new message from the bot.
 - `~ #8 bot (edited):` is an edited message, shown as it looks now.
 - `- #8 bot (… DELETED):` is a deleted message. Its buttons are gone, so they are not shown and `tap` does not find them.
+- `planner ← <first 60 chars of the planner's user message>` and `planner → <answer, or (none queued)>` are one planner call. The system prompt is never printed.
 - `toast: …` is a callback answer.
 - `keyboard: [a] [b] | [c]` means the reply keyboard changed; ` | ` separates its rows.
 - `[in Julia's chat] …` is a message that went to someone else.

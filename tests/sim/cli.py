@@ -318,6 +318,11 @@ def _print_events(state: world.State) -> None:
             print(f"!! A MODEL CALL WAS ATTEMPTED AND REFUSED: {event[1]}")
         elif event[0] == "error":
             print(f"!! APP ERROR: {event[1]}")
+        elif event[0] == "planner_in":
+            print(f"planner \u2190 {event[1]}")
+        elif event[0] == "planner_out":
+            shown = "(none queued)" if event[1] is None else event[1]
+            print(f"planner \u2192 {shown}")
         elif event[0] == "say":
             print(_render(state, state.by_key(event[1]), "> "))
         elif event[0] == "message" and event[1] not in done:
@@ -512,6 +517,12 @@ def cmd_say(state, args):
     if args.text.startswith("/"):
         fields["entities"] = [_command_entity(args.text)]
     _send(state, "text", args.text, **fields)
+
+
+def cmd_plan(state, args):
+    """Queue the planner's next answer: the raw text the model would return."""
+    state.data["planner_queue"].append(args.lines.replace("\\n", "\n"))
+    print(f"planner: {len(state.data['planner_queue'])} answer(s) queued")
 
 
 def cmd_reply(state, args):
@@ -888,6 +899,10 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("number", type=int)
     p.add_argument("text")
     p.set_defaults(run=cmd_reply)
+
+    p = sub.add_parser("plan", help="queue the planner's next answer (raw lines)")
+    p.add_argument("lines", help=r"the model's text; \n is a newline")
+    p.set_defaults(run=cmd_plan)
 
     p = sub.add_parser("clock", help="show, or set to a local time (forward only)")
     p.add_argument("when", nargs="?", help="2026-11-06T21:00 or 21:00, person's zone")
