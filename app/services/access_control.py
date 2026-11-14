@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
+from app.services import widget_queries
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,7 @@ async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     the owner closed hears that once. Whoever is refused goes through here, so an answer to
     a stranger belongs here, should one come.
     """
-    user = update.effective_user
-    telegram_id = user.id if user else None
+    telegram_id = widget_queries.person_of(update)
     if not is_user_allowed(telegram_id):
         logger.info(
             "Dropping update from non-allowed user %s (mode=%s)",
@@ -112,7 +112,8 @@ async def access_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def _tell_closed_once(update: Update, context) -> None:
     """Only to someone speaking to the bot in private: a status change or a group message
     spends nothing. Marked before it is sent: a lost line is smaller than a repeated one.
-    Nothing here may let the update through."""
+    Nothing here may let the update through. A widget query is neither: a stranger's tap
+    gets no line."""
     chat = getattr(update, "effective_chat", None)
     spoke = getattr(update, "message", None) or getattr(update, "callback_query", None)
     if chat is None or chat.type != "private" or spoke is None:
