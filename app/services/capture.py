@@ -1378,7 +1378,7 @@ def _routine_words_in_plan(db, came: Incoming, user: User, text: str) -> bool:
     if not ticks:
         return False
     day = stats_screen.local_time(datetime.now(UTC), user_zone(user)).date()
-    if plan_words.says_yesterday(text):
+    if plan_words.ticks_yesterday(text):
         day -= timedelta(days=1)
     due, _done = stats_screen._day_ticks(db, user, day)
     return any(stats_screen._routine_matches(due, said) for said, _e in ticks)
@@ -2169,7 +2169,10 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
         _aware(came.sent_at),
         zone,
         send.local_day if send else None,
-        said_in=came.text,
+        # A day's list («вчера ела: суп, сырники») gives its day to every part; a
+        # «вчера» of a weight or a tick beside a meal («вес вчера 72,4, на завтрак
+        # овсянка») is not the meal's.
+        said_in=came.text if plan_words.says_day(came.text) else None,
     )
     meals = []
     for number, (span, time) in enumerate(zip(spans, said), start=1):

@@ -688,6 +688,8 @@ class TickWords:
 def _tick_phrase(text: str | None) -> tuple[str, bool, bool] | None:
     """(the routine's words, yesterday?, the explicit «отметь»?) or None."""
     folded = " ".join((text or "").casefold().replace("ё", "е").split())
+    if folded.endswith("?"):  # «сделала зарядку?» asks, it does not tell
+        return None
     tokens = folded.strip(_TICK_EDGE).split(" ")
     if tokens.count("вчера") > 1:
         return None
@@ -736,8 +738,9 @@ def tick_by_words(
             refusal=SEVERAL_ROUTINES.format(name=html.escape(said), names=names)
         )
     if not found:
-        if not explicit:
-            return None  # «сделала омлет» is food, not a refusal
+        if not explicit or len(name_match.words(said)) > 3:
+            # «сделала омлет», «отметь обед гречка с курицей»: food, not a refusal
+            return None
         when = "вчера" if yesterday else "сегодня"
         return TickWords(
             refusal=NO_SUCH_ROUTINE.format(name=html.escape(said), day=when)

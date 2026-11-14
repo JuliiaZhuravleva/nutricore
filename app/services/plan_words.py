@@ -132,6 +132,22 @@ def tick_clauses(text: Optional[str]) -> list:
     return out
 
 
+_TODAY_WORD = re.compile(r"(?<!\w)сегодня(?!\w)")
+
+
+def ticks_yesterday(text: Optional[str]) -> bool:
+    """The ticks' day is yesterday: «вчера» said anywhere («вчера вес 72,4, зарядку
+    сделала»), unless «сегодня» is said too; then only a «вчера» in a tick's own clause
+    counts («вчера на ужин пицца, сегодня зарядку сделала» ticks today)."""
+    if not says_yesterday(text):
+        return False
+    if not _TODAY_WORD.search(plain(text)):
+        return True
+    return any(
+        _YESTERDAY_WORD.search(plain(c)) and tick_clauses(c) for c in _clauses(text)
+    )
+
+
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     """``DISH`` when the words change dishes, ``MEALS`` when they are several meals by
     R0's own rule, else None. A question is asked, not done."""

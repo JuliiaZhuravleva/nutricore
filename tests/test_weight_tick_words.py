@@ -421,3 +421,26 @@ def test_the_stem_rule_moved_to_name_match_and_plan_service_still_uses_it():
     assert name_match.akin("гречку", "гречка")
     assert not name_match.akin("чай", "чаю")
     assert name_match.words("Ёлка, 2 шт") == ["елка", "шт"]
+
+
+# --- review round 2 -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "words", ["сделала зарядку?", "отметь зарядку?", "зарядку сделала ?"]
+)
+def test_a_question_ticks_nothing(db, words):
+    _routine(db, "Зарядка", "z1")
+    assert stats_screen.tick_by_words(db, TG, words) is None
+    route = _route(db, words)
+    assert route.action == capture.LINE and "Вопросы" in route.line.text
+    assert _ticks(db) == []
+    assert stats_screen.tick_by_words(db, TG, "сделала зарядку") is not None  # control
+
+
+def test_a_long_food_after_the_verb_is_food_not_a_refusal(db):
+    _routine(db, "Зарядка", "z1")
+    route = _route(db, "отметь обед гречка с курицей")
+    assert route.action not in (capture.LINE, capture.TICK)
+    assert _ticks(db) == []
+    assert _route(db, "отметь медитация").action == capture.LINE  # control

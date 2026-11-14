@@ -9,7 +9,7 @@ real database (SQLite always, Postgres when ``TWO_PEOPLE_DB_URL`` is set: a uniq
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -678,3 +678,105 @@ def test_the_headline_message_with_one_meal(db, owner, reader, clock):
     assert rows[1] == [("↩️ Отменить", f"pl:u:{_plan(db).id}")]
     assert [m.weight for m in db.scalars(select(BodyMetric))] == [72.4]
     assert len(db.scalars(select(RoutineTick)).all()) == 1
+
+
+# --- review round 2: days, questions -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message, yesterday",
+    [
+        ("вчера вес 72,4, зарядку сделала, на завтрак каша", True),
+        ("вчера на ужин пицца, сегодня зарядку сделала", False),
+        ("сегодня на завтрак каша, вчера зарядку сделала", True),
+        ("зарядку сделала, на завтрак каша", False),
+    ],
+)
+def test_the_ticks_day_is_yesterday_only_where_it_is_said(message, yesterday):
+    assert words.ticks_yesterday(message) is yesterday
+
+
+def test_a_weight_in_a_question_is_not_written():
+    asked = _checked("weight 72.4", "вес 72,4 — это много? утром каша")
+    assert asked.weight is None
+    assert asked.refused[0].why == plan_service.WHY_WORDS
+    assert _checked("weight 72.4", "вес 72,4, утром каша").weight is not None
+
+
+def test_a_weight_with_yesterday_between_the_word_and_the_number():
+    checked = _checked('weight 72.4 day="вчера"', "вес вчера 72,4, на завтрак каша")
+    assert checked.weight is not None and checked.weight.yesterday
+
+
+def _local_day(moment) -> object:
+    stamp = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return stamp.astimezone(user_zone(None)).date()
+
+
+@BACKENDS
+def test_a_weights_yesterday_does_not_move_the_meal(wdb):
+    sent = datetime(2026, 11, 14, 16, 0, tzinfo=UTC)  # 20:00 in Tbilisi
+    message = "вес вчера 72,4, на завтрак каша"
+    executed, _plan_id = _go(
+        wdb, 'weight 72.4 day="вчера"\nmeal "на завтрак каша"', message, sent
+    )
+
+    assert executed.answer.startswith("⚖️ 72,4 кг — вчера")
+    (meal,) = _meals(wdb)
+    assert _local_day(meal.meal_time) == date(2026, 11, 14)
+
+
+@BACKENDS
+def test_the_weight_is_stamped_when_the_message_was_sent(wdb):
+    sent = datetime.now(UTC) - timedelta(hours=9)
+    user = wdb.get(User, 1)
+    plan = crud_message_plan.open(
+        wdb,
+        user_id=user.id,
+        chat_id=42,
+        message_id=next(_messages),
+        kind="text",
+        text="вес 72,4, на завтрак каша",
+        sent_at=sent,
+        want="meals",
+    )
+    checked = check(
+        plan_grammar.parse('weight 72.4\nmeal "на завтрак каша"'), plan.text, Book()
+    )
+    came = capture.plan_came(plan, user.telegram_id)
+    plan_service.execute(wdb, plan.id, checked, came, now=datetime.now(UTC))
+
+    wdb.expire_all()
+    (metric,) = wdb.scalars(select(BodyMetric)).all()
+    assert abs(metric.timestamp.replace(tzinfo=UTC) - sent) < timedelta(seconds=5)
+
+
+@BACKENDS
+def test_the_routines_day_is_the_day_the_message_was_sent(wdb):
+    user = wdb.get(User, 1)
+    zone = user_zone(user)
+    yesterday = datetime.now(zone).date() - timedelta(days=1)
+    sent = datetime.combine(yesterday, datetime.min.time(), zone) + timedelta(hours=23)
+    plan = crud_message_plan.open(
+        wdb,
+        user_id=user.id,
+        chat_id=42,
+        message_id=next(_messages),
+        kind="text",
+        text="зарядку сделала, на завтрак каша",
+        sent_at=sent.astimezone(UTC),
+        want="meals",
+    )
+
+    ask = plan_service.ask_of(wdb, plan.id)
+    assert ask.book.day == yesterday and not ask.book.yesterday
+    assert ask.book.routines == [("r1", "Зарядка")]
+
+
+@BACKENDS
+def test_the_plan_lists_todays_routines_when_today_is_said_beside_yesterday(wdb):
+    user = wdb.get(User, 1)
+    book = Book()
+    message = "вчера на ужин пицца, сегодня зарядку сделала"
+    plan_service._routines_of(wdb, user, message, book, datetime.now(user_zone(user)))
+    assert not book.yesterday and book.day == _today(wdb)

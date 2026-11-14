@@ -38,6 +38,7 @@ from app.services.plan_words import (
     says_weight_or_tick,
     says_yesterday,
     tick_clauses,
+    ticks_yesterday,
     weight_clause,
 )
 
@@ -538,7 +539,21 @@ def check(parsed: grammar.Parsed, text: str, book: Book) -> Checked:
 
 
 # The number right after «вес»/«вешу»: «вес 72,4, каша 200 г» weighs 72,4, not 200.
-_WEIGHT_NUMBER = re.compile(r"(?:вес|вешу)\s*:?\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+_WEIGHT_NUMBER = re.compile(
+    r"(?:вес|вешу)\s*(?:вчера\s*)?:?\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE
+)
+# Where the weight's clause ends: «?» makes it a question («вес 72,4 — это много?»).
+_CLAUSE_END = re.compile(r"[;!?\n]|[.,](?!\d)")
+
+
+def _weights_said(text: str) -> set:
+    """The numbers after «вес»/«вешу» whose clause tells, not asks."""
+    said = set()
+    for found in _WEIGHT_NUMBER.finditer(text):
+        end = _CLAUSE_END.search(text, found.end())
+        if end is None or end.group(0) != "?":
+            said.add(float(found.group(1).replace(",", ".")))
+    return said
 
 
 def _kg_text(command: grammar.Command) -> str:
@@ -567,7 +582,7 @@ def _routine_words(
 ) -> None:
     """D2: the weight and the ticks of the lines, checked strictly. A weight is a
     number the message says, 20 to 300 kg; a routine is one of the list given."""
-    said = {float(n.replace(",", ".")) for n in _WEIGHT_NUMBER.findall(text)}
+    said = _weights_said(text)
     for command in parsed.weights:
         label = f"вес {_kg_text(command)}"
         if checked.weight is not None:
@@ -888,7 +903,8 @@ def execute(
     group_id = dish_ops.new_group()
     moment = now or datetime.now(UTC)
     done = do_dishes(db, user, checked.acts, group_id, moment)
-    do_routine_words(db, user, checked, moment, done)
+    weighed = capture._aware(came.sent_at) if came.sent_at else moment
+    do_routine_words(db, user, checked, weighed, done)
     finish(db, plan, checked, [meal.id for meal, _ in meals], group_id, done)
     if retire is not None:
         _retire(db, user, retire, moment)
@@ -976,7 +992,12 @@ def ask_of(db, plan_id: int, line_id: Optional[int] = None) -> Optional[Ask]:
         replied = meal.id if meal is not None else None
     book = book_of(db, user, plan.text, replied) if plan.want == DISH else Book()
     local = datetime.now(user_zone(user))
-    _routines_of(db, user, plan.text, book, local)
+    # The routines' day is the message's, as its meals' is: a 🔁 next morning or a
+    # message sent before midnight and read after it keeps that day.
+    sent = (
+        capture._aware(plan.sent_at).astimezone(local.tzinfo) if plan.sent_at else local
+    )
+    _routines_of(db, user, plan.text, book, sent)
     return Ask(
         plan_id=plan.id,
         telegram_id=user.telegram_id,
@@ -995,7 +1016,7 @@ def _routines_of(db, user: User, text: str, book: Book, local: datetime) -> None
     was."""
     if not says_weight_or_tick(text):
         return
-    book.yesterday = says_yesterday(text)
+    book.yesterday = ticks_yesterday(text)
     book.day = local.date() - timedelta(days=1 if book.yesterday else 0)
     due, _done = stats_screen._day_ticks(db, user, book.day)
     book.routines = [(r["id"], str(r.get("name"))) for r in due][:ROUTINES_MAX]
