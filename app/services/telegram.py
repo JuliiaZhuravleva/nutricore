@@ -68,6 +68,7 @@ from app.services import (
     image_clean,
 )
 from app.services import inbound_message_service as inbound_msg
+from app.services import widget_queries
 from app.services import (
     invites,
     meal_card,
@@ -3538,7 +3539,7 @@ async def _load_custom_emoji(application: Application) -> None:
 
 
 # What the bot asks Telegram for, polling and webhook alike: an edit comes only if asked.
-ALLOWED_UPDATES = ["message", "edited_message", "callback_query"]
+ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "widget_query"]
 
 
 def create_bot_application() -> Application:
@@ -3573,6 +3574,11 @@ def create_bot_application() -> Application:
     # Global access gate — runs before every other handler (group=-4) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.
     application.add_handler(TypeHandler(Update, access_gate), group=-4)
+
+    # Taps inside HTML widgets (widget_query): routed by data prefix, after the gates. The
+    # handler matches widget queries only; a catch-all here would be the first match of
+    # group -3 for every update and keep invite_intake from ever running.
+    application.add_handler(widget_queries.WidgetQueryHandler(), group=-3)
 
     # A person picked, and the picker's labels: never food, never a slot's answer.
     application.add_handler(
