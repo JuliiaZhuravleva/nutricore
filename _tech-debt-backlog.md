@@ -392,3 +392,7 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/multi-action-plan (round-2 fix, own note)
   - **Created:** 2026-11-14
+- [ ] **TD-276**: `meal_card.join_row` (M1c, «sent a moment ago») offers «🔗 Объединить с …» across local days: «вчера ели: овсянка, суп» sent right after today's breakfast puts a chip on yesterday's day-only овсянка naming today's 9:00 meal. Skip the chip when the two meals fall on different local days (the «Ещё» menu still offers a join).
+  - **Priority:** Low
+  - **Source:** feat/words-do-more (sim walk, own note)
+  - **Created:** 2026-11-15
