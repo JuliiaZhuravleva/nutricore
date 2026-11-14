@@ -2,6 +2,8 @@
 
 > **Status:** slices 1–2 (text checkbox screen, weekly send) and slices 4–5 (several actions,
 > `feat/multi-action-plan`) released 2026-11-14; slice 3 (widget) not started. Owner's answers in §5.
+> Follow-ups (meal names, «за день», weight and ticks, questions with buttons, the widget)
+> designed and approved 2026-11-14 in §6; «↩️ Вернуть всё» becomes «↩️ Отменить» (§6.5).
 > Two features that share one core: **dish operations callable without a tap**
 > (merge, star, rename, hide) with **one undo for a group of them**.
 >
@@ -194,3 +196,79 @@ weekly batch usable. Slice 3 adds the one-tap widget on top.
    12:00 to 20:59), silently.
 3. **Dish changes from words** (slices 4–5): at once, with «↩️ Вернуть всё».
 4. **Order**: the tidy-up first (slices 1→2→3), then several actions (4→5).
+
+## 6. Follow-ups (2026-11-14)
+
+Six things left out of slices 4–5, designed together and checked on mocks by four isolated
+model viewers (invented personas: a hurried daily user, a tired evening logger with ADHD, a
+newcomer, a small phone in glare) before any code. The owner approved D1–D4 and the five
+changes in §6.5.
+
+### 6.1 D1 «за день» → several meals
+
+The planner groups foods by sense («овсянка с бананом» is one meal, «суп» another). Each part
+becomes a meal of that day without a time (`day_only`) unless its own words say a time or a
+meal name, and each part gets its own line with ✏️/🕐, as timed parts do. The day ends at
+midnight; «вчера» moves it. Trigger: «за день», «за сегодня», «сегодня/вчера ел(а/и)» with
+≥ 2 clauses or lines.
+
+### 6.2 D2 weight and ticks as words
+
+- Alone and plain, no model: «вес 72,4», «вешу 72,4 кг», «отметь X», «X сделан(а)», each
+  with «вчера».
+- Inside a plan: `weight <kg> [day="вчера"]` and `tick @n "<routine>"` (routines numbered
+  with `@`, so a dish `#n` can never tick one). Checks stay strict: 20–300 kg, and the routine
+  must be on that day's card; words never create a routine.
+- The answer holds «⚖️ 72,4 кг» and «✓ Зарядка» next to the dish changes; «↩️ Отменить» takes
+  them back with the dish changes, and the meals stay (each has its own ➖).
+
+### 6.3 D3 questions back: buttons only
+
+- A pick where `resolve` finds several dishes, in place of «подходит несколько… Напиши
+  точнее»: «⭐ Какую гречку добавить в избранное?», one row per dish by full name, «Все»
+  (star, unstar, hide, merge; not rename), «✖ Не надо».
+- The model's `ask <command>` becomes a yes/no question: «Объединить «A» и «B» в одно блюдо?»
+  [Да, объединить] [✖ Не надо], with the line «Записи останутся, отменить можно.»
+- At most 3 questions per message, each its own message, after the answer. An answer runs in
+  the plan's group and turns the question into its done line («✓ ⭐ гречка с маслом») with
+  its own `✅ ОК` / `↩️ Отменить`, which takes back only that answer.
+- An unanswered question holds nothing back and closes after 48 h: «Вопрос закрыт: прошло
+  2 дня. Ничего не изменено.» A rename without a new name is refused with a hint.
+
+### 6.4 D4 meal names
+
+- A said name wins: завтрак, обед, полдник, ужин, перекус. Only the said word is stored
+  (`meals.meal_type`).
+- Otherwise the hour, computed when shown (a 🕐 edit moves it, old meals need no backfill):
+  06–11 завтрак, 12–15 обед, 16–17 полдник, 18–22 ужин.
+- 23:00–05:59 and meals without a time show «Приём»; «перекус» only when said. A wrong name is
+  worse than none.
+- The name shows in the meal's line («Записан завтрак: …») and in its card title.
+
+### 6.5 What the mock check changed
+
+| Found (model viewers, 4 of 4 unless said) | Change |
+|---|---|
+| «↩️ Вернуть всё» under the dish answer: nobody said right what it takes back, 2 thought the meals too; «↩️ Отменить» under the weight read right | The label is «↩️ Отменить» everywhere, released screens included; behaviour unchanged |
+| A question's done line had no undo of its own | Its own `✅ ОК` / `↩️ Отменить` |
+| «↩️ Возвращено: 2 из 2.» does not say what | «↩️ Отменено: ⚖️ 72,4 кг, ✓ Зарядка.» |
+| Widget: the auto-merged row looked like a to-do and was counted in the button | Marked «уже объединено», not counted |
+| Widget after apply: ✓/— only; a planted swap was blamed on the reader (2 of 4) | A word per row: «сделано» / «не тронуто» |
+| Widget expiry in small grey text, missed by the glare persona | Larger |
+| «Да, объединить» did not say what happens to old entries | «Записи останутся, отменить можно.» |
+
+Kept as is: the closed-question text, the refusals, the said name over the hour, the expired
+widget's look, the times in the lines. Limits: model viewers are a screening, not people with
+a phone; the widget is checked on the owner's phone from the dev bot before its release.
+
+### 6.6 Releases
+
+| # | Release | Contents |
+|---|---|---|
+| R1 | Words do more | D4 names, D1 «за день», D2 weight and ticks, «↩️ Отменить» rename and the named undo result |
+| R2 | Questions with buttons | D3 (after moving the plan's markup into a screen module, TD-273) |
+| R3 | Tidy widget | `widget_query` plumbing, `dish_tidy_widget.py` with the §6.5 changes, kill switch `TIDY_WIDGET`, the checkbox screen as its text twin |
+
+Not in these: reply-binding to one part of a multi-meal message, free-text answers to
+questions, meal names in the diary widget, diary taps through `widget_query`, new routines
+from words, a per-person day boundary (TD-261).
