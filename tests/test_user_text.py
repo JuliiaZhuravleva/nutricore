@@ -46,6 +46,10 @@ EXEMPT = {
     ("app/services/model_watch.py", "Отключат … — осталось … дн."): (
         "admin notice: days left before an AI model shuts down, not about food"
     ),
+    (
+        "app/services/plan_service.py",
+        "отметь отметьте сделал сделала сделали сделало сделан сделана сделано",
+    ): "words the person writes for a tick, matched in their message, never shown",
 }
 
 

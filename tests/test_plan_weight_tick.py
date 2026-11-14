@@ -232,6 +232,16 @@ def test_a_meal_left_out_beside_the_ticks_is_asked_once_more(monkeypatch):
     assert len(checked.ticks) == 2 and checked.missed == []
 
 
+def test_none_for_a_message_with_a_weight_is_asked_once_more(monkeypatch):
+    # Review 2026-11-15: «none» on a weight message fell back to one meal of all
+    # its words, the weight unwritten.
+    message = "вес 72,4, на завтрак каша"
+    again = 'weight 72.4\nmeal "на завтрак каша"'
+    checked, sent = _read_with(monkeypatch, message, "none", again)
+    assert len(sent) == 2 and plan_service.NO_LINE in sent[1][-1]
+    assert checked.weight is not None and not checked.single
+
+
 def test_without_a_weight_or_tick_line_a_missed_part_is_not_asked_again(monkeypatch):
     checked, sent = _read_with(
         monkeypatch, "зарядку не сделала, на обед салат", 'meal "на обед салат"'
@@ -257,6 +267,17 @@ def test_a_routine_out_of_the_list_is_refused_with_the_approved_text():
     assert yesterday.refused[0].why.endswith("этой рутины вчера нет на карточке.")
     # The number must carry the routine's own name: a wrong @n is no tick.
     assert _checked('tick @1 "Йога"', "йогу сделала, а").ticks == []
+
+
+def test_a_routine_the_message_does_not_name_is_refused():
+    # Review 2026-11-15: a listed @n with its own name passed without the person
+    # ever naming the routine; only the weight was checked against the words.
+    checked = _checked('weight 72.4\ntick @1 "Зарядка"', "вес 72,4, на завтрак каша")
+    assert checked.ticks == [] and checked.weight is not None
+    (refusal,) = checked.refused
+    assert (refusal.label, refusal.why) == ("Зарядка", plan_service.WHY_WORDS)
+    # The person's own form of the name still counts.
+    assert len(_checked('tick @1 "Зарядка"', "зарядку сделала, а").ticks) == 1
 
 
 # --- the database --------------------------------------------------------------------
@@ -410,14 +431,10 @@ def test_only_an_old_tick_leaves_nothing_to_take_back(wdb):
 
 
 @BACKENDS
-@pytest.mark.parametrize("by_hand", ["edited", "deleted"])
-def test_a_weight_changed_after_the_plan_is_left_and_named(wdb, by_hand):
+def test_a_weight_changed_after_the_plan_is_left_and_named(wdb):
     _executed, plan_id = _go(wdb, LINES)
     row = wdb.scalars(select(BodyMetric)).one()
-    if by_hand == "edited":
-        row.weight = 73.0
-    else:
-        wdb.delete(row)
+    row.weight = 73.0
     wdb.commit()
 
     head, _ = plan_service.undo(wdb, 42, plan_id)
@@ -425,10 +442,31 @@ def test_a_weight_changed_after_the_plan_is_left_and_named(wdb, by_hand):
     assert head == (
         "↩️ Отменено: ✓ Зарядка. Не отменилось: «⚖️ 72,4 кг» — его меняли после."
     )
-    assert _ticks(wdb) == []
-    assert _weights(wdb) == (
-        [(73.0, {"source": "plan"})] if by_hand == "edited" else []
-    )
+    assert _ticks(wdb) == [] and _weights(wdb) == [(73.0, {"source": "plan"})]
+
+
+@BACKENDS
+def test_a_weight_and_a_tick_removed_by_hand_count_as_taken_back(wdb):
+    # Review 2026-11-15: a row already gone was «меняли после», and a plan holding
+    # only a gone tick answered «Уже сделано.» on every tap, its ↩️ never closing.
+    _executed, plan_id = _go(wdb, LINES)
+    wdb.delete(wdb.scalars(select(BodyMetric)).one())
+    wdb.delete(wdb.scalars(select(RoutineTick)).one())
+    wdb.commit()
+
+    head, toast = plan_service.undo(wdb, 42, plan_id)
+
+    assert (head, toast) == ("↩️ Отменено: ⚖️ 72,4 кг, ✓ Зарядка.", None)
+    assert plan_service.undo(wdb, 42, plan_id) == (None, plan_service.SAME_TOAST)
+
+
+@BACKENDS
+def test_a_plan_of_one_tick_removed_by_hand_closes_on_the_tap(wdb):
+    _executed, plan_id = _go(wdb, 'tick @1 "Зарядка"', "зарядку сделала вот")
+    wdb.delete(wdb.scalars(select(RoutineTick)).one())
+    wdb.commit()
+
+    assert plan_service.undo(wdb, 42, plan_id) == ("↩️ Отменено: ✓ Зарядка.", None)
 
 
 @BACKENDS
@@ -466,14 +504,18 @@ def test_refusals_say_so_and_write_nothing(wdb):
 
 
 @BACKENDS
-def test_a_failed_write_leaves_the_rest(wdb, monkeypatch):
+def test_a_failed_write_leaves_the_rest(wdb, monkeypatch, caplog):
     from sqlalchemy.exc import IntegrityError
 
     def boom(*_a, **_k):
         raise IntegrityError("x", {}, Exception("clash"))
 
     monkeypatch.setattr(plan_service.crud_routine_tick, "tick_flush", boom)
-    executed, _ = _go(wdb, LINES)
+    with caplog.at_level("WARNING", logger=plan_service.__name__):
+        executed, _ = _go(wdb, LINES)
+    # The error type only: an SQL error's text carries its parameters.
+    assert "Plan tick not written: IntegrityError" in caplog.text
+    assert "clash" not in caplog.text
     assert (
         "⚖️ 72,4 кг" in executed.answer and "✖ Не вышло: «Зарядка»." in executed.answer
     )
@@ -636,16 +678,3 @@ def test_the_headline_message_with_one_meal(db, owner, reader, clock):
     assert rows[1] == [("↩️ Отменить", f"pl:u:{_plan(db).id}")]
     assert [m.weight for m in db.scalars(select(BodyMetric))] == [72.4]
     assert len(db.scalars(select(RoutineTick)).all()) == 1
-
-
-@BACKENDS
-def test_a_tick_taken_off_by_hand_is_not_listed_in_the_undo(wdb):
-    _executed, plan_id = _go(wdb, LINES)
-    for tick in wdb.scalars(select(RoutineTick)).all():
-        wdb.delete(tick)
-    wdb.commit()
-
-    head, toast = plan_service.undo(wdb, 42, plan_id)
-
-    assert (head, toast) == ("↩️ Отменено: ⚖️ 72,4 кг.", None)
-    assert "Зарядка" not in head

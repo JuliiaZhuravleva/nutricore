@@ -37,6 +37,8 @@ from app.services.plan_words import (
     has_dish_verb,
     says_weight_or_tick,
     says_yesterday,
+    tick_clauses,
+    weight_clause,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,10 @@ RETRY = (
 )
 NO_DISH_LINE = "the message asks to change a dish, and no line does it: write that line"
 NO_MEAL_LINE = "no line covers this part: if it tells of a meal, write its meal line"
+NO_LINE = (
+    "no line covers this part: write its line if it tells of a meal, a weight or "
+    "a routine done"
+)
 
 # --- names ----------------------------------------------------------------------------
 
@@ -547,6 +553,15 @@ def _routine_fits(name: str, routine: str) -> bool:
     return bool(words) and all(any(_akin(w, t, 3) for t in theirs) for w in words)
 
 
+def _named_in(routine: str, text: str) -> bool:
+    """The message itself names the routine: a word of its name (three letters and
+    more) is akin to a word the person wrote. The model's quote alone is no proof."""
+    said = _words(text)
+    return any(
+        any(_akin(w, t, 3) for t in said) for w in _words(routine) if len(w) >= 3
+    )
+
+
 def _routine_words(
     parsed: grammar.Parsed, text: str, book: Book, checked: Checked
 ) -> None:
@@ -572,6 +587,9 @@ def _routine_words(
         if found is None or not _routine_fits(ref.name, found[1]):
             why = stats_screen.NO_SUCH_ROUTINE.partition("»")[2].format(day=when)
             checked.refused.append(Refusal(ref.name, why, final=True))
+            continue
+        if not _named_in(found[1], text):  # on the card, but the person never said it
+            checked.refused.append(Refusal(found[1], WHY_WORDS, final=True))
             continue
         tick = Tick(found[0], found[1], book.day, book.yesterday)
         if tick not in checked.ticks:
@@ -614,6 +632,13 @@ def _ambiguous(checked: Checked) -> bool:
     return any(r.why.startswith(marker) for r in checked.refused)
 
 
+def _tells_more(part: str) -> bool:
+    """A part shaped as a weight or a tick, not denied («зарядку не сделала»)."""
+    if weight_clause(part):
+        return True
+    return any("не" not in words.split() for words, _e in tick_clauses(part))
+
+
 def _retry_reasons(
     checked: Checked, parsed: grammar.Parsed, text: str, want: str
 ) -> str:
@@ -627,6 +652,12 @@ def _retry_reasons(
     if parsed.weights or parsed.ticks:
         # Seen on the real model (2026-11-15): two ticks and «none» for the breakfast.
         lines += [f"- «{part}»: {NO_MEAL_LINE}" for part in checked.missed]
+    else:
+        # No weight or tick line for a part that says one: else the message falls
+        # back to one meal of all its words, the weight and the tick unwritten.
+        lines += [
+            f"- «{part}»: {NO_LINE}" for part in checked.missed if _tells_more(part)
+        ]
     return "\n".join(lines)
 
 
@@ -747,8 +778,8 @@ def do_routine_words(
                 row = crud_body_metric.add_flush(
                     db, user.id, moment, weigh.kg, {"source": PLAN_SOURCE}
                 )
-        except SQLAlchemyError:
-            logger.warning("Plan weight not written", exc_info=True)
+        except SQLAlchemyError as e:
+            logger.warning("Plan weight not written: %s", type(e).__name__)
             done.said.append(NOT_DONE.format(label=f"вес {kg}") + ".")
         else:
             done.weight = {"id": row.id, "kg": weigh.kg}
@@ -760,8 +791,8 @@ def do_routine_words(
         try:
             with db.begin_nested():
                 new = crud_routine_tick.tick_flush(db, user.id, tick.routine, tick.day)
-        except SQLAlchemyError:
-            logger.warning("Plan tick not written", exc_info=True)
+        except SQLAlchemyError as e:
+            logger.warning("Plan tick not written: %s", type(e).__name__)
             done.said.append(NOT_DONE.format(label=tick.name) + ".")
             continue
         done.ticks.append(
@@ -1103,16 +1134,18 @@ def undo(db, telegram_id: int, plan_id: int) -> tuple:
 
 def take_back_routine_words(db, user: User, commands: dict) -> tuple:
     """(labels taken back, labels left): the weight this plan wrote only while its row
-    still holds the value, a tick only when this plan made it and it is still there.
-    Flushed, not committed. A routine that stood before the plan is not the plan's."""
+    still holds the value, a tick only when this plan made it. One already gone counts
+    as taken back: what the tap asks for is so. Flushed, not committed. A routine that
+    stood before the plan is not the plan's."""
     taken, left = [], []
     stored = commands.get("weight")
     if stored:
         label = DONE_WEIGHT.format(kg=weight_screen._kg(stored["kg"]))
         row = crud_body_metric.get(db, stored["id"])
-        if (
-            row is not None
-            and row.user_id == user.id
+        if row is None:
+            taken.append(label)  # deleted by hand: already as the tap wants it
+        elif (
+            row.user_id == user.id
             and row.weight is not None
             and abs(row.weight - stored["kg"]) < 0.005
         ):
@@ -1124,6 +1157,6 @@ def take_back_routine_words(db, user: User, commands: dict) -> tuple:
         if not tick.get("new"):
             continue
         day = date.fromisoformat(tick["day"])
-        if crud_routine_tick.untick_flush(db, user.id, tick["routine"], day):
-            taken.append(DONE_TICK.format(name=tick["name"]))
+        crud_routine_tick.untick_flush(db, user.id, tick["routine"], day)
+        taken.append(DONE_TICK.format(name=tick["name"]))  # gone by hand counts too
     return taken, left

@@ -32,6 +32,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
 from sqlalchemy.orm import object_session
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -662,7 +663,7 @@ def tick_by_name(
 # Ticks in words: «отметь зарядку», «зарядка сделана», «сделала зарядку», each with
 # «вчера». Exact name first, then by word stem; the verb decides what a miss means.
 _TICK_FORMS = (
-    (re.compile(r"^отметь (.+)$"), True),
+    (re.compile(r"^отметь(?:те)? (.+)$"), True),
     (re.compile(r"^(.+) сделан[аоы]?$"), False),
     (re.compile(r"^сделал[аи]? (.+)$"), False),
     (re.compile(r"^(.+) сделал[аи]?$"), False),
@@ -720,7 +721,7 @@ def tick_by_words(
 ) -> TickWords | None:
     """A typed or said tick in words. None: not a tick (a food, as ever)."""
     phrase = _tick_phrase(text)
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    user = db.scalar(select(User).where(User.telegram_id == telegram_id))
     if phrase is None or user is None:
         return None
     said, yesterday, explicit = phrase
