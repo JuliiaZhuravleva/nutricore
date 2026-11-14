@@ -23,7 +23,7 @@ from telegram.error import Forbidden, TelegramError
 from app.crud.crud_morning_answer import crud_morning_answer
 from app.models.morning_answer import MorningAnswer
 from app.models.user import User
-from app.services import morning
+from app.services import morning, sweep
 from app.services.card_delivery import may_have_arrived
 
 logger = logging.getLogger(__name__)
@@ -32,18 +32,9 @@ logger = logging.getLogger(__name__)
 def users_due(db, now: datetime) -> list:
     """(user, day asked about) for everyone with a question due now. One person's bad
     data must not cost everyone else theirs."""
-    due = []
-    for user in db.query(User).order_by(User.id).all():
-        telegram_id = user.telegram_id
-        try:
-            day = morning.due(db, user, now)
-        except Exception:
-            logger.exception("morning: could not check %s", telegram_id)
-            db.rollback()
-            continue
-        if day is not None:
-            due.append((user, day))
-    return due
+    return sweep.users_due(
+        db, lambda user: morning.due(db, user, now), logger, "morning"
+    )
 
 
 async def _close_previous(db, bot, row: MorningAnswer, now: datetime) -> None:
@@ -124,9 +115,11 @@ def _settle(db, row: MorningAnswer, status: str) -> None:
 async def run(db, bot, now: datetime | None = None) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     counts = {"sent": 0, "skipped": 0, "failed": 0, "blocked": 0}
-    for user, day in users_due(db, now):
-        telegram_id = user.telegram_id
+    for user_id, telegram_id, day in sweep.snapshot(db, users_due(db, now)):
         try:
+            user = db.get(User, user_id)
+            if user is None:
+                continue
             outcome = await _send(db, bot, user, day, now)
         except Exception:
             # One person's failed claim or commit must not cost everyone after
