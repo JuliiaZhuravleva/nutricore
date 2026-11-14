@@ -13,8 +13,8 @@ Shapes and parameter names, from the Bot API guide copy (telegram-api-watch widg
 - ``answerWidgetQuery``: ``widget_query_id`` + optional ``data`` (<= 1024 B), within 15 s.
 - ``editMessageWidgetData``: ``chat_id`` + ``message_id`` + ``chat_data`` (<= 1024 B);
   "Bad Request: message is not modified" counts as done.
-ASSUMED: the exact parameter names above are the guide's examples; the per-method pages
-(/bots/api/methods/...) were not read.
+VERIFIED 2026-11-15 against the method pages (core.telegram.org/bots/api/methods/
+answerwidgetquery.md, editmessagewidgetdata.md).
 
 Errors are told apart by HTTP 400 (python-telegram-bot's BadRequest) plus the method,
 never by an error code string: the texts differ from the guide (skill telegram-widgets,
