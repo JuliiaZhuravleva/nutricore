@@ -14,13 +14,15 @@ from typing import Optional
 MEALS_MAX = 8
 DISH_MAX = 10
 
-MEAL, MERGE, STAR, UNSTAR, HIDE, RENAME, NONE = (
+MEAL, MERGE, STAR, UNSTAR, HIDE, RENAME, WEIGHT, TICK, NONE = (
     "meal",
     "merge",
     "star",
     "unstar",
     "hide",
     "rename",
+    "weight",
+    "tick",
     "none",
 )
 DISH_VERBS = (MERGE, STAR, UNSTAR, HIDE, RENAME)
@@ -71,6 +73,20 @@ VERBS = (
         "rename the dish. The new name is copied from the message.",
         'rename #5 "салат" to "салат греческий"',
     ),
+    Verb(
+        WEIGHT,
+        'weight <kg> [day="вчера"]',
+        "the person says their body weight in kilograms. `day` only when they say "
+        "«вчера» for it. Copy the number as written.",
+        "weight 72.4",
+    ),
+    Verb(
+        TICK,
+        'tick @n "<routine>"',
+        "the person says they did one of their routines. Name it only from the "
+        "numbered Routines list, as @n with its number and name.",
+        'tick @1 "Зарядка"',
+    ),
     Verb(NONE, "none", "nothing above applies.", "none"),
 )
 _BY_NAME = {verb.name: verb for verb in VERBS}
@@ -97,6 +113,8 @@ class Command:
     refs: tuple = ()
     into: Optional[Ref] = None
     text: Optional[str] = None  # meal: the part; rename: the new name
+    kg: Optional[float] = None  # weight
+    yesterday: bool = False  # weight: day="вчера"
 
 
 @dataclass(frozen=True)
@@ -121,19 +139,33 @@ class Parsed:
     def dish(self) -> list:
         return [c for c in self.commands if c.verb in DISH_VERBS]
 
+    @property
+    def weights(self) -> list:
+        return [c for c in self.commands if c.verb == WEIGHT]
+
+    @property
+    def ticks(self) -> list:
+        return [c for c in self.commands if c.verb == TICK]
+
 
 MALFORMED = "malformed"
 _BULLET = re.compile(r"^(?:[-*•]\s+|\d{1,2}[.)]\s+)")
-_TOKEN = re.compile(r'#(\d{1,4})|"([^"]*)"|«([^»]*)»|“([^”]*)”|„([^“”]*)[“”]|(\S+)')
+_TOKEN = re.compile(
+    r'#(\d{1,4})|@(\d{1,4})|"([^"]*)"|«([^»]*)»|“([^”]*)”|„([^“”]*)[“”]|(\S+)'
+)
+_KG = re.compile(r"\d{1,4}(?:[.,]\d{1,2})?")
+_YESTERDAY = frozenset({'day="вчера"', "day=вчера", "day=«вчера»"})
 
 
 def _tokens(line: str) -> list:
-    """("#", n) | ("q", text) | ("w", word)."""
+    """("#", n) | ("@", n) | ("q", text) | ("w", word)."""
     out = []
     for match in _TOKEN.finditer(line):
-        number, *quoted, word = match.groups()
+        number, routine, *quoted, word = match.groups()
         if number is not None:
             out.append(("#", int(number)))
+        elif routine is not None:
+            out.append(("@", int(routine)))
         elif word is not None:
             out.append(("w", word))
         else:
@@ -159,6 +191,23 @@ def _command(verb: str, line: str, tokens: list) -> Optional[Command]:
     if verb == MEAL:
         if len(rest) == 1 and rest[0][0] == "q" and rest[0][1].strip():
             return Command(MEAL, line, text=rest[0][1].strip())
+        return None
+    if verb == WEIGHT:
+        if not rest or rest[0][0] != "w" or not _KG.fullmatch(rest[0][1]):
+            return None
+        yesterday = len(rest) == 2 and rest[1][0] == "w"
+        if len(rest) > 2 or (
+            len(rest) == 2 and not (yesterday and rest[1][1].casefold() in _YESTERDAY)
+        ):
+            return None
+        kg = float(rest[0][1].replace(",", "."))
+        return Command(WEIGHT, line, text=rest[0][1], kg=kg, yesterday=yesterday)
+    if verb == TICK:
+        # «@n "name"» and nothing else: a dish's #n never ticks a routine.
+        if len(rest) == 2 and rest[0][0] == "@" and rest[1][0] == "q":
+            name = rest[1][1].strip()
+            if name:
+                return Command(TICK, line, refs=(Ref(rest[0][1], name),))
         return None
     if verb in (STAR, UNSTAR, HIDE):
         ref, at = _ref(rest, 0)

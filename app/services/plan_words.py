@@ -74,6 +74,30 @@ def says_day(text: Optional[str]) -> bool:
     return len([item for item in re.split(edges, body) if item.strip()]) >= least
 
 
+# D2: a weight or a tick said inside a longer message. On the plain text.
+_WEIGHT_WORD = re.compile(r"(?<!\w)(?:вес|вешу)(?!\w)")
+_TICK_WORD = re.compile(r"(?<!\w)(?:отметь(?:те)?|сделал[аио]?|сделан[аоы]?)(?!\w)")
+_YESTERDAY_WORD = re.compile(r"(?<!\w)вчера(?!\w)")
+# A comma or a dot between digits is a decimal mark, not a clause's end.
+_CLAUSE_EDGE = re.compile(r"[;\n!?]+|(?<!\d)[.,]+|[.,]+(?!\d)")
+
+
+def says_weight_or_tick(text: Optional[str]) -> bool:
+    """A weight word or a tick word: the planner is then given the day's routines."""
+    if not text:
+        return False
+    plained = plain(text)
+    return bool(_WEIGHT_WORD.search(plained) or _TICK_WORD.search(plained))
+
+
+def says_yesterday(text: Optional[str]) -> bool:
+    return bool(text) and _YESTERDAY_WORD.search(plain(text)) is not None
+
+
+def _clauses(text: str) -> int:
+    return len([c for c in _CLAUSE_EDGE.split(text) if c.strip()])
+
+
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
     """``DISH`` when the words change dishes, ``MEALS`` when they are several meals by
     R0's own rule, else None. A question is asked, not done."""
@@ -85,4 +109,6 @@ def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
         return MEALS
     if says_day(text):
         return MEALS
+    if says_weight_or_tick(text) and _clauses(text) >= 2:
+        return MEALS  # next to other content: a whole-message weight or tick never is
     return None
