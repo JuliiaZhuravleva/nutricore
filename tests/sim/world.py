@@ -375,6 +375,13 @@ def _install_fakes(state: State) -> None:
     tg.resolve_meal_nutrition = resolve
     voice.hear = hear
     OpenAIService.suggest_portion = no_portion
+
+    async def no_planner(self, messages):
+        # The planner fails here: a message for it goes where it went before plans.
+        state.events.append(("planner", "failed"))
+        raise RuntimeError("sim: no planner")
+
+    OpenAIService.plan_message = no_planner
     tg._schedule_personal_food_save = lambda **_: None
     capture.ALBUM_WAIT_SECONDS = 0  # a photo here is one photo, never an album
     settings.WHISPER_URL = ""

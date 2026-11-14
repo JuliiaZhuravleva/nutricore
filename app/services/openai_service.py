@@ -419,6 +419,19 @@ class OpenAIService:
         )
         return response.choices[0].message.content
 
+    async def plan_message(self, messages: list) -> str:
+        """The planner's command lines for one message, as raw text: code checks every
+        line (``plan_service.check``). The person's words travel only in the user
+        message."""
+        response = await self._create(
+            task="text",
+            messages=messages,
+            max_tokens=400,
+            temperature=0,
+            cheapest=True,
+        )
+        return response.choices[0].message.content or ""
+
     async def analyze_food_image(
         self, image_url: str, *, caption: str | None = None, more_images: tuple = ()
     ) -> Dict:

@@ -14,6 +14,7 @@ from .meal_item import MealItem
 from .meal_message import MealMessage
 from .meal_reading import MealReading
 from .meal_source import MealSource
+from .message_plan import MessagePlan
 from .morning_answer import MorningAnswer
 from .personal_food import PersonalFood, PersonalFoodEmbedding
 from .product_cache import ProductCache
@@ -32,6 +33,7 @@ __all__ = [
     "MealSource",
     "MealReading",
     "MealMessage",
+    "MessagePlan",
     "RecordEvent",
     "FavoriteMeal",
     "Feedback",

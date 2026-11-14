@@ -29,12 +29,14 @@ from app.core.config import settings
 from app.crud.crud_inbound_message import crud_inbound_message
 from app.crud.crud_meal import crud_meal
 from app.crud.crud_meal_item import crud_meal_item
+from app.crud.crud_message_plan import crud_message_plan
 from app.crud.crud_personal_food import crud_personal_food
 from app.models.inbound_message import InboundMessage
 from app.models.meal import Meal
 from app.models.meal_message import MealMessage
 from app.models.meal_reading import MealReading
 from app.models.meal_source import MealSource
+from app.models.message_plan import MessagePlan
 from app.models.record_event import RecordEvent
 from app.models.reminder_send import ReminderSend
 from app.models.user import User
@@ -44,6 +46,7 @@ from app.services import (
     food_groups,
     meal_card,
     meal_items,
+    plan_words,
     reminders,
     stats_screen,
     voice,
@@ -90,8 +93,9 @@ from app.services.meal_words import STOP_WORDS  # noqa: F401 (the name tests rea
 from app.services.meal_words import _TODAY, _YESTERDAY, ADD, REMOVE, REPEAT, SaidTime
 from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
+from app.services.meal_words import part_times
 from app.services.meal_words import says_no as _says_no
-from app.services.meal_words import time_words
+from app.services.meal_words import says_several, time_words
 from app.services.settings_screen import draft_on, user_zone
 
 logger = logging.getLogger(__name__)
@@ -116,6 +120,10 @@ M6A_NOT_ASKED = "Можно не отвечать, ничего не измен�
 # A change sent while the message before it is still being worked out: the change
 # may belong to what that message turns out to be.
 STILL_READING = "Ещё разбираю прошлое сообщение — пришли это через минуту."
+# A message read as several actions is not read again when edited (decision 11).
+M11_PLANNED = "Сообщение уже разобрано: поправь нужную запись кнопкой ✏️ под ней."
+PLAN_FAILED = "Не получилось разобрать сообщение."
+PLAN_RETRY = "🔁 Ещё раз"
 M4C_DRAFT_HINT = (
     "Голосовые пока в пробном режиме. Что услышано, видно по кнопке «🎙 Текст». "
     "Если сервис проекта не отвечает, голосовое уходит во внешний сервис."
@@ -212,6 +220,7 @@ _CLOCK_IN = re.compile(r"(\s*(?:вчера\s+)?)в\s+", re.IGNORECASE)
 
 # What the handler does with a message.
 LINE, WEIGHT, TICK, SILENT, NEW_MEAL = "line", "weight", "tick", "silent", "new_meal"
+PLAN = "plan"  # several actions in one message: the planner reads it
 
 # The read that a meal's line waits for.
 _READING_KIND = {IMAGE: "vision", TEXT: "text", VOICE: "transcript"}
@@ -254,6 +263,16 @@ class Routed(Exception):
     def __init__(self, line: Optional["Line"]):
         super().__init__("routed")
         self.line = line
+
+
+class WantsPlan(Exception):
+    """A heard voice whose words want the planner, as the same words typed would:
+    ``want`` is ``plan_words.DISH`` or ``MEALS``, ``words`` what it reads."""
+
+    def __init__(self, want: str, words: str):
+        super().__init__("wants plan")
+        self.want = want
+        self.words = words
 
 
 def _now() -> datetime:
@@ -328,7 +347,10 @@ def seen(db, came: Incoming) -> bool:
         MealSource.message_id == came.message_id,
         MealSource.kind == came.kind,
     )
-    return db.scalar(stmt) is not None
+    if db.scalar(stmt) is not None:
+        return True
+    plan = crud_message_plan.of_message(db, came.chat_id, came.message_id)
+    return plan is not None and plan.kind == came.kind
 
 
 def _user(db, came: Incoming) -> User:
@@ -562,6 +584,11 @@ def _split_markup(source_id: int, meal_id: int) -> InlineKeyboardMarkup:
             [_button(SPLIT, f"ml:z:{source_id}:r"), _button(FIX, f"ml:o:{meal_id}:r")],
         ]
     )
+
+
+def plan_retry_markup(plan_id: int) -> InlineKeyboardMarkup:
+    """🔁 under a message the planner could not read: it runs the plan again."""
+    return InlineKeyboardMarkup([[_button(PLAN_RETRY, f"pl:r:{plan_id}")]])
 
 
 def _it_is_food(source_id: int) -> InlineKeyboardMarkup:
@@ -994,8 +1021,14 @@ def _unheard(db, meal: Meal) -> bool:
     return voice_source is not None
 
 
+def _planning(db, user: User) -> bool:
+    """A message of this person is with the planner now: what it holds is not known."""
+    return crud_message_plan.reading_of(db, user.id, _now() - STUCK_AFTER) is not None
+
+
 def _still_reading(db, came: Incoming, user: User, meal: Optional[Meal]) -> bool:
-    if meal is None or not _unheard(db, meal):
+    unheard = meal is not None and _unheard(db, meal)
+    if not unheard and not _planning(db, user):
         return False
     _keep(db, came, user)
     return True
@@ -1027,6 +1060,7 @@ class Route:
     tick: Optional[str] = None
     note: Optional[str] = None
     words: Optional[str] = None  # NEW_MEAL: the food, without what was said to the meal
+    plan: Optional[str] = None  # PLAN: plan_words.DISH or MEALS
     retouch: Optional[meal_card.Retouch] = None  # SILENT: a message of ours to redraw
 
 
@@ -1214,11 +1248,17 @@ def _nothing(db, came: Incoming, user: User, send) -> Route:
 
 
 def route_text(
-    db, came: Incoming, as_food: bool = False, *, heard: Optional[int] = None
+    db,
+    came: Incoming,
+    as_food: bool = False,
+    *,
+    heard: Optional[int] = None,
+    plan: bool = True,
 ) -> Route:
     """Rows 3 to 10 for a text. The first two are ahead of this handler. ``as_food``: the
     person said it is food, so its form does not say otherwise. ``heard``: the meal of
-    a voice whose words these are; only a meal before it is the «last» one."""
+    a voice whose words these are; only a meal before it is the «last» one. ``plan``
+    False: the planner gave the words back, so they go where they went before plans."""
     text = came.text
     if text.strip() in STALE_LABELS:
         return Route(LINE, Line(M9B_STALE, menu=True))
@@ -1230,6 +1270,10 @@ def route_text(
         send = _replied_send(db, came, user)
     if send is not None and not as_food and reminders.is_nothing(text):
         return _nothing(db, came, user, send)  # never the ⭐ the reminder holds
+    if plan and not as_food and _wants_dish_plan(came):
+        # Ahead of the replies and the corrective words: «добавь гречку в избранное»
+        # is no «добавь» to a meal.
+        return Route(PLAN, plan=plan_words.DISH)
     if target is not None and (send is None or _for_the_star(came, user)):
         route = _on_reply(db, came, user, target, heard=heard is not None)
         if route is not None:
@@ -1260,6 +1304,14 @@ def route_text(
             return _nothing(db, came, user, send)
 
     correction = _correction(text)
+    if (
+        plan
+        and correction
+        and correction[0] == ADD
+        and _several(came, user, correction[1])
+    ):
+        # «забыл написать: утром каша, в обед суп»: meals of their own, each timed.
+        return Route(PLAN, plan=plan_words.MEALS, words=correction[1])
     if correction and _recalls_more(db, came, user, correction):
         # §3.2: «а ещё днём был йогурт» after an answer is a meal of its own, at
         # that time; «а ещё хлеб» still joins the first answer below.
@@ -1288,7 +1340,25 @@ def route_text(
     if text.rstrip().endswith("?"):
         source = _keep(db, came, user)
         return Route(LINE, Line(M3B_QUESTION, _it_is_food(source.id)))
+    if plan and _several(came, user, text):
+        return Route(PLAN, plan=plan_words.MEALS)
     return Route(NEW_MEAL)
+
+
+def _wants_dish_plan(came: Incoming) -> bool:
+    if came.forward_date is not None:
+        return False
+    return plan_words.wants_plan(came.text, _aware(came.sent_at), UTC) == (
+        plan_words.DISH
+    )
+
+
+def _several(came: Incoming, user: User, text: Optional[str]) -> bool:
+    """R0's own condition: several meals, each at its own time. A forward's time is
+    its own, so its words never part it."""
+    if not text or came.forward_date is not None:
+        return False
+    return says_several(text, _aware(came.sent_at), user_zone(user))
 
 
 # --- M6a, M5d: the chips --------------------------------------------------------------
@@ -1733,6 +1803,7 @@ class Read:
     typed: bool = (
         False  # words typed to a meal (M7c): they stand even if no food is seen
     )
+    unplanned: bool = False  # the planner gave a heard voice back: routed as before
 
 
 @dataclass(frozen=True)
@@ -1999,6 +2070,102 @@ def born(
         note=note,
     )
     return Born(meal.id, source.id, meal.rev or 0, first=first, job=job)
+
+
+# --- the parts of one message: several meals, each at its own time -------------------
+
+
+def plan_came(plan: MessagePlan, telegram_id: int) -> Incoming:
+    """The message a plan was opened for, as it came: 🔁 and the sweep have nothing
+    else at hand."""
+    return Incoming(
+        telegram_id=telegram_id,
+        username=None,
+        chat_id=plan.chat_id,
+        message_id=plan.message_id,
+        kind=plan.kind,
+        text=plan.text,
+        file_id=None,
+        file_unique_id=None,
+        file_size=None,
+        duration_s=None,
+        media_group_id=None,
+        reply_to=plan.reply_to_message_id,
+        sent_at=_aware(plan.sent_at) if plan.sent_at else _now(),
+        forward_date=plan.forward_date,
+    )
+
+
+def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
+    """(meals, send): one meal per part, in the order given, each with a TEXT source
+    of its words on the message (``part`` 1..N), flushed and not committed. A voice's
+    parts sit on the voice's message: what was heard is what they read. No
+    ``MealMessage`` (the message maps to no one meal) and no exact-name shortcut: its
+    mapping row would take the message from the second part on. ``send``: the reminder
+    the message answers, for ``reminders.answered`` after the commit."""
+    send = reminders.answering(db, user, came)
+    zone = user_zone(user)
+    said = part_times(
+        spans, _aware(came.sent_at), zone, send.local_day if send else None
+    )
+    meals = []
+    for number, (span, time) in enumerate(zip(spans, said), start=1):
+        meal = crud_meal.build(
+            MealCreate(
+                description=time.rest or span,
+                sent_at=came.sent_at,
+                photos=[],
+                numbers_basis="none",
+                **_time_columns(came.sent_at, None, time),
+            ),
+            user.id,
+        )
+        meal.reading_status = "pending"
+        meal.is_draft = draft_on(user)
+        db.add(meal)
+        db.flush()
+        part = replace(
+            came,
+            kind=TEXT,
+            text=span,
+            file_id=None,
+            file_unique_id=None,
+            file_size=None,
+            duration_s=None,
+            media_group_id=None,
+        )
+        source = _source(part, user, meal.id)
+        source.part = number
+        db.add(source)
+        db.flush()
+        meals.append((meal, source))
+    return meals, send
+
+
+def parts_shown(db, came: Incoming, user: User, meals: list) -> list:
+    """After the commit: each part's first line and its read, as ``born`` gives one
+    meal's. The one-time hint goes under the first part only."""
+    out = []
+    for number, (meal, source) in enumerate(meals):
+        db.refresh(meal)
+        hint = _take_hint(db, user) if number == 0 else False
+        words = _record_text(db, meal, user, hint=hint, reading=True)
+        markup = _first_markup(db, meal, meal_card.join_row(db, meal))
+        first = Line(words, markup, meal_id=meal.id)
+        job = Read(
+            meal_id=meal.id,
+            rev=meal.rev or 0,
+            source_id=source.id,
+            telegram_id=came.telegram_id,
+            chat_id=came.chat_id,
+            kind=TEXT,
+            file_id=None,
+            text=meal.description or source.text,
+            shown=first.text,
+            hint=hint,
+        )
+        out.append(Born(meal.id, source.id, meal.rev or 0, first=first, job=job))
+    return out
 
 
 # --- an album, M2 and M2a --------------------------------------------------------------
@@ -2345,6 +2512,7 @@ def latest_version(db, source: MealSource) -> MealSource:
             .where(
                 MealSource.chat_id == source.chat_id,
                 MealSource.message_id == source.message_id,
+                MealSource.part == (source.part or 0),
                 MealSource.supersedes_id.is_not(None),
             )
             .order_by(MealSource.id.desc())
@@ -2490,8 +2658,18 @@ def edited(db, came: Incoming) -> Optional[Line]:
     new words are kept beside it, and the record waits for the person's word. None: not
     a message of a meal, or nothing new; a deleted meal keeps the words and says nothing.
     Words that made no record can become one, and 🔁 is offered only where it reads
-    what was edited.
+    what was edited. A planned message is not read again; a failed plan takes the new
+    words for its 🔁.
     """
+    plan = crud_message_plan.of_message(db, came.chat_id, came.message_id)
+    if plan is not None and plan.status != crud_message_plan.SINGLE:
+        if plan.status != crud_message_plan.FAILED:
+            return Line(M11_PLANNED)
+        if not came.text or came.text == plan.text:
+            return None
+        plan.text = came.text
+        db.commit()
+        return Line(M11_NO_RECORD, plan_retry_markup(plan.id))
     original = db.scalar(
         select(MealSource)
         .where(
@@ -2959,7 +3137,9 @@ def _waits(route: Route) -> bool:
     return route.line is not None and route.line.text == STILL_READING
 
 
-def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
+def route_heard(
+    db, job: Read, transcript: str, *, plan: bool = True
+) -> Optional[Routed]:
     """A voice heard for the first time goes where its words would go if typed: a
     weight, a tick, «ещё хлеб» to the meal before it, «убери сыр» in reply to a meal.
     None: it is food, and its read goes on as ever. Otherwise the voice's own meal
@@ -2981,7 +3161,10 @@ def route_heard(db, job: Read, transcript: str) -> Optional[Routed]:
     words = " ".join(part for part in (job.text, transcript) if part).strip()
     if not words:
         return None
-    route = route_text(db, _heard_came(job, source, words), heard=meal.id)
+    route = route_text(db, _heard_came(job, source, words), heard=meal.id, plan=plan)
+    if route.action == PLAN:
+        # Nothing is retired yet: the planner decides, and its fallback is a read.
+        raise WantsPlan(route.plan, route.words or words)
     if route.action == NEW_MEAL or _waits(route):
         # A voice before it is not heard yet: a typed change waits and stays in the
         # chat; a spoken one would be lost, so it is read as food, as it always was.
@@ -3030,6 +3213,17 @@ def _retire_heard(db, job: Read, meal: Meal, source: MealSource, line: Line) -> 
     else:
         left_meal(db, job.chat_id, job.line_id)
     return True
+
+
+def retire_planned(db, job: Read, line: Line) -> bool:
+    """A heard voice the planner took: its own meal leaves the day, as a routed one
+    does, and its line maps to what it says now. False: the line is no longer the
+    read's (or the voice is gone), so it is not edited."""
+    meal = db.get(Meal, job.meal_id)
+    source = db.get(MealSource, job.source_id)
+    if meal is None or source is None:
+        return False
+    return _retire_heard(db, job, meal, source, line)
 
 
 def spoken_words(db, job: Read, transcript: str) -> str:
@@ -3350,7 +3544,10 @@ def read_again(db, meal_id: int, *, automatic: bool = False) -> Optional[Read]:
 
 
 def _inbound_of(db, telegram_id: int, source: MealSource) -> Optional[int]:
-    """The diagnostic row of this source, so /reprocess does not read it twice."""
+    """The diagnostic row of this source, so /reprocess does not read it twice. A part
+    of a planned message has none: the message as a whole is what was recorded."""
+    if source.part:
+        return None
     stmt = select(InboundMessage.id).where(
         InboundMessage.telegram_id == telegram_id,
         InboundMessage.status != "analyzed",
@@ -3377,7 +3574,7 @@ def row_fate(db, row: InboundMessage) -> tuple:
     user = db.scalar(select(User).where(User.telegram_id == row.telegram_id))
     if user is None:
         return REPLAY, None
-    stmt = select(MealSource).where(MealSource.user_id == user.id)
+    stmt = select(MealSource).where(MealSource.user_id == user.id, MealSource.part == 0)
     if row.photo_file_id:
         stmt = stmt.where(MealSource.file_id == row.photo_file_id)
     else:

@@ -219,6 +219,89 @@ def _common_day(moments: list, text: str, local: datetime):
     return local.date()
 
 
+def said_moments(text: Optional[str], sent: datetime, zone) -> list:
+    """The moment each clause says, in order, as R0 counts them: a time phrase, else a
+    meal's name. Clauses that say none are left out."""
+    if not text:
+        return []
+    local = sent.astimezone(zone)
+    moments = []
+    for one in clauses(text):
+        said = _first_phrase(one, local, zone, True)
+        moment = said.moment if said else _meal_name(one, local, zone)
+        if moment is not None:
+            moments.append(moment)
+    return moments
+
+
+def says_several(text: Optional[str], sent: datetime, zone) -> bool:
+    """R0's own condition: two or more clauses say a time, and the times differ."""
+    moments = said_moments(text, sent, zone)
+    return len(moments) >= 2 and len(set(moments)) > 1
+
+
+def _part_clock(span: str, local: datetime, zone):
+    """(clock, precision, phrase, rest, moment) of one part's own words. ``moment`` is
+    set when the words fix it whole («час назад», «вчера в 9:00»); ``clock`` is None
+    when they say no time of day."""
+    said = _first_phrase(span, local, zone, True)
+    rest = said.rest if said else span
+    if said is not None and said.precision != DAY_ONLY:
+        clock = said.moment.astimezone(zone).time()
+        moment = None if said.of_day else said.moment
+        return clock, said.precision, said.phrase, rest, moment
+    match = _MEAL_NAME.search(rest)
+    if match is None:
+        return None, None, said.phrase if said else None, rest, None
+    name = _plain(next(word for word in match.groups() if word))
+    phrase = match.group(0).strip()
+    return _MEAL_NAME_CLOCKS[name], APPROX, phrase, _without(rest, match), None
+
+
+def _bare_days(text: str) -> str:
+    left = _TODAY.sub(" ", _YESTERDAY.sub(" ", text))
+    return " ".join(left.split()).strip(" ,.;:—-")
+
+
+def part_times(spans: list, sent: datetime, zone, reminder_day=None) -> list:
+    """A ``SaidTime`` for each part of one message (several meals), in order.
+
+    The day: the reminder's day if the message answers one; else «вчера» or «сегодня»
+    as said; else the latest day on which every part's clock has passed. The clock: the
+    part's own time phrase, else its meal's name, approximate. A part with neither, or
+    a clock still ahead on a day named outright, keeps the day alone. ``rest`` is the
+    part's words without its time words."""
+    local = sent.astimezone(zone)
+    whole = " ".join(spans)
+    found = [_part_clock(span, local, zone) for span in spans]
+    named = None
+    if reminder_day is not None:
+        named = reminder_day
+    elif _YESTERDAY.search(whole) and not _TODAY.search(whole):
+        named = local.date() - timedelta(days=1)
+    elif _TODAY.search(whole):
+        named = local.date()
+    if named is not None:
+        day = named
+    else:
+        clocks = [c[0] for c in found if c[0] is not None and c[4] is None]
+        ahead = any(clock > local.time() for clock in clocks)
+        day = local.date() - timedelta(days=1) if ahead else local.date()
+    out = []
+    for clock, precision, phrase, rest, moment in found:
+        rest = _bare_days(rest)
+        if moment is not None:
+            out.append(SaidTime(moment.astimezone(UTC), precision, phrase, rest))
+            continue
+        at = _at(day, clock, zone) if clock is not None else None
+        if at is None or at > local:
+            noon = _at(day, _NOON, zone).astimezone(UTC)
+            out.append(SaidTime(noon, DAY_ONLY, phrase, rest, of_day=True))
+            continue
+        out.append(SaidTime(at.astimezone(UTC), precision, phrase, rest, of_day=True))
+    return out
+
+
 def time_words(
     text: Optional[str], sent: datetime, zone, *, bare_ok: bool = False
 ) -> Optional[SaidTime]:
@@ -231,12 +314,7 @@ def time_words(
     if not text:
         return None
     local = sent.astimezone(zone)
-    moments = []
-    for one in clauses(text):
-        said = _first_phrase(one, local, zone, True)
-        moment = said.moment if said else _meal_name(one, local, zone)
-        if moment is not None:
-            moments.append(moment)
+    moments = said_moments(text, sent, zone)
     if len(moments) >= 2 and len(set(moments)) > 1:
         day = _common_day(moments, text, local)
         noon = _at(day, _NOON, zone).astimezone(UTC)

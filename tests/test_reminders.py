@@ -2033,13 +2033,13 @@ def test_the_sub_screen_says_rarer_or_paused(db):
 
 
 def test_the_explanation_says_what_the_time_screen_offers():
-    """§10, §3.5: every ⭐ from a reminder is day_only, so the 🕐 options and R0's
-    one-message-one-meal rule are what the entry has to say."""
+    """§10, §3.5: every ⭐ from a reminder is day_only, so the 🕐 options and how a
+    message of several meals is written are what the entry has to say."""
     how = explain_screen.TOPICS["reminders"].how
     for phrase in ("«утром», «днём», «вечером»", "когда ответ был прислан"):
         assert phrase in how
     assert "на день приёма" in how
-    assert "несколько времён, оно записывается без часов" in how
+    assert "как несколько приёмов, каждый со своим временем" in how
 
 
 # --- the schedule --------------------------------------------------------------------

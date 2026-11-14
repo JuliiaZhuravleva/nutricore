@@ -279,7 +279,11 @@ def test_r0_two_times_in_one_message_keep_the_day_and_claim_no_clock(
     # No phrase is cut: neither is the meal's, and the words keep both times.
     assert reader.text == [words]
     assert meal.description == words
-    head = wire.sent()[0]["text"].split("\n")[0]
+    # The planner was asked and failed: the message went where it went before plans.
+    assert len(reader.planned) == 1
+    shown = wire.line(0)
+    assert shown[0] == "Сообщение получено, читаю…"
+    head = shown[1].split("\n")[0]  # the line it became, before the read
     assert head == f"Записано на пн 26 октября, без времени: {words}."
 
 
@@ -306,7 +310,8 @@ def test_d2_a_meals_name_in_the_other_clause_makes_it_two_times(
     assert (meal.time_precision, meal.time_phrase) == ("day_only", None)
     assert _local(meal) == datetime(2026, 10, 26, 12, 0)
     assert reader.text == ["утром суп, в обед"]
-    head = wire.sent()[0]["text"].split("\n")[0]
+    assert len(reader.planned) == 1  # asked, failed: as before plans
+    head = wire.line(0)[1].split("\n")[0]
     assert head == "Записано на пн 26 октября, без времени: утром суп, в обед."
 
 

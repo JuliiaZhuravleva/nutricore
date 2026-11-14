@@ -34,6 +34,7 @@ BUTTON_VERBS = (
     "ml",
     "mq",
     "ok",
+    "pl",
     "rm",
     "rt",
     "set",

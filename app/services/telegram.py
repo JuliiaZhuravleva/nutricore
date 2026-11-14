@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import enum
+import html
 import logging
 import os
 import re
@@ -45,6 +46,7 @@ from telegram.warnings import PTBUserWarning
 from app.core.config import settings
 from app.crud.crud_access_grant import crud_access_grant
 from app.crud.crud_feedback import crud_feedback
+from app.crud.crud_message_plan import crud_message_plan
 from app.crud.crud_subscription import crud_subscription
 from app.db.session import SessionLocal
 from app.models import action_event
@@ -74,6 +76,7 @@ from app.services import (
     morning,
     owner_buttons,
     people_screen,
+    plan_service,
     portion_suggestions,
     reminders,
     routines,
@@ -824,7 +827,8 @@ async def _voice_words(bot, job: capture.Read) -> str:
     again. The log says who answered and how fast, and no word of it."""
     with SessionLocal() as db:
         transcript = meal_card.heard_of(db, job.meal_id)
-    if transcript is None:
+    first = transcript is None
+    if first:
         audio = await _voice_bytes(bot, job)
         started = time.monotonic()
         heard = await voice.hear(
@@ -843,10 +847,12 @@ async def _voice_words(bot, job: capture.Read) -> str:
             duration_s,
             took_s,
         )
-        # Once, on first hearing: a voice is typed words said aloud. A re-read of it
-        # later reads food, as it always did.
+    # Once, on first hearing: a voice is typed words said aloud. A re-read of it later
+    # reads food, as it always did. Given back by the planner, the words go where
+    # they went before plans.
+    if first or job.unplanned:
         with SessionLocal() as db:
-            routed = capture.route_heard(db, job, transcript)
+            routed = capture.route_heard(db, job, transcript, plan=not job.unplanned)
         if routed is not None:
             raise routed
     with SessionLocal() as db:
@@ -898,6 +904,8 @@ async def _read_and_show(bot, job: capture.Read, meter: Meter) -> tuple:
             done = capture.read_said_nothing(db, job)
         await _tell_read(bot, job, done.line, retouch=done.retouch)
         return False, None
+    except capture.WantsPlan:
+        raise  # the planner's turn, in the caller: no failure
     except capture.Routed as routed:
         # Heard, and no meal of its own: done the way typed words are, never read.
         inbound_msg.mark_analyzed(job.inbound_id, {"routed": True})
@@ -1115,7 +1123,14 @@ async def _read_meal(application: Application, job: capture.Read) -> None:
                         await _tell_read(application.bot, job, refused.line)
                         return
                 with metering() as meter:
-                    _, dead = await _read_one(application.bot, job, meter)
+                    try:
+                        _, dead = await _read_one(application.bot, job, meter)
+                    except capture.WantsPlan as wants:
+                        # Inside the gate already: the plan never takes it again.
+                        dead, again = None, await _plan_heard(application, job, wants)
+                        if again is not None:
+                            job = again
+                            _, dead = await _read_one(application.bot, job, meter)
             # The picker is a push, and a read nobody asked for pushes nothing: the
             # next live meal asks.
             if dead is not None and not job.automatic:
@@ -1201,6 +1216,7 @@ async def _show_given_up(application: Application, given_up: list) -> None:
 
 async def _sweep(application: Application) -> None:
     """One pass: a stuck pending fails and its line says so; what is due is read again."""
+    await _sweep_plans(application)
     with SessionLocal() as db:
         stuck = capture.stuck_meals(db, _live_reads)
     for meal_id in stuck:
@@ -1534,6 +1550,10 @@ async def _capture(
     if route.action == capture.NEW_MEAL:
         written = await _new_meal(update, context, came, route.note, route.words)
         return _Went.WRITTEN if written else _Went.REFUSED
+    if route.action == capture.PLAN:
+        went = await _plan_text(update, context, came, route)
+        await _menu_once(context.bot, came.chat_id, user.id)
+        return went
     if route.action == capture.SILENT:
         await _retouch(context.bot, came.chat_id, route.retouch)  # R16: «✓ Принято.»
         return _Went.NOTHING
@@ -1556,6 +1576,334 @@ async def _capture(
         )
     await _menu_once(context.bot, came.chat_id, user.id)
     return went
+
+
+# --- one message, several actions (plan_service) ----------------------------------
+
+_live_plans: set = set()
+
+
+async def _put(bot, chat_id: int, reply_to: int, line_id, line: capture.Line):
+    """The line into ``line_id`` when there is one, else a silent reply of its own.
+    The message id it stands in, or None if Telegram took neither."""
+    if line_id is not None:
+        try:
+            await _edit_line(bot, chat_id, line_id, line)
+        except BadRequest as e:
+            if not _is_not_modified(e):
+                logger.warning("Plan line not edited: %s", type(e).__name__)
+                return None
+        except TelegramError as e:
+            logger.warning("Plan line not edited: %s", type(e).__name__)
+            return None
+        return line_id
+    try:
+        sent = await _tries(
+            lambda: bot.send_message(
+                chat_id,
+                line.text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=line.markup,
+                disable_notification=True,
+                reply_parameters=ReplyParameters(
+                    message_id=reply_to, allow_sending_without_reply=True
+                ),
+            )
+        )
+    except TelegramError as e:
+        logger.warning("Plan line not sent: %s", type(e).__name__)
+        return None
+    return sent.message_id
+
+
+def _mapped(chat_id: int, message_id, line: capture.Line, view: str) -> None:
+    if message_id is None or line.meal_id is None:
+        return
+    with SessionLocal() as db:
+        capture.map_message(db, chat_id, message_id, line.meal_id, view)
+
+
+async def _plan_text(update, context, came: capture.Incoming, route) -> "_Went":
+    """A typed message for the planner: claimed, «читаю…» at once, read behind it."""
+    message = update.message
+    try:
+        with SessionLocal() as db:
+            plan_id = plan_service.open_plan(db, came, route.plan, route.words)
+    except Exception as e:
+        logger.error("Plan not opened: %s", type(e).__name__)
+        await message.reply_text(capture.M7F_REFUSED)
+        return _Went.REFUSED
+    if plan_id is None:
+        return _Went.WRITTEN  # a replay: the first one answers
+    sent = await _send_line(message, capture.Line(plan_service.READING_LINE))
+    if sent is not None:
+        with SessionLocal() as db:
+            plan_service.set_line(db, plan_id, sent.message_id)
+    _start_plan(context.application, plan_id)
+    return _Went.WRITTEN
+
+
+def _start_plan(application: Application, plan_id: int) -> None:
+    _live_plans.add(plan_id)
+    task = application.create_task(_run_plan(application, plan_id))
+    _keep_task(task)
+    task.add_done_callback(lambda _: _live_plans.discard(plan_id))
+
+
+async def _run_plan(application: Application, plan_id: int) -> None:
+    """A typed plan: the model under the reads' gate, the writing after it."""
+    gate = application.bot_data.setdefault(
+        "meal_reads_gate", asyncio.Semaphore(READS_AT_ONCE)
+    )
+    try:
+        async with gate:
+            ask, checked = await _plan_read(plan_id)
+        if ask is not None:
+            await _plan_done(application, ask, checked)
+    except Exception as e:
+        # The row stays reading: the sweep gives its line the failure and 🔁.
+        logger.error("Plan %s crashed: %s", plan_id, type(e).__name__)
+
+
+async def _plan_read(plan_id: int, line_id: Optional[int] = None) -> tuple:
+    """(ask, checked): ask None when the plan is no longer reading; checked None when
+    the model failed. The person whose message it is pays for it."""
+    with SessionLocal() as db:
+        ask = plan_service.ask_of(db, plan_id, line_id)
+    if ask is None:
+        return None, None
+    try:
+        with attribute_to(ask.telegram_id), metering():
+            checked = await plan_service.read(
+                telegram_service.openai_service,
+                ask.text,
+                ask.want,
+                ask.book,
+                ask.local,
+                telegram_id=ask.telegram_id,
+                input_ref=f"plan:{plan_id}",
+            )
+    except Exception as e:
+        logger.warning("Plan %s not read: %s", plan_id, type(e).__name__)
+        return ask, None
+    return ask, checked
+
+
+def _gives_back(ask, checked) -> bool:
+    """Today's way: one meal and nothing more, or meals the model could not part."""
+    if checked is None:
+        return ask.want != plan_service.DISH
+    return checked.single and (ask.want != plan_service.DISH or bool(checked.meals))
+
+
+async def _plan_done(application: Application, ask, checked) -> None:
+    bot, came = application.bot, ask.came
+    if _gives_back(ask, checked):
+        await _plan_single(application, ask)
+        return
+    if checked is None or checked.single:
+        with SessionLocal() as db:
+            if checked is None:
+                line = plan_service.fail(db, ask.plan_id)
+            else:
+                line = plan_service.nothing(db, ask.plan_id)
+        if line is not None:
+            await _put(bot, came.chat_id, came.message_id, ask.line_id, line)
+        return
+    with SessionLocal() as db:
+        executed = plan_service.execute(db, ask.plan_id, checked, came)
+    if executed is not None:
+        await _plan_show(application, ask, executed, ask.line_id)
+
+
+async def _plan_show(application: Application, ask, executed, first_line) -> None:
+    """Each meal's line (the first in ``first_line`` when there is one), then the one
+    answer of the dish changes; then the reads."""
+    bot, came = application.bot, ask.came
+    line_ids, jobs = [], []
+    for number, born in enumerate(executed.born):
+        target = first_line if number == 0 else None
+        shown = await _put(bot, came.chat_id, came.message_id, target, born.first)
+        _mapped(came.chat_id, shown, born.first, "pending")
+        line_ids.append(shown)
+        jobs.append(replace(born.job, line_id=shown, unsent=shown is None))
+    result_id = None
+    if executed.answer:
+        line = capture.Line(
+            html.escape(executed.answer),
+            plan_service.answer_markup(ask.plan_id, executed.changed),
+        )
+        target = first_line if not executed.born else None
+        result_id = await _put(bot, came.chat_id, came.message_id, target, line)
+    with SessionLocal() as db:
+        plan_service.shown(db, ask.plan_id, line_ids, result_id)
+    for job in jobs:
+        _start_read(application, job)
+
+
+async def _plan_single(application: Application, ask) -> None:
+    """The planner gave the message back: it goes where it went before plans, and its
+    «читаю…» line becomes that answer."""
+    bot, came = application.bot, replace(ask.came, kind="text")
+    with SessionLocal() as db:
+        if not plan_service.fall_back(db, ask.plan_id):
+            return
+    try:
+        with SessionLocal() as db:
+            route = capture.route_text(db, came, plan=False)
+            born = None
+            if route.action == capture.NEW_MEAL:
+                born = capture.born(db, came, note=route.note, words=route.words)
+    except Exception as e:
+        logger.error(
+            "Plan %s given back, not written: %s", ask.plan_id, type(e).__name__
+        )
+        line = capture.Line(capture.M7F_REFUSED)
+        await _put(bot, came.chat_id, came.message_id, ask.line_id, line)
+        return
+    if route.action == capture.NEW_MEAL:
+        if born is not None:
+            await _show_born(application, came, born, ask.line_id)
+        return
+    line = route.line if route.action == capture.LINE else None
+    line = line or capture.Line(capture.M7F_REFUSED)
+    shown = await _put(bot, came.chat_id, came.message_id, ask.line_id, line)
+    _mapped(came.chat_id, shown, line, line.view)
+    await _retouch(bot, came.chat_id, line.retouch)
+    if line.fill:
+        _keep_task(
+            application.create_task(_fill_typed_dish(line.fill, came.telegram_id))
+        )
+
+
+async def _show_born(application: Application, came, born, line_id) -> None:
+    """A text's meal written: its line into ``line_id``, then its read; as
+    ``_new_meal`` does with a line of its own."""
+    bot = application.bot
+    inbound_id = inbound_msg.record_inbound(
+        telegram_id=came.telegram_id, kind="text", content=came.text, photo_file_id=None
+    )
+    if born.final is not None:
+        inbound_msg.mark_analyzed(inbound_id, {"exact_name": born.names})
+        shown = await _put(bot, came.chat_id, came.message_id, line_id, born.final)
+        _mapped(came.chat_id, shown, born.final, "line")
+        return
+    shown = await _put(bot, came.chat_id, came.message_id, line_id, born.first)
+    _mapped(came.chat_id, shown, born.first, "pending")
+    job = replace(born.job, line_id=shown, inbound_id=inbound_id, unsent=shown is None)
+    _start_read(application, job)
+
+
+async def _plan_heard(application: Application, job: capture.Read, wants):
+    """A heard voice for the planner, inside the gate its read holds. Returns the read
+    to go on with (the voice as food, as before plans), or None when the plan took
+    the voice."""
+    bot = application.bot
+    try:
+        with SessionLocal() as db:
+            source = db.get(capture.MealSource, job.source_id)
+            came = replace(capture._heard_came(job, source, wants.words), kind="voice")
+            plan_id = plan_service.open_plan(db, came, wants.want, wants.words)
+    except Exception as e:
+        logger.error("Voice plan not opened: %s", type(e).__name__)
+        plan_id = None
+    if plan_id is None:
+        return replace(job, unplanned=True)
+    ask, checked = await _plan_read(plan_id, job.line_id)
+    if ask is None:
+        return None
+    if _gives_back(ask, checked):
+        with SessionLocal() as db:
+            plan_service.fall_back(db, plan_id)
+        return replace(job, unplanned=True)
+    if checked is None or checked.single:
+        with SessionLocal() as db:
+            if checked is None:
+                line = plan_service.fail(db, plan_id)
+            else:
+                line = plan_service.nothing(db, plan_id)
+            claimed = line is not None and capture.retire_planned(db, job, line)
+        if claimed:
+            await _show(bot, job, line)
+        return None
+    with SessionLocal() as db:
+        executed = plan_service.execute(db, plan_id, checked, ask.came)
+    if executed is None:
+        return None
+    if executed.born:
+        first = replace(executed.born[0].first, view="pending")
+    else:
+        first = capture.Line(
+            html.escape(executed.answer or ""),
+            plan_service.answer_markup(plan_id, executed.changed),
+        )
+    with SessionLocal() as db:
+        claimed = capture.retire_planned(db, job, first)
+    inbound_msg.mark_analyzed(job.inbound_id, {"planned": plan_id})
+    await _plan_show(application, ask, executed, job.line_id if claimed else None)
+    return None
+
+
+async def _sweep_plans(application: Application) -> None:
+    """A plan still reading long after its message (a restart lost it): nothing was
+    written, and its line says so with 🔁."""
+    try:
+        before = datetime.now(UTC) - capture.STUCK_AFTER
+        with SessionLocal() as db:
+            stuck = [
+                (p.id, p.chat_id, p.message_id, p.line_message_id)
+                for p in crud_message_plan.stuck(db, before)
+                if p.id not in _live_plans
+            ]
+    except Exception as e:
+        logger.error("Stuck plans not read: %s", type(e).__name__)
+        return
+    for plan_id, chat_id, message_id, line_id in stuck:
+        try:
+            with SessionLocal() as db:
+                line = plan_service.fail(db, plan_id)
+            if line is not None:
+                await _put(application.bot, chat_id, message_id, line_id, line)
+        except Exception as e:
+            logger.error("Plan %s not given up: %s", plan_id, type(e).__name__)
+
+
+async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """``pl:u:<id>`` ↩️ Вернуть всё; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan."""
+    query, user = update.callback_query, update.effective_user
+    match = re.fullmatch(r"pl:([ur]):(\d{1,10})", query.data or "")
+    if match is None or user is None:
+        await query.answer()
+        return
+    plan_id, message = int(match.group(2)), query.message
+    if match.group(1) == "u":
+        with SessionLocal() as db:
+            head, toast = plan_service.undo(db, user.id, plan_id)
+        await query.answer(toast)
+        if head is None:
+            return
+        body = html.escape(getattr(message, "text", None) or "")
+        try:
+            await query.edit_message_text(
+                f"{body}\n\n{html.escape(head)}".strip(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except TelegramError as e:
+            logger.warning("Plan undo not shown: %s", type(e).__name__)
+        return
+    line_id = getattr(message, "message_id", None)
+    with SessionLocal() as db:
+        taken = plan_service.again(db, user.id, plan_id, line_id)
+    if not taken:
+        await query.answer(plan_service.SAME_TOAST)
+        return
+    await query.answer()
+    try:
+        await query.edit_message_text(plan_service.READING_LINE, reply_markup=None)
+    except TelegramError as e:
+        logger.warning("Plan line not edited: %s", type(e).__name__)
+    _start_plan(context.application, plan_id)
 
 
 async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2541,7 +2889,13 @@ async def reprocess(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         for job in jobs:
             with metering() as meter:
-                read, dead = await _read_one(context.bot, job, meter)
+                try:
+                    read, dead = await _read_one(context.bot, job, meter)
+                except capture.WantsPlan as wants:
+                    read, dead = True, None
+                    again = await _plan_heard(context.application, job, wants)
+                    if again is not None:
+                        read, dead = await _read_one(context.bot, again, meter)
             _live_reads.pop(job.meal_id, None)
             if dead is not None:
                 await update.message.reply_text(stopped(dead))
@@ -3267,6 +3621,10 @@ def create_bot_application() -> Application:
     # a tap here closes that itself and does not count as leaving one (see below).
     application.add_handler(
         CallbackQueryHandler(dishes_callback, pattern=f"^{dishes.CALLBACK_PREFIX}")
+    )
+    # One message read as several actions: ↩️ of its dish changes, 🔁 of a failed one.
+    application.add_handler(
+        CallbackQueryHandler(plan_callback, pattern=f"^{plan_service.CALLBACK_PREFIX}")
     )
     # 🍲 the tidy-up of the dish base (stateless, like favorites).
     application.add_handler(

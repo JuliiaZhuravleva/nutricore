@@ -1279,8 +1279,24 @@ def join_row(db, meal: Meal) -> Optional[list]:
         return None
     if abs(_sent_moment(meal) - _sent_moment(previous)) >= JOIN_ROW_WINDOW:
         return None
+    if _parts_of_one_message(db, previous, meal):
+        return None  # the person said they are apart; «Ещё» still offers it
     # The chip names the meal it is not under, even when this line's meal survives.
     return [join_button(db, previous, meal, "r")]
+
+
+def _parts_of_one_message(db, one: Meal, other: Meal) -> bool:
+    """Both meals are parts (1..N) of the same message read as several meals."""
+
+    def parts(meal: Meal) -> set:
+        rows = db.execute(
+            select(MealSource.chat_id, MealSource.message_id).where(
+                MealSource.meal_id == meal.id, MealSource.part > 0
+            )
+        )
+        return {tuple(row) for row in rows}
+
+    return bool(parts(one) & parts(other))
 
 
 def join_candidates(db, meal: Meal) -> list:
