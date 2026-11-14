@@ -29,7 +29,13 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import (
+    BadRequest,
+    Forbidden,
+    NetworkError,
+    RetryAfter,
+    TelegramError,
+)
 
 from app.crud.crud_dish_tidy import crud_dish_tidy
 from app.models.dish_tidy import DishTidyBatch
@@ -39,6 +45,7 @@ from app.services import (
     dish_tidy,
     dish_tidy_batch,
     dish_tidy_screen,
+    dish_tidy_widget,
     settings_screen,
 )
 from app.services.access_control import may_receive
@@ -121,6 +128,9 @@ async def _retire_older(db, bot, user: User, batch: DishTidyBatch) -> None:
         db.commit()
         if old.chat_id is None or old.message_id is None:
             continue
+        if dish_tidy_widget.is_widget(old):
+            await dish_tidy_widget.refresh(bot, db, old, user)  # x: 1, no text to edit
+            continue
         screen = dish_tidy_screen.ended_view(db, old, user, dish_tidy_screen.RETIRED)
         try:
             await bot.edit_message_text(
@@ -132,6 +142,37 @@ async def _retire_older(db, bot, user: User, batch: DishTidyBatch) -> None:
             )
         except TelegramError as error:
             logger.info("dish tidy: batch %s not edited closed: %s", old.id, error)
+
+
+async def _send(bot, telegram_id: int, screen, built, markup) -> tuple:
+    """(message, form): the widget when there is one and Telegram takes it, else the text
+    screen. A refused widget (BadRequest or any other answer that is not a failure to
+    reach Telegram) falls back to the text, logged; a flood wait, a block and a
+    connection that may have delivered it are the caller's, as for the text."""
+    if built is not None:
+        try:
+            message = await dish_tidy_widget.send(bot, telegram_id, built, markup)
+            return message, dish_tidy_widget.FORM
+        except (Forbidden, RetryAfter):
+            raise
+        except BadRequest as error:
+            logger.warning(
+                "dish tidy: widget refused, sent as text: %s", str(error)[:200]
+            )
+        except NetworkError:
+            raise  # timed out or lost: may have arrived, never sent again as text
+        except TelegramError as error:
+            logger.warning(
+                "dish tidy: widget failed, sent as text: %s", str(error)[:200]
+            )
+    message = await bot.send_message(
+        chat_id=telegram_id,
+        text=screen.text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=screen.markup,
+        disable_notification=True,
+    )
+    return message, "text"
 
 
 async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> str:
@@ -151,14 +192,12 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
     screen = dish_tidy_screen.open_view(
         db, batch, user, dish_tidy_screen.default_mask(items)
     )
+    built = None
+    if dish_tidy_widget.allowed(user):
+        built = dish_tidy_widget.build(db, batch, user)
+    markup = dish_tidy_widget.keyboard(db, batch, user) if built else None
     try:
-        message = await bot.send_message(
-            chat_id=telegram_id,
-            text=screen.text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=screen.markup,
-            disable_notification=True,
-        )
+        message, form = await _send(bot, telegram_id, screen, built, markup)
     except Forbidden:
         logger.info("dish tidy: %s blocked the bot, merges taken back", telegram_id)
         dish_tidy_batch.roll_back(db, user, batch, "blocked")
@@ -190,11 +229,16 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
         db.commit()
         return "failed"
     batch.chat_id = telegram_id
-    batch.message_id = message.message_id
+    batch.message_id = _message_id(message)
+    batch.form = form
     batch.state = "sent"
     db.commit()
     await _retire_older(db, bot, user, batch)
     return "sent"
+
+
+def _message_id(message) -> int:
+    return dish_tidy_widget.message_id_of(message)
 
 
 async def _tidy(db, bot, user: User, week: date, now: datetime) -> str:

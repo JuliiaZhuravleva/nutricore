@@ -305,13 +305,25 @@ def _head(db, batch: DishTidyBatch) -> str:
     return heads.get(batch.state, CLOSED)
 
 
+def _offer_widget(t: _Tap, batch: DishTidyBatch) -> Screen:
+    """The checkbox screen, marked to go as a widget message instead when the person's
+    ``TIDY_WIDGET`` allows it: the caller sends it, and this screen stays the fallback
+    on the list's message when the widget cannot be sent."""
+    from app.services import dish_tidy_widget  # it imports this module
+
+    screen = open_view(t.db, batch, t.user, default_mask(_items(t, batch)))
+    if dish_tidy_widget.allowed(t.user):
+        return replace(screen, widget_batch=batch.id)
+    return screen
+
+
 def _v_open(t: _Tap, data: str) -> Screen:
     """🍲 Блюда → «Порядок»: the open batch, else a pass right now."""
     for batch in crud_dish_tidy.open_batches(t.db, t.user.id):
         if dish_tidy_batch.left_over(t.db, batch):
             return _show_left_over(t, batch)
         if _closed(t, batch) is None:
-            return open_view(t.db, batch, t.user, default_mask(_items(t, batch)))
+            return _offer_widget(t, batch)
     batch = crud_dish_tidy.claim(
         t.db, user_id=t.user.id, week=None, group_id=dish_ops.new_group(), now=t.now
     )
@@ -323,7 +335,7 @@ def _v_open(t: _Tap, data: str) -> Screen:
     batch.chat_id = t.telegram_id
     batch.message_id = t.message_id
     t.db.commit()
-    return open_view(t.db, batch, t.user, default_mask(_items(t, batch)))
+    return _offer_widget(t, batch)
 
 
 def _v_on(t: _Tap, data: str) -> Screen:
