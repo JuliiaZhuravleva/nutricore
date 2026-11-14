@@ -1158,6 +1158,76 @@ def shown(db, plan_id: int, line_ids: list, result_id: Optional[int]) -> None:
     crud_message_plan.shown(db, plan_id, line_ids, result_id)
 
 
+def fail_shown(db, plan_id: int) -> None:
+    """The failed line is on the person's screen: the sweep stops retrying it."""
+    crud_message_plan.fail_shown(db, plan_id)
+
+
+FAIL_RETRY_FOR = timedelta(hours=24)  # a failed line is retried this long (TD-274)
+ASK_LIFE = timedelta(hours=48)  # an unanswered question closes after this
+ASK_LOOKBACK = timedelta(days=7)  # how far back a fresh process looks for them
+
+
+def unshown_failures(db, before: datetime, now: datetime) -> list:
+    """(plan id, chat id, message id, line id) of failed plans whose failed line never
+    went out, up to ``FAIL_RETRY_FOR`` after their creation."""
+    return [
+        (p.id, p.chat_id, p.message_id, p.line_message_id)
+        for p in crud_message_plan.failed_unshown(db, before, now - FAIL_RETRY_FOR)
+    ]
+
+
+def line_holds_result(db, plan_id: int) -> bool:
+    """True when the plan's first line message already is one of its meals' lines
+    (capture maps a line message to its meal as it is shown): the answer went out,
+    only the bookkeeping did not."""
+    from app.models.meal_message import MealMessage
+
+    plan = db.get(MessagePlan, plan_id)
+    if plan is None or plan.line_message_id is None or not plan.meal_ids:
+        return False
+    row = db.scalar(
+        select(MealMessage.meal_id).where(
+            MealMessage.chat_id == plan.chat_id,
+            MealMessage.message_id == plan.line_message_id,
+        )
+    )
+    return row is not None and row in set(plan.meal_ids)
+
+
+def close_old(db, now: datetime, after: datetime) -> tuple:
+    """Questions still open ``ASK_LIFE`` after their plan was created are closed, with
+    nothing written. Reads only done plans created in (after, now - ASK_LIFE]; returns
+    ((chat id, message id or None) per closed question, the new ``after``). Each plan
+    is closed under the person's lock, so a tap racing it sees one state or the other.
+    """
+    cutoff = now - ASK_LIFE
+    closed = []
+    for found in crud_message_plan.done_between(db, after, cutoff):
+        plan_id, user_id, chat_id = found.id, found.user_id, found.chat_id
+        if not any(a.get("state") == "open" for a in crud_message_plan.asks_of(found)):
+            continue
+        user = db.get(User, user_id)
+        if user is None:
+            continue
+        dish_ops.lock_user(db, user)
+        plan = db.get(MessagePlan, plan_id)
+        db.refresh(plan)
+        was = crud_message_plan.close_asks(plan)
+        db.commit()
+        closed += [(chat_id, a.get("message_id")) for a in was]
+    return closed, cutoff
+
+
+def closed_ask(db, telegram_id: int, plan_id: int, q: int) -> bool:
+    """True when the person's own question is closed (its buttons may be taken away)."""
+    plan, _user = _own(db, telegram_id, plan_id)
+    if plan is None:
+        return False
+    ask = _find(crud_message_plan.asks_of(plan), q)
+    return ask is not None and ask.get("state") == "closed"
+
+
 def undo(db, telegram_id: int, plan_id: int) -> tuple:
     """(what the answer adds, toast). The dish changes of the plan come back; its meals
     stay, each with its own ✏️ and ➖. A second tap changes nothing."""
@@ -1181,8 +1251,15 @@ def undo(db, telegram_id: int, plan_id: int) -> tuple:
         db.rollback()
         return None, SAME_TOAST
     if asks:  # the group held the answered questions' changes: they are back too
+        # and a question still open closes: answered later, it would write into a
+        # group that was taken back
         commands["asks"] = [
-            {**a, "state": "undone"} if a.get("state") == "done" else a for a in asks
+            (
+                {**a, "state": {"done": "undone", "open": "closed"}.get(a.get("state"))}
+                if a.get("state") in ("done", "open")
+                else a
+            )
+            for a in asks
         ]
     crud_message_plan.undone(db, plan, commands)
     refused = [*left, *result.refused_names]
@@ -1304,7 +1381,7 @@ def answer_question(
         return None, GONE_TOAST
     if ask.get("state") != "open":
         db.rollback()
-        return None, SAME_TOAST
+        return None, GONE_TOAST if ask.get("state") == "closed" else SAME_TOAST
     if option == plan_screen.NO:
         ask["state"] = "declined"
         crud_message_plan.set_asks(plan, asks)
@@ -1354,6 +1431,9 @@ def undo_question(db, telegram_id: int, plan_id: int, q: int) -> tuple:
     db.refresh(plan)
     asks = crud_message_plan.asks_of(plan)
     ask = _find(asks, q)
+    if ask is not None and ask.get("state") == "closed":
+        db.rollback()
+        return None, GONE_TOAST
     if ask is None or ask.get("state") != "done" or not ask.get("events"):
         db.rollback()
         return None, SAME_TOAST

@@ -439,7 +439,7 @@ def test_the_plans_undo_takes_back_the_answered_questions_too(db, owner, reader,
     assert sorted(_stars(db, owner)) == ["борщ", "гречка с маслом"]
     run(tapped(f"pl:u:{plan.id}"))
     assert _stars(db, owner) == []
-    assert [x["state"] for x in _asks(db)] == ["undone", "open"]
+    assert [x["state"] for x in _asks(db)] == ["undone", "closed"]
     late = run(tapped(f"pl:q:{plan.id}:0", message_id=a[0]))
     assert _edits(late) == [] and _toasts(late) == [plan_screen.SAME_TOAST]
     assert _stars(db, owner) == []
