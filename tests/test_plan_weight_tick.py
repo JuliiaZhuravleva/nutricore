@@ -475,3 +475,112 @@ def test_the_plain_words_path_still_takes_a_whole_message_weight(
     db.expire_all()
     assert [m.weight for m in db.scalars(select(BodyMetric))] == [72.4]
     assert [m.metrics["source"] for m in db.scalars(select(BodyMetric))] == ["bot"]
+
+
+# --- the route: a weight or a tick next to food reaches the planner --------------------
+
+
+def _came(text_: str) -> capture.Incoming:
+    return capture.Incoming(
+        telegram_id=OWNER,
+        username="u",
+        chat_id=CHAT,
+        message_id=1,
+        kind=capture.TEXT,
+        text=text_,
+        file_id=None,
+        file_unique_id=None,
+        file_size=None,
+        duration_s=None,
+        media_group_id=None,
+        reply_to=None,
+        sent_at=datetime.now(UTC),
+        forward_date=None,
+    )
+
+
+def _route(db, text_: str) -> capture.Route:
+    return capture.route_text(db, _came(text_))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "вес 72,4, зарядку сделала, на завтрак каша",
+        "отметь зарядку, на завтрак каша",
+        "на завтрак каша, зарядку сделала",
+        "на завтрак каша. вчера вес 72,4",
+    ],
+)
+def test_a_weight_or_tick_beside_food_goes_to_the_planner(db, owner, message):
+    _with_routine(db, owner)
+    route = _route(db, message)
+    assert (route.action, route.plan) == (capture.PLAN, words.MEALS)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "сделала омлет",
+        "суп и хлеб",
+        "вешу себе кашу",
+        "вес порции 300 г, каша",
+        "омлет сделала, вкусно",
+        "вес 72,4 и каша",
+    ],
+)
+def test_other_words_do_not_become_a_plan(db, owner, message):
+    _with_routine(db, owner)
+    assert _route(db, message).action != capture.PLAN
+
+
+@pytest.mark.parametrize(
+    "message, action",
+    [
+        ("вес 72,4", capture.WEIGHT),
+        ("вчера вес 72,4", capture.WEIGHT),
+        ("отметь зарядку", capture.TICK),
+        ("зарядку сделала", capture.TICK),
+        ("вчера отметь зарядку", capture.TICK),
+    ],
+)
+def test_a_whole_message_weight_or_tick_keeps_its_route(db, owner, message, action):
+    _with_routine(db, owner)
+    assert _route(db, message).action == action
+
+
+def test_the_route_ticks_nothing_by_itself(db, owner):
+    _with_routine(db, owner)
+    _route(db, "отметь зарядку, на завтрак каша")
+    db.expire_all()
+    assert db.scalars(select(RoutineTick)).all() == []
+
+
+def test_the_headline_message_with_one_meal(db, owner, reader, clock):
+    _with_routine(db, owner)
+    reader.plan = 'weight 72.4\ntick @1 "Зарядка"\nmeal "на завтрак каша"'
+
+    wire = run(said(text("вес 72,4, зарядку сделала, на завтрак каша")))
+
+    assert len(reader.planned) == 1  # it went to the planner, not to NEW_MEAL
+    assert len(_meals(db)) == 1
+    answer = _answer(wire)
+    assert answer["text"] == "⚖️ 72,4 кг\n✓ Зарядка"
+    rows = _buttons(answer)
+    assert rows[0][0][0] == "✅ ОК"
+    assert rows[1] == [("↩️ Отменить", f"pl:u:{_plan(db).id}")]
+    assert [m.weight for m in db.scalars(select(BodyMetric))] == [72.4]
+    assert len(db.scalars(select(RoutineTick)).all()) == 1
+
+
+@BACKENDS
+def test_a_tick_taken_off_by_hand_is_not_listed_in_the_undo(wdb):
+    _executed, plan_id = _go(wdb, LINES)
+    for tick in wdb.scalars(select(RoutineTick)).all():
+        wdb.delete(tick)
+    wdb.commit()
+
+    head, toast = plan_service.undo(wdb, 42, plan_id)
+
+    assert (head, toast) == ("↩️ Отменено: ⚖️ 72,4 кг.", None)
+    assert "Зарядка" not in head

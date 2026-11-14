@@ -94,8 +94,42 @@ def says_yesterday(text: Optional[str]) -> bool:
     return bool(text) and _YESTERDAY_WORD.search(plain(text)) is not None
 
 
-def _clauses(text: str) -> int:
-    return len([c for c in _CLAUSE_EDGE.split(text) if c.strip()])
+def _clauses(text: str) -> list:
+    return [c for c in _CLAUSE_EDGE.split(text) if c.strip()]
+
+
+# A clause that is, whole, a weight or a tick (the plain-words path's own shapes).
+_WEIGHT_CLAUSE = re.compile(r"(?:вес|вешу) \d{2,3}(?:[.,]\d{1,2})?(?: ?(?:кг|kg))?")
+_TICK_FORMS = (
+    (re.compile(r"отметь(?:те)? (.+)"), True),
+    (re.compile(r"(.+) сделан[аоы]?"), False),
+    (re.compile(r"сделал[аи]? (.+)"), False),
+    (re.compile(r"(.+) сделал[аи]?"), False),
+)
+
+
+def _bare(clause: str) -> str:
+    tokens = plain(clause).split()
+    return " ".join(t for t in tokens if t != "вчера")
+
+
+def weight_clause(text: Optional[str]) -> bool:
+    """Some clause of the message is «вес 72,4» / «вешу 72 кг» and nothing else."""
+    return any(_WEIGHT_CLAUSE.fullmatch(_bare(c)) for c in _clauses(text or ""))
+
+
+def tick_clauses(text: Optional[str]) -> list:
+    """(the routine's words, explicit «отметь»?) of each clause shaped like a tick. A
+    food («омлет сделала») has the same shape: the routines tell, not these words."""
+    out = []
+    for clause in _clauses(text or ""):
+        bare = _bare(clause)
+        for form, explicit in _TICK_FORMS:
+            match = form.fullmatch(bare)
+            if match:
+                out.append((match.group(1), explicit))
+                break
+    return out
 
 
 def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
@@ -109,6 +143,6 @@ def wants_plan(text: Optional[str], sent: datetime, zone) -> Optional[str]:
         return MEALS
     if says_day(text):
         return MEALS
-    if says_weight_or_tick(text) and _clauses(text) >= 2:
+    if len(_clauses(text)) >= 2 and (weight_clause(text) or tick_clauses(text)):
         return MEALS  # next to other content: a whole-message weight or tick never is
     return None
