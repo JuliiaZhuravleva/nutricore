@@ -234,7 +234,11 @@ def test_time_words_move_the_meal_and_leave_the_name(
     assert meal.sent_at.replace(tzinfo=None) == NOW.replace(tzinfo=None)
     assert reader.text == ["суп"]  # the model never sees the phrase
     assert meal.description == "суп"
-    assert wire.sent()[0]["text"].split("\n")[0] == f"Записано на {head}: суп."
+    # D4: the said clock names the meal; night (3:00) and «без времени» get no name.
+    hours = {3: None, 9: "завтрак", 12: "обед", 13: "обед", 14: "обед", 20: "ужин"}
+    name = None if precision == "day_only" else hours[local.hour]
+    lead = f"Записан {name}" if name else "Записано"
+    assert wire.sent()[0]["text"].split("\n")[0] == f"{lead} на {head}: суп."
     # What came stays as it came.
     assert _sources(db)[0].text == words
 
@@ -260,7 +264,9 @@ def test_words_that_only_look_like_time_stay_food(db, owner, reader, clock, word
     assert meal.time_phrase is None
     assert meal.meal_time.replace(tzinfo=None) == NOW.replace(tzinfo=None)
     assert reader.text == [words]
-    assert wire.sent()[0]["text"].startswith("Записано: ")
+    # D4: a said «перекус» wins over the hour (13:20 обед).
+    name = "перекус" if "перекус" in words else "обед"
+    assert wire.sent()[0]["text"].startswith(f"Записан {name}: ")
 
 
 @pytest.mark.parametrize(
@@ -296,7 +302,7 @@ def test_r0_control_one_timed_clause_is_still_its_time(db, owner, reader, clock)
     assert _local(meal) == datetime(2026, 10, 26, 9, 0)
     assert reader.text == ["суп, хлеб"]
     head = wire.sent()[0]["text"].split("\n")[0]
-    assert head == "Записано на пн 26 октября, ≈ 9:00: суп, хлеб."
+    assert head == "Записан завтрак на пн 26 октября, ≈ 9:00: суп, хлеб."
 
 
 def test_d2_a_meals_name_in_the_other_clause_makes_it_two_times(
@@ -330,7 +336,9 @@ def test_a_caption_says_the_time_of_a_photo(db, owner, reader, clock):
     assert _local(meal) == datetime(2026, 10, 25, 20, 0)
     assert meal.time_source == "said"
     assert reader.image[0]["caption"] is None
-    assert wire.edits()[-1]["text"].startswith("Записано на вс 25 октября, ≈ 20:00: ")
+    assert wire.edits()[-1]["text"].startswith(
+        "Записан ужин на вс 25 октября, ≈ 20:00: "
+    )
 
 
 def test_a_forward_keeps_its_own_time_over_the_words(db, owner, reader, clock):
@@ -359,7 +367,7 @@ def test_an_exact_dish_with_a_time_word_is_free_and_said(db, owner, reader, cloc
     assert _local(meal) == datetime(2026, 10, 25, 20, 0)
     assert meal.time_source == "said"
     assert meal.time_phrase == "вчера вечером"
-    assert wire.seen()[0].startswith("Записано на вс 25 октября, ≈ 20:00: суп.")
+    assert wire.seen()[0].startswith("Записан ужин на вс 25 октября, ≈ 20:00: суп.")
 
 
 def test_a_read_again_after_a_failure_has_no_phrase_in_it(db, owner, reader, clock):
@@ -375,7 +383,7 @@ def test_back_to_the_line_names_the_said_time(db, owner, reader, clock):
     send(text("вчера вечером суп"))
     meal = _meals(db)[0]
     wire = tap(f"ml:r:{meal.id}")
-    assert wire.edits()[0]["text"] == "Записано на вс 25 октября, ≈ 20:00: суп."
+    assert wire.edits()[0]["text"] == "Записан ужин на вс 25 октября, ≈ 20:00: суп."
 
 
 # --- row 7 ---------------------------------------------------------------------
@@ -741,7 +749,7 @@ def test_m6a_separate_makes_its_own_meal_from_the_words(db, owner, reader, clock
     assert db.get(MealSource, source.id).origin_meal_id == other.id
     assert other.sent_at is not None
     item = db.scalars(select(MealItem).where(MealItem.name == "индейка")).one()
-    assert wire.edits()[0]["text"] == "Записано: индейка."
+    assert wire.edits()[0]["text"] == "Записан обед: индейка."
     assert _kb(wire.edits()[0]) == [[f"ml:i:{item.id}:r", f"ml:t:{other.id}:r"]]
     # Its message answers for the new meal now.
     row = db.scalars(select(MealMessage).where(MealMessage.message_id == 5001)).one()
@@ -776,7 +784,7 @@ def test_m6a_second_helping_separate_is_its_own_meal_of_the_same_dishes(
     assert _item_names(db, meal) == ["рис", "суп"]
     other = next(m for m in _live(db) if m.id != meal.id)
     assert _item_names(db, other) == ["рис", "суп"]
-    assert wire.edits()[0]["text"] == "Записано: рис и суп."
+    assert wire.edits()[0]["text"] == "Записан обед: рис и суп."
 
 
 def test_a_removal_it_cannot_place_asks_with_no_separate_meal(db, owner, reader, clock):
@@ -966,7 +974,7 @@ def test_the_original_line_is_edited_to_the_new_list(db, owner, reader, clock):
     )
     edit = wire.edits()[0]
     assert edit["message_id"] == row.message_id
-    assert edit["text"] == "Записано: суп и хлеб."
+    assert edit["text"] == "Записан обед: суп и хлеб."
     assert _kb(edit) == [[f"ml:o:{meal.id}:r", f"ml:t:{meal.id}:r"]]
     assert line_id
 
@@ -974,7 +982,7 @@ def test_the_original_line_is_edited_to_the_new_list(db, owner, reader, clock):
 def test_words_of_row_8_edit_the_original_line_too(db, owner, reader, clock):
     reader.answer = dict(SOUP)
     wire = send(text("суп"), text("ещё сыр"))
-    assert wire.edits()[-1]["text"] == "Записано: суп и сыр."
+    assert wire.edits()[-1]["text"] == "Записан обед: суп и сыр."
 
 
 def test_a_refused_edit_of_the_line_costs_nothing(
@@ -1194,7 +1202,7 @@ def test_m5d_back_to_the_line(db, owner, reader, clock):
     meal = _meal_now(db, owner, minutes_ago=30, names=("рис", "курица"))
     wire = send(text("200", reply_to_message=_mapped(db, meal)))
     wire = tap(_kb(wire.sent()[0])[-1][0], 5001)
-    assert wire.edits()[0]["text"] == "Записано: рис и курица."
+    assert wire.edits()[0]["text"] == "Записан обед: рис и курица."
     assert meal.deleted_at is None
 
 
@@ -1374,7 +1382,7 @@ def test_m5a_text(db, owner, reader, clock):
     wire = send(text("суп", reply_to_message=reply_to))
     other = next(m for m in _live(db) if m.id != meal.id)
     assert wire.sent()[0]["text"].split("\n")[0] == (
-        "Записано: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
+        "Записан обед: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
     )
     assert other.merged_into_id is None
     item = db.scalars(select(MealItem).where(MealItem.meal_id == other.id)).one()
@@ -1399,7 +1407,7 @@ def test_m5a_photo(db, owner, reader, clock):
     reader.answer = dict(SOUP)
     wire = send(photo(reply_to_message=reply_to))
     assert wire.edits()[-1]["text"].split("\n")[0] == (
-        "Записано: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
+        "Записан обед: суп. Тот приём был удалён раньше, поэтому это отдельная запись."
     )
     other = next(m for m in _live(db) if m.id != meal.id)
     assert other.merged_into_id is None
@@ -1414,7 +1422,7 @@ def test_m5a_corrective_words_lose_the_word(db, owner, reader, clock):
     reader.answer = {"foods": ["сыр"], "calories": 90.0}
     wire = send(text("ещё сыр", reply_to_message=reply_to))
     assert reader.text == ["сыр"]
-    assert wire.sent()[0]["text"].startswith("Записано: сыр. Тот приём")
+    assert wire.sent()[0]["text"].startswith("Записан обед: сыр. Тот приём")
     assert _sources(db)[0].text == "ещё сыр"
 
 

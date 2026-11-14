@@ -48,7 +48,7 @@ from app.services import (
 from app.services.close_row import ok_row
 from app.services.day_card import APPROX, DAY_ONLY
 from app.services.day_card import clock as _clock
-from app.services.day_card import local_time, plain_time
+from app.services.day_card import local_time, meal_name, plain_time
 from app.services.favorites import Screen
 from app.services.meal_draft import num
 from app.services.numbers import shows_numbers, toggle_label
@@ -280,7 +280,16 @@ def _when(meal: Meal, zone) -> str:
 
 
 def line_head(meal: Meal, zone, plain: str = "Записано") -> str:
-    """M1e, M1f, M1g: a time the person did not just send is said aloud."""
+    """M1e, M1f, M1g: a time the person did not just send is said aloud. D4: the
+    meal's name goes in, «Записан обед на …»."""
+    head = _line_time(meal, zone, plain)
+    name = meal_name(meal, zone)
+    if name and head.startswith("Записано"):
+        return f"Записан {name}{head[len('Записано'):]}"
+    return head
+
+
+def _line_time(meal: Meal, zone, plain: str) -> str:
     if meal.time_source == "forward":
         return f"Записано на {_when(meal, zone)} {FORWARD_WORDS}"
     if meal.time_source == "said":
@@ -675,7 +684,8 @@ def _card(
     opened: bool = False,
 ) -> Screen:
     items = crud_meal_item.live(t.db, meal.id)
-    word = meal.meal_type or "Приём"
+    name = meal_name(meal, t.zone)
+    word = name.capitalize() if name else "Приём"
     if meal.is_draft:
         lines = [M10B_TITLE.format(when=_when(meal, t.zone))]
     else:

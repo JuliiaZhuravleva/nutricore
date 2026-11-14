@@ -215,7 +215,7 @@ def test_back_to_the_answer_after_a_read_is_the_record(db, reader):
     send(photo())
     meal = _one(db)
     wire = tap(f"ml:r:{meal.id}")
-    assert wire.edits()[-1]["text"].startswith("Записано: рис")
+    assert wire.edits()[-1]["text"].startswith("Записан обед: рис")
 
 
 def test_back_to_the_answer_while_reading_leaves_the_line_the_reads(db, owner, reader):
@@ -246,7 +246,7 @@ def test_again_reads_toasts_and_edits_the_tapped_line(db, reader):
     assert len(reader.image) == 1
     shown = wire.edits()
     assert shown[0]["text"] == "Фото в дневнике, читаю…"
-    assert shown[-1]["text"].startswith("Записано: рис")
+    assert shown[-1]["text"].startswith("Записан обед: рис")
     assert all(p["message_id"] == line for p in shown)
     meal = _one(db)
     assert meal.reading_status == "read"
@@ -349,7 +349,7 @@ def test_again_on_a_meal_already_read_pays_nothing(db, reader):
     reader.image.clear()
     wire = tap(f"ml:rr:{meal.id}:r")
     assert reader.image == []
-    assert wire.edits()[-1]["text"].startswith("Записано: рис")
+    assert wire.edits()[-1]["text"].startswith("Записан обед: рис")
 
 
 def test_again_on_a_deleted_meal_is_rule_s(db, reader):
@@ -485,7 +485,9 @@ def test_written_words_become_the_reading_and_the_photo_stays(db, reader):
     meal = _failed_photo(db, reader)
     wire = _writing(db, meal, "суп")
     answer = wire.sent()[-1]
-    assert answer["text"] == "Записано: суп. Фото хранится при этой записи.\nСчитаю…"
+    assert (
+        answer["text"] == "Записан обед: суп. Фото хранится при этой записи.\nСчитаю…"
+    )
     db.expire_all()
     fresh = _one(db)
     assert fresh.reading_status == "read" and fresh.photos == ["big"]
@@ -549,7 +551,7 @@ def test_written_words_replace_the_words_that_failed(db, reader):
     meal = _one(db)
     reader.error = None
     wire = _writing(db, meal, "суп")
-    assert wire.sent()[-1]["text"] == "Записано: суп.\nСчитаю…"
+    assert wire.sent()[-1]["text"] == "Записан обед: суп.\nСчитаю…"
     db.expire_all()
     names = [i.name for i in crud_meal_item.live(db, meal.id)]
     assert names == NUTRITION["foods"] and "что-то непонятное" not in names
@@ -562,7 +564,7 @@ SENTENCE = "Это суп с курицей, рисом, морковкой, л�
 def test_a_sentence_is_read_into_foods_and_is_no_dish(db, reader):
     meal = _failed_photo(db, reader)
     wire = _writing(db, meal, SENTENCE)
-    assert wire.sent()[-1]["text"].startswith(f"Записано: {SENTENCE}")
+    assert wire.sent()[-1]["text"].startswith(f"Записан обед: {SENTENCE}")
     db.expire_all()
     assert reader.text[-1] == SENTENCE
     assert [i.name for i in crud_meal_item.live(db, meal.id)] == NUTRITION["foods"]
@@ -605,7 +607,7 @@ def test_written_words_with_no_food_seen_stand_as_written(db, reader):
     assert fresh.photos == ["big"]
     names = [i.name for i in crud_meal_item.live(db, fresh.id)]
     assert names == ["та самая штука от мамы"]
-    assert wire.edits()[-1]["text"].startswith("Записано: та самая штука от мамы")
+    assert wire.edits()[-1]["text"].startswith("Записан обед: та самая штука от мамы")
 
 
 def test_a_known_dish_written_costs_nothing(db, reader, owner):
@@ -629,7 +631,7 @@ def test_written_words_on_a_voice_keep_the_voice(db, reader):
     send(_voice())
     meal = _one(db)
     wire = _writing(db, meal, "суп")
-    assert wire.sent()[-1]["text"] == "Записано: суп.\nСчитаю…"
+    assert wire.sent()[-1]["text"] == "Записан обед: суп.\nСчитаю…"
     assert [s.kind for s in _sources(db)] == ["voice", "text"]
 
 
@@ -704,7 +706,7 @@ def test_m7d_written_words_too(db, reader):
     reader.answer = dict(NUTRITION)
     wire = _writing(db, meal, "суп")
     assert wire.sent()[-1]["text"] == (
-        "Записано: суп. Фото хранится при этой записи.\nСчитаю…"
+        "Записан обед: суп. Фото хранится при этой записи.\nСчитаю…"
     )
     assert _one(db).reading_status == "read"
 
@@ -717,7 +719,7 @@ def test_the_card_of_an_unread_photo_has_all_of_n1d(db, reader):
     wire = tap(f"ml:o:{meal.id}:r")
     shown = wire.edits()[-1]
     assert shown["text"] == (
-        "<b>🍽 Приём, пн 26 октября, 13:20</b>\n"
+        "<b>🍽 Обед, пн 26 октября, 13:20</b>\n"
         "Фото сохранено, распознать еду пока не вышло.\n"
         "В дневнике запись с этим фото."
     )
@@ -733,7 +735,7 @@ def test_again_from_the_card_edits_that_message(db, reader):
     meal = _failed_photo(db, reader)
     wire = tap(f"ml:rr:{meal.id}:t", message_id=4950)
     assert all(p["message_id"] == 4950 for p in wire.edits())
-    assert wire.edits()[-1]["text"].startswith("Записано: рис")
+    assert wire.edits()[-1]["text"].startswith("Записан обед: рис")
     assert _one(db).reading_status == "read"
 
 
@@ -770,7 +772,7 @@ def test_it_is_food_records_the_words_at_sent_at(db, reader):
     meal = db.scalars(
         select(Meal).where(Meal.deleted_at.is_(None)).order_by(Meal.id)
     ).one()
-    assert wire.edits()[-1]["text"] == "Записано: кошка на окне сидит."
+    assert wire.edits()[-1]["text"] == "Записан обед: кошка на окне сидит."
     assert [i.name for i in crud_meal_item.live(db, meal.id)] == ["кошка на окне сидит"]
     assert meal.reading_status == "read"
     assert meal.meal_time.replace(tzinfo=None) == NOW.replace(tzinfo=None)
@@ -778,7 +780,7 @@ def test_it_is_food_records_the_words_at_sent_at(db, reader):
     assert reader.text == ["кошка на окне сидит"]
     # A second tap is the same meal.
     again = tap(f"ml:nf:{source.id}", message_id=4961)
-    assert again.edits()[-1]["text"].startswith("Записано: кошка")
+    assert again.edits()[-1]["text"].startswith("Записан обед: кошка")
     db.expire_all()
     assert db.query(Meal).filter(Meal.deleted_at.is_(None)).count() == 1
 
@@ -923,7 +925,7 @@ def test_reprocess_fills_a_failed_photo_and_edits_its_line(db, reader):
     assert _one(db).reading_status == "read"
     assert crud_meal_item.live(db, meal.id)
     assert len(reader.image) == 1
-    assert any(p["text"].startswith("Записано: рис") for p in wire.edits())
+    assert any(p["text"].startswith("Записан обед: рис") for p in wire.edits())
     assert db.scalars(select(InboundMessage)).one().status == "analyzed"
     assert "успешно 1" in wire.seen()[-1]
 

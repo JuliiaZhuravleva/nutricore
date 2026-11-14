@@ -298,7 +298,7 @@ def test_no_cost_on_the_line_unless_switched_on(db, owner, model, setting):
     owner.settings = {**owner.settings, **setting}
     db.commit()
     wire = send(text("овсянка на воде"))
-    assert wire.seen()[-1].startswith("Записано")
+    assert wire.seen()[-1].startswith("Записан обед")
     assert "💸" not in wire.seen()[-1]
 
 
@@ -423,7 +423,7 @@ def test_a_pick_on_the_default_replaces_the_default(db, owner, model, monkeypatc
     assert crud_app_setting.get(db, OPENAI_MODEL_SETTING_KEY) == "openai:gpt-6-luna"
     assert crud_app_setting.get(db, "model:text") is None
     assert _meal(db).reading_status == "read"
-    assert wire.seen()[-1].startswith("Записано")
+    assert wire.seen()[-1].startswith("Записан обед")
 
 
 def test_a_pick_on_a_task_of_its_own_replaces_only_that(db, owner, model, monkeypatch):
@@ -485,7 +485,7 @@ def test_a_guest_typing_a_models_name_writes_food_and_changes_no_model(
     wire, _application = _with_picker(text("openai:gpt-6-luna"))
     assert model.model == before
     assert model.analyze_food_entry.await_count == 1
-    assert wire.seen()[-1].startswith("Записано")
+    assert wire.seen()[-1].startswith("Записан обед")
 
 
 # --- a button of a draft from before the drafts went ---------------------------

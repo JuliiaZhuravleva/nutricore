@@ -48,7 +48,7 @@ class DishTidyBatch(Base, BaseClass):
 
     ``UNIQUE(user_id, week)`` is the weekly claim (``week`` is the local Sunday); an
     on-demand batch has no week. ``group_id`` ties the batch's record events, so
-    «↩️ Вернуть всё» takes them back together.
+    «↩️ Отменить» takes them back together.
     """
 
     __tablename__ = "dish_tidy_batches"

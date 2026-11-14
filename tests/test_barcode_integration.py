@@ -265,7 +265,7 @@ def _default_no_web_search(monkeypatch):
 def _photo_meal(patched_db) -> Meal:
     """One photo through the application; the meal it left, read back from the row."""
     wire = send(photo())
-    assert wire.seen()[-1].startswith("Записано"), wire.seen()
+    assert wire.seen()[-1].startswith("Записан обед"), wire.seen()
     with sessionmaker(bind=patched_db)() as db:
         (meal,) = db.query(Meal).all()
         db.expunge(meal)

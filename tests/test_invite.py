@@ -1215,7 +1215,7 @@ def _sweep_owed(wire: Phone) -> None:
 def test_a_read_with_the_door_open_still_speaks(db, reader):  # noqa: F811
     _invite(db)
     wire = play(say(SASHA, "омлет"))
-    assert any(p["text"].startswith("Записано") for p in wire.edits())
+    assert any(p["text"].startswith("Записан обед") for p in wire.edits())
 
 
 def test_a_door_that_cannot_be_read_costs_no_line(
@@ -1235,7 +1235,7 @@ def test_a_door_that_cannot_be_read_costs_no_line(
     assert reader.text == ["омлет"]  # known positive: the read got as far as its end
     assert wire.edits() == []
     _sweep_owed(wire)  # the database is back: the line owed is shown
-    assert any(p["text"].startswith("Записано") for p in wire.edits())
+    assert any(p["text"].startswith("Записан обед") for p in wire.edits())
 
 
 def test_a_meal_closed_while_it_waited_its_turn_is_not_paid_for(

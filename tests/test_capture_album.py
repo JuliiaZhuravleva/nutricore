@@ -49,7 +49,7 @@ from tests.test_capture_router import (  # noqa: F401 (fixtures)
 )
 
 SOUP = {**NUTRITION, "foods": ["суп", "хлеб", "йогурт"]}
-M2A = "Записано по 3 фото: суп, хлеб и йогурт."
+M2A = "Записан обед по 3 фото: суп, хлеб и йогурт."
 M2B = (
     "<b>➖ Разделить 3 фото на отдельные приёмы?</b>\n"
     "Каждое фото будет распознано заново, отдельно от других. "
@@ -243,7 +243,7 @@ def test_a_time_in_a_later_caption_moves_the_meal(db, soup):
     meal = _meal(db)
     assert meal.time_source == "said"
     assert soup.image[0]["caption"] is None
-    assert wire.edits()[-1]["text"].startswith("Записано на ")
+    assert wire.edits()[-1]["text"].startswith("Записан обед на ")  # 12:30
 
 
 def test_a_time_edited_by_hand_outranks_a_later_caption(db, soup, owner):
@@ -497,7 +497,7 @@ def test_what_the_person_did_outranks_a_straggler_and_nothing_is_paid(db, soup, 
     meal = _meal(db)
     assert meal.photos == ["a", "b", "c"]
     assert "сыр" in _live(db, meal)
-    assert wire.edits()[-1]["text"].startswith("Записано по 3 фото: ")
+    assert wire.edits()[-1]["text"].startswith("Записан обед по 3 фото: ")
     assert len(_sources(db)) == 3
 
 
@@ -507,7 +507,7 @@ def test_a_straggler_past_the_limit_is_kept_and_not_read(db, soup, monkeypatch):
     wire = album(shot("p10"))
     assert soup.image == []
     assert len(_meal(db).photos) == 11
-    assert wire.edits()[-1]["text"].startswith("Записано по 11 фото: ")
+    assert wire.edits()[-1]["text"].startswith("Записан обед по 11 фото: ")
 
 
 def test_the_tenth_photo_as_a_straggler_is_read(db, soup, monkeypatch):
@@ -700,7 +700,7 @@ def test_each_new_line_answers_its_own_photo_and_gets_its_result(db, soup):
     ] == [m["message_id"] for m in photos]
     assert {p["text"] for p in wire.sent()} == {"Фото в дневнике, читаю…"}
     lines = {p["text"] for p in wire.edits()}
-    assert "Записано: кусок." in lines
+    assert "Записан обед: кусок." in lines
 
 
 def test_the_tapped_message_counts_the_photos_and_offers_the_way_back(db, soup):
@@ -715,7 +715,7 @@ def test_the_tapped_message_counts_the_photos_and_offers_the_way_back(db, soup):
     # way back is still on it.
     settled = wire.edits()[-1]
     assert settled["message_id"] == screen["message_id"]
-    assert settled["text"] == "Записано: кусок."
+    assert settled["text"] == "Записан обед: кусок."
     assert f"ml:u:{event.id}:r" in _kb(settled)[1]
 
 

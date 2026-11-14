@@ -325,7 +325,7 @@ def test_typing_a_hidden_dish_records_it_and_it_returns(db, owner, reader):
     wire = send(text("омлет"))
 
     assert reader.text == []
-    assert wire.sent()[0]["text"].startswith("Записано: Омлет.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: Омлет.")
     assert [i.personal_food_id for i in _items(db, _only_meal(db))] == [dish.id]
     db.refresh(dish)
     assert dish.hidden_at is None
@@ -339,7 +339,7 @@ def test_typing_a_merged_name_records_the_target(db, owner, reader):
     wire = send(text("омлет с сыром"))
 
     assert reader.text == []
-    assert wire.sent()[0]["text"].startswith("Записано: Омлет.")
+    assert wire.sent()[0]["text"].startswith("Записан обед: Омлет.")
     item = _items(db, _only_meal(db))[0]
     assert (item.personal_food_id, item.original_food_id) == (target.id, target.id)
     assert len(_rows(db)) == 2

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from app.models.meal import Meal
 from app.services import food_groups
+from app.services.meal_words import MEAL_NAMES
 
 GAP_HOURS = 6
 GAP_MIN_MEALS = 3  # with two meals the times already show the gap
@@ -56,6 +57,26 @@ def clock(meal: Meal, zone: ZoneInfo) -> str:
         return "без времени"
     shown = plain_time(local_time(meal.meal_time, zone))
     return f"≈ {shown}" if meal.time_precision == APPROX else shown
+
+
+# D4: a name by the hour, when none was said. Night and «без времени» get none: a
+# wrong name is worse than none, and the card says «Приём».
+_HOUR_NAMES = ((6, "завтрак"), (12, "обед"), (16, "полдник"), (18, "ужин"), (23, None))
+
+
+def meal_name(meal: Meal, zone: ZoneInfo) -> Optional[str]:
+    """The meal's name, lower case: the said one, else the hour's, else None."""
+    said = (meal.meal_type or "").strip().casefold()
+    if said in MEAL_NAMES:
+        return said
+    if not has_clock(meal):
+        return None
+    hour = local_time(meal.meal_time, zone).hour
+    name = None
+    for start, word in _HOUR_NAMES:
+        if hour >= start:
+            name = word
+    return name
 
 
 def _part_of_day(hour: float) -> str:

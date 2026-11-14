@@ -875,7 +875,7 @@ def answer_markup(plan_id: int, changed: bool):
 def undo(db, telegram_id: int, plan_id: int) -> tuple:
     """(what the answer adds, toast). The dish changes of the plan come back; its meals
     stay, each with its own ✏️ and ➖. A second tap changes nothing."""
-    from app.services.dish_tidy_screen import NOT_BACK, UNDONE
+    from app.services.dish_tidy_screen import NOT_BACK, UNDONE_NAMED
 
     plan = db.get(MessagePlan, plan_id)
     user = db.get(User, plan.user_id) if plan is not None else None
@@ -896,9 +896,8 @@ def undo(db, telegram_id: int, plan_id: int) -> tuple:
         return None, SAME_TOAST
     plan.commands = {**commands, "undone": True}
     db.commit()
-    head = UNDONE.format(
-        done=result.undone, total=result.undone + len(result.refused_names)
-    )
+    what = ", ".join(result.labels)
+    head = UNDONE_NAMED.format(what=what) if what else "↩️"  # all refused: named next
     if result.refused_names:
         names = ", ".join(f"«{n}»" for n in result.refused_names)
         them = "его" if len(result.refused_names) == 1 else "их"

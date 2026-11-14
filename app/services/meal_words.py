@@ -54,6 +54,45 @@ _MEAL_NAME = re.compile(
     r"|на\s+(ужин)|за\s+(ужин)ом|на\s+(полдник))\b",
     _FLAGS,
 )
+# D4 (2026-11-14): the meal's name as the person said it, the only name ever stored.
+MEAL_NAMES = ("завтрак", "обед", "полдник", "ужин", "перекус")
+_SAID_NAME = re.compile(
+    r"\b(?:(?:в|на)\s+(обед)|за\s+(обед)ом|на\s+(завтрак)|за\s+(завтрак)ом"
+    r"|на\s+(ужин)|за\s+(ужин)ом|на\s+(полдник)|на\s+(перекус)"
+    r"|(завтрак|обед|полдник|ужин|перекус))\b",
+    _FLAGS,
+)
+
+
+def said_name(text: Optional[str]) -> Optional[str]:
+    """«на обед суп» → «обед». None when no name is said, or when the words say two
+    different ones: then no one name is this meal's."""
+    if not text:
+        return None
+    names = {
+        _plain(next(word for word in match.groups() if word))
+        for match in _SAID_NAME.finditer(text)
+    }
+    return names.pop() if len(names) == 1 else None
+
+
+_NAME_PHRASE = re.compile(
+    r"\b(?:(?:в|на)\s+обед|за\s+обедом|на\s+завтрак|за\s+завтраком|на\s+ужин"
+    r"|за\s+ужином|на\s+полдник|на\s+перекус)\b",
+    _FLAGS,
+)
+_LEADING_NAME = re.compile(
+    r"^\s*(?:завтрак|обед|полдник|ужин|перекус)\s*[:—–-]\s*", _FLAGS
+)
+
+
+def without_name(text: str) -> str:
+    """The words with the meal's name cut: «на обед суп» → «суп», «Завтрак — каша» →
+    «каша». A bare name inside the words stays: «комплексный обед» is a dish."""
+    left = _LEADING_NAME.sub("", _NAME_PHRASE.sub(" ", text))
+    return " ".join(left.split()).strip(" ,.;:—-")
+
+
 # R0: what parts one clause from the next, «утром каша, в 19:30 паста»: a comma, a
 # semicolon, a dash, and a standalone «и» or «а» between words.
 _CLAUSE_EDGE = re.compile(r"[,;—]|(?<!\S)[иа](?!\S)", _FLAGS)
@@ -238,6 +277,13 @@ def says_several(text: Optional[str], sent: datetime, zone) -> bool:
     """R0's own condition: two or more clauses say a time, and the times differ."""
     moments = said_moments(text, sent, zone)
     return len(moments) >= 2 and len(set(moments)) > 1
+
+
+def message_name(text: Optional[str], sent: datetime, zone) -> Optional[str]:
+    """D4: the meal's name said in a whole message. None when its clauses say
+    different times («утром овсянка, в обед суп»): then one clause's name is not the
+    whole meal's."""
+    return None if says_several(text, sent, zone) else said_name(text)
 
 
 def _part_clock(span: str, local: datetime, zone):

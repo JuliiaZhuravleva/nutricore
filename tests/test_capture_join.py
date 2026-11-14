@@ -218,7 +218,7 @@ def test_m1c_a_meal_soon_after_another_offers_the_join_and_joins_nothing(
     db.expire_all()
     second = db.scalars(select(Meal).order_by(Meal.id.desc())).first()
     line = wire.sent()[-1]
-    assert line["text"] == "Записано: сыр.\nСчитаю…"
+    assert line["text"] == "Записан обед: сыр.\nСчитаю…"
     assert _labels(line)[-1] == ["🔗 Объединить с пн 26 окт, 13:00"]
     assert _datas(line)[-1] == [f"ml:j:{first.id}:{second.id}:r"]
     _budget(line)
@@ -252,7 +252,7 @@ def test_m1c_after_a_photo_read_the_line_carries_the_row(
     wire = send(photo(date=NOW_TS))
     db.expire_all()
     second = db.scalars(select(Meal).order_by(Meal.id.desc())).first()
-    assert wire.edits()[-1]["text"] == "Записано: сыр."
+    assert wire.edits()[-1]["text"] == "Записан обед: сыр."
     assert [f"ml:j:{first.id}:{second.id}:r"] in _datas(wire.edits()[-1])
 
 
@@ -382,7 +382,7 @@ def test_m8_the_surviving_line_is_retouched_silently(db, owner, reader):
     second = _meal_from(db, reader, "сыр", ago=0)
     wire = tap(f"ml:j:{first.id}:{second.id}:r")
     edits = {p["message_id"]: p["text"] for p in wire.edits()}
-    assert edits[line.message_id] == "Записано: рис и сыр."
+    assert edits[line.message_id] == "Записан обед: рис и сыр."
     assert not wire.sent()
 
 
@@ -1000,7 +1000,7 @@ def test_read_again_replaces_what_was_read_and_keeps_what_was_typed(db, owner, r
     assert _toasts(wire)[0] == "Читаю"
     # The answer lands on the message tapped; the meal's own line is retouched besides.
     last = [edit for edit in wire.edits() if edit["message_id"] == 4800][-1]
-    assert last["text"] == "Записано: гречка, салат, курица и кетчуп."
+    assert last["text"] == "Записан обед: гречка, салат, курица и кетчуп."
     event = db.scalars(select(RecordEvent).where(RecordEvent.kind == "reread")).one()
     assert _datas(last)[1][0] == f"ml:u:{event.id}:r"
     assert _labels(last)[1] == ["↩️ Вернуть", "✏️ Исправить"]
@@ -1070,7 +1070,7 @@ def test_read_again_that_fails_leaves_the_record(db, owner, reader):
     meal = _get(db, meal.id)
     assert meal.reading_status == "read"
     assert _names(db, meal) == ["рис"]
-    assert wire.edits()[-1]["text"] == "Записано: рис."
+    assert wire.edits()[-1]["text"] == "Записан обед: рис."
     assert "Не вышло" not in wire.edits()[-1]["text"]
 
 
@@ -1091,7 +1091,7 @@ def test_a_stale_read_button_on_a_line_costs_nothing(db, owner, reader):
     asked = len(reader.text)
     wire = tap(f"ml:rr:{meal.id}:r", 4801)
     assert len(reader.text) == asked
-    assert _screen(wire)["text"] == "Записано: рис."
+    assert _screen(wire)["text"] == "Записан обед: рис."
 
 
 def test_a_reply_source_read_again_does_not_join_anything_by_itself(
@@ -1440,7 +1440,7 @@ def test_silence_on_a_read_anew_leaves_the_record_and_the_line_says_it(
     meal.reading_status = "pending"
     db.commit()
     done = capture.read_no_speech(db, job)
-    assert done.line.text == "Записано: рис."
+    assert done.line.text == "Записан обед: рис."
     db.expire_all()
     assert _get(db, meal.id).deleted_at is None
     assert _get(db, meal.id).reading_status == "read"

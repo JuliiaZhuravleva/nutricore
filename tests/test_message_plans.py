@@ -1,5 +1,5 @@
 """One message, several actions, through the bot: meals each at its own time, and dish
-changes said in words with one answer and «↩️ Вернуть всё». The planner is a fake
+changes said in words with one answer and «↩️ Отменить». The planner is a fake
 (``reader.plan``); everything after it is real.
 """
 
@@ -192,6 +192,21 @@ def test_a_day_in_one_message_is_a_meal_per_part(db, owner, reader, clock):
     assert db.scalars(select(AiCallLog.kind)).all().count("plan") == 1
 
 
+def test_each_part_takes_only_its_own_said_name(db, owner, reader, clock):
+    """D4: a part's said name is stored and cut from its food words; a part that
+    says none stores none and is named by its hour when shown."""
+    reader.plan = 'meal "в 16 на перекус яблоко"\nmeal "в 19 суп"'
+    wire = run(said(text("в 16 на перекус яблоко, в 19 суп")))
+
+    meals = sorted(_meals(db), key=lambda m: m.id)
+    assert [(m.meal_type, m.description) for m in meals] == [
+        ("перекус", "яблоко"),
+        (None, "суп"),
+    ]
+    assert wire.line(0)[1].startswith("Записан перекус")
+    assert wire.line(1)[0].startswith("Записан ужин")
+
+
 def test_parts_of_one_message_are_not_offered_to_join(db, owner, reader, clock):
     reader.plan = 'meal "на завтрак овсянка"\nmeal "в обед суп"'
     wire = run(said(text(DAY)))
@@ -321,7 +336,7 @@ def test_dish_changes_apply_at_once_with_one_answer_and_undo(db, owner, reader, 
     rows = _buttons(answer)
     assert rows[0][0][0] == "✅ ОК"  # ✅ ОК first: the answer holds an undo
     plan = _plan(db)
-    assert rows[1] == [("↩️ Вернуть всё", f"pl:u:{plan.id}")]
+    assert rows[1] == [("↩️ Отменить", f"pl:u:{plan.id}")]
 
     undone = run(tapped(f"pl:u:{plan.id}"))
     assert _live_dishes(db, owner) == {
@@ -330,7 +345,12 @@ def test_dish_changes_apply_at_once_with_one_answer_and_undo(db, owner, reader, 
         "гречка",
     }
     assert _stars(db, owner) == []
-    assert any("Возвращено" in t for t in undone.seen())
+    # The result names what it took back, in the order it was done (fresh eyes, §6.5).
+    heads = [line for t in undone.seen() for line in t.splitlines() if "↩️" in line]
+    assert heads == [
+        "↩️ Отменено: одно блюдо «сырки глазированные» → «сырок глазированный», "
+        "⭐ гречка."
+    ]
 
     again = run(tapped(f"pl:u:{plan.id}"))  # a second tap moves nothing
     assert len(_live_dishes(db, owner)) == 3

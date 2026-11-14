@@ -86,7 +86,7 @@ def _confirm(draft):
     )
     with patch.object(tg, "resolve_meal_nutrition", AsyncMock(return_value=result)):
         wire = send(photo())
-    assert wire.seen()[-1].startswith("Записано")
+    assert wire.seen()[-1].startswith("Записан обед")
 
 
 def _draft(foods, calories=500.0, **fields):
@@ -1171,7 +1171,7 @@ def test_exact_name_is_written_at_once_with_no_model(Session, db, owner):
     line, analysis = _send("омлет")
 
     analysis.assert_not_called()
-    assert line == "Записано: Омлет."
+    assert line == "Записан обед: Омлет."
     meal = _only_meal(db)
     (item,) = crud_meal_item.live(db, meal.id)
     assert meal.numbers_basis == "items"
@@ -1194,7 +1194,7 @@ def test_every_comma_part_matching_is_one_meal_of_dishes(Session, db, owner):
     line, analysis = _send("Кофе, печенье")
 
     analysis.assert_not_called()
-    assert line == "Записано: кофе и печенье."
+    assert line == "Записан обед: кофе и печенье."
     meal = _only_meal(db)
     assert meal.numbers_basis == "items"
     assert meal.calories == 94.0
@@ -1207,7 +1207,7 @@ def test_three_names_read_as_a_list(Session, db, owner):
 
     line, _analysis = _send("кофе, печенье, сыр")
 
-    assert line == "Записано: кофе, печенье и сыр."
+    assert line == "Записан обед: кофе, печенье и сыр."
 
 
 def test_whole_text_with_a_comma_can_be_a_dish(Session, db, owner):
@@ -1216,7 +1216,7 @@ def test_whole_text_with_a_comma_can_be_a_dish(Session, db, owner):
     line, analysis = _send("рис, жареный")
 
     analysis.assert_not_called()
-    assert line == "Записано: рис, жареный."
+    assert line == "Записан обед: рис, жареный."
 
 
 @pytest.mark.parametrize("body", ["омлет с сыром", "омлет, сыр", "омлет,", "2 омлета"])
@@ -1287,7 +1287,7 @@ def test_a_deleted_meal_does_not_feed_the_next_saving_by_name(Session, db, owner
     line, analysis = _send("сырники")
 
     analysis.assert_not_called()
-    assert line == "Записано: сырники."
+    assert line == "Записан обед: сырники."
     meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
     assert meal.calories is None and meal.numbers_basis == "none"
 
@@ -1322,7 +1322,7 @@ def test_a_plate_row_is_never_served_as_numbers(Session, db, owner):
     line, analysis = _send("рис")
 
     analysis.assert_not_called()
-    assert line == "Записано: рис."
+    assert line == "Записан обед: рис."
     meal = db.scalars(select(Meal).where(Meal.resolution_source == "exact_name")).one()
     (item,) = crud_meal_item.live(db, meal.id)
     assert item.numbers_source == "none"

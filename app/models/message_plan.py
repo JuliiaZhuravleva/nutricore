@@ -34,7 +34,7 @@ class MessagePlan(Base, BaseClass):
     ``UNIQUE(chat_id, message_id)`` is the claim: a replayed or edited message never
     plans twice. The row keeps the message itself (kind, words, times), so 🔁 and the
     sweep can run it again with nothing else at hand. ``group_id`` ties the dish
-    changes' record events, so «↩️ Вернуть всё» takes them back together.
+    changes' record events, so «↩️ Отменить» takes them back together.
     """
 
     __tablename__ = "message_plans"

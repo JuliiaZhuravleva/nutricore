@@ -93,9 +93,9 @@ from app.services.meal_words import STOP_WORDS  # noqa: F401 (the name tests rea
 from app.services.meal_words import _TODAY, _YESTERDAY, ADD, REMOVE, REPEAT, SaidTime
 from app.services.meal_words import correction as _correction
 from app.services.meal_words import matching as _matching
-from app.services.meal_words import part_times
+from app.services.meal_words import message_name, part_times, said_name
 from app.services.meal_words import says_no as _says_no
-from app.services.meal_words import says_several, time_words
+from app.services.meal_words import says_several, time_words, without_name
 from app.services.settings_screen import draft_on, user_zone
 
 logger = logging.getLogger(__name__)
@@ -1944,10 +1944,16 @@ def _born_exact(
     said=None,
     on_day=None,
     recall=None,
+    named: Optional[str] = None,
 ) -> Born:
     columns = _time_columns(came.sent_at, came.forward_date, said, on_day, recall)
     meal = meal_items.save_exact(
-        db, user.id, dishes, meal_time=columns["meal_time"], draft=draft_on(user)
+        db,
+        user.id,
+        dishes,
+        meal_time=columns["meal_time"],
+        meal_type=named,
+        draft=draft_on(user),
     )
     meal.sent_at = came.sent_at
     meal.time_source = columns["time_source"]
@@ -1996,12 +2002,17 @@ def born(
     ``day``: the day it was asked for (O1b); time words in it are still no dish."""
     user = _user(db, came)
     told = words if words is not None else came.text
+    # D4: a message of several timed meals that stays one (the planner failed) takes
+    # no one part's name.
+    named = message_name(told, _aware(came.sent_at), user_zone(user))
     send = None if day else reminders.bound_send(db, user, came)
     said = _said(
         told, came.kind, came.sent_at, came.forward_date, user, send, came.reply_to
     )
     recall = reminders.recall_time(send, came, user_zone(user)) if send else None
     told = said.rest if said and (said.rest or not day) else told
+    if named and told:
+        told = without_name(told) or told
     on_day = meal_card.noon_of(day, user_zone(user)) if day else None
     try:
         joined = _join_album(db, came, user, said)
@@ -2010,7 +2021,9 @@ def born(
         if came.kind == "text":
             dishes = meal_items.exact_match(db, user.id, told)
             if dishes:
-                exact = _born_exact(db, came, user, dishes, note, said, on_day, recall)
+                exact = _born_exact(
+                    db, came, user, dishes, note, said, on_day, recall, named
+                )
                 if send is not None:
                     reminders.answered(db, user, send, came)
                 return exact
@@ -2021,6 +2034,7 @@ def born(
                 sent_at=came.sent_at,
                 photos=[] if reading_text or came.kind == "voice" else [came.file_id],
                 numbers_basis="none",
+                meal_type=named,
                 **_time_columns(came.sent_at, came.forward_date, said, on_day, recall),
             ),
             user.id,
@@ -2114,12 +2128,14 @@ def born_parts(db, came: Incoming, user: User, spans: list) -> tuple:
     )
     meals = []
     for number, (span, time) in enumerate(zip(spans, said), start=1):
+        words = time.rest or span
         meal = crud_meal.build(
             MealCreate(
-                description=time.rest or span,
+                description=without_name(words) or words,
                 sent_at=came.sent_at,
                 photos=[],
                 numbers_basis="none",
+                meal_type=said_name(span),
                 **_time_columns(came.sent_at, None, time),
             ),
             user.id,
@@ -3261,6 +3277,11 @@ def spoken_words(db, job: Read, transcript: str) -> str:
     said = _said(
         transcript, TEXT, source.sent_at, source.forward_date, user, send, reply_to
     )
+    if meal.meal_type is None:
+        # D4: «на обед…» said in a voice, by the same rule as typed words.
+        meal.meal_type = message_name(
+            transcript, _aware(source.sent_at), user_zone(user)
+        )
     ahead = said and said.precision != DAY_ONLY and said.moment > _now()
     if said and meal.time_source in ("sent", reminders.SOURCE) and not ahead:
         for column, value in _time_columns(source.sent_at, None, said).items():
