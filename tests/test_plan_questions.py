@@ -169,6 +169,27 @@ def test_ask_is_a_verb_with_doc_and_example_and_the_prompt_teaches_it():
     assert grammar.parse('ask meal "x"').bad and grammar.parse("ask").bad
 
 
+HEDGED = "наверное омлет стоит убрать"
+
+
+def test_a_clause_the_question_took_gets_no_not_understood_line():
+    # Calibration 2026-11-15: the question came with «Не записано» on its own clause.
+    checked = _check('ask hide #1 "омлет"', HEDGED, ["омлет"])
+    assert [q.kind for q in checked.asks] == ["ask"]
+    assert checked.missed == []
+
+
+def test_without_the_rule_the_clause_was_missed(monkeypatch):
+    monkeypatch.setattr(plan_service, "_asked_words", lambda *_a: frozenset())
+    checked = _check('ask hide #1 "омлет"', HEDGED, ["омлет"])
+    assert checked.missed == [HEDGED]
+
+
+def test_another_clause_beside_the_question_is_still_missed():
+    checked = _check('ask hide #1 "омлет"', HEDGED + ", купить билеты", ["омлет"])
+    assert checked.missed == ["купить билеты"]
+
+
 def test_ask_merge_reads_exactly_as_approved():
     checked = _check(
         'ask merge #1 "котлета куриная" #2 "куриная котлета"',

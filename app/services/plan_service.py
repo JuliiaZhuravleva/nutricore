@@ -540,6 +540,27 @@ _TICK_SAID = frozenset(
 _WEIGHT_SAID = frozenset("вес вешу кг".split())
 
 
+def _asked_words(text: str, commands: list) -> frozenset:
+    """The words of a clause a question took: the model chose to ask about it, so the
+    clause gets no «Не записано» line beside the question («наверное омлет стоит
+    убрать» → «Убрать «омлет»?»)."""
+    names = [
+        _words(ref.name)
+        for command in commands
+        if command.verb == grammar.ASK and command.inner is not None
+        for ref in command.inner.refs
+    ]
+    out = set()
+    for clause in re.split(r"[,;.\n!?]+", text):
+        words = _words(clause)
+        if any(
+            name and all(any(_akin(n, w, least=3) for w in words) for n in name)
+            for name in names
+        ):
+            out.update(words)
+    return frozenset(out)
+
+
 def _missed(
     text: str,
     parts: list,
@@ -608,6 +629,8 @@ def check(parsed: grammar.Parsed, text: str, book: Book) -> Checked:
         | (_TICK_SAID if parsed.ticks else frozenset())
         | {w for r in checked.refused if r.final for w in _words(r.label)}
     )
+    if checked.asks:
+        said |= _asked_words(text, parsed.commands)
     if not parsed.over_meals and not parsed.over_dish:
         checked.missed = _missed(
             text, checked.meals, parsed.commands, book, checked.acts, said
