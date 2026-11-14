@@ -311,3 +311,35 @@ def test_edit_data_oversize_is_refused_without_a_call(caplog):
         assert asyncio.run(widget_queries.edit_data(bot, 5, 77, "x" * 1025)) is False
     assert bot.calls == []
     assert any("1024" in r.message for r in caplog.records)
+
+
+# -- the handler must not shadow its group ------------------------------------------------
+
+
+def test_the_widget_handler_matches_only_widget_queries(owner, reader):  # noqa: F811
+    async def steps(application, wire):
+        handler = next(
+            h
+            for h in application.handlers[-3]
+            if isinstance(h, widget_queries.WidgetQueryHandler)
+        )
+        assert handler.check_update(Update.de_json(_raw(), application.bot))
+        plain = Update.de_json(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": 0,
+                    "chat": {"id": PERSON, "type": "private"},
+                    "from": {"id": PERSON, "is_bot": False, "first_name": "x"},
+                    "text": "hi",
+                },
+            },
+            application.bot,
+        )
+        assert not handler.check_update(plain)
+        # invite_intake shares the group and must still see a private message
+        others = [h for h in application.handlers[-3] if h is not handler]
+        assert others and any(h.check_update(plain) for h in others)
+
+    asyncio.run(_with_app(steps))

@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from telegram import Update
 from telegram.error import BadRequest, TelegramError
-from telegram.ext import ContextTypes
+from telegram.ext import BaseHandler, ContextTypes
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,18 @@ async def dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error("Widget route %r failed: %s", prefix, type(e).__name__)
         await answer(context.bot, query.id, None)
+
+
+class WidgetQueryHandler(BaseHandler):
+    """Matches only a widget query. A TypeHandler(Update) matches every update, and PTB
+    runs just the first matching handler of a group, so it would shadow the group's other
+    handlers (it hid invite_intake in group -3)."""
+
+    def __init__(self) -> None:
+        super().__init__(dispatch)
+
+    def check_update(self, update: object) -> bool:
+        return isinstance(update, Update) and query_of(update) is not None
 
 
 # -- raw methods ------------------------------------------------------------------------

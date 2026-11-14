@@ -3575,9 +3575,10 @@ def create_bot_application() -> Application:
     # updates from users not allowed by the current BOT_ACCESS_MODE.
     application.add_handler(TypeHandler(Update, access_gate), group=-4)
 
-    # Taps inside HTML widgets (widget_query): routed by data prefix, after the gates. Its
-    # own group, so it never takes the place of a handler in the default one.
-    application.add_handler(TypeHandler(Update, widget_queries.dispatch), group=-3)
+    # Taps inside HTML widgets (widget_query): routed by data prefix, after the gates. The
+    # handler matches widget queries only; a catch-all here would be the first match of
+    # group -3 for every update and keep invite_intake from ever running.
+    application.add_handler(widget_queries.WidgetQueryHandler(), group=-3)
 
     # A person picked, and the picker's labels: never food, never a slot's answer.
     application.add_handler(
