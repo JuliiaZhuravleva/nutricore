@@ -30,6 +30,7 @@ import app.services.telegram as tg
 import app.services.usage_ledger as usage_ledger
 from app.core.config import settings
 from app.db.base import Base
+from app.models.favorite_meal import FavoriteMeal
 from app.models.meal import Meal
 from app.models.meal_item import MealItem
 from app.models.personal_food import PersonalFood
@@ -157,6 +158,11 @@ def test_a_row_holds_time_emoji_marks_and_its_dishes(db, me):
         items=(("кетчуп", 20, None), ("сэндвич с тофу", 450, tofu.id)),
         photos=[{"file_id": "f"}],
     )
+    row = dw.row(db, meal, ZONE)
+    # Linked to the dish base is not ⭐: every dish is linked (2026-11-15).
+    assert row.flags == dw.PHOTO
+    db.add(FavoriteMeal(user_id=me.id, name="сэндвич с тофу", personal_food_id=tofu.id))
+    db.commit()
     row = dw.row(db, meal, ZONE)
     assert row.clock == "22:49" and row.part == 2
     assert row.emoji == "🥪"  # the biggest dish's, not the first one's

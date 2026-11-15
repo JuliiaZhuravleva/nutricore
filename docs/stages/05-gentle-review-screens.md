@@ -1370,6 +1370,8 @@ Per-slice topics in `explain_screen.TOPICS`, no model call. The list passes the 
 
 Topic screens render through the shipped `topic_screen`, with back `⬅️ Как это работает`. Ids in order below: `M15a` to `M15e`.
 
+> **2026-11-15, superseded copy.** The owner's rule «never a wall of text» split every topic into points: a title, one line of what it is, «Как работает» as one point per line (the first four open, the rest folded into «Подробнее»), and «Откуда идея» with the source in a folded quote. The facts below stayed; the wording now lives only in `explain_screen.TOPICS`, and `tests/test_explain_screen.py` checks the shape, not this copy.
+
 **`🍽 Приём и блюда`** (ships with N)
 
 - Что это: `Приём состоит из блюд, и каждое можно поправить отдельно.`

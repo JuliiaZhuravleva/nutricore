@@ -1969,9 +1969,9 @@ def test_r10_words_never_said(db):
 def test_d8_the_reminder_says_roughly_and_not_all():
     """D8, the owner's words."""
     assert reminders._FIRST == (
-        "Можно не отвечать. Если что-то вспоминается, можно рассказать голосовым или "
-        "написать — примерно и не всё. Время можно назвать: «в 13 суп». Без времени "
-        "запишется на этот день, без часов."
+        "Можно не отвечать.\n"
+        "Если что-то вспоминается — голосовым или текстом, примерно и не всё.\n"
+        "Время можно назвать: «в 13 суп». Без времени — на этот день, без часов."
     )
     assert reminders._LATER_STARS == (
         "Можно не отвечать. Если что-то вспоминается — голосовым, текстом или блюдом "
@@ -1985,7 +1985,7 @@ def test_d8_the_reminder_says_roughly_and_not_all():
 
 def test_d8_the_shown_reminders_carry_the_new_words(db):
     send, screen = _first_view(db)
-    assert screen.text.split("\n")[1] == reminders._FIRST
+    assert screen.text.split("\n", 1)[1].startswith(reminders._FIRST + "\n")
     _set(db, noted=send.id)
     later = _send(db, DAY + timedelta(days=1))
     assert reminders.reminder_view(db, _user(db), later, AT_21).text.endswith(
@@ -2000,16 +2000,17 @@ def test_d8_the_shown_reminders_carry_the_new_words(db):
 def test_the_explanation_holds_the_new_sentences():
     """§10 as D8 and the ladder/re-entry sentence have it."""
     topic = explain_screen.TOPICS["reminders"]
-    assert topic.what == (
-        "Короткое сообщение вечером: если что-то из еды вспоминается, можно рассказать "
-        "голосовым, написать или нажать на блюдо из ⭐, примерно и не всё. Отвечать не "
-        "обязательно."
+    assert topic.what == "Короткое сообщение вечером. Отвечать не обязательно."
+    assert topic.how.startswith(
+        "Если что-то из еды вспоминается, можно рассказать голосовым, написать "
+        "или нажать на блюдо из ⭐, примерно и не всё.\n"
     )
     assert topic.how.endswith(
-        "Если напоминания подряд остаются без ответа, они приходят реже, а потом "
-        "перестают и возвращаются после перерыва в записях или кнопкой в настройках. "
-        "Если записей долго нет, придут одно-два коротких сообщения, и дальше бот "
-        "молчит, пока не придёт еда."
+        "Если напоминания подряд остаются без ответа, они приходят реже, а "
+        "потом перестают.\n"
+        "Они возвращаются после перерыва в записях или кнопкой в настройках.\n"
+        "Если записей долго нет, придут одно-два коротких сообщения.\n"
+        "Дальше бот молчит, пока не придёт еда."
     )
     assert "Если три" not in topic.how
 
@@ -2364,10 +2365,11 @@ def test_the_sub_screen_says_when_they_have_stopped(db):
 
 def test_the_sub_screen_names_stars_only_when_there_are_some(db):
     about = (
-        "Напоминание приходит не чаще раза в день без звука: можно рассказать голосовым, "
-        "что было{}. Если были записи за три часа до него, оно не приходит."
+        "• Не чаще раза в день, без звука.\n"
+        "• Ответить можно голосовым, текстом{}\n"
+        "• Не приходит, если за три часа до него были записи."
     )
-    assert about.format("") in _tap(db, "rm:o", AT_21).text
+    assert about.format(".") in _tap(db, "rm:o", AT_21).text
     _fav(db, "Суп")
     text = _tap(db, "rm:o", AT_21).text
-    assert about.format(", или нажать на блюдо из ⭐") in text
+    assert about.format(" или блюдом из ⭐.") in text

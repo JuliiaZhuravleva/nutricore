@@ -230,6 +230,14 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 - **Imports ordered**: Standard library → Third-party → Local
 - **Docstrings**: Use for classes and complex functions
 
+### Bot Screens
+- **Never a wall of text**, text fallbacks included: a bold title, one short line of
+  what it is, then short lines or `• ` points; secondary detail goes into
+  `<blockquote expandable>`. `tests/test_no_wall_of_text.py` checks the long screens;
+  add a new long screen to its list.
+- A new or changed screen is walked in the sim (`scripts/sim.sh`) and looked at
+  before release.
+
 ## Development Workflows
 
 ### Setting Up Development Environment
