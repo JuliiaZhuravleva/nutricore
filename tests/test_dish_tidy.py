@@ -35,7 +35,7 @@ from app.crud.crud_subscription import crud_subscription
 from app.db.base import Base
 from app.models import FavoriteMeal, Meal, PersonalFood, RecordEvent, User
 from app.models.dish_tidy import DishTidyBatch, DishTidyItem
-from app.services import close_row, dish_tidy, dish_tidy_push
+from app.services import close_row, dish_tidy, dish_tidy_batch, dish_tidy_push
 from app.services import dish_tidy_screen as screen_mod
 from app.services import dishes
 from app.services import telegram as tg
@@ -487,13 +487,13 @@ def test_a_pass_failing_after_its_commit_takes_its_merges_back(db, monkeypatch):
     """The commit went through and only then the pass failed: the merges are durable,
     so ``failed`` alone would leave them where nobody sees them."""
     k = _kitchen(db)
-    real = screen_mod.prepare
+    real = dish_tidy_batch.prepare
 
     def committed_then_broken(*args, **kwargs):
         real(*args, **kwargs)
         raise RuntimeError("connection lost after COMMIT")
 
-    monkeypatch.setattr(screen_mod, "prepare", committed_then_broken)
+    monkeypatch.setattr(dish_tidy_batch, "prepare", committed_then_broken)
     assert _run(db, _bot())["failed"] == 1
     assert _batch(db).state == "failed"
     assert _live(db, k.sauce) and _live(db, k.sauce_too)
@@ -820,12 +820,12 @@ def test_the_switch_on_the_message(db):
     off = next(d for d in _callbacks(markup) if d.startswith("dt:x:"))
     screen = _tap(db, off)
     assert screen.toast == screen_mod.OFF_TOAST
-    assert screen_mod.tidy_on(_user(db)) is False
+    assert dish_tidy_batch.tidy_on(_user(db)) is False
     assert screen_mod.ON_LABEL in _labels(screen.markup)
     assert dish_tidy_push.week_due(db, _user(db), AT_12 + timedelta(days=7)) is None
     on = next(d for d in _callbacks(screen.markup) if d.startswith("dt:s:"))
     assert _tap(db, on).toast == screen_mod.ON_TOAST
-    assert screen_mod.tidy_on(_user(db)) is True
+    assert dish_tidy_batch.tidy_on(_user(db)) is True
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -861,7 +861,7 @@ def test_another_persons_batch_is_refused_and_unchanged(db):
         screen = _tap(db, data, telegram_id=43)
         assert screen_mod.APPLIED not in screen.text
     assert _writes(db) == before
-    assert screen_mod.tidy_on(_user(db)) is True
+    assert dish_tidy_batch.tidy_on(_user(db)) is True
     assert _tap(db, _callbacks(markup)[0], telegram_id=999).text  # nobody
 
 
@@ -897,7 +897,7 @@ def test_with_nothing_found_a_switched_off_batch_can_be_turned_on(db):
     assert _labels(screen.markup)[0] == screen_mod.ON_LABEL
     on = _tap(db, "dt:on")
     assert on.toast == screen_mod.ON_TOAST
-    assert screen_mod.tidy_on(_user(db))
+    assert dish_tidy_batch.tidy_on(_user(db))
     assert _callbacks(on.markup) == ["dh:l:0"]
 
 
@@ -1008,7 +1008,7 @@ def test_every_state_the_code_writes_is_declared():
     from app.models.dish_tidy import BATCH_STATES, ITEM_STATES
 
     written = set()
-    for name in ("dish_tidy_screen", "dish_tidy_push", "dish_tidy"):
+    for name in ("dish_tidy_screen", "dish_tidy_batch", "dish_tidy_push", "dish_tidy"):
         tree = ast.parse((ROOT / "app" / "services" / f"{name}.py").read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):

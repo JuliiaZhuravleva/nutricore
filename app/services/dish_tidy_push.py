@@ -1,13 +1,13 @@
 """Sending the weekly 🍲 tidy-up: who is due, the claim, the merges, the send.
 
 A sweep every 15 minutes. A person is due on Sunday from 12:00 to 20:59 on their own
-clock, with the switch on (``dish_tidy_screen.tidy_on``), when the bot may write to
+clock, with the switch on (``dish_tidy_batch.tidy_on``), when the bot may write to
 them and the week has no batch yet. The wide window lets a sweep lost to a restart at
 noon be made up later the same afternoon.
 
 1. The claim: the batch row (UNIQUE user + week), committed before anything else.
 2. The pass, in one transaction under the person's lock: the finder's rows, the
-   near-identical dishes merged under the batch's group (``dish_tidy_screen.prepare``).
+   near-identical dishes merged under the batch's group (``dish_tidy_batch.prepare``).
    Nothing found → ``empty``, nothing sent.
 3. The send, always silent. What a failure means:
 
@@ -29,12 +29,25 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import (
+    BadRequest,
+    Forbidden,
+    NetworkError,
+    RetryAfter,
+    TelegramError,
+)
 
 from app.crud.crud_dish_tidy import crud_dish_tidy
 from app.models.dish_tidy import DishTidyBatch
 from app.models.user import User
-from app.services import dish_ops, dish_tidy_screen, settings_screen
+from app.services import (
+    dish_ops,
+    dish_tidy,
+    dish_tidy_batch,
+    dish_tidy_screen,
+    dish_tidy_widget,
+    settings_screen,
+)
 from app.services.access_control import may_receive
 from app.services.card_delivery import may_have_arrived
 from app.services.day_card import local_time
@@ -49,13 +62,9 @@ COUNTS = ("sent", "empty", "skipped", "failed", "blocked")
 RESENDABLE = ("ready", "retry")
 
 
-def _aware(moment: datetime) -> datetime:
-    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)  # SQLite drops it
-
-
 def week_due(db, user: User, now: datetime) -> date | None:
     """The local Sunday to tidy up for now, or None."""
-    if not dish_tidy_screen.tidy_on(user):
+    if not dish_tidy_batch.tidy_on(user):
         return None
     local = local_time(now, settings_screen.user_zone(user))
     if local.weekday() != SUNDAY or not FIRST_HOUR <= local.hour <= LAST_HOUR:
@@ -89,7 +98,7 @@ def clear_stuck(db, now: datetime) -> int:
     them, so a later sweep may claim the week again."""
     gone = 0
     for batch in crud_dish_tidy.in_state(db, "claimed"):
-        if now - _aware(batch.claimed_at) > STUCK:
+        if now - dish_tidy.aware(batch.claimed_at) > STUCK:
             logger.warning("dish tidy: batch %s stuck claimed, cleared", batch.id)
             db.delete(batch)
             gone += 1
@@ -105,7 +114,7 @@ def to_resend(db, now: datetime) -> list:
     return [
         batch
         for batch in batches
-        if batch.state == "retry" or now - _aware(batch.claimed_at) > STUCK
+        if batch.state == "retry" or now - dish_tidy.aware(batch.claimed_at) > STUCK
     ]
 
 
@@ -113,11 +122,14 @@ async def _retire_older(db, bot, user: User, batch: DishTidyBatch) -> None:
     """At most one open batch: an older one closes, its message says so and keeps
     only what can still be taken back."""
     for old in crud_dish_tidy.open_batches(db, user.id, but=batch.id):
-        if dish_tidy_screen.left_over(db, old):
+        if dish_tidy_batch.left_over(db, old):
             continue  # what stayed merged is still to be shown on demand
         old.state = "retired"
         db.commit()
         if old.chat_id is None or old.message_id is None:
+            continue
+        if dish_tidy_widget.is_widget(old):
+            await dish_tidy_widget.refresh(bot, db, old, user)  # x: 1, no text to edit
             continue
         screen = dish_tidy_screen.ended_view(db, old, user, dish_tidy_screen.RETIRED)
         try:
@@ -130,6 +142,37 @@ async def _retire_older(db, bot, user: User, batch: DishTidyBatch) -> None:
             )
         except TelegramError as error:
             logger.info("dish tidy: batch %s not edited closed: %s", old.id, error)
+
+
+async def _send(bot, telegram_id: int, screen, built, markup) -> tuple:
+    """(message, form): the widget when there is one and Telegram takes it, else the text
+    screen. A refused widget (BadRequest or any other answer that is not a failure to
+    reach Telegram) falls back to the text, logged; a flood wait, a block and a
+    connection that may have delivered it are the caller's, as for the text."""
+    if built is not None:
+        try:
+            message = await dish_tidy_widget.send(bot, telegram_id, built, markup)
+            return message, dish_tidy_widget.FORM
+        except (Forbidden, RetryAfter):
+            raise
+        except BadRequest as error:
+            logger.warning(
+                "dish tidy: widget refused, sent as text: %s", str(error)[:200]
+            )
+        except NetworkError:
+            raise  # timed out or lost: may have arrived, never sent again as text
+        except TelegramError as error:
+            logger.warning(
+                "dish tidy: widget failed, sent as text: %s", str(error)[:200]
+            )
+    message = await bot.send_message(
+        chat_id=telegram_id,
+        text=screen.text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=screen.markup,
+        disable_notification=True,
+    )
+    return message, "text"
 
 
 async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> str:
@@ -149,17 +192,15 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
     screen = dish_tidy_screen.open_view(
         db, batch, user, dish_tidy_screen.default_mask(items)
     )
+    built = None
+    if dish_tidy_widget.allowed(user):
+        built = dish_tidy_widget.build(db, batch, user)
+    markup = dish_tidy_widget.keyboard(db, batch, user) if built else None
     try:
-        message = await bot.send_message(
-            chat_id=telegram_id,
-            text=screen.text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=screen.markup,
-            disable_notification=True,
-        )
+        message, form = await _send(bot, telegram_id, screen, built, markup)
     except Forbidden:
         logger.info("dish tidy: %s blocked the bot, merges taken back", telegram_id)
-        dish_tidy_screen.roll_back(db, user, batch, "blocked")
+        dish_tidy_batch.roll_back(db, user, batch, "blocked")
         return "blocked"
     except BadRequest as error:
         logger.error(
@@ -167,7 +208,7 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
             batch.id,
             error,
         )
-        dish_tidy_screen.roll_back(db, user, batch, "failed")
+        dish_tidy_batch.roll_back(db, user, batch, "failed")
         return "failed"
     except Exception as error:
         if may_have_arrived(error):
@@ -177,22 +218,27 @@ async def deliver(db, bot, user: User, batch: DishTidyBatch, now: datetime) -> s
             db.commit()
             return "failed"
         batch.tries = (batch.tries or 0) + 1
-        if now - _aware(batch.claimed_at) > GIVE_UP:
+        if now - dish_tidy.aware(batch.claimed_at) > GIVE_UP:
             logger.error(
                 "dish tidy: batch %s not sent for a day, merges taken back", batch.id
             )
-            dish_tidy_screen.roll_back(db, user, batch, "failed")
+            dish_tidy_batch.roll_back(db, user, batch, "failed")
             return "failed"
         logger.exception("dish tidy: failed for %s, next sweep retries", telegram_id)
         batch.state = "retry"
         db.commit()
         return "failed"
     batch.chat_id = telegram_id
-    batch.message_id = message.message_id
+    batch.message_id = _message_id(message)
+    batch.form = form
     batch.state = "sent"
     db.commit()
     await _retire_older(db, bot, user, batch)
     return "sent"
+
+
+def _message_id(message) -> int:
+    return dish_tidy_widget.message_id_of(message)
 
 
 async def _tidy(db, bot, user: User, week: date, now: datetime) -> str:
@@ -203,14 +249,14 @@ async def _tidy(db, bot, user: User, week: date, now: datetime) -> str:
     if batch is None:
         return "skipped"
     try:
-        found = dish_tidy_screen.prepare(db, user, batch, now)
+        found = dish_tidy_batch.prepare(db, user, batch, now)
     except Exception:
         # Rolled back whole, unless the commit went through before it failed: then
         # the merges are taken back. The week is not tried again.
         logger.exception("dish tidy: the pass failed for %s", telegram_id)
         db.rollback()
         if dish_ops.group_changes(db, batch.group_id):
-            dish_tidy_screen.roll_back(db, user, batch, "failed")
+            dish_tidy_batch.roll_back(db, user, batch, "failed")
             return "failed"
         batch.state = "failed"
         db.commit()
@@ -273,13 +319,13 @@ def _give_up(db, user_id: int, batch_id: int, now: datetime) -> None:
         if batch is None or batch.state not in RESENDABLE:
             db.rollback()
             return  # settled meanwhile: what the person accepted stays
-        if now - _aware(batch.claimed_at) <= GIVE_UP:
+        if now - dish_tidy.aware(batch.claimed_at) <= GIVE_UP:
             db.rollback()
             return
         logger.error(
             "dish tidy: batch %s failing for a day, merges taken back", batch_id
         )
-        dish_tidy_screen.roll_back(db, user, batch, "failed")
+        dish_tidy_batch.roll_back(db, user, batch, "failed")
     except Exception:
         logger.exception("dish tidy: batch %s could not be taken back", batch_id)
         db.rollback()

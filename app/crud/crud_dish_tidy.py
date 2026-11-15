@@ -52,6 +52,22 @@ class CRUDDishTidy:
         )
         return db.scalars(stmt).first()
 
+    def by_message(
+        self, db: Session, chat_id: int, message_id: int, user_id: int
+    ) -> DishTidyBatch | None:
+        """The person's batch that sits on this chat message (a widget's tap names the
+        message, not the batch); None for anyone else's."""
+        stmt = (
+            select(DishTidyBatch)
+            .where(
+                DishTidyBatch.chat_id == chat_id,
+                DishTidyBatch.message_id == message_id,
+                DishTidyBatch.user_id == user_id,
+            )
+            .order_by(DishTidyBatch.id.desc())
+        )
+        return db.scalars(stmt).first()
+
     def items(self, db: Session, batch_id: int) -> list[DishTidyItem]:
         stmt = (
             select(DishTidyItem)

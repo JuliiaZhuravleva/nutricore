@@ -27,16 +27,17 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import Forbidden
 
 from app.models.user import User
+from app.services import sweep
 from app.services.access_control import may_receive
 from app.services.card_delivery import may_have_arrived
 from app.services.close_row import ok_row
 from app.services.day_card import local_time
+from app.services.dish_ops import lock_user
 from app.services.favorites import Screen
 from app.services.settings_screen import user_zone
 
@@ -192,18 +193,7 @@ def _due(db, user: User, now: datetime) -> News | None:
 def users_due(db, now: datetime) -> list:
     """(user, news) for everyone whose news goes out now. One user's bad data must
     not cost everyone else theirs."""
-    due = []
-    for user in db.query(User).order_by(User.id).all():
-        telegram_id = user.telegram_id
-        try:
-            news = _due(db, user, now)
-        except Exception:
-            logger.exception("news: could not check %s", telegram_id)
-            db.rollback()
-            continue
-        if news is not None:
-            due.append((user, news))
-    return due
+    return sweep.users_due(db, lambda user: _due(db, user, now), logger, "news")
 
 
 def _mark(db, user: User, value: str | None) -> None:
@@ -218,14 +208,7 @@ def _mark(db, user: User, value: str | None) -> None:
 def _claim(db, user: User, news: News) -> tuple[bool, str | None]:
     """Mark the item under a row lock, reading the mark afresh: runs left queued by
     a restart overlap, and the second must find the first one's mark."""
-    # The rows must be read: an unread result neither locks on every dialect nor
-    # refreshes ``user`` (populate_existing works as rows are fetched).
-    db.scalars(
-        select(User)
-        .where(User.id == user.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).one()
+    lock_user(db, user)
     previous = (user.settings or {}).get(NEWS_SEEN)
     if previous == news.id or not news_on(user):
         db.rollback()
@@ -261,6 +244,7 @@ async def _send(db, bot, user: User, news: News) -> str:
         try:
             db.rollback()
             if claimed:
+                lock_user(db, user)  # the row afresh: the rollback expired it
                 _mark(db, user, previous)
         except Exception:
             logger.exception("news: mark not cleared for %s", telegram_id)
@@ -272,11 +256,14 @@ async def _send(db, bot, user: User, news: News) -> str:
 async def run(db, bot, now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     counts = {"sent": 0, "failed": 0, "blocked": 0}
-    for user, news in users_due(db, now):
+    for user_id, telegram_id, news in sweep.snapshot(db, users_due(db, now)):
         try:
+            user = db.get(User, user_id)
+            if user is None:
+                continue
             outcome = await _send(db, bot, user, news)
         except Exception:  # one person's row (deleted meanwhile…) must not stop all
-            logger.exception("news: send failed before it started")
+            logger.exception("news: could not send to %s", telegram_id)
             db.rollback()
             outcome = "failed"
         if outcome in counts:

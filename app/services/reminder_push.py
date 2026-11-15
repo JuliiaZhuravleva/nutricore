@@ -22,7 +22,7 @@ from telegram.error import Forbidden, TelegramError
 from app.crud.crud_reminder_send import crud_reminder_send
 from app.models.reminder_send import ReminderSend
 from app.models.user import User
-from app.services import reminders, settings_screen
+from app.services import reminders, settings_screen, sweep
 from app.services.card_delivery import may_have_arrived
 
 logger = logging.getLogger(__name__)
@@ -31,18 +31,9 @@ logger = logging.getLogger(__name__)
 def users_due(db, now: datetime) -> list:
     """(user, slot) for everyone with a reminder due now. One person's bad data must
     not cost everyone else theirs."""
-    due = []
-    for user in db.query(User).order_by(User.id).all():
-        telegram_id = user.telegram_id
-        try:
-            slot = reminders.due(db, user, now)
-        except Exception:
-            logger.exception("reminders: could not check %s", telegram_id)
-            db.rollback()
-            continue
-        if slot is not None:
-            due.append((user, slot))
-    return due
+    return sweep.users_due(
+        db, lambda user: reminders.due(db, user, now), logger, "reminders"
+    )
 
 
 async def _close_previous(
@@ -162,9 +153,11 @@ def _settle(db, send: ReminderSend, status: str) -> None:
 async def run(db, bot, now: datetime | None = None) -> dict:
     now = (now or datetime.now(UTC)).astimezone(UTC)
     counts = {"sent": 0, "skipped": 0, "failed": 0, "blocked": 0}
-    for user, slot in users_due(db, now):
-        telegram_id = user.telegram_id
+    for user_id, telegram_id, slot in sweep.snapshot(db, users_due(db, now)):
         try:
+            user = db.get(User, user_id)
+            if user is None:
+                continue
             outcome = await _send(db, bot, user, slot, now)
         except Exception:
             # One person's failed claim or commit must not cost everyone after

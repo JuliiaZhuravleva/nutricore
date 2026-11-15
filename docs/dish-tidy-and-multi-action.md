@@ -260,7 +260,10 @@ midnight; «вчера» moves it. Trigger: «за день», «за сегод
 
 Kept as is: the closed-question text, the refusals, the said name over the hour, the expired
 widget's look, the times in the lines. Limits: model viewers are a screening, not people with
-a phone; the widget is checked on the owner's phone from the dev bot before its release.
+a phone; the widget is checked on the owner's phone before everyone gets it. Nutricore has
+no dev bot, so R3 first goes out with `TIDY_WIDGET=owner`: only the owner gets the widget, on
+the real bot with working taps, and everyone else keeps the text screen. After the owner's OK
+the switch becomes `all`, with a news item.
 
 ### 6.6 Releases
 
@@ -268,7 +271,7 @@ a phone; the widget is checked on the owner's phone from the dev bot before its 
 |---|---|---|
 | R1 ✅ 2026-11-14 | Words do more | D4 names, D1 «за день», D2 weight and ticks, «↩️ Отменить» rename and the named undo result |
 | R2 | Questions with buttons | D3 (after moving the plan's markup into a screen module, TD-273) |
-| R3 | Tidy widget | `widget_query` plumbing, `dish_tidy_widget.py` with the §6.5 changes, kill switch `TIDY_WIDGET`, the checkbox screen as its text twin |
+| R3 | Tidy widget | `widget_query` plumbing, `dish_tidy_widget.py` with the §6.5 changes, switch `TIDY_WIDGET` (`off`/`owner`/`all`, first `owner`), the checkbox screen as its text twin |
 
 Not in these: reply-binding to one part of a multi-meal message, free-text answers to
 questions, meal names in the diary widget, diary taps through `widget_query`, new routines

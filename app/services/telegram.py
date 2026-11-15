@@ -45,9 +45,11 @@ from telegram.warnings import PTBUserWarning
 
 from app.core.config import settings
 from app.crud.crud_access_grant import crud_access_grant
+from app.crud.crud_dish_tidy import crud_dish_tidy
 from app.crud.crud_feedback import crud_feedback
 from app.crud.crud_message_plan import crud_message_plan
 from app.crud.crud_subscription import crud_subscription
+from app.crud.crud_user import crud_user
 from app.db.session import SessionLocal
 from app.models import action_event
 from app.models import feedback as feedback_model
@@ -59,6 +61,7 @@ from app.services import (
     custom_emoji,
     diary_widget,
     dish_tidy_screen,
+    dish_tidy_widget,
     dishes,
     explain_screen,
     favorites,
@@ -87,6 +90,7 @@ from app.services import (
     voice,
     weight_screen,
     welcome_screen,
+    widget_queries,
 )
 from app.services.access_control import (
     NO_ACCESS,
@@ -2538,6 +2542,10 @@ async def _screen_callback(
     if deliver is not None:
         await deliver(query, screen)
         return
+    await _edit_screen(query, screen)
+
+
+async def _edit_screen(query, screen) -> None:
     try:
         await query.edit_message_text(
             screen.text,
@@ -2614,16 +2622,84 @@ async def morning_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _screen_callback(update, handle, TERM_ENDED, "Morning")
 
 
+WIDGET_SENT = "Подборка пришла новым сообщением"
+
+
+async def _dish_tidy_widget_out(bot, telegram_id: int, screen):
+    """On demand, for a person the ``TIDY_WIDGET`` switch allows: the batch goes as a new
+    widget message and the list's message stays as it was (a toast says so). Anything
+    that stops it leaves the checkbox screen to replace the list's message as before."""
+    try:
+        with SessionLocal() as db:
+            user = crud_user.get_by_telegram_id(db, telegram_id)
+            batch = crud_dish_tidy.get(db, screen.widget_batch)
+            if user is None or batch is None or batch.user_id != user.id:
+                return screen
+            if not await dish_tidy_widget.on_demand(bot, db, user, batch):
+                return screen
+    except Exception as e:
+        logger.warning("Dish tidy: on-demand widget failed: %s", type(e).__name__)
+        return screen
+    return favorites.Screen("", None, toast=WIDGET_SENT)
+
+
 async def dish_tidy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """A tap on the 🍲 tidy-up (``dt:…``): the same message becomes the next screen."""
-    message_id = getattr(update.callback_query.message, "message_id", None)
+    """A tap on the 🍲 tidy-up (``dt:…``): the same message becomes the next screen. Under
+    a widget message the screen is the widget's state and keyboard instead (a widget
+    message has no text to edit)."""
+    message = update.callback_query.message
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(message, "chat_id", None)
+    telegram_id = update.effective_user.id
 
     def handle(db, telegram_id: int, data: str):
         return dish_tidy_screen.handle_callback(
             db, telegram_id, data, message_id=message_id
         )
 
-    await _screen_callback(update, handle, TERM_ENDED, "Dish tidy")
+    async def widget_out(screen):
+        if screen.widget_batch is None:
+            return screen
+        return await _dish_tidy_widget_out(context.bot, telegram_id, screen)
+
+    async def deliver(query, screen):
+        try:
+            with SessionLocal() as db:
+                user = crud_user.get_by_telegram_id(db, telegram_id)
+                batch = None
+                if user is not None and chat_id is not None and message_id is not None:
+                    batch = crud_dish_tidy.by_message(db, chat_id, message_id, user.id)
+                if batch is not None and dish_tidy_widget.is_widget(batch):
+                    await dish_tidy_widget.refresh(context.bot, db, batch, user)
+                    return
+        except SQLAlchemyError as e:
+            logger.error("Dish tidy: widget lookup failed: %s", type(e).__name__)
+        await _edit_screen(query, screen)
+
+    await _screen_callback(
+        update,
+        handle,
+        TERM_ENDED,
+        "Dish tidy",
+        deliver=deliver,
+        before_answer=widget_out,
+    )
+
+
+async def dish_tidy_widget_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A tap inside the 🍲 widget (``a:<rev>:<mask>``, widget_query). A person whose
+    subscription ended writes nothing; the tap is answered empty."""
+    query = widget_queries.query_of(update)
+    if query is None:
+        return
+    if not await check_subscription(query.from_id):
+        logger.info(
+            "dish tidy widget: tap of %s refused, no subscription", query.from_id
+        )
+        await widget_queries.answer(context.bot, query.id, None)
+        return
+    with SessionLocal() as db:
+        await dish_tidy_widget.handle_tap(context.bot, db, query)
 
 
 async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3726,7 +3802,7 @@ async def _load_custom_emoji(application: Application) -> None:
 
 
 # What the bot asks Telegram for, polling and webhook alike: an edit comes only if asked.
-ALLOWED_UPDATES = ["message", "edited_message", "callback_query"]
+ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "widget_query"]
 
 
 def create_bot_application() -> Application:
@@ -3761,6 +3837,15 @@ def create_bot_application() -> Application:
     # Global access gate — runs before every other handler (group=-4) and drops
     # updates from users not allowed by the current BOT_ACCESS_MODE.
     application.add_handler(TypeHandler(Update, access_gate), group=-4)
+
+    # Taps inside HTML widgets (widget_query): routed by data prefix, after the gates. The
+    # handler matches widget queries only; a catch-all here would be the first match of
+    # group -3 for every update and keep invite_intake from ever running.
+    application.add_handler(widget_queries.WidgetQueryHandler(), group=-3)
+    try:
+        widget_queries.register(dish_tidy_widget.PREFIX, dish_tidy_widget_tap)
+    except ValueError:
+        pass  # the application is built again in one process (tests): the route stays
 
     # A person picked, and the picker's labels: never food, never a slot's answer.
     application.add_handler(

@@ -7,7 +7,7 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Medium
 
-- [ ] **TD-266**: One person's failure can end a weekly sweep for everyone after them.
+- [x] **TD-266** (closed 2026-11-15, R3 feat/tidy-widget: sweep.py snapshots ids, per-person try with rollback): One person's failure can end a weekly sweep for everyone after them.
   `week_push.run` calls `_send` with no try, and `_send` reads `user.telegram_id` before its own
   try; `users_due` in week_push, bot_news, morning_push and reminder_push read `user.telegram_id`
   before the per-person try, after an earlier iteration's `db.rollback()` expired the rows. A
@@ -88,7 +88,7 @@ Medium / Low / без приоритета, открытые. Не читать 
 
 ## Low
 
-- [ ] **TD-267**: 🍲 tidy-up module boundaries.
+- [x] **TD-267** (closed 2026-11-15, R3 feat/tidy-widget: dish_tidy_batch.py): 🍲 tidy-up module boundaries.
   `dish_tidy.py` / `dish_tidy_screen.py` are ~600 lines each; the screen module owns
   `prepare`/`roll_back`/`tidy_on`/`left_over`, which `dish_tidy_push` imports (service logic in a
   screen module); `_aware` and the lock snippet are copied across modules; `close_pairs` runs
@@ -368,7 +368,7 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/multi-action (review)
   - **Created:** 2026-11-14
-- [ ] **TD-270**: A ⭐ set from words and taken back with «↩️ Вернуть всё» is not a decline for the tidy-up (merges are), so next week's tidy may offer that ⭐ again.
+- [x] **TD-270** (closed 2026-11-15, R3 feat/tidy-widget: taken-back ⭐ counts as a decline): A ⭐ set from words and taken back with «↩️ Вернуть всё» is not a decline for the tidy-up (merges are), so next week's tidy may offer that ⭐ again.
   - **Priority:** Low
   - **Source:** feat/multi-action (review)
   - **Created:** 2026-11-14
@@ -380,7 +380,7 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/multi-action (review)
   - **Created:** 2026-11-14
-- [ ] **TD-273**: `plan_service` reaches into private capture helpers (`capture._user`, `_replied_meal`, `_heard_came`) and owns the plan row's state moves (`_ended`, `set_line`, `shown`, `again`, `nothing`, `finish`) that belong in `crud_message_plan`; it also builds Telegram markup (`answer_markup`) and lines. Make the capture helpers public, move the state moves to the CRUD, the markup to a `plan_screen`.
+- [x] **TD-273** (closed 2026-11-15, done by A4 in R2 (plan_screen.py), released 2026-11-14): `plan_service` reaches into private capture helpers (`capture._user`, `_replied_meal`, `_heard_came`) and owns the plan row's state moves (`_ended`, `set_line`, `shown`, `again`, `nothing`, `finish`) that belong in `crud_message_plan`; it also builds Telegram markup (`answer_markup`) and lines. Make the capture helpers public, move the state moves to the CRUD, the markup to a `plan_screen`.
   - **Priority:** Low
   - **Source:** feat/multi-action-plan (review round 2, arch-monitor 80–90)
   - **Created:** 2026-11-14
@@ -415,4 +415,20 @@ Medium / Low / без приоритета, открытые. Не читать 
 - [ ] **TD-281**: The pick question's head («⭐ Какую гречку…») inflects the asked label by a heuristic, which can read wrong for multi-word labels (reviewer's note, not measured on real names). Heuristic; per memory `heuristic-parser-review-loop-diverges`, bound it by a corpus test before touching it, or ask with the name in quotes («Какое блюдо «котлета куриная»…»).
   - **Priority:** Low
   - **Source:** feat/plan-questions (R2 review, reviewer)
+  - **Created:** 2026-11-15
+- [ ] **TD-282**: 🍲 widget whose send timed out is dead. A `TimedOut` on `sendWidget` makes the batch `maybe` with `message_id=None`; the widget may have arrived, but a tap finds its batch by (chat, message, person) and so finds none («Не применилось»). On-demand has the same gap. Way out today: open 🍲 Порядок from the list, a fresh widget comes. Fix: carry the batch id in the request (`a:<bid>:<rev>:<mask>`, authorize by `batch.user_id`), or record `form='widget'` on the maybe branch.
+  - **Priority:** Low
+  - **Source:** feat/tidy-widget (R3 review, bug-hunter 75)
+  - **Created:** 2026-11-15
+- [ ] **TD-283**: 🍲 widget refusals log without ids. `dish_tidy_push._send` (widget refused / TelegramError), `on_demand` and `_dish_tidy_widget_out` log the error type with no batch id or telegram id; `tap()` logs one line for four different ignore causes; `refresh()` ignores `edit_data` returning False. Add batch id, person and which condition failed.
+  - **Priority:** Low
+  - **Source:** feat/tidy-widget (R3 review, silent-failure 70–75)
+  - **Created:** 2026-11-15
+- [ ] **TD-284**: A widget tap dropped by `access_gate` (closed/whitelist) is never answered: the page spins until TIMEOUT and says «Бот не ответил». Answer empty before `ApplicationHandlerStop` when the update is a widget query. Also `on_demand` writes the new message id without `lock_user`/refresh (small race with the 15-min retry sweep).
+  - **Priority:** Low
+  - **Source:** feat/tidy-widget (R3 review, silent-failure 70, bug-hunter 50)
+  - **Created:** 2026-11-15
+- [ ] **TD-285**: 🍲 module tidy-ups from the R3 architecture review: the expiry gate is written twice (`dish_tidy_screen._closed` vs `dish_tidy_widget._expire`); the widget reaches into private names (`dish_tidy_screen._day/_days_word/_undoable`, `diary_widget._script_json`, `meal_card._cut`); screen↔widget import cycle broken by a local import; the widget-or-text choice lives in three places (`dish_tidy_push._send`, telegram `_dish_tidy_widget_out`, the `deliver` closure); `TIDY_WIDGET` typo silently means `off` (validate as a Literal); design doc §2.3/§6.5 still shows the state as `{r, mask, done}` (real: `{r,m,e,d,u,x,f,n}`, r derived from the batch state).
+  - **Priority:** Low
+  - **Source:** feat/tidy-widget (R3 review, arch-monitor 70–78)
   - **Created:** 2026-11-15

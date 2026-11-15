@@ -29,6 +29,7 @@ from app.models.action_event import (
     TEXT,
     VOICE,
 )
+from app.services import widget_queries
 from app.services.access_control import is_user_allowed
 from app.services.attribution import begin_update
 from app.services.day_card import local_time
@@ -121,8 +122,7 @@ def note(telegram_id: int, kind: str, label: Optional[str] = None) -> None:
 async def note_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """The first handler of every update: whose it is, then what they did. Someone the
     gate is about to drop gets no row: strangers leave nothing here."""
-    user = update.effective_user
-    telegram_id = user.id if user else None
+    telegram_id = widget_queries.person_of(update)
     begin_update(telegram_id)
     try:
         if telegram_id is None or not is_user_allowed(telegram_id):
