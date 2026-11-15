@@ -60,4 +60,5 @@ fi
 # A clean environment: none of the shell's keys or settings reach the bot.
 exec env -i HOME="$HOME" PATH="/usr/bin:/bin" LANG="en_US.UTF-8" \
   PYTHONPATH="$REPO" PYTHONIOENCODING="utf-8" PYTHONDONTWRITEBYTECODE=1 \
+  SIM_WIDGETS="${SIM_WIDGETS:-}" \
   "$VENV_PY" -m tests.sim.cli "$STATE" "$@"

@@ -74,6 +74,16 @@ at #1, so Julia's #12 and Anna's #12 are different messages. `#N` in `chat`,
 
 `chat` prints the whole chat in the same format, without the change marks.
 
+Every message the bot sends or edits is also appended to `<state>/screens.jsonl`, one
+JSON object per line: `chat`, `id`, `kind` (`text`, `photo`, `widget`…), `text`, `html`
+and `buttons` (rows of labels). It is the raw material for rendering screens or checking
+them all at once, for example for walls of text (`tests/test_no_wall_of_text.py` holds
+the rule).
+
+`SIM_WIDGETS=refuse` makes `sendWidget` and `editMessageWidgetData` fail with
+`INPUT_MEDIA_WIDGET_NOT_ALLOWED`, as Telegram does where widgets are not allowed, so
+the fallbacks (picture, then text) can be walked. `scripts/sim.sh` passes it through.
+
 ## Exit codes
 
 - `0`: the command ran.

@@ -890,13 +890,16 @@ def test_the_first_start_is_the_welcome(db):
     _invite(db)
     sent = play(say(SASHA, "/start")).to(SASHA)
     assert len(sent) == 1
-    assert sent[0]["text"].startswith("<b>👋 Дневник питания</b>\n\n")
+    assert sent[0]["text"].startswith("<b>👋 Дневник питания</b>\n")
     assert (
-        "Владелец бота в своих экранах видит, как часто ты пишешь и сколько это стоит."
+        "Владелец бота видит, как часто ты пишешь и во сколько ему обходится ИИ."
         in sent[0]["text"]
     )
     assert sent[0]["text"].endswith(diet.QUESTION)
-    assert _labels(sent[0]) == [["🍖 Всё", "🥚 Без мяса", "🌱 Растения"], ["Позже"]]
+    assert _labels(sent[0]) == [
+        ["🍖 Всё", "🥚 Без мяса", "🌱 Растения"],
+        ["Ответить позже"],
+    ]
     _fits(sent[0])
     assert "подписк" not in sent[0]["text"].casefold()
 
@@ -1011,7 +1014,7 @@ def _old_meal(user: User) -> Meal:
 
 
 def _welcomes(wire: Phone) -> list:
-    return [p for p in wire.to(SASHA) if "в своих экранах видит" in p["text"]]
+    return [p for p in wire.to(SASHA) if "<b>Кто что видит</b>" in p["text"]]
 
 
 def test_someone_invited_whose_first_word_is_food_still_learns_who_sees_what(
@@ -1039,7 +1042,7 @@ def test_a_welcome_telegram_did_not_take_is_still_owed(db, reader):  # noqa: F81
 
         async def do_request(self, url, method, request_data=None, **kwargs):
             params = dict(request_data.parameters) if request_data else {}
-            if self.refusing and "в своих экранах видит" in params.get("text", ""):
+            if self.refusing and "<b>Кто что видит</b>" in params.get("text", ""):
                 body = {"ok": False, "error_code": 400, "description": "Bad Request"}
                 return 400, json.dumps(body).encode()
             return await super().do_request(url, method, request_data, **kwargs)
@@ -1069,7 +1072,7 @@ def test_a_record_from_before_the_invitation_means_they_were_here(
 def test_a_listed_person_who_writes_first_is_as_before(db, reader):  # noqa: F811
     crud_subscription.create_subscription(db, LISTED, OWNER, months=1)
     wire = play(say(LISTED, "омлет"))
-    assert not [p for p in wire.to(LISTED) if "в своих экранах видит" in p["text"]]
+    assert not [p for p in wire.to(LISTED) if "<b>Кто что видит</b>" in p["text"]]
     assert reader.text == ["омлет"]  # known positive: the message did reach the diary
 
 
@@ -1174,7 +1177,7 @@ def _closes_while_reading(db, monkeypatch, error=None) -> None:
 def _pending_only(wire: Phone) -> None:
     """What the person saw is what they saw before the door closed."""
     assert wire.edits() == []
-    said = [p for p in wire.to(SASHA) if "в своих экранах видит" not in p["text"]]
+    said = [p for p in wire.to(SASHA) if "<b>Кто что видит</b>" not in p["text"]]
     assert len(said) == 1
 
 

@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import html
 import json
+import os
 import re
 import sys
 from datetime import UTC, datetime, timedelta
@@ -100,6 +101,7 @@ def _wire_class():
                 deleted=False,
             )
             state.events.append(("message", state.key(chat, message["id"]), "new"))
+            self._journal(message)
             if keyboard_changed:
                 state.events.append(("keyboard", chat))
             return _as_telegram(message)
@@ -112,6 +114,19 @@ def _wire_class():
 
         def _sendDocument(self, params):
             return self._new(params, "document", params.get("caption"))
+
+        def _sendWidget(self, params):
+            # The widget's page is not drawn here: the chat shows a stand-in line.
+            # SIM_WIDGETS=refuse answers as Telegram did from 2026-11-13.
+            if os.environ.get("SIM_WIDGETS") == "refuse":
+                raise _Refused("Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED")
+            return self._new(params, "widget", "[виджет]")
+
+        def _editMessageWidgetData(self, params):
+            if os.environ.get("SIM_WIDGETS") == "refuse":
+                raise _Refused("Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED")
+            self._target(params)
+            return True
 
         # edits
         def _target(self, params) -> dict:
@@ -139,7 +154,18 @@ def _wire_class():
             message["edited"] = True
             key = self.state.key(message["chat"], message["id"])
             self.state.events.append(("message", key, "edited"))
+            self._journal(message)
             return _as_telegram(message)
+
+        def _journal(self, message) -> None:
+            """Every state a bot message takes, raw HTML and buttons, one JSON line in
+            screens.jsonl: the chat keeps only the last, a screen review needs each."""
+            line = {k: message[k] for k in ("chat", "id", "kind", "text", "html")}
+            line["buttons"] = [
+                [_label(b) for b in row] for row in (message["buttons"] or [])
+            ]
+            with open(self.state.folder / "screens.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
         def _editMessageText(self, params):
             if self._target(params)["kind"] != "text":

@@ -62,10 +62,11 @@ HEADS = {
     dish_tidy.MERGE: "Похоже на одно блюдо:",
     dish_tidy.STAR: "В ⭐ Избранное — часто в записях:",
 }
+# One line each: never a wall of text (owner, 2026-11-15).
 HOW = "Нажатие на строку ставит или снимает ✓."
-HOW_SAME = " Без ✓ объединение отменится, а предложение не применится."
-HOW_PLAIN = " Без ✓ предложение не применится."
-UNTIL = " Предложения действуют до {day}."
+HOW_SAME = "Без ✓ объединение отменится, а предложение не применится."
+HOW_PLAIN = "Без ✓ предложение не применится."
+UNTIL = "Решить можно до {day}."
 APPLY = "✅ Применить отмеченное ({count})"
 DONE_LABEL = "✅ Готово"
 OFF_LABEL = "✖ Не присылать по воскресеньям"
@@ -163,10 +164,10 @@ def open_view(db, batch: DishTidyBatch, user: User, mask: int) -> Screen:
             lines.append("")
             lines.append(HEADS[item.kind])
         lines.append(_line(item.idx + 1, item))
-    foot = HOW + (HOW_SAME if dish_tidy.SAME in kinds else HOW_PLAIN)
+    foot = [HOW, HOW_SAME if dish_tidy.SAME in kinds else HOW_PLAIN]
     if any(item.kind != dish_tidy.SAME for item in items) and batch.expires_at:
-        foot += UNTIL.format(day=_day(batch.expires_at, user))
-    lines += ["", foot]
+        foot.append(UNTIL.format(day=_day(batch.expires_at, user)))
+    lines += ["", *foot]
     rows = []
     for item in items:
         mark = "✓ " if dish_tidy_batch.ticked(mask, item) else ""

@@ -1,7 +1,7 @@
 """«🗒 Дневник дня»: the day's meals as a widget inside a message (Bot API 10.4).
 
 What was eaten and when, a part of the day at a time, each meal with its dish emoji, its
-food-group marks in their own colours, ⭐ when a dish came from the person's own base and
+food-group marks in their own colours, ⭐ when a dish is in the person's ⭐ Избранное and
 📷 when the meal has a photo. A tap opens a meal inside the widget; nothing goes to the
 bot. No calories (owner 2026-11-10): this is a record, not a count.
 
@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.crud.crud_favorite_meal import crud_favorite_meal
 from app.crud.crud_meal_item import crud_meal_item
 from app.crud.crud_user import crud_user
 from app.models.meal import Meal
@@ -110,6 +111,15 @@ def _calories(item) -> float:
         return 0.0
 
 
+def _starred(db, user_id: int) -> set:
+    """The dishes behind this person's live ⭐ Избранное."""
+    return {
+        fav.personal_food_id
+        for fav in crud_favorite_meal.list_active(db, user_id)
+        if fav.personal_food_id is not None
+    }
+
+
 def row(db, meal: Meal, zone: ZoneInfo) -> Row:
     name = _meal_name(meal)
     items = crud_meal_item.live(db, meal.id) if db is not None else []
@@ -122,7 +132,9 @@ def row(db, meal: Meal, zone: ZoneInfo) -> Row:
         dishes = tuple((dish_emoji.of_name(n), _cut(n)) for n in names)
         emoji = dish_emoji.of_name(name)
     flags = 0
-    if any(item.personal_food_id for item in items):
+    # ⭐ means Избранное on every screen. Every dish is linked to the dish base now, so
+    # «linked» starred every row and read as «all favourites» (2026-11-15).
+    if items and _starred(db, meal.user_id) & {i.personal_food_id for i in items}:
         flags |= SAVED
     if meal.photos:
         flags |= PHOTO

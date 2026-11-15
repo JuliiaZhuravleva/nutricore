@@ -180,42 +180,45 @@ def test_a_page_past_the_end_after_a_release_still_opens_a_page():
     assert screen.toast is None
 
 
-def test_the_meal_topic_is_the_spec_copy():
+def test_the_meal_topic_is_short_points_with_the_idea_folded():
     screen = _tap("hw:t:meal")
     assert screen.text == "\n\n".join(
         [
-            "<b>🍽 Приём и блюда</b>",
-            "<b>Что это.</b> Приём состоит из блюд, и каждое можно поправить отдельно.",
-            "<b>Как работает.</b> В приёме блюдо записано таким, каким было в тот день. "
-            "Правка блюда меняет будущие приёмы, прошлые остаются как были. "
-            "Ранние записи не разделены на блюда: цифры у них на всю запись. "
-            "Удалённый приём не считается ни на карточке дня, ни на карточке недели, "
-            "но хранится, чтобы его можно было вернуть.",
-            "<b>Откуда идея.</b> С фото лучше определяется, что было, чем сколько, "
-            "поэтому сначала выбирается блюдо, а граммы идут вторыми. "
-            "Деление на блюда сделано проектом и в исследованиях не проверялось.",
-            "<i>Источник: PMID 30060528</i>",
+            "<b>🍽 Приём и блюда</b>\n"
+            "Приём состоит из блюд, и каждое можно поправить отдельно.",
+            "<b>Как работает</b>\n"
+            "• Блюдо в приёме записано таким, каким было в тот день.\n"
+            "• Правка блюда меняет будущие приёмы, прошлые остаются как были.\n"
+            "• Удалённый приём не считается на карточках дня и недели.\n"
+            "• Но он хранится, чтобы его можно было вернуть.\n"
+            "• Ранние записи не разделены на блюда: цифры у них на всю запись.",
+            "<blockquote expandable><b>Откуда идея</b>\n"
+            "• По фото лучше видно, что было, чем сколько. Поэтому сначала блюдо, "
+            "граммы вторыми.\n"
+            "• Деление на блюда сделал проект, в исследованиях его не проверяли.\n"
+            "<i>Источник: PMID 30060528</i></blockquote>",
         ]
     )
     assert _rows(screen) == [["⬅️ Как это работает"]]
     assert _buttons(screen)[0].callback_data == "hw:open"
 
 
-def test_the_dishes_topic_is_the_spec_copy_m15e():
-    assert _tap(explain._TOPIC + "dishes").text == "\n\n".join(
-        [
-            "<b>🍲 Мои блюда</b>",
-            "<b>Что это.</b> Все блюда из записей в одном месте. "
-            "⭐ записывается одним нажатием.",
-            "<b>Как работает.</b> Блюдо появляется само, когда приходит еда. "
-            "«🔗 Объединить» соединяет два названия одного блюда, «🗑 Из списков» "
-            "прячет блюдо. Прошлые приёмы и их цифры при этом не меняются, "
-            "и оба действия отменяются.",
-            "<b>Откуда идея.</b> Повторы в еде здесь не считаются недостатком. "
-            "Решение проекта, отдельно не проверялось.",
-            "<i>Источник: Решение проекта.</i>",
-        ]
-    )
+def test_a_long_how_keeps_four_points_open_and_folds_the_rest():
+    topic = explain.TOPICS["reminders"]
+    text = _tap(explain._TOPIC + "reminders").text
+    points = topic.how.split("\n")
+    assert len(points) > 5  # the known positive: there is something to fold
+    open_part, folded = text.split("<b>Подробнее</b>")
+    assert all(f"• {p}" in open_part for p in points[:4])
+    assert not any(f"• {p}" in open_part for p in points[4:])
+    assert all(f"• {p}" in folded for p in points[4:])
+    assert open_part.rstrip().endswith("<blockquote expandable>")
+
+
+def test_a_short_how_is_never_folded():
+    text = _tap(explain._TOPIC + "dishes").text  # four points
+    assert "Подробнее" not in text
+    assert text.count("<blockquote expandable>") == 1  # only where the idea comes from
 
 
 def _quoted_marks(words: str) -> list:
@@ -255,13 +258,17 @@ def test_every_topic_says_what_how_why_and_source(key):
         ).callback_data
     )
     assert screen.text.startswith(f"<b>{topic.label}</b>")
-    for part in ("Что это.", "Как работает.", "Откуда идея.", "Источник:"):
+    assert screen.text.startswith(f"<b>{topic.label}</b>\n{topic.what}\n\n")
+    for part in ("<b>Как работает</b>\n• ", "<b>Откуда идея</b>\n• ", "Источник:"):
         assert part in screen.text
+    # Never a wall of text: every line fits two phone lines (~60 chars each).
+    for line in re.sub(r"<[^>]+>", "", screen.text).split("\n"):
+        assert len(line) <= 120 or line.startswith("Источник:"), line
     assert _buttons(screen)[-1].text == "⬅️ Как это работает"
     assert _buttons(screen)[-1].callback_data == explain.OPEN
     # Telegram refuses a message over 4096 characters and tags it does not know.
     assert len(screen.text) < 4096
-    assert set(re.findall(r"</?(\w+)", screen.text)) <= {"b", "i"}
+    assert set(re.findall(r"</?(\w+)", screen.text)) <= {"b", "i", "blockquote"}
     assert not re.search(r"&(?!amp;|lt;|gt;)", screen.text)
 
 
@@ -319,7 +326,8 @@ def test_each_nutrient_has_links_limits_and_leaves_the_decision_open(key):
     assert re.search(
         r'<a href="https://pubmed\.ncbi\.nlm\.nih\.gov/\d+/">', screen.text
     )
-    assert "<b>Чего не знаем.</b>" in screen.text
+    assert "<b>Чего не знаем</b>\n• " in screen.text
+    assert "<blockquote expandable><b>Источники</b>" in screen.text
     assert "решать тебе и врачу" in screen.text
     assert len(screen.text) < 4096
     assert _buttons(screen)[-1].callback_data == explain.NUTRIENTS_OPEN
@@ -358,39 +366,21 @@ def test_links_in_the_reference_open_no_preview_over_the_screen(monkeypatch):
     assert kwargs["link_preview_options"].is_disabled is True
 
 
-# --- M15: the three topics of the capture, verbatim -----------------------------------
-
-
-def _spec_says(words: str) -> bool:
-    spec = Path(__file__).parent.parent / "docs/stages/05-gentle-review-screens.md"
-    return words in " ".join(spec.read_text(encoding="utf-8").split())
-
-
-def test_the_capture_topics_say_what_the_spec_says_word_for_word():
-    for key in ("capture", "time", "voice", "dishes"):
-        topic = explain.TOPICS[key]
-        for words in (topic.what, topic.how, topic.why, topic.source):
-            assert _spec_says(words), words
-        if topic.privacy:
-            assert _spec_says(topic.privacy), topic.privacy
-    assert not _spec_says("Такого предложения в документе нет.")  # known-negative
-
-
 def test_privacy_comes_right_after_what_it_is_and_only_where_it_is_said():
     said = _tap(explain._TOPIC + "voice").text
-    assert said.startswith("<b>🎙 Голосовые</b>\n\n<b>Что это.</b> Голосовое")
+    assert said.startswith("<b>🎙 Голосовые</b>\nГолосовое")
     order = [
         said.index(mark)
         for mark in (
-            "<b>Что это.</b>",
-            "<b>Приватность.</b>",
-            "<b>Как работает.</b>",
-            "<b>Откуда идея.</b>",
+            "Голосовое записывается",
+            "<b>Приватность</b>",
+            "<b>Как работает</b>",
+            "<b>Откуда идея</b>",
             "<i>Источник: PMID 37191989</i>",
         )
     ]
     assert order == sorted(order)
-    assert "<b>Приватность.</b>" in _tap(explain._TOPIC + "capture").text
-    assert "<b>Приватность.</b>" not in _tap(explain._TOPIC + "time").text
-    assert "<b>Приватность.</b>" not in _tap(explain._TOPIC + "day").text
+    assert "<b>Приватность</b>" in _tap(explain._TOPIC + "capture").text
+    assert "<b>Приватность</b>" not in _tap(explain._TOPIC + "time").text
+    assert "<b>Приватность</b>" not in _tap(explain._TOPIC + "day").text
     assert _rows(_tap(explain._TOPIC + "capture")) == [["⬅️ Как это работает"]]

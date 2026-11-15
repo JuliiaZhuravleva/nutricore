@@ -615,12 +615,10 @@ def _settings(db):
 
 def test_the_settings_screen_has_the_line_the_sentence_and_the_button(db):
     screen = _settings(db)
-    assert "«✖ Выкл» выключает только напоминание.\n" in screen.text
-    assert "приходит итог недели. «✖ Выкл» выключает только напоминание." in screen.text
+    assert "«✖ Выкл» выключает только его.\n" in screen.text
+    assert "приходит итог недели.\n«✖ Выкл» выключает только его." in screen.text
     _setting(db, WEEK_PUSH, False)
-    assert (
-        "оно не приходит. «✖ Выкл» выключает только напоминание." in _settings(db).text
-    )
+    assert "были записи.\n«✖ Выкл» выключает только его." in _settings(db).text
     assert "☀️ Утром, в 10:00 — вопрос про вчерашние записи: присылаю." in screen.text
     assert "☀️ Вопрос утром: вкл" in _labels(screen.markup)
     assert "rm:morning" in _callbacks(screen.markup)

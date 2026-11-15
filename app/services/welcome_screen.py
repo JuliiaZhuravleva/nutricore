@@ -1,6 +1,6 @@
 """The first run: what the bot is, who sees what, one question, then the first record.
 
-    the first /start → <b>👋 Дневник питания</b>: the three answers, [Позже]
+    the first /start → <b>👋 Дневник питания</b>: the three answers, [Ответить позже]
     an answer → <b>✍️ Первая запись</b> in a new message, the only kind that can bring the
       main keyboard
     the first record saved → one line about /feedback, once
@@ -48,13 +48,23 @@ FIRST_RECORD = (
     "Пришли, что съедено сейчас или недавно: фото, текст или голосовое. Например, "
     "«омлет и кофе». Ошибку бота можно будет поправить под записью."
 )
+LATER_LABEL = "Ответить позже"  # «Позже» alone read as «later, the bot» (2026-11-15)
+# Short lines, one fact each: never a wall of text (owner, 2026-11-15). «In the bot»
+# and «server»: «only you» next to «whoever runs the bot can read» read as a
+# contradiction to every fresh viewer.
+WHO_SEES = (
+    "<b>Кто что видит</b>\n"
+    "• В боте твои записи видишь только ты.\n"
+    "• Владелец бота видит, как часто ты пишешь и во сколько ему обходится ИИ.\n"
+    "• Текст и фото читает внешний ИИ-сервис.\n"
+    "• Сквозного шифрования нет: у кого есть доступ к серверу бота, тот технически "
+    "может прочитать сообщения."
+)
 _WELCOME = (
-    "<b>👋 Дневник питания</b>\n\n"
-    "Записывает, что ты ешь, по фото, тексту или голосу. Без оценок и запретов, готовая "
-    "еда считается наравне с любой.\n\n"
-    "Ты видишь только свои записи. Владелец бота в своих экранах видит, как часто ты "
-    "пишешь и сколько это стоит. Текст и фото читает внешний ИИ-сервис, а технически "
-    "сообщения доступны тому, кто запускает бота.\n\n"
+    "<b>👋 Дневник питания</b>\n"
+    "Записывает, что ты ешь: фото, текст или голосовое.\n"
+    "Без оценок и запретов. Готовая еда считается наравне с любой.\n\n"
+    f"{WHO_SEES}\n\n"
     f"{diet.QUESTION}"
 )
 
@@ -121,7 +131,7 @@ def still_owed(db, telegram_id: int) -> None:
 def welcome() -> Screen:
     rows = [
         diet_row(_EATS, None),
-        [InlineKeyboardButton("Позже", callback_data=_LATER)],
+        [InlineKeyboardButton(LATER_LABEL, callback_data=_LATER)],
     ]
     return Screen(_WELCOME, InlineKeyboardMarkup(rows))
 
