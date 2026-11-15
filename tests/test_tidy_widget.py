@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import sqlalchemy as sa
-from telegram.error import BadRequest, Forbidden, TimedOut
+from telegram.error import BadRequest, Forbidden, NetworkError, TimedOut
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -87,6 +87,8 @@ def _bot(**kw):
         calls.append((method, args, kwargs))
         if method == "sendWidget" and kw.get("widget_error") is not None:
             raise kw["widget_error"]
+        if method == "editMessageWidgetData" and kw.get("edit_error") is not None:
+            raise kw["edit_error"]
         return sent if method == "sendWidget" else True
 
     bot = SimpleNamespace(
@@ -343,10 +345,11 @@ def test_the_owner_gets_a_silent_widget_and_another_person_gets_text(db):
     assert owner_batch.state == "sent" and owner_batch.message_id == 900
 
 
-def test_the_keyboard_under_an_open_widget_is_the_sunday_switch_only(db):
+def test_the_keyboard_under_an_open_widget_is_text_and_the_sunday_switch(db):
     batch, bot = _widget_batch(db)
     markup = _call(bot, "sendWidget")[2]["api_kwargs"]["reply_markup"]
-    assert [d.split(":")[1] for d in _callbacks(markup)] == ["x"]
+    assert [d.split(":")[1] for d in _callbacks(markup)] == ["t", "x"]
+    assert markup.inline_keyboard[0][0].text == W.TEXT_LABEL
     assert not [d for d in _callbacks(markup) if d.startswith("dt:a:")]
 
 
@@ -736,3 +739,104 @@ def test_the_migration_chains_on_the_single_head():
     assert parent in {rev for rev, _ in others}
     assert [rev for rev, down in others if down == parent] == []
     assert [rev for rev, down in others if down == mine] == []
+
+
+# --- the fallback when the widget cannot be drawn ----------------------------------------
+
+
+def test_text_under_a_widget_sends_the_batch_as_a_text_message(db):
+    """«💬 Текстом»: a phone that shows no widget still gets the rows; the text message
+    becomes the batch's, the widget left behind closes and loses its buttons."""
+    batch, _ = _widget_batch(db)
+    widget_id = batch.message_id
+    bot = _bot(text_id=950)
+    query = _press(db, f"dt:t:{batch.id}", bot, widget_id)
+    query.edit_message_text.assert_not_awaited()
+    sent = _call(bot, "send_message")[2]
+    assert sent["chat_id"] == 42 and sent["disable_notification"] is True
+    assert screen_mod.TITLE in sent["text"]
+    assert any(d.startswith("dt:a:") for d in _callbacks(sent["reply_markup"]))
+    db.expire_all()
+    batch = _batch(db)
+    assert (batch.message_id, batch.form, batch.state) == (950, "text", "sent")
+    closed = _call(bot, "editMessageWidgetData")[2]["api_kwargs"]
+    assert (
+        closed["message_id"] == widget_id and json.loads(closed["chat_data"])["x"] == 1
+    )
+    cleared = _call(bot, "edit_message_reply_markup")[2]
+    assert cleared["message_id"] == widget_id and cleared["reply_markup"] is None
+
+
+def test_after_text_the_next_tap_edits_the_text_message(db):
+    batch, _ = _widget_batch(db)
+    _press(db, f"dt:t:{batch.id}", _bot(text_id=950), batch.message_id)
+    db.expire_all()
+    batch = _batch(db)
+    bot = _bot()
+    query = _press(db, f"dt:k:{batch.id}:0:{_mask(db, batch):x}", bot, 950)
+    query.edit_message_text.assert_awaited()
+    assert "editMessageWidgetData" not in _names(bot)
+    assert "send_message" not in _names(bot)
+
+
+def test_a_refused_widget_edit_sends_the_screen_as_text(db, caplog):
+    """Telegram stops drawing widgets after one was sent (it did on 2026-11-13): the
+    undo's result comes as a text message instead of nothing."""
+    batch, _ = _widget_batch(db)
+    _tap(db, batch)
+    batch = _batch(db)
+    bot = _bot(edit_error=BadRequest("Input_media_widget_not_allowed"), text_id=960)
+    with caplog.at_level("INFO"):
+        _press(db, f"dt:u:{batch.id}", bot, batch.message_id)
+    sent = _call(bot, "send_message")[2]
+    assert screen_mod.UNDONE_HEAD.split()[0] in sent["text"]
+    db.expire_all()
+    batch = _batch(db)
+    assert (batch.state, batch.form, batch.message_id) == ("undone", "text", 960)
+    assert any("from the widget to text" in r.getMessage() for r in caplog.records)
+
+
+def test_a_lost_widget_edit_sends_no_text(db):
+    """A network failure is not a refusal: the widget may well show the new state, so
+    no second message."""
+    batch, _ = _widget_batch(db)
+    _tap(db, batch)
+    batch = _batch(db)
+    bot = _bot(edit_error=NetworkError("lost"))
+    _press(db, f"dt:u:{batch.id}", bot, batch.message_id)
+    assert "send_message" not in _names(bot)
+    db.expire_all()
+    assert _batch(db).form == W.FORM
+
+
+def test_text_that_does_not_go_either_leaves_the_batch_on_the_widget(db, caplog):
+    batch, _ = _widget_batch(db)
+    widget_id = batch.message_id
+    bot = _bot()
+
+    async def refused(*args, **kwargs):
+        bot.calls.append(("send_message", args, kwargs))
+        raise BadRequest("chat not found")
+
+    bot.send_message = refused
+    with caplog.at_level("ERROR"):
+        _press(db, f"dt:t:{batch.id}", bot, widget_id)
+    db.expire_all()
+    batch = _batch(db)
+    assert (batch.message_id, batch.form) == (widget_id, W.FORM)
+    assert "editMessageWidgetData" not in _names(bot)
+    assert any("not sent as text either" in r.getMessage() for r in caplog.records)
+
+
+def test_text_of_a_closed_batch_shows_how_it_ended(db):
+    batch, _ = _widget_batch(db)
+    _tap(db, batch)
+    batch = _batch(db)
+    bot = _bot()
+    _press(db, f"dt:t:{batch.id}", bot, batch.message_id)
+    text = _call(bot, "send_message")[2]["text"]
+    assert screen_mod.APPLIED in text
+    assert not any(
+        d.startswith("dt:a:")
+        for d in _callbacks(_call(bot, "send_message")[2]["reply_markup"])
+    )

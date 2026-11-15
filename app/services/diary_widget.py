@@ -31,6 +31,10 @@ from app.services.stats_screen import _card_title, _meal_name, _meals_on, day_ti
 
 CALLBACK_PREFIX = "dy:"
 DAY = "d"  # dy:d:<yyyymmdd>
+TEXT = "t"  # dy:t:<yyyymmdd>: that day in words, and its ‹ › stay in words
+TEXT_LABEL = (
+    "💬 Текстом"  # under the widget: a phone that shows no widget still reads the day
+)
 BUDGET = 3800  # bytes after zlib -9: the guide's margin under Telegram's 4096
 LIMIT = 4096
 CAPTION_MAX = 1024
@@ -77,7 +81,9 @@ class Diary:
     html: Optional[str]  # None: does not fit a widget, send ``text``
     caption: str
     text: str
-    markup: Optional[InlineKeyboardMarkup]
+    markup: Optional[InlineKeyboardMarkup]  # under the widget: ‹ › and «💬 Текстом»
+    text_markup: Optional[InlineKeyboardMarkup] = None  # under the text: ‹ › only
+    as_text: bool = False  # asked for in words: no widget is tried
 
 
 # --- the day ---------------------------------------------------------------------------
@@ -356,14 +362,15 @@ def text(rows: list, title: str) -> str:
 # --- the screen ------------------------------------------------------------------------
 
 
-def markup(day: date, today: date) -> Optional[InlineKeyboardMarkup]:
+def markup(day: date, today: date, verb: str = DAY) -> Optional[InlineKeyboardMarkup]:
+    """‹ › to the day before and after; ``verb`` TEXT keeps them in words."""
     back = day - timedelta(days=1)
     row = []
     if (today - back).days <= MAX_BACK:
         row.append(
             InlineKeyboardButton(
                 f"‹ {day_title(back)}",
-                callback_data=f"{CALLBACK_PREFIX}{DAY}:{back:%Y%m%d}",
+                callback_data=f"{CALLBACK_PREFIX}{verb}:{back:%Y%m%d}",
             )
         )
     if day < today:
@@ -371,15 +378,29 @@ def markup(day: date, today: date) -> Optional[InlineKeyboardMarkup]:
         label = "Сегодня ›" if ahead == today else f"{day_title(ahead)} ›"
         row.append(
             InlineKeyboardButton(
-                label, callback_data=f"{CALLBACK_PREFIX}{DAY}:{ahead:%Y%m%d}"
+                label, callback_data=f"{CALLBACK_PREFIX}{verb}:{ahead:%Y%m%d}"
             )
         )
     return InlineKeyboardMarkup([row]) if row else None
 
 
+def widget_markup(day: date, today: date) -> InlineKeyboardMarkup:
+    """Under the widget: ‹ › and «💬 Текстом», the way out for a phone that cannot draw it."""
+    nav = markup(day, today)
+    words = InlineKeyboardButton(
+        TEXT_LABEL, callback_data=f"{CALLBACK_PREFIX}{TEXT}:{day:%Y%m%d}"
+    )
+    return InlineKeyboardMarkup([*(nav.inline_keyboard if nav else ()), [words]])
+
+
+def asks_text(data: str) -> bool:
+    return (data or "").startswith(f"{CALLBACK_PREFIX}{TEXT}:")
+
+
 def parse(data: str, today: date) -> Optional[date]:
-    """The day a ‹ › tap asks for; None for anything else, a future day or too far back."""
-    head = f"{CALLBACK_PREFIX}{DAY}:"
+    """The day a ‹ › or «💬 Текстом» tap asks for; None for anything else, a future
+    day or too far back."""
+    head = f"{CALLBACK_PREFIX}{TEXT if asks_text(data) else DAY}:"
     if not (data or "").startswith(head):
         return None
     digits = data[len(head) :]
@@ -394,7 +415,9 @@ def parse(data: str, today: date) -> Optional[date]:
     return day
 
 
-def build(db, user, day: date, zone: ZoneInfo, now: datetime) -> Diary:
+def build(
+    db, user, day: date, zone: ZoneInfo, now: datetime, as_text: bool = False
+) -> Diary:
     today = day_card.local_time(now, zone).date()
     rows = rows_of(db, user, day, zone)
     title = _card_title(day)
@@ -408,7 +431,9 @@ def build(db, user, day: date, zone: ZoneInfo, now: datetime) -> Diary:
         html=widget(rows, title, stamp),
         caption=caption(rows, title),
         text=text(rows, title),
-        markup=markup(day, today),
+        markup=widget_markup(day, today),
+        text_markup=markup(day, today, TEXT if as_text else DAY),
+        as_text=as_text,
     )
 
 
@@ -422,8 +447,10 @@ def open_day(db, telegram_id: int, now: datetime, day: Optional[date] = None) ->
 
 
 def tapped(db, telegram_id: int, data: str, now: datetime) -> Optional[Diary]:
-    """The day a ‹ › tap asks for; None for a day it may not ask for."""
+    """The day a ‹ › or «💬 Текстом» tap asks for; None for a day it may not ask for."""
     user = crud_user.get_by_telegram_id(db, telegram_id)
     zone = user_zone(user)
     day = parse(data, day_card.local_time(now, zone).date())
-    return None if day is None else build(db, user, day, zone, now)
+    if day is None:
+        return None
+    return build(db, user, day, zone, now, as_text=asks_text(data))

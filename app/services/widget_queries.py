@@ -182,11 +182,15 @@ async def answer(bot, query_id: str, data: Optional[str]) -> bool:
         return False
 
 
-async def edit_data(bot, chat_id: int, message_id: int, chat_data: str) -> bool:
-    """``editMessageWidgetData``: the widget's chat state. "Not modified" is success;
-    any other failure is logged and False (the caller does not commit its own state)."""
+OK, REFUSED, FAILED = "ok", "refused", "failed"
+
+
+async def edit_state(bot, chat_id: int, message_id: int, chat_data: str) -> str:
+    """``editMessageWidgetData``: the widget's chat state. ``OK`` (also for "not
+    modified"), ``REFUSED`` for an HTTP 400 (Telegram will not draw it: the caller may
+    send the older form), ``FAILED`` for the rest, all logged."""
     if not _fits(chat_data, "editMessageWidgetData chat_data"):
-        return False
+        return FAILED
     try:
         await bot.do_api_request(
             "editMessageWidgetData",
@@ -196,12 +200,18 @@ async def edit_data(bot, chat_id: int, message_id: int, chat_data: str) -> bool:
                 "chat_data": chat_data,
             },
         )
-        return True
+        return OK
     except BadRequest as e:  # HTTP 400 on this method
         if "not modified" in str(e).lower():
-            return True
+            return OK
         logger.warning("editMessageWidgetData refused (400): %s", str(e)[:200])
-        return False
+        return REFUSED
     except TelegramError as e:
         logger.warning("editMessageWidgetData failed: %s", type(e).__name__)
-        return False
+        return FAILED
+
+
+async def edit_data(bot, chat_id: int, message_id: int, chat_data: str) -> bool:
+    """:func:`edit_state` as a yes/no: False for any failure (the caller does not commit
+    its own state)."""
+    return await edit_state(bot, chat_id, message_id, chat_data) == OK

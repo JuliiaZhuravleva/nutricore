@@ -107,6 +107,13 @@ Per user, over live dishes (not merged, not hidden):
   as a **checkbox keyboard**: one row per item `☑ томатный соус → соус…`, a tap
   flips ☑/☐ by editing the markup only (no write), then `[Применить отмеченное]`,
   `[💤 Не сейчас]`. One extra tap per refused item, never a walk through all items.
+- **Fallback after the send** (Julia 2026-11-15: a fallback everywhere a widget may not be
+  drawn). An open widget carries `[💬 Текстом]` (`dt:t:<batch>`) first: the text twin as a
+  new silent message, which becomes the batch's (`form = text`); the widget left behind
+  gets `x: 1` and loses its buttons. A tap whose state edit Telegram refuses (HTTP 400,
+  e.g. widgets closed to bots as on 2026-11-13) sends its screen the same way; a lost edit
+  (network) sends nothing, it may have arrived. `/diary` has the same `[💬 Текстом]`
+  (`dy:t:<day>`), whose ‹ › stay in words.
 - Storage: `tidy_batches(id, user_id, created_at, expires_at, status, chat_id,
   message_id, group_id)` and `tidy_items(id, batch_id, kind auto|merge|star,
   food_ids JSON, target_id, score, state proposed|applied|declined|undone|stale)`.

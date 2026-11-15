@@ -343,3 +343,17 @@ def test_the_widget_handler_matches_only_widget_queries(owner, reader):  # noqa:
         assert others and any(h.check_update(plain) for h in others)
 
     asyncio.run(_with_app(steps))
+
+
+def test_edit_state_tells_a_refusal_from_a_lost_edit():
+    """The caller sends the older form only for a refusal: a lost edit may have
+    arrived, a 400 never draws."""
+    refused = FakeBot(fail=BadRequest("Input_media_widget_not_allowed"))
+    lost = FakeBot(fail=NetworkError("down"))
+    same = FakeBot(fail=BadRequest("message is not modified"))
+    run = asyncio.run
+    assert run(widget_queries.edit_state(refused, 5, 77, "x")) == widget_queries.REFUSED
+    assert run(widget_queries.edit_state(lost, 5, 77, "x")) == widget_queries.FAILED
+    assert run(widget_queries.edit_state(same, 5, 77, "x")) == widget_queries.OK
+    assert run(widget_queries.edit_state(FakeBot(), 5, 77, "x")) == widget_queries.OK
+    assert run(widget_queries.edit_state(FakeBot(), 5, 77, "x" * 1025)) == "failed"

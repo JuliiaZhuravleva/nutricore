@@ -2670,7 +2670,17 @@ async def dish_tidy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if user is not None and chat_id is not None and message_id is not None:
                     batch = crud_dish_tidy.by_message(db, chat_id, message_id, user.id)
                 if batch is not None and dish_tidy_widget.is_widget(batch):
-                    await dish_tidy_widget.refresh(context.bot, db, batch, user)
+                    # «💬 Текстом», or Telegram will not draw the widget's new state:
+                    # the screen goes as a text message, the widget's fallback.
+                    words = dish_tidy_screen.TEXT_VERB + ":"
+                    asked = (query.data or "").startswith(
+                        dish_tidy_screen.CALLBACK_PREFIX + words
+                    )
+                    if asked or (
+                        await dish_tidy_widget.refresh(context.bot, db, batch, user)
+                        == widget_queries.REFUSED
+                    ):
+                        await dish_tidy_widget.to_text(context.bot, db, batch, screen)
                     return
         except SQLAlchemyError as e:
             logger.error("Dish tidy: widget lookup failed: %s", type(e).__name__)
@@ -2726,8 +2736,10 @@ async def stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _send_diary(bot, chat_id: int, diary) -> bool:
     """The day as a widget; as text when widgets are off, the day does not fit one, or
     Telegram refuses it (an old client, a chat it does not allow them in). True when
-    the day went out (or may have: a timed-out widget is not sent again as text)."""
-    if settings.DIARY_WIDGET and diary.html:
+    the day went out (or may have: a timed-out widget is not sent again as text).
+    A day asked for «💬 Текстом» goes as text straight away."""
+    widget = settings.DIARY_WIDGET and not diary.as_text
+    if widget and diary.html:
         try:
             await bot.do_api_request(
                 "sendWidget",
@@ -2750,10 +2762,10 @@ async def _send_diary(bot, chat_id: int, diary) -> bool:
             return False
         except TelegramError as e:
             logger.warning("Diary widget refused, sent as text: %s", str(e)[:200])
-    elif settings.DIARY_WIDGET:
+    elif widget:
         logger.info("Diary day too big for a widget, sent as text")
     try:
-        await bot.send_message(chat_id, diary.text, reply_markup=diary.markup)
+        await bot.send_message(chat_id, diary.text, reply_markup=diary.text_markup)
         return True
     except TelegramError as e:
         logger.error("Diary not sent, not even as text: %s", str(e)[:200])
