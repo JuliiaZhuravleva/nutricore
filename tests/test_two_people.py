@@ -1422,3 +1422,84 @@ def test_the_welcome_tells_a_record_from_before_the_invitation_on_any_database(S
             db.commit()
         assert welcome_screen.opens_welcome(db, SASHA) is False  # was here before
         assert welcome_screen.opens_welcome(db, B) is True  # wrote since, still owed
+
+
+# --- the questions of a plan (pl:c, pl:q) ------------------------------------------------
+
+
+def _a_plan_with_questions(db, world):
+    """A's plan, done, with an open yes/no question and an answered one to undo."""
+    from app.models import MessagePlan
+
+    ids = {
+        d.canonical_name: d.id
+        for d in db.scalars(
+            select(PersonalFood).where(PersonalFood.user_id == world.a.id)
+        )
+    }
+    soup, porridge = ids[f"{MARK} суп"], ids[f"{MARK} каша"]
+    base = {
+        "kind": "ask",
+        "verb": "merge",
+        "ids": [soup, porridge],
+        "cands": [],
+        "target": soup,
+        "new": None,
+        "label": f"{MARK} суп",
+        "message_id": 7702,
+        "events": [],
+    }
+    asks = [
+        {**base, "q": 0, "state": "open"},
+        {**base, "q": 1, "state": "done", "events": [1]},
+    ]
+    plan = MessagePlan(
+        user_id=world.a.id,
+        chat_id=A,
+        message_id=next(_ids),
+        kind="text",
+        text=f"{MARK} суп и каша",
+        want="dish",
+        status="done",
+        group_id="00000000-0000-4000-8000-00000000a001",
+        meal_ids=[],
+        line_ids=[],
+        commands={"asks": asks},
+    )
+    db.add(plan)
+    db.commit()
+    return plan.id
+
+
+@pytest.mark.parametrize("verb", ["pl:c:{p}:0:y", "pl:c:{p}:0:n", "pl:q:{p}:1"])
+def test_b_forging_a_plan_question_tap_is_refused_and_writes_nothing(
+    db, world, caplog, verb
+):
+    from app.models import MessagePlan
+
+    plan_id = _a_plan_with_questions(db, world)
+    data = verb.format(p=plan_id)
+    before = _rows(db)
+
+    with caplog.at_level(logging.WARNING):
+        wire = _tap(B, data)
+
+    assert "unknown or foreign" in caplog.text, data  # the guard is what said no
+    toasts = [p.get("text") for n, p in wire.calls if n == "answerCallbackQuery"]
+    assert toasts == ["Это сообщение уже не изменить."]
+    assert not [n for n, _p in wire.calls if n.startswith("edit")]  # buttons stay
+    assert _moved(before, _rows(db), world.b.id) == {}
+    db.expire_all()
+    asks = db.get(MessagePlan, plan_id).commands["asks"]
+    assert [a["state"] for a in asks] == ["open", "done"]  # A's asks unchanged
+
+
+def test_a_plan_question_tap_from_its_owner_gets_through(db, world, caplog):
+    """The known positive of the probes above: the same data from A does its work."""
+    plan_id = _a_plan_with_questions(db, world)
+    before = _rows(db)
+    with caplog.at_level(logging.WARNING):
+        _tap(A, f"pl:c:{plan_id}:0:n")
+    assert "unknown or foreign" not in caplog.text
+    moved = _moved(before, _rows(db))
+    assert any(key[0] == "message_plans" for key in moved), moved

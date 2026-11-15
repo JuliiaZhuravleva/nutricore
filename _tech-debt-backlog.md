@@ -384,15 +384,35 @@ Medium / Low / без приоритета, открытые. Не читать 
   - **Priority:** Low
   - **Source:** feat/multi-action-plan (review round 2, arch-monitor 80–90)
   - **Created:** 2026-11-14
-- [ ] **TD-274**: A failed plan whose line could not be shown (Telegram down for both the edit and the send) stays FAILED with «читаю…» and no 🔁: the sweep never revisits FAILED rows. Needs two outages in a row; a retry of the owed line would close it.
+- [x] **TD-274**: A failed plan whose line could not be shown (Telegram down for both the edit and the send) stays FAILED with «читаю…» and no 🔁: the sweep never revisits FAILED rows. Needs two outages in a row; a retry of the owed line would close it.
   - **Priority:** Low
   - **Source:** feat/multi-action-plan (review round 2, silent-failure N4)
   - **Created:** 2026-11-14
-- [ ] **TD-275**: If `plan_service.shown` fails after the lines went out (a database blink), the owed-plan sweep later puts «Ответ не дошёл» over meal 1's line, which by then holds its result. Tell the two apart by the line's meal mapping before overwriting.
+- [x] **TD-275**: If `plan_service.shown` fails after the lines went out (a database blink), the owed-plan sweep later puts «Ответ не дошёл» over meal 1's line, which by then holds its result. Tell the two apart by the line's meal mapping before overwriting.
   - **Priority:** Low
   - **Source:** feat/multi-action-plan (round-2 fix, own note)
   - **Created:** 2026-11-14
 - [ ] **TD-276**: `meal_card.join_row` (M1c, «sent a moment ago») offers «🔗 Объединить с …» across local days: «вчера ели: овсянка, суп» sent right after today's breakfast puts a chip on yesterday's day-only овсянка naming today's 9:00 meal. Skip the chip when the two meals fall on different local days (the «Ещё» menu still offers a join).
   - **Priority:** Low
   - **Source:** feat/words-do-more (sim walk, own note)
+  - **Created:** 2026-11-15
+- [ ] **TD-277**: TD-275's guard misses plans with no meals: `line_holds_result` returns False when `not plan.meal_ids`, so a dish-only plan whose `shown` failed gets «Ответ не дошёл» over its result line, and its questions (sent after `shown`) are never sent after a restart. Tell an owed line from a shown one by the stored line text or a `lines_out` mark, and send the open questions from the sweep.
+  - **Priority:** Low
+  - **Source:** feat/plan-questions (R2 review, bug-hunter #3)
+  - **Created:** 2026-11-15
+- [ ] **TD-278**: A plan with more than 3 questions sends the first 3 and drops the rest without a word. Add one line «и ещё N вопросов — спроси отдельно» or fold them into the plan's «Не вышло» lines.
+  - **Priority:** Low
+  - **Source:** feat/plan-questions (R2 review, bug-hunter #6)
+  - **Created:** 2026-11-15
+- [ ] **TD-279**: `undo_question` marks the question `undone` even when every event was refused (changed since), so a repeat tap says nothing new and the done line's ↩️ is gone. Keep `done` and say what was not taken back, as the plan's own undo does.
+  - **Priority:** Low
+  - **Source:** feat/plan-questions (R2 review, own note)
+  - **Created:** 2026-11-15
+- [ ] **TD-280**: `_asked_words` silences every clause sharing the asked dish's name: «добавь гречку в избранное, гречку отварную скрой» with two гречки asks about the first and drops the second clause's «не понял» even when it was not acted on.
+  - **Priority:** Low
+  - **Source:** feat/plan-questions (R2 review, own note)
+  - **Created:** 2026-11-15
+- [ ] **TD-281**: The pick question's head («⭐ Какую гречку…») inflects the asked label by a heuristic, which can read wrong for multi-word labels (reviewer's note, not measured on real names). Heuristic; per memory `heuristic-parser-review-loop-diverges`, bound it by a corpus test before touching it, or ask with the name in quotes («Какое блюдо «котлета куриная»…»).
+  - **Priority:** Low
+  - **Source:** feat/plan-questions (R2 review, reviewer)
   - **Created:** 2026-11-15

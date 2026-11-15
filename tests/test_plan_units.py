@@ -157,12 +157,12 @@ def test_a_number_beyond_the_list_or_another_name_is_refused():
         assert checked.refused and plan_service.WHY_NONE in checked.refused[0].why
 
 
-def test_a_name_that_fits_several_asks_to_be_precise():
+def test_a_name_that_fits_several_becomes_a_pick_question():
     book = _book(("суп куриный",), ("суп грибной",))
     checked = check(grammar.parse('hide "суп"'), "убери суп из блюд", book)
-    assert checked.acts == []
-    (refusal,) = checked.refused
-    assert "суп куриный" in refusal.why and "суп грибной" in refusal.why
+    assert checked.acts == [] and checked.refused == []  # D3: a question, not a ✖
+    (pick,) = checked.asks
+    assert pick.kind == "pick" and pick.cands == (101, 102)
 
 
 def test_merge_without_into_keeps_one_of_them():
@@ -321,7 +321,8 @@ def test_an_ambiguous_name_is_not_asked_again(monkeypatch):
     sent = _asked(monkeypatch, 'hide "суп"', 'hide #1 "суп куриный"\nhide #2 "суп"')
     checked = _read("убери суп из блюд", DISH, book)
     assert len(sent) == 1  # the live model hid both soups when asked again
-    assert checked.acts == [] and "подходит несколько" in checked.refused[0].why
+    assert checked.acts == [] and checked.refused == []
+    assert [q.kind for q in checked.asks] == ["pick"]  # a question stands
 
 
 def test_a_dish_verb_answered_none_is_asked_once_more(monkeypatch):

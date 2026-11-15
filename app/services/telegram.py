@@ -79,6 +79,7 @@ from app.services import (
     morning,
     owner_buttons,
     people_screen,
+    plan_screen,
     plan_service,
     portion_suggestions,
     reminders,
@@ -677,21 +678,21 @@ async def _send_unsent(bot, job: capture.Read, line: capture.Line) -> None:
     _map_line(line, sent, line.view)
 
 
-async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
+async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> bool:
     """The result into the same line. A refusal costs nothing, the record is written.
     Telegram being away is another matter: the line would stay on «читаю», so it is owed
-    and the sweep puts it right."""
+    and the sweep puts it right. True when the line is out (or went as a new one)."""
     if line is None:
-        return
+        return False
     if job.line_id is None:
         if job.unsent:
             await _send_unsent(bot, job, line)
-        return
+        return job.unsent
     try:
         await _edit_line(bot, job.chat_id, job.line_id, line)
     except BadRequest as e:
         if _is_not_modified(e):
-            return
+            return True
         logger.warning("Meal line not edited: %s", type(e).__name__)
         owed = False
     except (RetryAfter, NetworkError) as e:
@@ -701,9 +702,10 @@ async def _show(bot, job: capture.Read, line: Optional[capture.Line]) -> None:
         logger.warning("Meal line not edited: %s", type(e).__name__)
         owed = False
     else:
-        return
+        return True
     with SessionLocal() as db:
         capture.line_not_shown(db, job, line, owed=owed)
+    return False
 
 
 def _may_hear(telegram_id: int) -> bool:
@@ -1631,6 +1633,22 @@ def _failed(e: BaseException) -> str:
     return f"{type(e).__name__} at {os.path.basename(where.filename)}:{where.lineno}"
 
 
+async def _put_failed(bot, plan_id: int, chat_id, message_id, line_id, line) -> None:
+    """A failed plan's line (🔁), and the mark that it went out: without it the sweep
+    puts the line again (TD-274)."""
+    shown = await _put(bot, chat_id, message_id, line_id, line)
+    if shown is not None:
+        _mark_fail_shown(plan_id)
+
+
+def _mark_fail_shown(plan_id: int) -> None:
+    try:
+        with SessionLocal() as db:
+            plan_service.fail_shown(db, plan_id)
+    except Exception as e:
+        logger.error("Plan %s failed line not marked: %s", plan_id, _failed(e))
+
+
 def _mapped(chat_id: int, message_id, line: capture.Line, view: str) -> None:
     """The line's meal, for taps and replies. Best effort: the line is already out,
     and a crash here must not reach _plan_crashed, which would take it back."""
@@ -1655,7 +1673,7 @@ async def _plan_text(update, context, came: capture.Incoming, route) -> "_Went":
         return _Went.REFUSED
     if plan_id is None:
         return _Went.WRITTEN  # a replay: the first one answers
-    sent = await _send_line(message, capture.Line(plan_service.READING_LINE))
+    sent = await _send_line(message, capture.Line(plan_screen.READING_LINE))
     if sent is not None:
         try:
             with SessionLocal() as db:
@@ -1744,7 +1762,11 @@ async def _plan_done(application: Application, ask, checked) -> None:
                 line = plan_service.fail(db, ask.plan_id)
             else:
                 line = plan_service.nothing(db, ask.plan_id)
-        if line is not None:
+        if line is not None and checked is None:
+            await _put_failed(
+                bot, ask.plan_id, came.chat_id, came.message_id, ask.line_id, line
+            )
+        elif line is not None:
             await _put(bot, came.chat_id, came.message_id, ask.line_id, line)
         return
     with SessionLocal() as db:
@@ -1768,7 +1790,7 @@ async def _plan_show(application: Application, ask, executed, first_line) -> Non
     if executed.answer:
         line = capture.Line(
             html.escape(executed.answer),
-            plan_service.answer_markup(ask.plan_id, executed.changed),
+            plan_screen.answer_markup(ask.plan_id, executed.changed),
         )
         target = first_line if not executed.born else None
         result_id = await _put(bot, came.chat_id, came.message_id, target, line)
@@ -1777,8 +1799,24 @@ async def _plan_show(application: Application, ask, executed, first_line) -> Non
             plan_service.shown(db, ask.plan_id, line_ids, result_id)
     except Exception as e:
         logger.error("Plan %s lines not kept: %s", ask.plan_id, _failed(e))
+    await _plan_questions(bot, ask, executed)
     for job in jobs:
         _start_read(application, job)
+
+
+async def _plan_questions(bot, ask, executed) -> None:
+    """Each question of the plan as a silent reply of its own, after the answer. A
+    question that cannot go out stays open, with no message."""
+    came = ask.came
+    for stored in executed.asks:
+        try:
+            with SessionLocal() as db:
+                line = plan_service.question_line(db, ask.plan_id, stored)
+            sent = await _put(bot, came.chat_id, came.message_id, None, line)
+            with SessionLocal() as db:
+                plan_service.question_sent(db, ask.plan_id, stored["q"], sent)
+        except Exception as e:
+            logger.error("Plan %s question not sent: %s", ask.plan_id, _failed(e))
 
 
 async def _plan_single(application: Application, ask) -> None:
@@ -1842,7 +1880,7 @@ async def _plan_heard(application: Application, job: capture.Read, wants):
     try:
         with SessionLocal() as db:
             source = db.get(capture.MealSource, job.source_id)
-            came = replace(capture._heard_came(job, source, wants.words), kind="voice")
+            came = replace(capture.heard_came(job, source, wants.words), kind="voice")
             plan_id = plan_service.open_plan(db, came, wants.want, wants.words)
     except Exception as e:
         logger.error("Voice plan not opened: %s", _failed(e))
@@ -1900,7 +1938,13 @@ async def _plan_heard_on(application: Application, job: capture.Read, plan_id: i
         if line is None:
             return None
         if _retired(job, line):
-            await _show(bot, job, line)
+            shown = await _show(bot, job, line)  # owed and retried by its own sweep
+            if checked is None and shown:  # else TD-274's retry puts it out
+                _mark_fail_shown(plan_id)
+        elif checked is None:
+            await _put_failed(
+                bot, plan_id, ask.came.chat_id, ask.came.message_id, None, line
+            )
         else:
             await _put(bot, ask.came.chat_id, ask.came.message_id, None, line)
         return None
@@ -1915,7 +1959,7 @@ async def _plan_heard_on(application: Application, job: capture.Read, plan_id: i
     else:
         first = capture.Line(
             html.escape(executed.answer or ""),
-            plan_service.answer_markup(plan_id, executed.changed),
+            plan_screen.answer_markup(plan_id, executed.changed),
         )
     claimed = _retired(job, first)
     try:
@@ -1942,6 +1986,11 @@ async def _sweep_plans(application: Application) -> None:
                 for p in crud_message_plan.owed(db, before)
                 if p.id not in _live_plans
             ]
+            unshown = [
+                row
+                for row in plan_service.unshown_failures(db, before, datetime.now(UTC))
+                if row[0] not in _live_plans
+            ]
     except Exception as e:
         logger.error("Stuck plans not read: %s", type(e).__name__)
         return
@@ -1956,32 +2005,91 @@ async def _sweep_plans(application: Application) -> None:
                     continue
                 line = plan_service.fail(db, plan_id)
             if line is not None:
-                await _put(application.bot, chat_id, message_id, line_id, line)
+                await _put_failed(
+                    application.bot, plan_id, chat_id, message_id, line_id, line
+                )
         except Exception as e:
             logger.error("Plan %s not given up: %s", plan_id, _failed(e))
+    for plan_id, chat_id, message_id, line_id in unshown:
+        # TD-274: the failed line never went out (Telegram was down for the edit and
+        # the send). Once per sweep, until it does or a day has passed.
+        try:
+            line = plan_screen.fail_line(plan_id)
+            await _put_failed(
+                application.bot, plan_id, chat_id, message_id, line_id, line
+            )
+        except Exception as e:
+            logger.error("Plan %s failed line not retried: %s", plan_id, _failed(e))
     for plan_id, chat_id, message_id, line_id in owed:
         # Written, then a restart before its lines went out: the meals are read
         # again (_replay_pending) as lines of their own; this one stops «читаю…».
         try:
             with SessionLocal() as db:
+                held = plan_service.line_holds_result(db, plan_id)
                 plan_service.shown(db, plan_id, [], None)
+            if held:  # TD-275: the line already is meal 1's result; never overwrite
+                continue
             line = capture.Line(capture.PLAN_ANSWER_LOST)
             await _put(application.bot, chat_id, message_id, line_id, line)
         except Exception as e:
             logger.error("Plan %s answer not owed: %s", plan_id, _failed(e))
+    await _close_asks(application)
+
+
+_asks_closed_upto: Optional[datetime] = None  # plans created up to here were looked at
+
+
+async def _close_asks(application: Application) -> None:
+    """Questions open 48 h after their plan: closed, their message says so and loses
+    its buttons. Reads each plan once (the window moves forward); a fresh process
+    looks back a week. An edit that fails is logged, the question stays closed."""
+    global _asks_closed_upto
+    now = datetime.now(UTC)
+    after = _asks_closed_upto or now - plan_service.ASK_LIFE - plan_service.ASK_LOOKBACK
+    try:
+        with SessionLocal() as db:
+            closed, upto = plan_service.close_old(db, now, after)
+    except Exception as e:
+        logger.error("Plan questions not closed: %s", _failed(e))
+        return
+    _asks_closed_upto = upto
+    for chat_id, message_id in closed:
+        if message_id is None:
+            continue
+        try:
+            await _edit_line(
+                application.bot,
+                chat_id,
+                message_id,
+                capture.Line(plan_screen.CLOSED_LINE),
+            )
+        except TelegramError as e:
+            logger.warning("Plan question not edited: %s", type(e).__name__)
 
 
 async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """``pl:u:<id>`` ↩️ Отменить; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan."""
+    """``pl:u:<id>`` ↩️ Отменить; ``pl:r:<id>`` 🔁 Ещё раз on a failed plan;
+    ``pl:c:<id>:<q>:<o>`` a tap on a question; ``pl:q:<id>:<q>`` ↩️ of one answer."""
     query, user = update.callback_query, update.effective_user
+    asked = re.fullmatch(
+        r"pl:([cq]):(\d{1,10}):(\d{1,2})(?::([0-9any]))?", query.data or ""
+    )
+    if asked is not None and user is not None:
+        await _plan_question_tap(query, user, asked)
+        return
     match = re.fullmatch(r"pl:([ur]):(\d{1,10})", query.data or "")
     if match is None or user is None:
         await query.answer()
         return
     plan_id, message = int(match.group(2)), query.message
     if match.group(1) == "u":
-        with SessionLocal() as db:
-            head, toast = plan_service.undo(db, user.id, plan_id)
+        try:
+            with SessionLocal() as db:
+                head, toast = plan_service.undo(db, user.id, plan_id)
+        except Exception as e:  # the spinner must stop
+            logger.error("Plan %s undo failed: %s", plan_id, _failed(e))
+            await query.answer(plan_screen.TAP_FAILED)
+            return
         await query.answer(toast)
         if head is None:
             return
@@ -1996,17 +2104,97 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Plan undo not shown: %s", type(e).__name__)
         return
     line_id = getattr(message, "message_id", None)
-    with SessionLocal() as db:
-        taken = plan_service.again(db, user.id, plan_id, line_id)
+    try:
+        with SessionLocal() as db:
+            taken = plan_service.again(db, user.id, plan_id, line_id)
+    except Exception as e:  # the spinner must stop
+        logger.error("Plan %s retry failed: %s", plan_id, _failed(e))
+        await query.answer(plan_screen.TAP_FAILED)
+        return
     if not taken:
-        await query.answer(plan_service.SAME_TOAST)
+        await query.answer(plan_screen.SAME_TOAST)
         return
     await query.answer()
     try:
-        await query.edit_message_text(plan_service.READING_LINE, reply_markup=None)
+        await query.edit_message_text(plan_screen.READING_LINE, reply_markup=None)
     except TelegramError as e:
         logger.warning("Plan line not edited: %s", type(e).__name__)
     _start_plan(context.application, plan_id)
+
+
+async def _plan_question_tap(query, user, match) -> None:
+    kind, plan_id, q, option = match.groups()
+    plan_id, q = int(plan_id), int(q)
+    if kind == "c" and option is None or kind == "q" and option is not None:
+        await query.answer()
+        return
+    try:
+        with SessionLocal() as db:
+            if kind == "c":
+                line, toast = plan_service.answer_question(
+                    db, user.id, plan_id, q, option
+                )
+            else:
+                head, toast = plan_service.undo_question(db, user.id, plan_id, q)
+    except Exception as e:  # the spinner must stop; nothing was committed
+        logger.error("Plan %s question tap failed: %s", plan_id, _failed(e))
+        await query.answer(plan_screen.TAP_FAILED)
+        return
+    await query.answer(toast)
+    if toast == plan_screen.GONE_TOAST and kind == "c":
+        await _drop_closed_buttons(query, user, plan_id, q)
+    if toast == plan_screen.SAME_TOAST:
+        await _show_settled(query, user, plan_id, q, kind)
+    if toast is not None:
+        return
+    try:
+        if kind == "c":
+            await query.edit_message_text(
+                line.text, parse_mode=ParseMode.HTML, reply_markup=line.markup
+            )
+        else:
+            body = html.escape(getattr(query.message, "text", None) or "")
+            await query.edit_message_text(
+                f"{body}\n\n{html.escape(head)}".strip(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+    except TelegramError as e:
+        logger.warning("Plan question not shown: %s", type(e).__name__)
+
+
+async def _show_settled(query, user, plan_id: int, q: int, kind: str) -> None:
+    """A repeat tap on an answered question: the answer's own line is shown again
+    (the edit after the answer may have failed), or the stale buttons go."""
+    try:
+        with SessionLocal() as db:
+            view = plan_service.settled(db, user.id, plan_id, q)
+        if view is None:
+            return
+        text, markup = view
+        if kind == "c" and text:
+            await query.edit_message_text(
+                text, parse_mode=ParseMode.HTML, reply_markup=markup
+            )
+        elif markup is None:
+            await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest as e:
+        if not _is_not_modified(e):
+            logger.warning("Answered question not shown: %s", type(e).__name__)
+    except Exception as e:
+        logger.warning("Answered question not shown: %s", type(e).__name__)
+
+
+async def _drop_closed_buttons(query, user, plan_id: int, q: int) -> None:
+    """A tap on a question that is closed: its buttons go (only when it is the
+    person's own and closed; a foreign or missing one touches nothing)."""
+    try:
+        with SessionLocal() as db:
+            closed = plan_service.closed_ask(db, user.id, plan_id, q)
+        if closed:
+            await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning("Closed question buttons not removed: %s", type(e).__name__)
 
 
 async def capture_edited(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3805,7 +3993,7 @@ def create_bot_application() -> Application:
     )
     # One message read as several actions: ↩️ of its dish changes, 🔁 of a failed one.
     application.add_handler(
-        CallbackQueryHandler(plan_callback, pattern=f"^{plan_service.CALLBACK_PREFIX}")
+        CallbackQueryHandler(plan_callback, pattern=f"^{plan_screen.CALLBACK_PREFIX}")
     )
     # 🍲 the tidy-up of the dish base (stateless, like favorites).
     application.add_handler(

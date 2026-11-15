@@ -4,6 +4,7 @@
 > `feat/multi-action-plan`) released 2026-11-14; slice 3 (widget) not started. Owner's answers in §5.
 > Follow-ups (meal names, «за день», weight and ticks, questions with buttons, the widget)
 > designed and approved 2026-11-14 in §6; «↩️ Вернуть всё» becomes «↩️ Отменить» (§6.5).
+> R1 (D1, D2, D4, the rename) released 2026-11-14 20:51 UTC (main `538ac58`); R2 and R3 not yet.
 > Two features that share one core: **dish operations callable without a tap**
 > (merge, star, rename, hide) with **one undo for a group of them**.
 >
@@ -268,7 +269,7 @@ the switch becomes `all`, with a news item.
 
 | # | Release | Contents |
 |---|---|---|
-| R1 | Words do more | D4 names, D1 «за день», D2 weight and ticks, «↩️ Отменить» rename and the named undo result |
+| R1 ✅ 2026-11-14 | Words do more | D4 names, D1 «за день», D2 weight and ticks, «↩️ Отменить» rename and the named undo result |
 | R2 | Questions with buttons | D3 (after moving the plan's markup into a screen module, TD-273) |
 | R3 | Tidy widget | `widget_query` plumbing, `dish_tidy_widget.py` with the §6.5 changes, switch `TIDY_WIDGET` (`off`/`owner`/`all`, first `owner`), the checkbox screen as its text twin |
 
