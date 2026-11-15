@@ -2623,6 +2623,7 @@ async def morning_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 WIDGET_SENT = "Подборка пришла новым сообщением"
+WORDS_FAILED = "Не получилось, попробуй ещё раз"
 
 
 async def _dish_tidy_widget_out(bot, telegram_id: int, screen):
@@ -2658,9 +2659,29 @@ async def dish_tidy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
     async def widget_out(screen):
+        words = dish_tidy_screen.CALLBACK_PREFIX + dish_tidy_screen.TEXT_VERB + ":"
+        if (update.callback_query.data or "").startswith(words):
+            return await _dish_tidy_words(screen)
         if screen.widget_batch is None:
             return screen
         return await _dish_tidy_widget_out(context.bot, telegram_id, screen)
+
+    async def _dish_tidy_words(screen):
+        """«💬 Текстом» under a widget: the text goes before the tap is answered, so a
+        text that does not go either says so instead of a tap that did nothing."""
+        try:
+            with SessionLocal() as db:
+                user = crud_user.get_by_telegram_id(db, telegram_id)
+                batch = None
+                if user is not None and chat_id is not None and message_id is not None:
+                    batch = crud_dish_tidy.by_message(db, chat_id, message_id, user.id)
+                if batch is None or not dish_tidy_widget.is_widget(batch):
+                    return screen  # a text message already: edited in place
+                sent = await dish_tidy_widget.to_text(context.bot, db, batch, screen)
+        except SQLAlchemyError as e:
+            logger.error("Dish tidy: text lookup failed: %s", type(e).__name__)
+            sent = False
+        return replace(screen, text="", toast=None if sent else WORDS_FAILED)
 
     async def deliver(query, screen):
         try:
@@ -2670,16 +2691,12 @@ async def dish_tidy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if user is not None and chat_id is not None and message_id is not None:
                     batch = crud_dish_tidy.by_message(db, chat_id, message_id, user.id)
                 if batch is not None and dish_tidy_widget.is_widget(batch):
-                    # «💬 Текстом», or Telegram will not draw the widget's new state:
-                    # the screen goes as a text message, the widget's fallback.
-                    words = dish_tidy_screen.TEXT_VERB + ":"
-                    asked = (query.data or "").startswith(
-                        dish_tidy_screen.CALLBACK_PREFIX + words
+                    # Telegram will not draw the widget's new state: the screen goes
+                    # as a text message, the widget's fallback.
+                    outcome = await dish_tidy_widget.refresh(
+                        context.bot, db, batch, user
                     )
-                    if asked or (
-                        await dish_tidy_widget.refresh(context.bot, db, batch, user)
-                        == widget_queries.REFUSED
-                    ):
+                    if outcome == widget_queries.REFUSED:
                         await dish_tidy_widget.to_text(context.bot, db, batch, screen)
                     return
         except SQLAlchemyError as e:

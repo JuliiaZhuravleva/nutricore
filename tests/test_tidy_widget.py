@@ -820,12 +820,21 @@ def test_text_that_does_not_go_either_leaves_the_batch_on_the_widget(db, caplog)
 
     bot.send_message = refused
     with caplog.at_level("ERROR"):
-        _press(db, f"dt:t:{batch.id}", bot, widget_id)
+        query = _press(db, f"dt:t:{batch.id}", bot, widget_id)
     db.expire_all()
     batch = _batch(db)
     assert (batch.message_id, batch.form) == (widget_id, W.FORM)
+    # The tap says so, not a button that did nothing (review of cf64aa6).
+    query.answer.assert_awaited_once_with(tg.WORDS_FAILED)
     assert "editMessageWidgetData" not in _names(bot)
     assert any("not sent as text either" in r.getMessage() for r in caplog.records)
+
+
+def test_text_that_went_answers_the_tap_silently(db):
+    batch, _ = _widget_batch(db)
+    query = _press(db, f"dt:t:{batch.id}", _bot(), batch.message_id)
+    query.answer.assert_awaited_once_with(None)
+    query.edit_message_text.assert_not_awaited()
 
 
 def test_text_of_a_closed_batch_shows_how_it_ended(db):
