@@ -2693,6 +2693,9 @@ async def dish_tidy_widget_tap(update: Update, context: ContextTypes.DEFAULT_TYP
     if query is None:
         return
     if not await check_subscription(query.from_id):
+        logger.info(
+            "dish tidy widget: tap of %s refused, no subscription", query.from_id
+        )
         await widget_queries.answer(context.bot, query.id, None)
         return
     with SessionLocal() as db:

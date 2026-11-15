@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -111,26 +113,27 @@ _SCRIPT = (
     "L=document.getElementById('l');"
     "const T={apply:'Применить отмеченное (',fin:'Готово',wait:'Применяю…',"
     "did:'Применено: ',of:' из ',ok:'Готово.',undo:'Отменено: всё вернулось, как было.',"
+    "part:'Отменено не всё: где «не отменилось», без изменений.',"
     "old:'Предложения устарели: им больше недели. Объединённое само не менялось.',"
     "shut:'Эта подборка закрыта: есть новая.',"
     "same:'объединено',apart:'разъединено',made:'сделано',keep:'не тронуто',"
-    "back:'отменено',fail:'не вышло',"
+    "back:'отменено',fail:'не вышло',stay:'не отменилось',"
     "err:{TIMEOUT:'Бот не ответил, нажми ещё раз',BUSY:'Ещё применяю прошлое',"
     "RATE_LIMITED:'Подожди немного и нажми ещё раз',"
     "NOT_ALLOWED:'Здесь это не открыть',FAILED:'Не применилось, нажми ещё раз'}};"
-    "let S=null,M=0,F=0,busy=0,note='';"
+    "let S=null,M=0,F=0,N=0,busy=0,note='';"
     "function load(t){try{const s=JSON.parse(t);if(s&&(!S||s.r>=S.r)){S=s;"
-    "M=parseInt(s.m,16)||0;F=parseInt(s.f||'0',16)||0}}catch(e){}}"
+    "M=parseInt(s.m,16)||0;F=parseInt(s.f||'0',16)||0;N=parseInt(s.n||'0',16)||0}}catch(e){}}"
     "const ended=()=>S.x||S.d||S.u||Date.now()/1e3>=S.e;"
     "function ic(i){const d=$('span');d.innerHTML='<svg><use href=\"#i'+i+'\"/></svg>';"
     "return d.firstChild}"
     "function bits(m){let n=0;for(;m;m>>=1)n+=m&1;return n}"
     "function word(k,gt){const t=M>>k&1;if(F>>k&1)return T.fail;"
-    "if(S.u)return gt>1?T.apart:S.d&&t?T.back:T.keep;"
+    "if(S.u)return N>>k&1?T.stay:gt>1?T.apart:S.d&&t?T.back:T.keep;"
     "if(S.d)return gt>1?(t?T.same:T.apart):t?T.made:T.keep;return''}"
     "function draw(){L.textContent='';document.getElementById('w').textContent=D.w;"
     "const end=ended();document.body.className=end?'end':'';"
-    "if(end)L.append($('div','st',S.u?T.undo:S.d?(D.c?T.did+bits(M&~F&D.c)+T.of+"
+    "if(end)L.append($('div','st',S.u?(N?T.part:T.undo):S.d?(D.c?T.did+bits(M&~F&D.c)+T.of+"
     "bits(D.c):T.ok):S.x?T.shut:T.old));"
     "let i=0;D.g.forEach(g=>{const h=$('div','g');if(g[1]==1)h.append(ic('s'));"
     "h.append(g[0]);L.append(h);g[2].forEach(r=>{const k=i++,"
@@ -322,6 +325,11 @@ def state_of(batch: DishTidyBatch, items: list) -> dict:
         state["d"] = 1
     if batch.state == "undone":
         state["u"] = 1
+        # Undo leaves a row "applied" when its change could not be taken back: the
+        # page names those rows and does not say everything came back.
+        kept = sum(1 << i.idx for i in items if i.state == "applied")
+        if kept:
+            state["n"] = f"{kept:x}"
     if batch.state in ("retired", "blocked", "failed"):
         state["x"] = 1
     failed = sum(1 << i.idx for i in items if i.state == "stale")
@@ -479,7 +487,19 @@ async def handle_tap(bot, db, query: widget_queries.WidgetQuery) -> None:
     try:
         outcome = tap(db, query, datetime.now(UTC))
     except Exception as error:
-        logger.error("dish tidy widget: the tap failed: %s", type(error).__name__)
+        # The type and the raising line, never the error's text: it may hold dish names.
+        frames = traceback.extract_tb(error.__traceback__)
+        where = (
+            f"{Path(frames[-1].filename).name}:{frames[-1].lineno}" if frames else "?"
+        )
+        logger.error(
+            "dish tidy widget: the tap of %s on message %s/%s failed: %s at %s",
+            query.from_id,
+            query.chat_id,
+            query.message_id,
+            type(error).__name__,
+            where,
+        )
         db.rollback()
         await widget_queries.answer(bot, query.id, None)
         return

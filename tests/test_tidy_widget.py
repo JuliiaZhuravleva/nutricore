@@ -502,6 +502,7 @@ def test_a_failing_apply_is_logged_and_never_raises(db, monkeypatch, caplog):
     assert _names(bot) == ["answerWidgetQuery"]
     assert "data" not in _answers(bot)[0][2]["api_kwargs"]
     assert "RuntimeError" in caplog.text and "secret row" not in caplog.text
+    assert "message 42/" in caplog.text and "test_tidy_widget.py:" in caplog.text
 
 
 def test_the_tap_after_the_week_expires_the_batch_and_applies_nothing(db):
@@ -565,6 +566,40 @@ def test_undo_under_a_widget_edits_data_not_text(db):
     data = json.loads(_call(bot, "editMessageWidgetData")[2]["api_kwargs"]["chat_data"])
     assert data["u"] == 1
     assert _batch(db).state == "undone"
+
+
+def test_undo_that_could_not_take_a_row_back_says_so(db):
+    """A merge that moved on since cannot come back: the widget names that row «не
+    отменилось» and does not say everything came back (R3 review)."""
+    k = _kitchen(db)
+    _run(db, _bot())
+    batch = _batch(db)
+    _tap(db, batch)
+    source = db.get(PersonalFood, k.boiled.id)
+    if source.merged_into_id is None:  # the pair merged the other way round
+        source = db.get(PersonalFood, k.buckwheat.id)
+    assert source.merged_into_id is not None  # the control: the merge did apply
+    source.merged_into_id = k.oats.id
+    db.commit()
+    batch = _batch(db)
+    bot = _bot()
+    _press(db, f"dt:u:{batch.id}", bot, batch.message_id)
+    data = json.loads(_call(bot, "editMessageWidgetData")[2]["api_kwargs"]["chat_data"])
+    assert data["u"] == 1
+    kept = int(data["n"], 16)
+    items = crud_dish_tidy.items(db, batch.id)
+    assert kept and kept == sum(1 << i.idx for i in items if i.state == "applied")
+    page = W.page({"w": "", "u": "", "h": "", "c": 0, "g": []})
+    assert "не отменилось" in page and "Отменено не всё" in page
+
+
+def test_a_clean_undo_sends_no_kept_rows(db):
+    batch, _ = _widget_batch(db)
+    _tap(db, batch)
+    bot = _bot()
+    _press(db, f"dt:u:{_batch(db).id}", bot, _batch(db).message_id)
+    data = json.loads(_call(bot, "editMessageWidgetData")[2]["api_kwargs"]["chat_data"])
+    assert data["u"] == 1 and "n" not in data
 
 
 def test_undo_under_a_text_batch_still_edits_the_text(db, monkeypatch):
