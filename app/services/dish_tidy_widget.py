@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from app.core.config import settings
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 PREFIX = "a"  # widget_queries route: the page's data is ``a:<rev>:<mask hex>``
 FORM = "widget"
+TEXT_LABEL = "💬 Текстом"  # the way out for a phone that cannot draw the widget
 MAX_STATE = widget_queries.MAX_DATA_BYTES
 CUTS = (dish_tidy_screen.LINE_NAME_MAX, 40, 28, 20)  # names, longest first
 HEIGHT_MAX = 560  # px at 320 wide: Telegram clips at 600 and nothing scrolls inside
@@ -348,15 +350,23 @@ def state_json(batch: DishTidyBatch, items: list) -> str:
 def keyboard(db, batch: DishTidyBatch, user: User) -> Optional[InlineKeyboardMarkup]:
     """Open: the Sunday switch (the ticks are the widget's own). After the apply, and for
     a batch closed with something still to take back: ✅ ОК first, then ↩️ Отменить: the
-    text screen's ``dt:`` buttons, so its undo is the one that runs."""
+    text screen's ``dt:`` buttons, so its undo is the one that runs. Open, «💬 Текстом»
+    comes first: the same rows as a text message, for a phone that shows no widget."""
     if batch.state in OPEN or batch.state == "ready":
         items = crud_dish_tidy.items(db, batch.id)
         mask = f"{dish_tidy_screen.default_mask(items):x}"
         on = dish_tidy_batch.tidy_on(user)
         label = dish_tidy_screen.OFF_LABEL if on else dish_tidy_screen.ON_LABEL
         verb = "x" if on else "s"
-        data = f"{dish_tidy_screen.CALLBACK_PREFIX}{verb}:{batch.id}:{mask}"
-        return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=data)]])
+        prefix = dish_tidy_screen.CALLBACK_PREFIX
+        data = f"{prefix}{verb}:{batch.id}:{mask}"
+        words = f"{prefix}{dish_tidy_screen.TEXT_VERB}:{batch.id}"
+        return InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(TEXT_LABEL, callback_data=words)],
+                [InlineKeyboardButton(label, callback_data=data)],
+            ]
+        )
     if dish_tidy_screen._undoable(db, batch):
         undo = f"{dish_tidy_screen.CALLBACK_PREFIX}u:{batch.id}"
         return InlineKeyboardMarkup(
@@ -461,15 +471,18 @@ def tap(db, query: widget_queries.WidgetQuery, now: datetime) -> Outcome:
     )
 
 
-async def refresh(bot, db, batch: DishTidyBatch, user: User) -> None:
+async def refresh(bot, db, batch: DishTidyBatch, user: User) -> str:
     """The widget's state and keyboard follow the batch (undo, retire, the switch):
     ``editMessageWidgetData``, never ``editMessageText``: a widget message has no text.
-    Failures are logged, never raised."""
+    Failures are logged, never raised; the state edit's outcome is returned
+    (``widget_queries.REFUSED``: Telegram would not draw it, :func:`to_text` may)."""
     if batch.chat_id is None or batch.message_id is None:
-        return
+        return widget_queries.FAILED
     items = crud_dish_tidy.items(db, batch.id)
     state = state_json(batch, items)
-    await widget_queries.edit_data(bot, batch.chat_id, batch.message_id, state)
+    outcome = await widget_queries.edit_state(
+        bot, batch.chat_id, batch.message_id, state
+    )
     try:
         await bot.edit_message_reply_markup(
             chat_id=batch.chat_id,
@@ -479,6 +492,7 @@ async def refresh(bot, db, batch: DishTidyBatch, user: User) -> None:
     except TelegramError as error:
         if "not modified" not in str(error).lower():
             logger.info("dish tidy: batch %s keyboard not edited: %s", batch.id, error)
+    return outcome
 
 
 async def handle_tap(bot, db, query: widget_queries.WidgetQuery) -> None:
@@ -583,4 +597,42 @@ async def on_demand(bot, db, user: User, batch: DishTidyBatch) -> bool:
     batch.form = FORM
     batch.state = "sent"
     db.commit()
+    return True
+
+
+async def to_text(bot, db, batch: DishTidyBatch, screen) -> bool:
+    """The older form when the widget cannot be drawn (the person asked «💬 Текстом», or
+    Telegram refused the widget's edit): ``screen`` as a new silent text message, which
+    becomes the batch's message; the widget left behind loses its buttons and, where
+    Telegram still takes it, shows closed. False, nothing changed, when the text did not
+    go either."""
+    old = (batch.chat_id, batch.message_id)
+    if None in old:
+        return False
+    try:
+        message = await bot.send_message(
+            chat_id=batch.chat_id,
+            text=screen.text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=screen.markup,
+            disable_notification=True,
+        )
+    except TelegramError as error:
+        logger.error(
+            "dish tidy: batch %s not sent as text either: %s",
+            batch.id,
+            type(error).__name__,
+        )
+        return False
+    batch.message_id = message_id_of(message)
+    batch.form = "text"
+    db.commit()
+    logger.info("dish tidy: batch %s went from the widget to text", batch.id)
+    await widget_queries.edit_data(bot, old[0], old[1], CLOSED_STATE)
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=old[0], message_id=old[1], reply_markup=None
+        )
+    except TelegramError as error:
+        logger.info("dish tidy: old widget keyboard stayed: %s", error)
     return True

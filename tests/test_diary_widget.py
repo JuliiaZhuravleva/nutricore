@@ -532,3 +532,48 @@ def test_an_old_day_that_cannot_be_deleted_still_opens_the_new_one(db, me):
     wire = Telegram(deleteMessage="Bad Request: message can't be deleted")
     _tap(f"dy:d:{_today() - timedelta(days=1):%Y%m%d}", wire)
     assert _named(wire, "sendWidget")
+
+
+def _keys(params) -> list:
+    markup = params["reply_markup"]
+    return (json.loads(markup) if isinstance(markup, str) else markup)[
+        "inline_keyboard"
+    ]
+
+
+def test_the_widget_carries_a_text_button_for_a_phone_that_cannot_draw_it(db, me):
+    wire = _command()
+    (sent,) = _named(wire, "sendWidget")
+    words = _keys(sent)[-1]
+    assert [b["text"] for b in words] == [dw.TEXT_LABEL]
+    assert words[0]["callback_data"] == f"dy:t:{_today():%Y%m%d}"
+
+
+def test_the_text_twin_after_a_refusal_has_no_text_button_and_tries_widgets_again(
+    db, me
+):
+    wire = Telegram(sendWidget=TOO_LARGE)
+    _command(wire)
+    (text,) = _named(wire, "sendMessage")
+    data = [b["callback_data"] for row in _keys(text) for b in row]
+    assert data and all(d.startswith("dy:d:") for d in data)
+
+
+def test_text_sends_the_day_in_words_and_its_arrows_stay_in_words(db, me):
+    yesterday = _today() - timedelta(days=1)
+    _meal(db, me, _at(yesterday, 13), "Суп вчерашний")
+    wire = _tap(f"dy:t:{yesterday:%Y%m%d}")
+    assert not _named(wire, "sendWidget")
+    (text,) = _named(wire, "sendMessage")
+    assert "Суп вчерашний" in text["text"]
+    data = [b["callback_data"] for row in _keys(text) for b in row]
+    assert data and all(d.startswith("dy:t:") for d in data)
+    (gone,) = _named(wire, "deleteMessage")
+    assert int(gone["message_id"]) == 4900
+
+
+def test_text_taps_are_checked_like_the_arrows():
+    today = date(2026, 11, 10)
+    assert dw.parse("dy:t:20261109", today) == date(2026, 11, 9)
+    for data in ("dy:t:20261111", "dy:t:x", "dy:t:2026111", "dy:x:20261109"):
+        assert dw.parse(data, today) is None

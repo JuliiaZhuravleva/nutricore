@@ -49,6 +49,7 @@ from app.services.meal_items import SAME_TOAST
 logger = logging.getLogger(__name__)
 
 CALLBACK_PREFIX = "dt:"
+TEXT_VERB = "t"  # dt:t:<batch>: under a widget, the same batch as a text message
 SWITCH = dish_tidy_batch.SWITCH
 ROW_LABEL_MAX = 34
 LINE_NAME_MAX = 60  # 20 lines of two names stay well under Telegram's 4096
@@ -401,6 +402,17 @@ def _v_undo(t: _Tap, data: str, bid: str) -> Screen:
     return replace(ended_view(t.db, batch, t.user, head), toast=None)
 
 
+def _v_text(t: _Tap, data: str, bid: str) -> Screen:
+    """«💬 Текстом» under a widget: the checkbox screen with the batch's own ticks (what
+    was ticked in the widget only lives in the widget), or how it ended. The caller
+    sends it as a new message: a widget message has no text to edit."""
+    batch = _own_batch(t, data, bid)
+    closed = _closed(t, batch)
+    if closed is not None:
+        return closed
+    return open_view(t.db, batch, t.user, default_mask(_items(t, batch)))
+
+
 _N = r"(\d{1,10})"
 _I = r"(\d{1,2})"
 _M = r"([0-9a-f]{1,6})"
@@ -410,6 +422,7 @@ _VERBS = (
     (re.compile(rf"dt:k:{_N}:{_I}:{_M}"), _v_tick),
     (re.compile(rf"dt:a:{_N}:{_M}"), _v_apply),
     (re.compile(rf"dt:u:{_N}"), _v_undo),
+    (re.compile(rf"dt:{TEXT_VERB}:{_N}"), _v_text),
     (re.compile(rf"dt:x:{_N}:{_M}"), _v_switch(False)),
     (re.compile(rf"dt:s:{_N}:{_M}"), _v_switch(True)),
 )

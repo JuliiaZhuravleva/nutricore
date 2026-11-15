@@ -611,6 +611,7 @@ PROBES = {
     "dt:k": lambda w: f"dt:k:{w.tidy}:0:0",
     "dt:a": lambda w: f"dt:a:{w.tidy}:1",
     "dt:u": lambda w: f"dt:u:{w.tidy}",
+    "dt:t": lambda w: f"dt:t:{w.tidy}",
     "dt:x": lambda w: f"dt:x:{w.tidy}:1",
     "dt:s": lambda w: f"dt:s:{w.tidy}:1",
 }
